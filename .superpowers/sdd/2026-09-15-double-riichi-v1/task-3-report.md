@@ -157,3 +157,31 @@ git diff --check
 C:/Users/eitab/.pi/agent/git/github.com/obra/superpowers/skills/subagent-driven-development/scripts/review-package docs/superpowers/plans/2026-09-15-double-riichi-v1.md 8105727 HEAD
 # wrote the workspace review package for 8105727..HEAD
 ```
+
+## Review round 2/5 follow-up
+
+The round 2 review marked all three prior findings as addressed; no additional source change was required. The existing focused tests cover each accepted boundary:
+
+- `engine::tests::malformed_consumed_tile_is_adapter_divergence` covers Result-collect conversion of malformed consumed IDs.
+- `engine::tests::three_player_parser_rejects_removed_tile` covers mode-aware tile parsing.
+- `engine::tests::parser_rejects_engine_seats_before_narrowing` covers values `256..259` and the three-player dummy seat.
+- `match_machine::tests::adapter_divergence_aborts_without_a_result` uses valid unknown-event JSON through public `MatchMachine::apply` and asserts `Aborted` with no result.
+
+Exact verification output for this review round:
+
+```text
+cargo test -p double_riichi_core
+# 5 unit tests, 3 integration tests, and 0 doc tests passed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# Finished `dev` profile [unoptimized + debuginfo]
+
+cargo test --workspace
+# all workspace unit, integration, and doc tests passed
+
+git diff HEAD --check
+# passed
+```
