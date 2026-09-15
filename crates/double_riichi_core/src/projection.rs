@@ -315,6 +315,7 @@ pub fn serialize_projection(projection: &AudienceProjection) -> Result<String, s
     serde_json::to_string(projection)
 }
 
+#[derive(Clone, Copy)]
 enum HandVisibility {
     Own(Seat),
     None,
@@ -326,6 +327,11 @@ fn visible_player(player: &TablePlayerState, visibility: HandVisibility) -> Visi
         HandVisibility::Own(seat) if seat == player.seat => Some(player.hand.clone()),
         HandVisibility::All => Some(player.hand.clone()),
         HandVisibility::Own(_) | HandVisibility::None => None,
+    };
+    let reveal_closed_melds = match visibility {
+        HandVisibility::Own(seat) => seat == player.seat,
+        HandVisibility::None => false,
+        HandVisibility::All => true,
     };
     VisiblePlayer {
         seat: player.seat,
@@ -339,14 +345,19 @@ fn visible_player(player: &TablePlayerState, visibility: HandVisibility) -> Visi
         melds: player
             .melds
             .iter()
-            .map(|meld| VisibleMeld {
-                tiles: meld.tiles.clone(),
-                opened: meld.opened,
-                from_who: meld.from_who,
-                called_tile: meld.called_tile,
-            })
+            .map(|meld| visible_meld(meld, reveal_closed_melds))
             .collect(),
         riichi: player.riichi,
+    }
+}
+
+fn visible_meld(meld: &MeldState, reveal_closed: bool) -> VisibleMeld {
+    let reveal = meld.opened || reveal_closed;
+    VisibleMeld {
+        tiles: reveal.then(|| meld.tiles.clone()).unwrap_or_default(),
+        opened: meld.opened,
+        from_who: reveal.then_some(meld.from_who).flatten(),
+        called_tile: reveal.then_some(meld.called_tile).flatten(),
     }
 }
 
@@ -363,9 +374,9 @@ fn player_decision(decision: &Decision, seat: Seat) -> Option<PlayerDecisionProj
             .map(visible_action)
             .collect(),
         default_action_id: decision.default_action_id(seat).clone(),
-        duration_ms: duration_ms(decision.duration()),
-        remaining_ms: duration_ms(decision.remaining(Instant::now())),
-        watchdog: decision.is_watchdog(),
+        duration_ms: duration_ms(decision.duration_for(seat)),
+        remaining_ms: duration_ms(decision.remaining_for(seat, Instant::now())),
+        watchdog: decision.is_watchdog_for(seat),
     })
 }
 
