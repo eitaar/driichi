@@ -8,7 +8,10 @@ use riichienv_core::{
 };
 use thiserror::Error;
 
-use crate::domain::{GameAction, GameEvent, GameMode, Seat, Tile, Wind};
+use crate::{
+    domain::{GameAction, GameEvent, GameMode, Participant, Seat, Tile, Wind},
+    projection::{MeldState, TablePlayerState, TableState},
+};
 
 #[derive(Debug, Error)]
 pub(crate) enum EngineError {
@@ -120,6 +123,105 @@ impl EngineAdapter {
             self.step_once_without_action()?;
         }
         self.drain_events()
+    }
+
+    pub(crate) fn apply_simultaneous(
+        &mut self,
+        actions: &[(Seat, GameAction)],
+    ) -> Result<Vec<GameEvent>, EngineError> {
+        let mut commands = HashMap::new();
+        let mut seen = HashMap::new();
+        for (seat, action) in actions {
+            if seen.insert(*seat, ()).is_some() {
+                return Err(EngineError::Divergence(format!(
+                    "duplicate response for seat {seat}"
+                )));
+            }
+            self.validate_seat(*seat)?;
+            let action = action.clone().canonicalize();
+            let legal = self.legal_actions(*seat)?;
+            if !legal.contains(&action) {
+                return Err(EngineError::Rejected(format!(
+                    "action is not legal for seat {seat}"
+                )));
+            }
+            let (raw, _) = self.raw_legal_actions(*seat)?;
+            match self.find_command(*seat, &action, &raw)? {
+                ApplyCommand::One(command) => {
+                    commands.insert(seat.index(), command);
+                }
+                ApplyCommand::RiichiDiscard { .. } => {
+                    return Err(EngineError::Divergence(
+                        "riichi cannot be resolved in a response window".into(),
+                    ));
+                }
+            }
+        }
+        step_variant(&mut self.state, &commands);
+        if let Some(error) = last_error(&self.state) {
+            return Err(EngineError::Rejected(error));
+        }
+        while self.needs_initialize_next_round() {
+            self.step_once_without_action()?;
+        }
+        self.drain_events()
+    }
+
+    pub(crate) fn table_state(
+        &self,
+        mode: GameMode,
+        participants: &[Participant],
+    ) -> Result<TableState, EngineError> {
+        let mut players = Vec::with_capacity(mode.seat_count());
+        let dora_indicators;
+        match &self.state {
+            GameStateVariant::FourPlayer(state) => {
+                dora_indicators = state
+                    .wall
+                    .dora_indicators
+                    .iter()
+                    .copied()
+                    .map(|tile| parse_engine_tile(mode, tile))
+                    .collect::<Result<Vec<_>, _>>()?;
+                for seat in 0..mode.seat_count() {
+                    let player = &state.players[seat];
+                    players.push(player_snapshot(
+                        mode,
+                        Seat::new(seat as u8).expect("validated mode seat"),
+                        &player.hand,
+                        &player.discards,
+                        &player.melds,
+                        player.score,
+                        player.riichi_declared,
+                        participants[seat].clone(),
+                    )?);
+                }
+            }
+            GameStateVariant::ThreePlayer(state) => {
+                dora_indicators = state
+                    .wall
+                    .dora_indicators
+                    .iter()
+                    .copied()
+                    .map(|tile| parse_engine_tile(mode, tile))
+                    .collect::<Result<Vec<_>, _>>()?;
+                for seat in 0..mode.seat_count() {
+                    let player = &state.players[seat];
+                    players.push(player_snapshot(
+                        mode,
+                        Seat::new(seat as u8).expect("validated mode seat"),
+                        &player.hand,
+                        &player.discards,
+                        &player.melds,
+                        player.score,
+                        player.riichi_declared,
+                        participants[seat].clone(),
+                    )?);
+                }
+            }
+        }
+        TableState::new(mode, players, dora_indicators)
+            .map_err(|error| EngineError::Divergence(error.to_string()))
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -420,6 +522,50 @@ impl EngineAdapter {
         self.log_cursor = logs.len();
         Ok(events)
     }
+}
+
+fn player_snapshot(
+    mode: GameMode,
+    seat: Seat,
+    hand: &[u8],
+    discards: &[u8],
+    melds: &[riichienv_core::types::Meld],
+    score: i32,
+    riichi: bool,
+    participant: Participant,
+) -> Result<TablePlayerState, EngineError> {
+    let parse = |tile: &u8| parse_engine_tile(mode, *tile);
+    Ok(TablePlayerState {
+        seat,
+        participant,
+        score,
+        hand: hand.iter().map(parse).collect::<Result<Vec<_>, _>>()?,
+        discards: discards.iter().map(parse).collect::<Result<Vec<_>, _>>()?,
+        melds: melds
+            .iter()
+            .map(|meld| {
+                Ok(MeldState {
+                    tiles: meld
+                        .tiles
+                        .iter()
+                        .map(parse)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    opened: meld.opened,
+                    from_who: if meld.from_who < 0 {
+                        None
+                    } else {
+                        Seat::new(meld.from_who as u8)
+                    },
+                    called_tile: meld
+                        .called_tile
+                        .as_ref()
+                        .map(|tile| parse(tile))
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>, EngineError>>()?,
+        riichi,
+    })
 }
 
 fn engine_mode(mode: GameMode) -> u8 {
