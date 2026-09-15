@@ -190,11 +190,11 @@ impl MatchMachine {
             && self.players[index].kind == ParticipantKind::Human
             && self.controllers[index] == ControllerState::Interactive
             && self.decision.as_ref().is_some_and(|decision| {
-                !decision.actions_for(seat).is_empty() && decision.deadline().is_none()
+                !decision.actions_for(seat).is_empty() && decision.deadline_for(seat).is_none()
             })
         {
             if let Some(decision) = &mut self.decision {
-                decision.retime(Instant::now(), Some(self.timing.watchdog), true);
+                decision.retime_for(seat, Instant::now(), Some(self.timing.watchdog), true);
             }
         }
         Ok(())
@@ -206,22 +206,27 @@ impl MatchMachine {
         self.presence[index] = Presence::Connected;
         if self.controllers[index] == ControllerState::TemporaryAuto {
             self.controllers[index] = ControllerState::Interactive;
-            self.decision = None;
+            if let Some(decision) = &self.decision {
+                if !decision.actions_for(seat).is_empty() {
+                    let (duration, watchdog) = self.decision_timing_for(decision.kind(), seat);
+                    if let Some(decision) = &mut self.decision {
+                        decision.retime_for(seat, Instant::now(), duration, watchdog);
+                    }
+                }
+            }
         } else if self.time_control == TimeControl::Unlimited
             && self.players[index].kind == ParticipantKind::Human
             && self.decision.as_ref().is_some_and(|decision| {
-                decision.is_watchdog() && !decision.actions_for(seat).is_empty()
+                decision.is_watchdog_for(seat) && !decision.actions_for(seat).is_empty()
             })
         {
-            if let Some((kind, eligible)) = self
+            let (duration, watchdog) = self
                 .decision
                 .as_ref()
-                .map(|decision| (decision.kind(), decision.eligible().collect::<Vec<_>>()))
-            {
-                let (duration, watchdog) = self.decision_timing(kind, &eligible);
-                if let Some(decision) = &mut self.decision {
-                    decision.retime(Instant::now(), duration, watchdog);
-                }
+                .map(|decision| self.decision_timing_for(decision.kind(), seat))
+                .expect("watchdog check above guarantees a decision");
+            if let Some(decision) = &mut self.decision {
+                decision.retime_for(seat, Instant::now(), duration, watchdog);
             }
         }
         Ok(())
@@ -293,8 +298,6 @@ impl MatchMachine {
         } else {
             DecisionKind::Turn
         };
-        let eligible: Vec<Seat> = options.iter().map(|(seat, _)| *seat).collect();
-        let (duration, watchdog) = self.decision_timing(kind, &eligible);
         let decision_id = DecisionId::new(format!("d{}", self.next_decision_id));
         self.next_decision_id += 1;
         let options = options
@@ -308,16 +311,15 @@ impl MatchMachine {
                         (id, action)
                     })
                     .collect();
-                (seat, actions)
+                let (duration, watchdog) = self.decision_timing_for(kind, seat);
+                (seat, actions, duration, watchdog)
             })
             .collect();
-        let decision = match Decision::from_action_ids(
+        let decision = match Decision::from_action_ids_with_timings(
             decision_id,
             kind,
             options,
             Instant::now(),
-            duration,
-            watchdog,
         ) {
             Ok(decision) => decision,
             Err(error) => {
@@ -457,7 +459,7 @@ impl MatchMachine {
         Ok(new_events)
     }
 
-    fn decision_timing(&self, kind: DecisionKind, eligible: &[Seat]) -> (Option<Duration>, bool) {
+    fn decision_timing_for(&self, kind: DecisionKind, seat: Seat) -> (Option<Duration>, bool) {
         match self.time_control {
             TimeControl::Casual => (
                 Some(match kind {
@@ -474,45 +476,20 @@ impl MatchMachine {
                 false,
             ),
             TimeControl::Unlimited => {
-                let mut finite = Vec::new();
-                let mut watchdog = false;
-                for seat in eligible {
-                    let index = seat.index() as usize;
-                    let duration = match self.controllers[index] {
-                        ControllerState::PermanentAuto | ControllerState::TemporaryAuto => {
-                            Some(Duration::ZERO)
-                        }
-                        ControllerState::Interactive => match self.players[index].kind {
-                            ParticipantKind::BuiltInBot => Some(Duration::ZERO),
-                            ParticipantKind::Human
-                                if self.presence[index] == Presence::Connected =>
-                            {
-                                None
-                            }
-                            ParticipantKind::Human => {
-                                watchdog = true;
-                                Some(self.timing.watchdog)
-                            }
-                            ParticipantKind::MJAI | ParticipantKind::MCP => {
-                                watchdog = true;
-                                Some(self.timing.watchdog)
-                            }
-                        },
-                    };
-                    if let Some(duration) = duration {
-                        finite.push(duration);
+                let index = seat.index() as usize;
+                match self.controllers[index] {
+                    ControllerState::PermanentAuto | ControllerState::TemporaryAuto => {
+                        (Some(Duration::ZERO), false)
                     }
-                }
-                if finite.is_empty() {
-                    (None, false)
-                } else {
-                    // A response window has one shared deadline. The longest
-                    // finite safety period prevents a connected Human from
-                    // inheriting a shorter bot/MJAI watchdog by accident.
-                    (
-                        Some(finite.into_iter().max().expect("finite deadline")),
-                        watchdog,
-                    )
+                    ControllerState::Interactive => match self.players[index].kind {
+                        ParticipantKind::BuiltInBot => (Some(Duration::ZERO), false),
+                        ParticipantKind::Human if self.presence[index] == Presence::Connected => {
+                            (None, false)
+                        }
+                        ParticipantKind::Human | ParticipantKind::MJAI | ParticipantKind::MCP => {
+                            (Some(self.timing.watchdog), true)
+                        }
+                    },
                 }
             }
         }
@@ -772,6 +749,92 @@ mod tests {
             assert!(result.is_resolved());
         }
         panic!("seed did not expose a simultaneous response window")
+    }
+
+    #[test]
+    fn unlimited_mixed_response_keeps_connected_human_without_deadline() {
+        let mode = GameMode::FourPlayerRedEast;
+        let participants = vec![
+            Participant::new("human0", "Human 0", ParticipantKind::Human),
+            Participant::new("human1", "Human 1", ParticipantKind::Human),
+            Participant::new("bot0", "Bot 0", ParticipantKind::BuiltInBot),
+            Participant::new("bot1", "Bot 1", ParticipantKind::BuiltInBot),
+        ];
+        for seed in 0..128 {
+            let mut machine =
+                MatchMachine::new_with_seed(mode, participants.clone(), seed).unwrap();
+            machine.set_time_control(TimeControl::Unlimited);
+            for _ in 0..2_000 {
+                machine.resolve_expired().unwrap();
+                machine.current_decision().unwrap().expect("decision");
+                machine.resolve_expired().unwrap();
+                let decision = machine.current_decision().unwrap().expect("decision");
+                let seats: Vec<_> = decision.eligible().collect();
+                let human = seats.iter().copied().find(|seat| {
+                    machine.participant(*seat).expect("seat participant").kind
+                        == ParticipantKind::Human
+                });
+                let bot = seats.iter().copied().find(|seat| {
+                    machine.participant(*seat).expect("seat participant").kind
+                        == ParticipantKind::BuiltInBot
+                });
+                if let (Some(human), Some(bot)) = (human, bot) {
+                    assert_eq!(decision.duration_for(human), None);
+                    assert_eq!(decision.duration_for(bot), Some(Duration::ZERO));
+                    return;
+                }
+                for seat in seats {
+                    if decision.submitted_action_id(seat).is_some() {
+                        continue;
+                    }
+                    if decision.is_expired_for(seat, Instant::now()) {
+                        machine.resolve_expired().unwrap();
+                        break;
+                    }
+                    let action = decision.default_action_id(seat).clone();
+                    machine
+                        .submit_action(seat, decision.id().clone(), action)
+                        .unwrap();
+                }
+            }
+        }
+        panic!("seed did not expose a mixed response window")
+    }
+
+    #[test]
+    fn reconnect_preserves_pending_decision_responses() {
+        let mode = GameMode::FourPlayerRedEast;
+        let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0_u64).unwrap();
+        let reconnecting = Seat::new(0).unwrap();
+        let other = Seat::new(1).unwrap();
+        let decision = Decision::new(
+            DecisionId::new("pending"),
+            DecisionKind::Response,
+            vec![
+                (reconnecting, vec![GameAction::Pass]),
+                (other, vec![GameAction::Pass]),
+            ],
+            Instant::now(),
+            Some(Duration::from_secs(10)),
+            false,
+        )
+        .unwrap();
+        let decision_id = decision.id().clone();
+        let other_action = decision.actions_for(other)[0].id.clone();
+        machine.decision = Some(decision);
+        machine.presence[reconnecting.index() as usize] = Presence::Disconnected;
+        machine.controllers[reconnecting.index() as usize] = ControllerState::TemporaryAuto;
+        assert!(
+            !machine
+                .submit_action(other, decision_id.clone(), other_action)
+                .unwrap()
+                .is_resolved()
+        );
+
+        machine.reconnect(reconnecting).unwrap();
+        let current = machine.current_decision().unwrap().unwrap();
+        assert_eq!(current.id(), &decision_id);
+        assert!(current.submitted_action_id(other).is_some());
     }
 
     #[test]

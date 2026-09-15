@@ -98,6 +98,10 @@ pub struct DecisionSeat {
     pub actions: Vec<DecisionAction>,
     default_action_id: ActionId,
     submitted_action_id: Option<ActionId>,
+    opened_at: Instant,
+    duration: Option<Duration>,
+    deadline: Option<Instant>,
+    watchdog: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,6 +307,31 @@ impl Decision {
         Self::from_action_ids(id, kind, options, opened_at, duration, watchdog)
     }
 
+    pub fn new_with_timings(
+        id: DecisionId,
+        kind: DecisionKind,
+        options: Vec<(Seat, Vec<GameAction>, Option<Duration>, bool)>,
+        opened_at: Instant,
+    ) -> Result<Self, DecisionError> {
+        let mut next_action = 1u64;
+        let options = options
+            .into_iter()
+            .map(|(seat, actions, duration, watchdog)| {
+                let actions = actions
+                    .into_iter()
+                    .map(|action| {
+                        let action = action.canonicalize();
+                        let id = ActionId::new(format!("a{next_action}"));
+                        next_action += 1;
+                        (id, action)
+                    })
+                    .collect();
+                (seat, actions, duration, watchdog)
+            })
+            .collect();
+        Self::from_action_ids_with_timings(id, kind, options, opened_at)
+    }
+
     pub(crate) fn from_action_ids(
         id: DecisionId,
         kind: DecisionKind,
@@ -311,10 +340,22 @@ impl Decision {
         duration: Option<Duration>,
         watchdog: bool,
     ) -> Result<Self, DecisionError> {
-        let deadline = duration.map(|duration| opened_at + duration);
+        let options = options
+            .into_iter()
+            .map(|(seat, actions)| (seat, actions, duration, watchdog))
+            .collect();
+        Self::from_action_ids_with_timings(id, kind, options, opened_at)
+    }
+
+    pub(crate) fn from_action_ids_with_timings(
+        id: DecisionId,
+        kind: DecisionKind,
+        options: Vec<(Seat, Vec<(ActionId, GameAction)>, Option<Duration>, bool)>,
+        opened_at: Instant,
+    ) -> Result<Self, DecisionError> {
         let entries = options
             .into_iter()
-            .map(|(seat, actions)| {
+            .map(|(seat, actions, duration, watchdog)| {
                 let actions: Vec<DecisionAction> = actions
                     .into_iter()
                     .map(|(id, action)| DecisionAction { id, action })
@@ -325,19 +366,25 @@ impl Decision {
                     actions,
                     default_action_id,
                     submitted_action_id: None,
+                    opened_at,
+                    duration,
+                    deadline: duration.map(|duration| opened_at + duration),
+                    watchdog,
                 })
             })
             .collect::<Result<Vec<_>, DecisionError>>()?;
-        Ok(Self {
+        let mut decision = Self {
             id,
             kind,
             entries,
             opened_at,
-            duration,
-            deadline,
-            watchdog,
+            duration: None,
+            deadline: None,
+            watchdog: false,
             closed: false,
-        })
+        };
+        decision.recompute_timing();
+        Ok(decision)
     }
 
     pub fn id(&self) -> &DecisionId {
@@ -402,12 +449,24 @@ impl Decision {
         self.duration
     }
 
+    pub fn duration_for(&self, seat: Seat) -> Option<Duration> {
+        self.entry(seat).and_then(|entry| entry.duration)
+    }
+
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
 
+    pub fn deadline_for(&self, seat: Seat) -> Option<Instant> {
+        self.entry(seat).and_then(|entry| entry.deadline)
+    }
+
     pub fn is_watchdog(&self) -> bool {
         self.watchdog
+    }
+
+    pub fn is_watchdog_for(&self, seat: Seat) -> bool {
+        self.entry(seat).is_some_and(|entry| entry.watchdog)
     }
 
     pub fn remaining(&self, now: Instant) -> Option<Duration> {
@@ -415,8 +474,20 @@ impl Decision {
             .map(|deadline| deadline.saturating_duration_since(now))
     }
 
+    pub fn remaining_for(&self, seat: Seat, now: Instant) -> Option<Duration> {
+        self.deadline_for(seat)
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
     pub fn is_expired_at(&self, now: Instant) -> bool {
-        self.deadline.is_some_and(|deadline| now >= deadline)
+        self.entries
+            .iter()
+            .any(|entry| entry.deadline.is_some_and(|deadline| now >= deadline))
+    }
+
+    pub fn is_expired_for(&self, seat: Seat, now: Instant) -> bool {
+        self.entry(seat)
+            .is_some_and(|entry| entry.deadline.is_some_and(|deadline| now >= deadline))
     }
 
     pub fn is_expired(&self) -> bool {
@@ -427,16 +498,52 @@ impl Decision {
         self.closed
     }
 
-    pub(crate) fn retime(
+    pub(crate) fn retime_for(
         &mut self,
+        seat: Seat,
         opened_at: Instant,
         duration: Option<Duration>,
         watchdog: bool,
     ) {
-        self.opened_at = opened_at;
-        self.duration = duration;
-        self.deadline = duration.map(|duration| opened_at + duration);
-        self.watchdog = watchdog;
+        if let Some(entry) = self.entry_mut(seat) {
+            entry.opened_at = opened_at;
+            entry.duration = duration;
+            entry.deadline = duration.map(|duration| opened_at + duration);
+            entry.watchdog = watchdog;
+        }
+        self.recompute_timing();
+    }
+
+    fn entry(&self, seat: Seat) -> Option<&DecisionSeat> {
+        self.entries.iter().find(|entry| entry.seat == seat)
+    }
+
+    fn entry_mut(&mut self, seat: Seat) -> Option<&mut DecisionSeat> {
+        self.entries.iter_mut().find(|entry| entry.seat == seat)
+    }
+
+    fn recompute_timing(&mut self) {
+        let Some(first) = self.entries.first() else {
+            self.duration = None;
+            self.deadline = None;
+            self.watchdog = false;
+            return;
+        };
+        let uniform = self.entries.iter().all(|entry| {
+            entry.opened_at == first.opened_at
+                && entry.duration == first.duration
+                && entry.watchdog == first.watchdog
+        });
+        if uniform {
+            self.opened_at = first.opened_at;
+            self.duration = first.duration;
+            self.deadline = first.deadline;
+            self.watchdog = first.watchdog;
+        } else {
+            self.duration = None;
+            self.deadline = None;
+            self.watchdog = false;
+        }
     }
 
     pub fn submit(
@@ -456,7 +563,10 @@ impl Decision {
         if self.closed {
             return Err(DecisionError::Closed);
         }
-        if self.is_expired_at(now) {
+        if self.entry(seat).is_none() {
+            return Err(DecisionError::NotEligible { seat });
+        }
+        if self.is_expired_for(seat, now) {
             return Err(DecisionError::Expired);
         }
         let action_id = action_id.into();
@@ -464,7 +574,7 @@ impl Decision {
             .entries
             .iter_mut()
             .find(|entry| entry.seat == seat)
-            .ok_or(DecisionError::NotEligible { seat })?;
+            .expect("seat was checked above");
         if entry.submitted_action_id.is_some() {
             return Err(DecisionError::AlreadyConsumed { seat });
         }
@@ -511,10 +621,20 @@ impl Decision {
         }
         let mut timed_out = Vec::new();
         for entry in &mut self.entries {
-            if entry.submitted_action_id.is_none() {
+            if entry.submitted_action_id.is_none()
+                && entry.deadline.is_some_and(|deadline| now >= deadline)
+            {
                 entry.submitted_action_id = Some(entry.default_action_id.clone());
                 timed_out.push(entry.seat);
             }
+        }
+        if timed_out.is_empty()
+            || self
+                .entries
+                .iter()
+                .any(|entry| entry.submitted_action_id.is_none())
+        {
+            return Ok(None);
         }
         self.closed = true;
         let mut resolution = self.accepted_resolution();

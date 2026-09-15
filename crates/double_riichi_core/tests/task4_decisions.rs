@@ -141,6 +141,56 @@ fn ids_reject_stale_foreign_and_already_consumed_submissions() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn mixed_unlimited_decision_keeps_connected_human_open_while_auto_times_out() {
+    let human = seat(0);
+    let bot = seat(1);
+    let mut decision = Decision::new_with_timings(
+        DecisionId::new("mixed"),
+        DecisionKind::Response,
+        vec![
+            (human, vec![GameAction::Pass], None, false),
+            (bot, vec![GameAction::Pass], Some(Duration::ZERO), false),
+        ],
+        Instant::now(),
+    )
+    .unwrap();
+    assert_eq!(decision.duration_for(human), None);
+    assert_eq!(decision.duration_for(bot), Some(Duration::ZERO));
+    let bot_action = decision.actions_for(bot)[0].id.clone();
+    assert!(matches!(
+        decision.submit(bot, bot_action),
+        Err(DecisionError::Expired)
+    ));
+    assert!(decision.resolve_at(Instant::now()).unwrap().is_none());
+    assert!(decision.submitted_action_id(bot).is_some());
+    let human_action = decision.actions_for(human)[0].id.clone();
+    assert!(decision.submit(human, human_action).unwrap().is_resolved());
+}
+
+#[tokio::test(start_paused = true)]
+async fn response_decision_expires_after_exactly_ten_seconds() {
+    let first = seat(0);
+    let second = seat(1);
+    let mut decision = Decision::new(
+        DecisionId::new("response-time"),
+        DecisionKind::Response,
+        vec![
+            (first, vec![GameAction::Pass]),
+            (second, vec![GameAction::Pass]),
+        ],
+        Instant::now(),
+        Some(Duration::from_secs(10)),
+        false,
+    )
+    .unwrap();
+    time::advance(Duration::from_secs(9)).await;
+    assert!(decision.resolve_at(Instant::now()).unwrap().is_none());
+    time::advance(Duration::from_secs(1)).await;
+    let resolution = decision.resolve_at(Instant::now()).unwrap().unwrap();
+    assert!(resolution.actions.iter().all(|action| action.timed_out));
+}
+
+#[tokio::test(start_paused = true)]
 async fn casual_and_unlimited_timing_is_monotonic() {
     let casual = TimeControl::Casual;
     assert_eq!(casual.turn_duration(), Duration::from_secs(30));

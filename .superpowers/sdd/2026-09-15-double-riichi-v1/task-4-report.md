@@ -109,3 +109,55 @@ After the required commit:
 C:/Users/eitab/.pi/agent/git/github.com/obra/superpowers/skills/subagent-driven-development/scripts/review-package docs/superpowers/plans/2026-09-15-double-riichi-v1.md b678a3e58c51f4530df3d3386a3f9ab4cf6458a HEAD
 # wrote the workspace review package for the Task 4 commit range
 ```
+
+## Review round 1/5 follow-up
+
+Follow-up commit: `d28d3b7` — `fix(core): close task 4 visibility and timing gaps` (final amended hash: see `git rev-parse HEAD`)
+
+Addressed all findings:
+
+- Public and opponent Player projections now redact closed meld tile identities while retaining full contents for the owning Player and ReplayAdmin. New JSON fixtures cover both three-player and four-player modes.
+- Unlimited Decisions now keep timing per eligible seat. Connected Humans retain no deadlines even when mixed with Built-in Bot or watchdog seats; automatic seats still timeout independently. Mixed roster coverage is included.
+- Reconnecting Temporary Auto preserves the open Decision, other seats' accepted responses, and the original ephemeral IDs while retiming only the reconnected seat.
+- Added a three-player Player JSON assertion and an actual paused-time ten-second response expiry test.
+
+### Follow-up RED
+
+```text
+cargo test -p double_riichi_core --test task4_projection closed_meld_tiles_are_redacted_from_public_and_opponent_players_in_both_modes
+# FAILED: public meld tiles were [100, 101, 102, 103] instead of []
+
+cargo test -p double_riichi_core --test task4_decisions mixed_unlimited_decision_keeps_connected_human_open_while_auto_times_out
+# failed to compile: Decision::new_with_timings was not implemented
+
+cargo test -p double_riichi_core --lib reconnect_preserves_pending_decision_responses -- --nocapture
+# FAILED: current decision was d1 instead of pending after reconnect
+```
+
+### Follow-up GREEN
+
+```text
+cargo test -p double_riichi_core --test task4_projection closed_meld_tiles_are_redacted_from_public_and_opponent_players_in_both_modes
+# 1 passed; 0 failed
+
+cargo test -p double_riichi_core --test task4_decisions mixed_unlimited_decision_keeps_connected_human_open_while_auto_times_out
+# 1 passed; 0 failed
+
+cargo test -p double_riichi_core --test task4_decisions response_decision_expires_after_exactly_ten_seconds
+# 1 passed; 0 failed
+
+cargo test -p double_riichi_core --lib reconnect_preserves_pending_decision_responses -- --nocapture
+# 1 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# Finished `dev` profile
+
+cargo test --workspace
+# all workspace unit, integration, and doc tests passed
+
+git diff --check
+# passed
+```
