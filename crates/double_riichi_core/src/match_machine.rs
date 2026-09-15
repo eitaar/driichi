@@ -296,14 +296,18 @@ mod tests {
     fn adapter_divergence_aborts_without_a_result() {
         let mode = GameMode::FourPlayerRedEast;
         let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0_u64).unwrap();
+        let seat = Seat::all(mode)[0];
+        let action = machine
+            .legal_actions(seat)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("initial decision has an action");
         machine.engine.force_event_divergence_for_test();
-        let error = machine
-            .engine
-            .drain_events_for_test()
-            .expect_err("unknown engine event must diverge");
+
         assert!(matches!(
-            machine.abort_for_engine(error),
-            MatchError::Aborted(_)
+            machine.apply(seat, action),
+            Err(MatchError::Aborted(_))
         ));
         assert!(matches!(machine.status(), MatchStatus::Aborted(_)));
         assert!(machine.result().is_none());

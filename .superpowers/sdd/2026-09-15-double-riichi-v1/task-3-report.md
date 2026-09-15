@@ -109,3 +109,51 @@ git diff --check
 
 - The pinned engine exposes final scores rather than a separate rank field. `MatchResult` derives rank from descending final scores with seat-order tie breaking while leaving scoring and rule resolution to the engine.
 - No MJAI, Replay, Room, MCP, HTTP, or production Frontend code was changed.
+
+## Review round 1/5 follow-up
+
+Addressed findings from the review of commit `8105727`:
+
+- All engine action consumed-tile conversions now use `Result` collection; invalid Chi/Pon/Daiminkan/Ankan/Kakan IDs return `EngineError::InvalidTile` and route through `MatchMachine::abort_for_engine`.
+- Event parsing now receives `GameMode`; every event tile and seat is checked against the mode, so removed 3-player manzu tiles and dummy seat 3 are rejected.
+- `parse_seat` validates the `usize` before narrowing to `u8`; values `256..259` no longer wrap.
+- Engine numeric mode mapping moved from `domain.rs` into the private adapter module.
+- The divergence test now injects valid unknown-event JSON and triggers the error through `MatchMachine::apply`; it asserts `Aborted` and no result rather than manually draining the adapter.
+
+Failing-first focused checks added before the implementation fix:
+
+```text
+cargo test -p double_riichi_core engine::tests
+# failed to compile: parse_tile required the new mode argument
+```
+
+Passing focused checks after the fix:
+
+```text
+cargo test -p double_riichi_core engine::tests
+# 3 passed; 0 failed
+
+cargo test -p double_riichi_core match_machine::tests::adapter_divergence_aborts_without_a_result -- --nocapture
+# 1 passed; 0 failed
+
+cargo test -p double_riichi_core
+# 5 unit tests, 3 integration tests, and 0 doc tests passed
+
+Final affected-workspace verification after the fix:
+
+```text
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# Finished `dev` profile [unoptimized + debuginfo]
+
+cargo test --workspace
+# all workspace unit, integration, and doc tests passed
+
+git diff --check
+# passed
+
+C:/Users/eitab/.pi/agent/git/github.com/obra/superpowers/skills/subagent-driven-development/scripts/review-package docs/superpowers/plans/2026-09-15-double-riichi-v1.md 8105727 HEAD
+# wrote the workspace review package for 8105727..HEAD
+```

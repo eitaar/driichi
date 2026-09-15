@@ -36,15 +36,6 @@ impl GameMode {
         self.seat_count() == 3
     }
 
-    pub(crate) const fn engine_mode(self) -> u8 {
-        match self {
-            Self::FourPlayerRedEast => 1,
-            Self::FourPlayerRedHalf => 2,
-            Self::ThreePlayerRedEast => 4,
-            Self::ThreePlayerRedHalf => 5,
-        }
-    }
-
     pub const fn all() -> [Self; 4] {
         [
             Self::FourPlayerRedEast,

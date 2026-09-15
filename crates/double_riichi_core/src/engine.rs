@@ -45,7 +45,7 @@ impl EngineAdapter {
         seed: Option<u64>,
     ) -> Result<(Self, Vec<GameEvent>), EngineError> {
         let state = GameStateVariant::new(
-            mode.engine_mode(),
+            engine_mode(mode),
             false,
             seed,
             0,
@@ -140,17 +140,12 @@ impl EngineAdapter {
     pub(crate) fn force_event_divergence_for_test(&mut self) {
         match &mut self.state {
             GameStateVariant::FourPlayer(state) => {
-                state.mjai_log.push(r#"{\"type\":\"future_event\"}"#.into())
+                state.mjai_log.push(r#"{"type":"future_event"}"#.into())
             }
             GameStateVariant::ThreePlayer(state) => {
-                state.mjai_log.push(r#"{\"type\":\"future_event\"}"#.into())
+                state.mjai_log.push(r#"{"type":"future_event"}"#.into())
             }
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn drain_events_for_test(&mut self) -> Result<Vec<GameEvent>, EngineError> {
-        self.drain_events()
     }
 
     fn validate_seat(&self, seat: Seat) -> Result<(), EngineError> {
@@ -189,8 +184,8 @@ impl EngineAdapter {
     ) -> Result<GameAction, EngineError> {
         let tile = |value: Option<u8>| {
             value
-                .and_then(Tile::from_id)
                 .ok_or_else(|| EngineError::InvalidTile(format!("{:?}", value)))
+                .and_then(|value| parse_engine_tile(self.mode, value))
         };
         let target = || {
             self.last_discard()
@@ -212,8 +207,8 @@ impl EngineAdapter {
                     .consume_tiles
                     .iter()
                     .copied()
-                    .filter_map(Tile::from_id)
-                    .collect(),
+                    .map(|value| parse_engine_tile(self.mode, value))
+                    .collect::<Result<Vec<_>, _>>()?,
             },
             ActionType::Pon => GameAction::Pon {
                 target: target()?,
@@ -222,8 +217,8 @@ impl EngineAdapter {
                     .consume_tiles
                     .iter()
                     .copied()
-                    .filter_map(Tile::from_id)
-                    .collect(),
+                    .map(|value| parse_engine_tile(self.mode, value))
+                    .collect::<Result<Vec<_>, _>>()?,
             },
             ActionType::Daiminkan => GameAction::Daiminkan {
                 target: target()?,
@@ -232,18 +227,15 @@ impl EngineAdapter {
                     .consume_tiles
                     .iter()
                     .copied()
-                    .filter_map(Tile::from_id)
-                    .collect(),
+                    .map(|value| parse_engine_tile(self.mode, value))
+                    .collect::<Result<Vec<_>, _>>()?,
             },
             ActionType::Ankan => GameAction::Ankan {
                 consumed: action
                     .consume_tiles
                     .iter()
                     .copied()
-                    .map(|value| {
-                        Tile::from_id(value)
-                            .ok_or_else(|| EngineError::InvalidTile(format!("{value}")))
-                    })
+                    .map(|value| parse_engine_tile(self.mode, value))
                     .collect::<Result<Vec<_>, _>>()?,
             },
             ActionType::Kakan => GameAction::Kakan {
@@ -252,10 +244,7 @@ impl EngineAdapter {
                     .consume_tiles
                     .iter()
                     .copied()
-                    .map(|value| {
-                        Tile::from_id(value)
-                            .ok_or_else(|| EngineError::InvalidTile(format!("{value}")))
-                    })
+                    .map(|value| parse_engine_tile(self.mode, value))
                     .collect::<Result<Vec<_>, _>>()?,
             },
             ActionType::Kita => GameAction::Nuki {
@@ -387,7 +376,10 @@ impl EngineAdapter {
             GameStateVariant::FourPlayer(state) => state.last_discard,
             GameStateVariant::ThreePlayer(state) => state.last_discard,
         }?;
-        Some((Seat::new(raw.0)?, Tile::from_id(raw.1)?))
+        if usize::from(raw.0) >= self.mode.seat_count() {
+            return None;
+        }
+        Some((Seat::new(raw.0)?, parse_engine_tile(self.mode, raw.1).ok()?))
     }
 
     fn step_once(&mut self, seat: Seat, action: Action) -> Result<(), EngineError> {
@@ -423,10 +415,30 @@ impl EngineAdapter {
         let new_logs = logs.get(self.log_cursor..).unwrap_or_default();
         let mut events = Vec::with_capacity(new_logs.len());
         for log in new_logs {
-            events.push(parse_event(log)?);
+            events.push(parse_event(log, self.mode)?);
         }
         self.log_cursor = logs.len();
         Ok(events)
+    }
+}
+
+fn engine_mode(mode: GameMode) -> u8 {
+    match mode {
+        GameMode::FourPlayerRedEast => 1,
+        GameMode::FourPlayerRedHalf => 2,
+        GameMode::ThreePlayerRedEast => 4,
+        GameMode::ThreePlayerRedHalf => 5,
+    }
+}
+
+fn parse_engine_tile(mode: GameMode, id: u8) -> Result<Tile, EngineError> {
+    let tile = Tile::from_id(id).ok_or_else(|| EngineError::InvalidTile(format!("{id}")))?;
+    if Tile::canonical_order(mode).contains(&tile) {
+        Ok(tile)
+    } else {
+        Err(EngineError::InvalidTile(format!(
+            "tile {id} is not valid for {mode}"
+        )))
     }
 }
 
@@ -498,7 +510,9 @@ fn action_sort_key(action: &GameAction) -> (u8, u8, u8, Vec<u8>) {
     }
 }
 
-fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
+fn parse_event(line: &str, mode: GameMode) -> Result<GameEvent, EngineError> {
+    let parse_seat_for_mode = |value: usize| parse_seat(value, mode);
+    let parse_tile_for_mode = |value: &str| parse_tile(value, mode);
     let raw: MjaiEvent = serde_json::from_str(line)
         .map_err(|error| EngineError::UnsupportedEvent(format!("{error}: {line}")))?;
     match raw {
@@ -517,25 +531,25 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
             kyoku,
             honba,
             kyotaku: kyoutaku,
-            oya: parse_seat(usize::from(oya))?,
+            oya: parse_seat_for_mode(usize::from(oya))?,
             scores,
-            dora_marker: parse_tile(&dora_marker)?,
+            dora_marker: parse_tile_for_mode(&dora_marker)?,
             tehais: tehais
                 .iter()
-                .map(|hand| hand.iter().map(|tile| parse_tile(tile)).collect())
+                .map(|hand| hand.iter().map(|tile| parse_tile_for_mode(tile)).collect())
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         MjaiEvent::Tsumo { actor, pai } => Ok(GameEvent::Tsumo {
-            actor: parse_seat(actor)?,
-            tile: parse_tile(&pai)?,
+            actor: parse_seat_for_mode(actor)?,
+            tile: parse_tile_for_mode(&pai)?,
         }),
         MjaiEvent::Dahai {
             actor,
             pai,
             tsumogiri,
         } => Ok(GameEvent::Dahai {
-            actor: parse_seat(actor)?,
-            tile: parse_tile(&pai)?,
+            actor: parse_seat_for_mode(actor)?,
+            tile: parse_tile_for_mode(&pai)?,
             tsumogiri,
         }),
         MjaiEvent::Pon {
@@ -544,12 +558,12 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
             pai,
             consumed,
         } => Ok(GameEvent::Pon {
-            actor: parse_seat(actor)?,
-            target: parse_seat(target)?,
-            called: parse_tile(&pai)?,
+            actor: parse_seat_for_mode(actor)?,
+            target: parse_seat_for_mode(target)?,
+            called: parse_tile_for_mode(&pai)?,
             consumed: consumed
                 .iter()
-                .map(|tile| parse_tile(tile))
+                .map(|tile| parse_tile_for_mode(tile))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         MjaiEvent::Chi {
@@ -558,12 +572,12 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
             pai,
             consumed,
         } => Ok(GameEvent::Chi {
-            actor: parse_seat(actor)?,
-            target: parse_seat(target)?,
-            called: parse_tile(&pai)?,
+            actor: parse_seat_for_mode(actor)?,
+            target: parse_seat_for_mode(target)?,
+            called: parse_tile_for_mode(&pai)?,
             consumed: consumed
                 .iter()
-                .map(|tile| parse_tile(tile))
+                .map(|tile| parse_tile_for_mode(tile))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         MjaiEvent::Kan {
@@ -572,33 +586,33 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
             pai,
             consumed,
         } => Ok(GameEvent::Daiminkan {
-            actor: parse_seat(actor)?,
-            target: parse_seat(target)?,
-            called: parse_tile(&pai)?,
+            actor: parse_seat_for_mode(actor)?,
+            target: parse_seat_for_mode(target)?,
+            called: parse_tile_for_mode(&pai)?,
             consumed: consumed
                 .iter()
-                .map(|tile| parse_tile(tile))
+                .map(|tile| parse_tile_for_mode(tile))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         MjaiEvent::Kakan { actor, pai } => Ok(GameEvent::Kakan {
-            actor: parse_seat(actor)?,
-            called: parse_tile(&pai)?,
+            actor: parse_seat_for_mode(actor)?,
+            called: parse_tile_for_mode(&pai)?,
         }),
         MjaiEvent::Ankan { actor, consumed } => Ok(GameEvent::Ankan {
-            actor: parse_seat(actor)?,
+            actor: parse_seat_for_mode(actor)?,
             consumed: consumed
                 .iter()
-                .map(|tile| parse_tile(tile))
+                .map(|tile| parse_tile_for_mode(tile))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         MjaiEvent::Dora { dora_marker } => Ok(GameEvent::Dora {
-            dora_marker: parse_tile(&dora_marker)?,
+            dora_marker: parse_tile_for_mode(&dora_marker)?,
         }),
         MjaiEvent::Reach { actor } => Ok(GameEvent::Reach {
-            actor: parse_seat(actor)?,
+            actor: parse_seat_for_mode(actor)?,
         }),
         MjaiEvent::ReachAccepted { actor } => Ok(GameEvent::ReachAccepted {
-            actor: parse_seat(actor)?,
+            actor: parse_seat_for_mode(actor)?,
         }),
         MjaiEvent::Hora {
             actor,
@@ -611,12 +625,15 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
             scores,
             delta,
         } => Ok(GameEvent::Hora {
-            actor: parse_seat(actor)?,
-            target: parse_seat(target)?,
-            tile: pai.as_deref().map(parse_tile).transpose()?,
+            actor: parse_seat_for_mode(actor)?,
+            target: parse_seat_for_mode(target)?,
+            tile: pai
+                .as_deref()
+                .map(|tile| parse_tile_for_mode(tile))
+                .transpose()?,
             ura_markers: uradora_markers
                 .as_ref()
-                .map(|tiles| tiles.iter().map(|tile| parse_tile(tile)).collect())
+                .map(|tiles| tiles.iter().map(|tile| parse_tile_for_mode(tile)).collect())
                 .transpose()?,
             yaku,
             fu,
@@ -636,7 +653,7 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
                 .map(|hands| {
                     hands
                         .iter()
-                        .map(|hand| hand.iter().map(|tile| parse_tile(tile)).collect())
+                        .map(|hand| hand.iter().map(|tile| parse_tile_for_mode(tile)).collect())
                         .collect()
                 })
                 .transpose()?,
@@ -644,7 +661,7 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
             scores,
         }),
         MjaiEvent::Kita { actor } => Ok(GameEvent::Kita {
-            actor: parse_seat(actor)?,
+            actor: parse_seat_for_mode(actor)?,
         }),
         MjaiEvent::EndGame => Ok(GameEvent::EndGame),
         MjaiEvent::EndKyoku => Ok(GameEvent::EndKyoku),
@@ -652,13 +669,16 @@ fn parse_event(line: &str) -> Result<GameEvent, EngineError> {
     }
 }
 
-fn parse_tile(value: &str) -> Result<Tile, EngineError> {
+fn parse_tile(value: &str, mode: GameMode) -> Result<Tile, EngineError> {
     let id = riichienv_core::parser::mjai_to_tid(value)
         .ok_or_else(|| EngineError::InvalidTile(value.to_owned()))?;
-    Tile::from_id(id).ok_or_else(|| EngineError::InvalidTile(value.to_owned()))
+    parse_engine_tile(mode, id)
 }
 
-fn parse_seat(value: usize) -> Result<Seat, EngineError> {
+fn parse_seat(value: usize, mode: GameMode) -> Result<Seat, EngineError> {
+    if value >= mode.seat_count() {
+        return Err(EngineError::InvalidEngineSeat(value));
+    }
     Seat::new(value as u8).ok_or(EngineError::InvalidEngineSeat(value))
 }
 
@@ -677,3 +697,33 @@ fn parse_wind(value: &str) -> Result<Wind, EngineError> {
 // Keep the engine's private action/event vocabulary below this module boundary.
 #[allow(dead_code)]
 fn _engine_type_names(_: ActionType) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_consumed_tile_is_adapter_divergence() {
+        let (mut adapter, _) = EngineAdapter::new(GameMode::FourPlayerRedEast, Some(0)).unwrap();
+        if let GameStateVariant::FourPlayer(state) = &mut adapter.state {
+            state.last_discard = Some((1, 8));
+        }
+        let action = Action::new(ActionType::Pon, Some(8), vec![8, 255], Some(0));
+
+        assert!(matches!(
+            adapter.to_neutral_action(&action, None),
+            Err(EngineError::InvalidTile(_))
+        ));
+    }
+
+    #[test]
+    fn three_player_parser_rejects_removed_tile() {
+        assert!(parse_tile("2m", GameMode::ThreePlayerRedEast).is_err());
+    }
+
+    #[test]
+    fn parser_rejects_engine_seats_before_narrowing() {
+        assert!(parse_seat(256, GameMode::FourPlayerRedEast).is_err());
+        assert!(parse_seat(3, GameMode::ThreePlayerRedEast).is_err());
+    }
+}
