@@ -185,3 +185,23 @@ cargo test --workspace
 git diff HEAD --check
 # passed
 ```
+
+## Review round 3/5 follow-up
+
+The round 3 review again marked all three prior findings as addressed and reported no new Critical or Important breakage. No source change was necessary; the boundary tests and adapter-local mapping remain unchanged from the reviewed fix.
+
+Exact verification output:
+
+```text
+cargo test -p double_riichi_core
+# 5 unit tests, 3 integration tests, and 0 doc tests passed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# Finished `dev` profile [unoptimized + debuginfo]
+
+cargo test --workspace
+# all workspace unit, integration, and doc tests passed
+``` 
