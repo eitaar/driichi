@@ -1,0 +1,15 @@
+target/
+frontend/node_modules/
+frontend/dist/
+.env
+double-riichi.db
+double-riichi.db-shm
+double-riichi.db-wal
+replays/
+character-packs/
+.cache/
+.superpowers/
+.worktrees/
+.pi/
+playwright-report/
+test-results/
