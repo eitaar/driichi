@@ -1,0 +1,12 @@
+[package]
+name = "double_riichi_mjai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+double_riichi_core = { path = "../double_riichi_core" }
+
+[lints]
+workspace = true

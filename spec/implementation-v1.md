@@ -64,8 +64,9 @@ v1 does not provide:
 - Public Replay access or raw Replay download
 - Complex Replay seeking, branching, or debug cloning
 - Mobile gameplay layout
-- Formal Pixi keyboard/screen-reader support
-- Reduced-motion presentation
+- Full Pixi keyboard/screen-reader narration
+
+Basic accessibility is a v1 requirement. The v1 baseline includes semantic DOM controls, usable contrast, and visible keyboard focus. Reduced-motion fallbacks are a v1 requirement. Mobile gameplay layout remains deferred. Full Pixi keyboard and screen-reader narration remains deferred.
 
 Ordinary DOM controls retain native semantics where this requires no special table implementation.
 

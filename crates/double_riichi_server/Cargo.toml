@@ -1,0 +1,21 @@
+[package]
+name = "double_riichi_server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+double_riichi_core = { path = "../double_riichi_core" }
+double_riichi_mcp = { path = "../double_riichi_mcp" }
+double_riichi_mjai = { path = "../double_riichi_mjai" }
+double_riichi_replay = { path = "../double_riichi_replay" }
+rust-embed = "=8.12.0"
+
+[[bin]]
+name = "driichi"
+path = "src/main.rs"
+
+[lints]
+workspace = true

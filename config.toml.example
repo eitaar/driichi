@@ -1,0 +1,4 @@
+# Copy this file to config.toml beside the driichi executable.
+# The config file's parent is the runtime data root.
+bind = "127.0.0.1:3000"
+public_origin = "http://127.0.0.1:3000"
