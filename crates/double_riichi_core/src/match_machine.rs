@@ -378,18 +378,23 @@ impl MatchMachine {
         let Some(decision) = self.decision.as_mut() else {
             return Ok(None);
         };
-        let Some(resolution) = decision.resolve_at(Instant::now())? else {
-            return Ok(None);
-        };
-        for action in &resolution.actions {
-            if action.timed_out
-                && self.presence[action.seat.index() as usize] == Presence::Disconnected
-                && self.controllers[action.seat.index() as usize] == ControllerState::Interactive
+        let resolution = decision.resolve_at(Instant::now())?;
+        let timed_out: Vec<Seat> = decision
+            .eligible()
+            .filter(|seat| decision.timed_out(*seat))
+            .collect();
+        for seat in timed_out {
+            let index = seat.index() as usize;
+            if self.presence[index] == Presence::Disconnected
+                && self.controllers[index] == ControllerState::Interactive
             {
-                self.controllers[action.seat.index() as usize] = ControllerState::TemporaryAuto;
+                self.controllers[index] = ControllerState::TemporaryAuto;
             }
         }
-        Ok(Some(self.resolve_actions(resolution)?))
+        match resolution {
+            Some(resolution) => Ok(Some(self.resolve_actions(resolution)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn resolve_timeouts(&mut self) -> Result<Option<DecisionResult>, MatchError> {
@@ -799,6 +804,48 @@ mod tests {
             }
         }
         panic!("seed did not expose a mixed response window")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_timeout_promotes_disconnected_seat_and_preserves_timeout_marker() {
+        let mode = GameMode::FourPlayerRedEast;
+        let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0_u64).unwrap();
+        let disconnected = Seat::new(0).unwrap();
+        let human = Seat::new(1).unwrap();
+        machine.players[disconnected.index() as usize].kind = ParticipantKind::Human;
+        machine.players[human.index() as usize].kind = ParticipantKind::Human;
+        machine.presence[disconnected.index() as usize] = Presence::Disconnected;
+        machine.controllers[disconnected.index() as usize] = ControllerState::Interactive;
+        machine.controllers[human.index() as usize] = ControllerState::Interactive;
+        let decision = Decision::new_with_timings(
+            DecisionId::new("partial-timeout"),
+            DecisionKind::Response,
+            vec![
+                (
+                    disconnected,
+                    vec![GameAction::Pass],
+                    Some(Duration::ZERO),
+                    true,
+                ),
+                (human, vec![GameAction::Pass], None, false),
+            ],
+            Instant::now(),
+        )
+        .unwrap();
+        machine.decision = Some(decision);
+
+        assert!(machine.resolve_expired().unwrap().is_none());
+        assert_eq!(
+            machine.controller(disconnected).unwrap(),
+            ControllerState::TemporaryAuto
+        );
+        assert!(
+            machine
+                .decision
+                .as_ref()
+                .expect("pending decision")
+                .timed_out(disconnected)
+        );
     }
 
     #[test]
