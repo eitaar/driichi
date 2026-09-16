@@ -21,7 +21,7 @@ use crate::{
         ParticipantKind, Seat,
     },
     match_machine::DecisionResult,
-    projection::Audience,
+    projection::{Audience, AudienceProjection},
 };
 
 pub const ROOM_COMMAND_CAPACITY: usize = 256;
@@ -284,6 +284,8 @@ pub struct RoomSnapshot {
     pub id: RoomId,
     pub join_code: RoomJoinCode,
     pub room_name: String,
+    pub created_at: i64,
+    pub participant_limit: usize,
     pub mode: GameMode,
     pub time_control: TimeControl,
     pub replay_save: bool,
@@ -407,6 +409,9 @@ pub enum RoomCommand {
     SetReplaySave {
         enabled: bool,
     },
+    SetMaxParticipants {
+        max_participants: usize,
+    },
     SetReady {
         participant_id: ParticipantId,
         preloaded_characters: Vec<String>,
@@ -441,6 +446,9 @@ pub enum RoomCommand {
         mode: ShutdownMode,
     },
     GetSnapshot,
+    GetProjection {
+        participant_id: ParticipantId,
+    },
 }
 
 impl RoomCommand {
@@ -513,6 +521,10 @@ impl RoomCommand {
         Self::SetReplaySave { enabled }
     }
 
+    pub fn set_max_participants(max_participants: usize) -> Self {
+        Self::SetMaxParticipants { max_participants }
+    }
+
     pub fn set_ready(
         participant_id: impl Into<ParticipantId>,
         preloaded_characters: Vec<String>,
@@ -580,6 +592,7 @@ impl RoomCommand {
 pub enum RoomResponse {
     Joined(RoomParticipantSnapshot),
     Accepted(RoomSnapshot),
+    Projection(Option<AudienceProjection>),
     Started(MatchId),
     Action(DecisionResult),
     Deleted,
@@ -604,6 +617,8 @@ pub enum RoomError {
     InvalidRoomName,
     #[error("room is full")]
     RoomFull,
+    #[error("invalid participant limit")]
+    InvalidParticipantLimit,
     #[error("participant already exists")]
     DuplicateParticipant,
     #[error("participant not found: {0}")]
@@ -721,6 +736,21 @@ impl RoomHandle {
         }
     }
 
+    pub async fn projection(
+        &self,
+        participant_id: impl Into<ParticipantId>,
+    ) -> Result<Option<AudienceProjection>, RoomError> {
+        match self
+            .send(RoomCommand::GetProjection {
+                participant_id: participant_id.into(),
+            })
+            .await?
+        {
+            RoomResponse::Projection(projection) => Ok(projection),
+            _ => Err(RoomError::Closed),
+        }
+    }
+
     pub async fn subscribe(&self) -> Result<RoomConnection, RoomError> {
         let (reply, receiver) = oneshot::channel();
         self.sender
@@ -779,6 +809,7 @@ pub struct RoomState {
     persistence_degraded: bool,
     replay_available: bool,
     empty_since: Option<Instant>,
+    created_at: i64,
 }
 
 impl fmt::Debug for RoomState {
@@ -821,6 +852,10 @@ impl RoomState {
             persistence_degraded: false,
             replay_available: config.replay_save,
             empty_since: Some(Instant::now()),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             config,
         })
     }
@@ -831,6 +866,8 @@ impl RoomState {
             id: self.id.clone(),
             join_code: self.join_code.clone(),
             room_name: self.config.room_name.clone(),
+            created_at: self.created_at,
+            participant_limit: self.config.max_participants,
             mode: self.config.mode,
             time_control: self.config.time_control,
             replay_save: self.config.replay_save,
@@ -863,6 +900,27 @@ impl RoomState {
 
     fn bump_revision(&mut self) {
         self.revision = self.revision.saturating_add(1);
+    }
+
+    fn projection_for(
+        &mut self,
+        participant_id: &ParticipantId,
+    ) -> Result<Option<AudienceProjection>, RoomError> {
+        let participant = self
+            .participants
+            .get(participant_id)
+            .ok_or_else(|| RoomError::ParticipantNotFound(participant_id.clone()))?;
+        let audience = match participant.role {
+            MatchRole::Player(seat) => Audience::Player(seat),
+            MatchRole::None | MatchRole::Spectator => Audience::Public,
+        };
+        let Some(machine) = self.match_machine.as_mut() else {
+            return Ok(None);
+        };
+        machine
+            .project(audience)
+            .map(Some)
+            .map_err(|error| RoomError::Match(error.to_string()))
     }
 
     fn add_participant(
@@ -1437,6 +1495,22 @@ impl RoomState {
                 self.bump_revision();
                 RoomResponse::Accepted(self.snapshot())
             }
+            RoomCommand::SetMaxParticipants { max_participants } => {
+                if !matches!(self.phase, RoomPhase::Lobby) {
+                    return Err(RoomError::NotLobby);
+                }
+                if !(self.config.mode.seat_count()..=DEFAULT_MAX_PARTICIPANTS)
+                    .contains(&max_participants)
+                {
+                    return Err(RoomError::InvalidParticipantLimit);
+                }
+                if self.participants.len() > max_participants {
+                    return Err(RoomError::RoomFull);
+                }
+                self.config.max_participants = max_participants;
+                self.bump_revision();
+                RoomResponse::Accepted(self.snapshot())
+            }
             RoomCommand::SetReady {
                 participant_id,
                 preloaded_characters,
@@ -1526,7 +1600,10 @@ impl RoomState {
             RoomCommand::Shutdown { .. }
             | RoomCommand::Start
             | RoomCommand::SubmitAction { .. }
-            | RoomCommand::Rematch => return Err(RoomError::Match("actor-only command".into())),
+            | RoomCommand::Rematch
+            | RoomCommand::GetProjection { .. } => {
+                return Err(RoomError::Match("actor-only command".into()));
+            }
             RoomCommand::GetSnapshot => RoomResponse::Accepted(self.snapshot()),
         };
         Ok(response)
@@ -1763,6 +1840,10 @@ impl Actor {
         let now = Instant::now();
         match command {
             RoomCommand::GetSnapshot => Ok(RoomResponse::Accepted(self.state.snapshot())),
+            RoomCommand::GetProjection { participant_id } => self
+                .state
+                .projection_for(&participant_id)
+                .map(RoomResponse::Projection),
             RoomCommand::Start => self.start_match().await,
             RoomCommand::SubmitAction {
                 participant_id,
@@ -2312,6 +2393,11 @@ impl RoomRegistry {
         }
         rooms.insert(join_code, handle.clone());
         Ok(handle)
+    }
+
+    pub async fn list(&self) -> Vec<RoomHandle> {
+        self.purge_closed().await;
+        self.rooms.read().await.values().cloned().collect()
     }
 
     pub async fn get(&self, join_code: &str) -> Option<RoomHandle> {

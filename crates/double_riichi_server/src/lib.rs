@@ -3,6 +3,7 @@
 mod auth;
 mod characters;
 mod config;
+mod http;
 mod storage;
 
 pub use auth::{
@@ -17,6 +18,7 @@ pub use characters::{
     is_safe_character_id, starter_version,
 };
 pub use config::{CasualTimeControl, CharacterConfig, ConfigError, RuntimeConfig, TimeControls};
+pub use http::{IpCidr, ServerInitError, ServerLimits, ServerState, server_router};
 pub use storage::{Storage, StorageError};
 
 #[cfg(frontend_dist)]

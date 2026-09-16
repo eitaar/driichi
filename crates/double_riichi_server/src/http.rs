@@ -1,0 +1,2486 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant, SystemTime},
+};
+
+use axum::{
+    Extension, Router,
+    body::{Body, Bytes},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, Path, State, WebSocketUpgrade,
+        rejection::BytesRejection,
+        ws::{CloseFrame, Message, WebSocket},
+    },
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
+    middleware::{self, Next},
+    response::Response,
+    routing::{any, get, post},
+};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use double_riichi_core::{
+    AudienceProjection, CharacterCatalog, CharacterUsage as CoreCharacterUsage, GameAction,
+    GameMode, MatchPlayerSnapshot, MatchRole, Participant, ParticipantId, ParticipantKind,
+    Presence, RoomCommand, RoomConfig, RoomController, RoomError, RoomEvent, RoomHandle,
+    RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot,
+    TimeControl,
+};
+use futures_util::{SinkExt, StreamExt};
+use rand::random;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+use thiserror::Error;
+use tokio::{
+    sync::mpsc,
+    time::{self, MissedTickBehavior},
+};
+use url::Url;
+
+use crate::{
+    AdminAuthenticator, AdminSecrets, CharacterAsset, CharacterRegistry, CharacterRegistryError,
+    CredentialError, RuntimeConfig, Storage,
+};
+
+const HTTP_JSON_LIMIT: usize = 64 * 1024;
+const HUMAN_WS_MESSAGE_LIMIT: usize = 64 * 1024;
+const ADMIN_SESSION_COOKIE: &str = "driichi_admin";
+const GUEST_COOKIE_PREFIX: &str = "driichi_guest_";
+const ADMIN_SESSION_MAX_AGE: u64 = 12 * 60 * 60;
+const HUMAN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const HUMAN_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
+const HUMAN_OUTBOUND_CAPACITY: usize = 64;
+const SERVER_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+#[derive(Clone, Debug)]
+pub struct ServerLimits {
+    pub max_connections: usize,
+    pub code_lookup_limit: usize,
+    pub participant_creation_limit: usize,
+    pub admin_login_failure_limit: usize,
+    pub agent_auth_failure_limit: usize,
+    pub rate_window: Duration,
+    pub admin_login_window: Duration,
+    pub trusted_proxy_cidrs: Vec<IpCidr>,
+    pub http_json_limit: usize,
+    pub human_ws_message_limit: usize,
+}
+
+impl Default for ServerLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: 256,
+            code_lookup_limit: 20,
+            participant_creation_limit: 10,
+            admin_login_failure_limit: 5,
+            agent_auth_failure_limit: 20,
+            rate_window: Duration::from_secs(60),
+            admin_login_window: Duration::from_secs(15 * 60),
+            trusted_proxy_cidrs: Vec::new(),
+            http_json_limit: HTTP_JSON_LIMIT,
+            human_ws_message_limit: HUMAN_WS_MESSAGE_LIMIT,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IpCidr {
+    network: IpAddr,
+    prefix: u8,
+}
+
+impl IpCidr {
+    pub fn new(network: IpAddr, prefix: u8) -> Result<Self, &'static str> {
+        let max = match network {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        if prefix > max {
+            return Err("CIDR prefix is outside the address width");
+        }
+        Ok(Self {
+            network: mask_ip(network, prefix),
+            prefix,
+        })
+    }
+
+    pub fn contains(&self, address: IpAddr) -> bool {
+        match (self.network, address) {
+            (IpAddr::V4(network), IpAddr::V4(address)) => {
+                prefix_matches_v4(u32::from(network), u32::from(address), self.prefix)
+            }
+            (IpAddr::V6(network), IpAddr::V6(address)) => {
+                prefix_matches_v6(u128::from(network), u128::from(address), self.prefix)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl FromStr for IpCidr {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (address, prefix) = value.split_once('/').ok_or("CIDR must contain a slash")?;
+        let address = address
+            .parse::<IpAddr>()
+            .map_err(|_| "CIDR address is invalid")?;
+        let prefix = prefix.parse::<u8>().map_err(|_| "CIDR prefix is invalid")?;
+        Self::new(address, prefix)
+    }
+}
+
+fn mask_ip(address: IpAddr, prefix: u8) -> IpAddr {
+    match address {
+        IpAddr::V4(value) => IpAddr::V4(std::net::Ipv4Addr::from(
+            u32::from(value) & prefix_mask_v4(prefix),
+        )),
+        IpAddr::V6(value) => IpAddr::V6(std::net::Ipv6Addr::from(
+            u128::from(value) & prefix_mask_v6(prefix),
+        )),
+    }
+}
+
+fn prefix_mask_v4(prefix: u8) -> u32 {
+    if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    }
+}
+
+fn prefix_mask_v6(prefix: u8) -> u128 {
+    if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    }
+}
+
+fn prefix_matches_v4(network: u32, address: u32, prefix: u8) -> bool {
+    (network & prefix_mask_v4(prefix)) == (address & prefix_mask_v4(prefix))
+}
+
+fn prefix_matches_v6(network: u128, address: u128, prefix: u8) -> bool {
+    (network & prefix_mask_v6(prefix)) == (address & prefix_mask_v6(prefix))
+}
+
+#[derive(Debug, Error)]
+pub enum ServerInitError {
+    #[error("admin secrets could not be loaded")]
+    Secrets(#[source] crate::SecretsError),
+    #[error("admin authentication could not be initialized")]
+    Auth(#[source] CredentialError),
+    #[error("storage could not be initialized")]
+    Storage(#[source] crate::StorageError),
+    #[error("Character registry could not be initialized")]
+    Characters(#[source] CharacterRegistryError),
+}
+
+#[derive(Clone)]
+pub struct ServerState {
+    public_origin: String,
+    public_origin_url: Url,
+    secure_cookies: bool,
+    admin: Arc<AdminAuthenticator>,
+    rooms: RoomRegistry,
+    registry: Option<Arc<CharacterRegistry>>,
+    character_catalog: CharacterCatalog,
+    guest_sessions: Arc<GuestSessionStore>,
+    connections: Arc<HumanConnections>,
+    rate_limiter: Arc<RateLimiter>,
+    connection_count: Arc<AtomicUsize>,
+    limits: ServerLimits,
+    started_at: Instant,
+    storage: Option<Arc<Storage>>,
+}
+
+impl ServerState {
+    pub fn for_tests(
+        public_origin: impl Into<String>,
+        admin: Arc<AdminAuthenticator>,
+        rooms: RoomRegistry,
+    ) -> Self {
+        let mut state = Self::new_inner(
+            public_origin.into(),
+            admin,
+            rooms,
+            None,
+            CharacterCatalog::starter(),
+            ServerLimits::default(),
+        );
+        state.storage = None;
+        state
+    }
+
+    pub fn with_registry(
+        public_origin: impl Into<String>,
+        admin: Arc<AdminAuthenticator>,
+        rooms: RoomRegistry,
+        registry: Arc<CharacterRegistry>,
+    ) -> Self {
+        let catalog = catalog_from_registry(&registry);
+        Self::new_inner(
+            public_origin.into(),
+            admin,
+            rooms,
+            Some(registry),
+            catalog,
+            ServerLimits::default(),
+        )
+    }
+
+    pub fn with_limits(mut self, limits: ServerLimits) -> Self {
+        self.rate_limiter = Arc::new(RateLimiter::new());
+        self.limits = limits;
+        self
+    }
+
+    pub fn public_origin(&self) -> &str {
+        &self.public_origin
+    }
+
+    pub fn rooms(&self) -> &RoomRegistry {
+        &self.rooms
+    }
+
+    pub fn limits(&self) -> &ServerLimits {
+        &self.limits
+    }
+
+    pub async fn from_config(config: RuntimeConfig) -> Result<Self, ServerInitError> {
+        let secrets = AdminSecrets::load(config.data_root()).map_err(ServerInitError::Secrets)?;
+        let admin = Arc::new(
+            AdminAuthenticator::new(secrets.username(), secrets.password_hash())
+                .map_err(ServerInitError::Auth)?,
+        );
+        let storage = Arc::new(
+            Storage::connect(config.data_root())
+                .await
+                .map_err(ServerInitError::Storage)?,
+        );
+        let registry = Arc::new(
+            config
+                .load_character_registry()
+                .map_err(ServerInitError::Characters)?,
+        );
+        let mut state = Self::with_registry(
+            config.public_origin.clone(),
+            admin,
+            RoomRegistry::new(),
+            registry,
+        );
+        state.storage = Some(storage);
+        Ok(state)
+    }
+
+    fn new_inner(
+        public_origin: String,
+        admin: Arc<AdminAuthenticator>,
+        rooms: RoomRegistry,
+        registry: Option<Arc<CharacterRegistry>>,
+        character_catalog: CharacterCatalog,
+        limits: ServerLimits,
+    ) -> Self {
+        let public_origin_url = Url::parse(&public_origin).expect("validated public origin");
+        let secure_cookies = public_origin_url.scheme() == "https";
+        Self {
+            public_origin,
+            public_origin_url,
+            secure_cookies,
+            admin,
+            rooms,
+            registry,
+            character_catalog,
+            guest_sessions: Arc::new(GuestSessionStore::default()),
+            connections: Arc::new(HumanConnections::default()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            connection_count: Arc::new(AtomicUsize::new(0)),
+            limits,
+            started_at: Instant::now(),
+            storage: None,
+        }
+    }
+
+    fn room_config(&self, room_name: String, mode: GameMode) -> RoomConfig {
+        RoomConfig::new(room_name, mode, self.character_catalog.clone())
+    }
+
+    fn connection_permit(&self) -> Option<ConnectionPermit> {
+        let mut current = self.connection_count.load(Ordering::Relaxed);
+        loop {
+            if current >= self.limits.max_connections {
+                return None;
+            }
+            match self.connection_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(ConnectionPermit(self.connection_count.clone())),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+}
+
+fn catalog_from_registry(registry: &CharacterRegistry) -> CharacterCatalog {
+    let mut catalog = CharacterCatalog::starter();
+    for character in registry.characters() {
+        let usage = match character.usage() {
+            crate::CharacterUsage::Human => CoreCharacterUsage::Human,
+            crate::CharacterUsage::Mjai => CoreCharacterUsage::Mjai,
+            crate::CharacterUsage::Mcp => CoreCharacterUsage::Mcp,
+            crate::CharacterUsage::Builtin => CoreCharacterUsage::BuiltInBot,
+        };
+        catalog.insert(character.id(), usage);
+    }
+    catalog
+}
+
+#[derive(Clone, Debug)]
+struct RequestId(String);
+
+#[derive(Debug, Clone)]
+struct ApiError {
+    status: StatusCode,
+    title: &'static str,
+    detail: &'static str,
+    code: &'static str,
+}
+
+impl ApiError {
+    const fn new(
+        status: StatusCode,
+        title: &'static str,
+        detail: &'static str,
+        code: &'static str,
+    ) -> Self {
+        Self {
+            status,
+            title,
+            detail,
+            code,
+        }
+    }
+
+    fn response(&self, request_id: &RequestId) -> Response {
+        problem_response(
+            self.status,
+            self.title,
+            self.detail,
+            self.code,
+            &request_id.0,
+        )
+    }
+}
+
+fn problem_response(
+    status: StatusCode,
+    title: &'static str,
+    detail: &'static str,
+    code: &'static str,
+    request_id: &str,
+) -> Response {
+    let body = json!({
+        "type": "about:blank",
+        "title": title,
+        "status": status.as_u16(),
+        "detail": detail,
+        "code": code,
+        "request_id": request_id,
+    });
+    let mut response = json_response(status, body);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/problem+json"),
+    );
+    response
+}
+
+fn json_response(status: StatusCode, body: Value) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn parse_json<T>(
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+    request_id: &RequestId,
+) -> Result<T, Response>
+where
+    T: DeserializeOwned,
+{
+    let body = body.map_err(|_| {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Request too large",
+            "The request body exceeds the allowed limit.",
+            "request_too_large",
+        )
+        .response(request_id)
+    })?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !content_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+    {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Unsupported media type",
+            "The request must use application/json.",
+            "unsupported_media_type",
+        )
+        .response(request_id));
+    }
+    serde_json::from_slice(&body).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid request",
+            "The request body is invalid.",
+            "invalid_request",
+        )
+        .response(request_id)
+    })
+}
+
+async fn request_context(mut request: Request<Body>, next: Next) -> Response {
+    let request_id = RequestId(generate_ulid());
+    let path = request.uri().path().to_owned();
+    request.extensions_mut().insert(request_id.clone());
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        "x-request-id",
+        HeaderValue::from_str(&request_id.0).expect("ULID is a valid header"),
+    );
+    for (name, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "no-referrer"),
+        ("x-frame-options", "DENY"),
+        (
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=()",
+        ),
+        ("content-security-policy", SERVER_CSP),
+    ] {
+        response
+            .headers_mut()
+            .entry(name)
+            .or_insert(HeaderValue::from_static(value));
+    }
+    if path.starts_with("/api/") || path.starts_with("/ws/") {
+        response
+            .headers_mut()
+            .entry(header::CACHE_CONTROL)
+            .or_insert(HeaderValue::from_static("no-store"));
+    }
+    response
+}
+
+async fn not_found(Extension(request_id): Extension<RequestId>) -> Response {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "Not found",
+        "The requested resource does not exist.",
+        "not_found",
+    )
+    .response(&request_id)
+}
+
+pub fn server_router(state: Arc<ServerState>) -> Router {
+    Router::new()
+        .route("/api/v1/health", get(health))
+        .route("/api/v1/characters/human", get(human_characters))
+        .route(
+            "/assets/characters/{id}/portrait.webp",
+            get(character_portrait),
+        )
+        .route("/assets/characters/{id}/icon.webp", get(character_icon))
+        .route(
+            "/assets/characters/{id}/voices/{voice}",
+            get(character_voice),
+        )
+        .route("/api/v1/admin/login", post(admin_login))
+        .route("/api/v1/admin/logout", post(admin_logout))
+        .route(
+            "/api/v1/admin/rooms",
+            get(admin_list_rooms).post(admin_create_room),
+        )
+        .route(
+            "/api/v1/admin/rooms/{join_code}",
+            get(admin_room_detail)
+                .patch(admin_patch_room)
+                .delete(admin_delete_room),
+        )
+        .route(
+            "/api/v1/admin/rooms/{join_code}/participants/{participant_id}/select",
+            post(admin_select),
+        )
+        .route(
+            "/api/v1/admin/rooms/{join_code}/participants/{participant_id}/deselect",
+            post(admin_deselect),
+        )
+        .route(
+            "/api/v1/admin/rooms/{join_code}/participants/{participant_id}/kick",
+            post(admin_kick),
+        )
+        .route(
+            "/api/v1/admin/rooms/{join_code}/fill-with-bots",
+            post(admin_fill),
+        )
+        .route("/api/v1/admin/rooms/{join_code}/start", post(admin_start))
+        .route(
+            "/api/v1/admin/rooms/{join_code}/rematch",
+            post(admin_rematch),
+        )
+        .route(
+            "/api/v1/admin/rooms/{join_code}/back-to-lobby",
+            post(admin_back_to_lobby),
+        )
+        .route("/api/v1/rooms/{join_code}", get(public_room_lookup))
+        .route("/api/v1/rooms/{join_code}/join", post(public_join))
+        .route("/ws/v1/rooms/{join_code}/human", any(human_upgrade))
+        .fallback(not_found)
+        .layer(DefaultBodyLimit::max(state.limits.http_json_limit))
+        .layer(middleware::from_fn(request_context))
+        .with_state(state)
+}
+
+fn generate_ulid() -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let millis = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u128;
+    let value = ((millis & ((1u128 << 48) - 1)) << 80) | (random::<u128>() & ((1u128 << 80) - 1));
+    let mut result = String::with_capacity(26);
+    for shift in (0..26).rev().map(|index| index * 5) {
+        result.push(ALPHABET[((value >> shift) & 31) as usize] as char);
+    }
+    result
+}
+
+fn public_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool {
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| origin == state.public_origin)
+}
+
+fn unsafe_admin_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool {
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        return origin
+            .to_str()
+            .ok()
+            .is_some_and(|origin| origin == state.public_origin);
+    }
+    headers
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Url::parse(value).ok())
+        .is_some_and(|referer| same_origin(&referer, &state.public_origin_url))
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && effective_port(left) == effective_port(right)
+        && left.username().is_empty()
+        && left.password().is_none()
+}
+
+fn effective_port(url: &Url) -> Option<u16> {
+    url.port_or_known_default()
+}
+
+fn require_admin(
+    state: &ServerState,
+    headers: &HeaderMap,
+    request_id: &RequestId,
+) -> Result<(), Response> {
+    let Some(value) = cookie_value(headers, ADMIN_SESSION_COOKIE) else {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "Unauthorized",
+            "Authentication is required.",
+            "authentication_required",
+        )
+        .response(request_id));
+    };
+    let Ok(credential) = URL_SAFE_NO_PAD.decode(value.as_bytes()) else {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "Unauthorized",
+            "Authentication is required.",
+            "authentication_required",
+        )
+        .response(request_id));
+    };
+    if !state
+        .admin
+        .sessions()
+        .validate(credential, SystemTime::now())
+    {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "Unauthorized",
+            "Authentication is required.",
+            "authentication_required",
+        )
+        .response(request_id));
+    }
+    Ok(())
+}
+
+fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookies.split(';').find_map(|part| {
+        let (key, value) = part.trim().split_once('=')?;
+        (key == name).then_some(value)
+    })
+}
+
+fn secure_cookie_suffix(state: &ServerState) -> &'static str {
+    if state.secure_cookies { "; Secure" } else { "" }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+async fn admin_login(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let ip = request_ip(
+        &headers,
+        peer.as_ref().map(|value| value.0.0),
+        &state.limits.trusted_proxy_cidrs,
+    );
+    if !state.rate_limiter.available(
+        RateKind::AdminLoginFailure,
+        ip,
+        state.limits.admin_login_failure_limit,
+        state.limits.admin_login_window,
+    ) {
+        return rate_limited(&request_id, state.limits.admin_login_window);
+    }
+    let payload: LoginRequest = match parse_json(&headers, body, &request_id) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let session = match state
+        .admin
+        .login(&payload.username, &payload.password, SystemTime::now())
+    {
+        Ok(session) => session,
+        Err(CredentialError::InvalidCredentials) => {
+            state.rate_limiter.record(
+                RateKind::AdminLoginFailure,
+                ip,
+                state.limits.admin_login_window,
+            );
+            return ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "The username or password is invalid.",
+                "invalid_credentials",
+            )
+            .response(&request_id);
+        }
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error",
+                "The server could not complete the request.",
+                "internal_error",
+            )
+            .response(&request_id);
+        }
+    };
+    let value = URL_SAFE_NO_PAD.encode(session.credential().as_bytes());
+    let expires_at = system_time_rfc3339(session.expires_at());
+    let cookie = format!(
+        "{ADMIN_SESSION_COOKIE}={value}; HttpOnly; SameSite=Strict; Path=/api/v1/admin; Max-Age={ADMIN_SESSION_MAX_AGE}{}",
+        secure_cookie_suffix(&state)
+    );
+    let mut response = json_response(StatusCode::OK, json!({"expires_at": expires_at}));
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&cookie).expect("session cookie is valid"),
+    );
+    response
+}
+
+async fn admin_logout(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    if let Some(value) = cookie_value(&headers, ADMIN_SESSION_COOKIE) {
+        if let Ok(credential) = URL_SAFE_NO_PAD.decode(value.as_bytes()) {
+            state.admin.sessions().revoke(credential);
+        }
+    }
+    let cookie = format!(
+        "{ADMIN_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/api/v1/admin; Max-Age=0{}",
+        secure_cookie_suffix(&state)
+    );
+    let mut response = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::empty())
+        .unwrap();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&cookie).expect("session cookie is valid"),
+    );
+    response
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateRoomRequest {
+    room_name: String,
+    game_mode: String,
+    #[serde(default)]
+    time_control: Option<String>,
+    #[serde(default)]
+    replay_save: Option<bool>,
+    #[serde(default)]
+    participant_limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchRoomRequest {
+    #[serde(default)]
+    room_name: Option<String>,
+    #[serde(default)]
+    game_mode: Option<String>,
+    #[serde(default)]
+    time_control: Option<String>,
+    #[serde(default)]
+    replay_save: Option<bool>,
+    #[serde(default)]
+    participant_limit: Option<usize>,
+}
+
+fn parse_mode(value: &str) -> Option<GameMode> {
+    value.parse().ok()
+}
+
+fn parse_time_control(value: &str) -> Option<TimeControl> {
+    match value {
+        "riichi_dev" | "riichi-dev" => Some(TimeControl::RiichiDev),
+        "casual" => Some(TimeControl::Casual),
+        "unlimited" => Some(TimeControl::Unlimited),
+        _ => None,
+    }
+}
+
+async fn admin_create_room(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let payload: CreateRoomRequest = match parse_json(&headers, body, &request_id) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let Some(mode) = parse_mode(&payload.game_mode) else {
+        return invalid_request(&request_id);
+    };
+    let mut config = state.room_config(payload.room_name, mode);
+    if let Some(value) = payload.time_control.as_deref() {
+        let Some(time_control) = parse_time_control(value) else {
+            return invalid_request(&request_id);
+        };
+        config.time_control = time_control;
+    }
+    if let Some(replay_save) = payload.replay_save {
+        config.replay_save = replay_save;
+    }
+    if let Some(limit) = payload.participant_limit {
+        if !(mode.seat_count()..=32).contains(&limit) {
+            return invalid_request(&request_id);
+        }
+        config.max_participants = limit;
+    }
+    let handle = match state.rooms.create(config).await {
+        Ok(handle) => handle,
+        Err(error) => return registry_error_response(error, &request_id),
+    };
+    let snapshot = match handle.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return internal_error(&request_id),
+    };
+    room_detail_response(StatusCode::CREATED, &snapshot)
+}
+
+async fn admin_list_rooms(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let mut views = Vec::new();
+    for handle in state.rooms.list().await {
+        if let Ok(snapshot) = handle.snapshot().await {
+            views.push(room_list_view(&snapshot));
+        }
+    }
+    json_response(StatusCode::OK, json!(views))
+}
+
+async fn admin_room_detail(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    match handle.snapshot().await {
+        Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
+        Err(_) => room_not_found(&request_id),
+    }
+}
+
+async fn admin_patch_room(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let payload: PatchRoomRequest = match parse_json(&headers, body, &request_id) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    if payload.room_name.is_none()
+        && payload.game_mode.is_none()
+        && payload.time_control.is_none()
+        && payload.replay_save.is_none()
+        && payload.participant_limit.is_none()
+    {
+        return invalid_request(&request_id);
+    }
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    let current = match handle.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return room_not_found(&request_id),
+    };
+    if let Some(value) = payload.game_mode.as_deref() {
+        let Some(mode) = parse_mode(value) else {
+            return invalid_request(&request_id);
+        };
+        if let Err(error) = handle.send(RoomCommand::set_mode(mode)).await {
+            return room_error_response(error, &request_id);
+        }
+    }
+    if let Some(value) = payload.room_name {
+        if let Err(error) = handle.send(RoomCommand::set_room_name(value)).await {
+            return room_error_response(error, &request_id);
+        }
+    }
+    if let Some(value) = payload.time_control.as_deref() {
+        let Some(time_control) = parse_time_control(value) else {
+            return invalid_request(&request_id);
+        };
+        if let Err(error) = handle
+            .send(RoomCommand::set_time_control(time_control))
+            .await
+        {
+            return room_error_response(error, &request_id);
+        }
+    }
+    if let Some(value) = payload.replay_save {
+        if let Err(error) = handle.send(RoomCommand::set_replay_save(value)).await {
+            return room_error_response(error, &request_id);
+        }
+    }
+    if let Some(limit) = payload.participant_limit {
+        if !(current.mode.seat_count()..=32).contains(&limit) {
+            return invalid_request(&request_id);
+        }
+        if let Err(error) = handle.send(RoomCommand::set_max_participants(limit)).await {
+            return room_error_response(error, &request_id);
+        }
+    }
+    match handle.snapshot().await {
+        Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
+        Err(_) => room_not_found(&request_id),
+    }
+}
+
+async fn admin_delete_room(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    match state.rooms.remove(&join_code).await {
+        Ok(()) => {
+            state.guest_sessions.invalidate_room(&join_code);
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(Body::empty())
+                .unwrap()
+        }
+        Err(error) => registry_error_response(error, &request_id),
+    }
+}
+
+async fn admin_select(
+    State(state): State<Arc<ServerState>>,
+    Path((join_code, participant_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_participant_command(
+        &state,
+        join_code,
+        participant_id,
+        headers,
+        request_id,
+        RoomCommand::select(ParticipantId::new("placeholder")),
+    )
+    .await
+}
+
+async fn admin_deselect(
+    State(state): State<Arc<ServerState>>,
+    Path((join_code, participant_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_participant_command(
+        &state,
+        join_code,
+        participant_id,
+        headers,
+        request_id,
+        RoomCommand::deselect(ParticipantId::new("placeholder")),
+    )
+    .await
+}
+
+async fn admin_kick(
+    State(state): State<Arc<ServerState>>,
+    Path((join_code, participant_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_participant_command(
+        &state,
+        join_code,
+        participant_id,
+        headers,
+        request_id,
+        RoomCommand::leave(ParticipantId::new("placeholder")),
+    )
+    .await
+}
+
+async fn admin_participant_command(
+    state: &ServerState,
+    join_code: String,
+    participant_id: String,
+    headers: HeaderMap,
+    request_id: RequestId,
+    command: RoomCommand,
+) -> Response {
+    if let Err(response) = require_admin(state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    let participant_id = ParticipantId::new(participant_id);
+    let is_leave = matches!(command, RoomCommand::Leave { .. });
+    let command = match command {
+        RoomCommand::Select { .. } => RoomCommand::select(participant_id.clone()),
+        RoomCommand::Deselect { .. } => RoomCommand::deselect(participant_id.clone()),
+        RoomCommand::Leave { .. } => RoomCommand::leave(participant_id.clone()),
+        _ => unreachable!(),
+    };
+    match handle.send(command).await {
+        Ok(_) => {
+            if is_leave {
+                state
+                    .guest_sessions
+                    .invalidate_participant(&join_code, &participant_id);
+            }
+            match handle.snapshot().await {
+                Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
+                Err(_) => room_not_found(&request_id),
+            }
+        }
+        Err(error) => room_error_response(error, &request_id),
+    }
+}
+
+async fn admin_fill(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_room_command(
+        &state,
+        &join_code,
+        headers,
+        request_id,
+        RoomCommand::fill_with_bots(),
+    )
+    .await
+}
+
+async fn admin_start(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_room_command(
+        &state,
+        &join_code,
+        headers,
+        request_id,
+        RoomCommand::start(),
+    )
+    .await
+}
+
+async fn admin_rematch(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_room_command(
+        &state,
+        &join_code,
+        headers,
+        request_id,
+        RoomCommand::rematch(),
+    )
+    .await
+}
+
+async fn admin_back_to_lobby(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_room_command(
+        &state,
+        &join_code,
+        headers,
+        request_id,
+        RoomCommand::back_to_lobby(),
+    )
+    .await
+}
+
+async fn admin_room_command(
+    state: &ServerState,
+    join_code: &str,
+    headers: HeaderMap,
+    request_id: RequestId,
+    command: RoomCommand,
+) -> Response {
+    if let Err(response) = require_admin(state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let Some(handle) = state.rooms.get(join_code).await else {
+        return room_not_found(&request_id);
+    };
+    match handle.send(command).await {
+        Ok(RoomResponse::Started(_)) | Ok(RoomResponse::Accepted(_)) => {
+            match handle.snapshot().await {
+                Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
+                Err(_) => room_not_found(&request_id),
+            }
+        }
+        Ok(_) => internal_error(&request_id),
+        Err(error) => room_error_response(error, &request_id),
+    }
+}
+
+async fn public_room_lookup(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+) -> Response {
+    let ip = request_ip(
+        &headers,
+        peer.as_ref().map(|value| value.0.0),
+        &state.limits.trusted_proxy_cidrs,
+    );
+    if !state.rate_limiter.allowed(
+        RateKind::CodeLookup,
+        ip,
+        state.limits.code_lookup_limit,
+        state.limits.rate_window,
+    ) {
+        return rate_limited(&request_id, state.limits.rate_window);
+    }
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    let Ok(snapshot) = handle.snapshot().await else {
+        return room_not_found(&request_id);
+    };
+    let join_allowed = snapshot.participants.len() < snapshot.participant_limit;
+    json_response(
+        StatusCode::OK,
+        json!({
+            "room_name": snapshot.room_name,
+            "game_mode": snapshot.mode.as_str(),
+            "phase": phase_name(&snapshot.phase),
+            "join_allowed": join_allowed,
+            "participant_count": snapshot.participants.len(),
+            "participant_limit": snapshot.participant_limit,
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HumanJoinRequest {
+    nickname: String,
+    character_id: String,
+}
+
+async fn public_join(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let ip = request_ip(
+        &headers,
+        peer.as_ref().map(|value| value.0.0),
+        &state.limits.trusted_proxy_cidrs,
+    );
+    if !state.rate_limiter.allowed(
+        RateKind::ParticipantCreation,
+        ip,
+        state.limits.participant_creation_limit,
+        state.limits.rate_window,
+    ) {
+        return rate_limited(&request_id, state.limits.rate_window);
+    }
+    let payload: HumanJoinRequest = match parse_json(&headers, body, &request_id) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let Some(nickname) = normalize_display_text(&payload.nickname) else {
+        return invalid_request(&request_id);
+    };
+    if !crate::is_safe_character_id(&payload.character_id) {
+        return invalid_request(&request_id);
+    }
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    let participant_id = ParticipantId::new(generate_ulid());
+    let response = handle
+        .send(RoomCommand::Join {
+            participant: Participant::new(participant_id.clone(), nickname, ParticipantKind::Human),
+            character_id: Some(payload.character_id),
+            token_id: None,
+        })
+        .await;
+    if let Err(error) = response {
+        return room_error_response(error, &request_id);
+    }
+    let cookie_value = state.guest_sessions.issue(&join_code, &participant_id);
+    let cookie_name = format!("{GUEST_COOKIE_PREFIX}{join_code}");
+    let cookie = format!(
+        "{cookie_name}={cookie_value}; HttpOnly; SameSite=Strict; Path=/ws/v1/rooms/{join_code}{}",
+        secure_cookie_suffix(&state)
+    );
+    let mut response = json_response(
+        StatusCode::CREATED,
+        json!({
+            "participant_id": participant_id.as_str(),
+            "websocket_url": format!("/ws/v1/rooms/{join_code}/human"),
+        }),
+    );
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&cookie).expect("guest cookie is valid"),
+    );
+    response
+}
+
+async fn human_upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if !public_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    let cookie_name = format!("{GUEST_COOKIE_PREFIX}{join_code}");
+    let Some(cookie) = cookie_value(&headers, &cookie_name) else {
+        return invalid_credentials(&request_id);
+    };
+    let Some(participant_id) = state.guest_sessions.authenticate(&join_code, cookie) else {
+        return invalid_credentials(&request_id);
+    };
+    let snapshot = match handle.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return room_not_found(&request_id),
+    };
+    if !snapshot
+        .participants
+        .iter()
+        .any(|participant| participant.id == participant_id)
+    {
+        state
+            .guest_sessions
+            .invalidate_participant(&join_code, &participant_id);
+        return invalid_credentials(&request_id);
+    }
+    let Some(permit) = state.connection_permit() else {
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server busy",
+            "The server connection limit has been reached.",
+            "server_busy",
+        )
+        .response(&request_id);
+    };
+    let state_for_upgrade = state.clone();
+    let handle_for_upgrade = handle.clone();
+    let join_code_for_upgrade = join_code.clone();
+    let participant_for_upgrade = participant_id.clone();
+    let ws_limit = state.limits.human_ws_message_limit;
+    ws.max_message_size(ws_limit)
+        .max_frame_size(ws_limit)
+        .on_upgrade(move |socket| async move {
+            let _ = handle_for_upgrade
+                .send(RoomCommand::reconnect(participant_for_upgrade.clone()))
+                .await;
+            let (generation, control) = state_for_upgrade
+                .connections
+                .register(participant_for_upgrade.clone())
+                .await;
+            run_human(
+                socket,
+                state_for_upgrade,
+                handle_for_upgrade,
+                join_code_for_upgrade,
+                participant_for_upgrade,
+                generation,
+                control,
+                permit,
+            )
+            .await;
+        })
+}
+
+#[derive(Debug)]
+enum Control {
+    Close { code: u16, reason: &'static str },
+}
+
+struct ConnectionPermit(Arc<AtomicUsize>);
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Default)]
+struct HumanConnections {
+    next_generation: AtomicU64,
+    entries: Mutex<HashMap<ParticipantId, ActiveConnection>>,
+}
+
+struct ActiveConnection {
+    generation: u64,
+    control: mpsc::Sender<Control>,
+}
+
+impl HumanConnections {
+    async fn register(&self, participant_id: ParticipantId) -> (u64, mpsc::Receiver<Control>) {
+        let (control, receiver) = mpsc::channel(2);
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let old = self
+            .entries
+            .lock()
+            .expect("connection lock poisoned")
+            .insert(
+                participant_id,
+                ActiveConnection {
+                    generation,
+                    control,
+                },
+            );
+        if let Some(old) = old {
+            let _ = old.control.try_send(Control::Close {
+                code: 4001,
+                reason: "connected_elsewhere",
+            });
+        }
+        (generation, receiver)
+    }
+
+    fn is_current(&self, participant_id: &ParticipantId, generation: u64) -> bool {
+        self.entries
+            .lock()
+            .expect("connection lock poisoned")
+            .get(participant_id)
+            .is_some_and(|entry| entry.generation == generation)
+    }
+
+    fn remove(&self, participant_id: &ParticipantId, generation: u64) {
+        let mut entries = self.entries.lock().expect("connection lock poisoned");
+        if entries
+            .get(participant_id)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            entries.remove(participant_id);
+        }
+    }
+}
+
+async fn run_human(
+    socket: WebSocket,
+    state: Arc<ServerState>,
+    room: RoomHandle,
+    join_code: String,
+    participant_id: ParticipantId,
+    generation: u64,
+    mut control: mpsc::Receiver<Control>,
+    permit: ConnectionPermit,
+) {
+    let (mut sender, mut receiver) = socket.split();
+    let (outbound, mut outbound_receiver) = mpsc::channel::<Message>(HUMAN_OUTBOUND_CAPACITY);
+    let writer = tokio::spawn(async move {
+        while let Some(message) = outbound_receiver.recv().await {
+            let close = matches!(message, Message::Close(_));
+            if sender.send(message).await.is_err() {
+                break;
+            }
+            if close {
+                break;
+            }
+        }
+    });
+    let mut connection = match room.subscribe().await {
+        Ok(connection) => connection,
+        Err(_) => {
+            let _ = outbound.send(close_message(4002, "room_deleted")).await;
+            writer.abort();
+            drop(permit);
+            return;
+        }
+    };
+    // RoomActor subscriptions begin with their own snapshot. The protocol sends
+    // one audience-projected snapshot after reconnect, not the actor's raw event.
+    let _ = connection.recv().await;
+    let _ = send_snapshot(&outbound, &room, &participant_id).await;
+
+    let mut heartbeat = time::interval(HUMAN_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut last_pong = Instant::now();
+    loop {
+        tokio::select! {
+            command = control.recv() => {
+                match command {
+                    Some(Control::Close { code, reason }) => {
+                        let _ = enqueue(&outbound, close_message(code, reason));
+                    }
+                    None => break,
+                }
+                break;
+            }
+            event = connection.recv() => {
+                let Some(event) = event else {
+                    let _ = enqueue(&outbound, close_message(4005, "slow_consumer"));
+                    break;
+                };
+                if matches!(event, RoomEvent::RoomDeleted) {
+                    let _ = enqueue(&outbound, close_message(4002, "room_deleted"));
+                    break;
+                }
+                if matches!(event, RoomEvent::ServerShutdown) {
+                    let _ = enqueue(&outbound, close_message(4003, "server_shutdown"));
+                    break;
+                }
+                if !queue_room_event(&outbound, &room, &participant_id, event).await {
+                    let _ = enqueue(&outbound, close_message(4005, "slow_consumer"));
+                    break;
+                }
+            }
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if text.as_bytes().len() > state.limits.human_ws_message_limit {
+                            let _ = enqueue(&outbound, close_message(1009, "message_too_large"));
+                            break;
+                        }
+                        if !handle_human_message(&outbound, &room, &participant_id, text.as_str()).await {
+                            let _ = enqueue(&outbound, close_message(1008, "invalid_message"));
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if bytes.len() > state.limits.human_ws_message_limit {
+                            let _ = enqueue(&outbound, close_message(1009, "message_too_large"));
+                        } else {
+                            let _ = enqueue(&outbound, close_message(1008, "invalid_message"));
+                        }
+                        break;
+                    }
+                    Some(Ok(Message::Pong(_))) => last_pong = Instant::now(),
+                    Some(Ok(Message::Ping(_))) => {}
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => {
+                        let _ = enqueue(&outbound, close_message(1009, "message_too_large"));
+                        break;
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {
+                if last_pong.elapsed() >= HUMAN_HEARTBEAT_TIMEOUT {
+                    let _ = enqueue(&outbound, close_message(4006, "session_expired"));
+                    break;
+                }
+                if !enqueue(&outbound, Message::Ping(Bytes::new())) {
+                    let _ = enqueue(&outbound, close_message(4005, "slow_consumer"));
+                    break;
+                }
+            }
+        }
+    }
+    if state.connections.is_current(&participant_id, generation) {
+        let _ = room
+            .send(RoomCommand::disconnect(participant_id.clone()))
+            .await;
+    }
+    state.connections.remove(&participant_id, generation);
+    writer.abort();
+    drop(permit);
+    let _ = join_code;
+}
+
+fn close_message(code: u16, reason: &'static str) -> Message {
+    Message::Close(Some(CloseFrame {
+        code,
+        reason: reason.into(),
+    }))
+}
+
+fn enqueue(outbound: &mpsc::Sender<Message>, message: Message) -> bool {
+    outbound.try_send(message).is_ok()
+}
+
+async fn send_snapshot(
+    outbound: &mpsc::Sender<Message>,
+    room: &RoomHandle,
+    participant_id: &ParticipantId,
+) -> bool {
+    let Ok(snapshot) = room.snapshot().await else {
+        return enqueue(outbound, close_message(4002, "room_deleted"));
+    };
+    let projection = room.projection(participant_id.clone()).await.ok().flatten();
+    let value = json!({
+        "type": "snapshot",
+        "room": room_snapshot_value(&snapshot),
+        "state": projection_value(projection),
+    });
+    enqueue(outbound, Message::text(value.to_string()))
+}
+
+async fn queue_room_event(
+    outbound: &mpsc::Sender<Message>,
+    room: &RoomHandle,
+    participant_id: &ParticipantId,
+    event: RoomEvent,
+) -> bool {
+    let Ok(snapshot) = room.snapshot().await else {
+        return false;
+    };
+    let projection = room.projection(participant_id.clone()).await.ok().flatten();
+    let value = match event {
+        RoomEvent::ActionResolved { result, .. } => json!({
+            "type": "game_update",
+            "event": {
+                "type": "action_resolved",
+                "decision_id": decision_result_id(&result),
+                "events": result.events().iter().map(|event| json!({"type": event.kind()})).collect::<Vec<_>>(),
+            },
+            "state": projection_value(projection),
+        }),
+        RoomEvent::DecisionOpened { decision, .. } => json!({
+            "type": "game_update",
+            "event": {"type": "decision_opened", "decision_id": decision.id().as_str()},
+            "state": projection_value(projection),
+        }),
+        other => json!({
+            "type": "room_update",
+            "event": room_event_value(&other),
+            "room": room_snapshot_value(&snapshot),
+            "state": projection_value(projection),
+        }),
+    };
+    enqueue(outbound, Message::text(value.to_string()))
+}
+
+fn decision_result_id(result: &double_riichi_core::DecisionResult) -> &str {
+    match result {
+        double_riichi_core::DecisionResult::Waiting { decision_id }
+        | double_riichi_core::DecisionResult::Resolved { decision_id, .. } => decision_id.as_str(),
+    }
+}
+
+async fn handle_human_message(
+    outbound: &mpsc::Sender<Message>,
+    room: &RoomHandle,
+    participant_id: &ParticipantId,
+    text: &str,
+) -> bool {
+    let input = match serde_json::from_str::<HumanInput>(text) {
+        Ok(input) => input,
+        Err(_) => {
+            let _ = enqueue(
+                outbound,
+                Message::text(json!({"type":"error","code":"invalid_message"}).to_string()),
+            );
+            return false;
+        }
+    };
+    match input {
+        HumanInput::SetReady {
+            preloaded_characters,
+        } => match room
+            .send(RoomCommand::set_ready(
+                participant_id.clone(),
+                preloaded_characters,
+            ))
+            .await
+        {
+            Ok(_) => send_snapshot(outbound, room, participant_id).await,
+            Err(_) => enqueue(
+                outbound,
+                Message::text(json!({"type":"error","code":"not_ready"}).to_string()),
+            ),
+        },
+        HumanInput::SubmitAction {
+            decision_id,
+            action_id,
+        } => match room
+            .send(RoomCommand::submit_action(
+                participant_id.clone(),
+                decision_id.clone(),
+                action_id,
+            ))
+            .await
+        {
+            Ok(RoomResponse::Action(result)) => {
+                let response = json!({
+                    "type": "action_result",
+                    "decision_id": decision_result_id(&result),
+                    "status": if result.is_resolved() { "accepted" } else { "accepted" },
+                });
+                enqueue(outbound, Message::text(response.to_string()))
+                    && send_snapshot(outbound, room, participant_id).await
+            }
+            Err(error) => {
+                let code = action_error_code(&error);
+                let response = json!({
+                    "type": "action_result",
+                    "decision_id": decision_id,
+                    "status": "rejected",
+                    "code": code,
+                });
+                enqueue(outbound, Message::text(response.to_string()))
+                    && send_snapshot(outbound, room, participant_id).await
+            }
+            Ok(_) => false,
+        },
+        HumanInput::Leave => room
+            .send(RoomCommand::leave(participant_id.clone()))
+            .await
+            .is_ok(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum HumanInput {
+    SetReady {
+        preloaded_characters: Vec<String>,
+    },
+    SubmitAction {
+        decision_id: String,
+        action_id: String,
+    },
+    Leave,
+}
+
+fn action_error_code(error: &RoomError) -> &'static str {
+    let value = error.to_string().to_ascii_lowercase();
+    if value.contains("stale decision") || value.contains("decision is already closed") {
+        "stale_decision"
+    } else if value.contains("foreign action") || value.contains("illegal action") {
+        "illegal_action"
+    } else if value.contains("not eligible") {
+        "not_eligible"
+    } else if value.contains("disconnected") {
+        "disconnected"
+    } else {
+        "action_rejected"
+    }
+}
+
+fn room_event_value(event: &RoomEvent) -> Value {
+    match event {
+        RoomEvent::Snapshot(_) => json!({"type": "snapshot"}),
+        RoomEvent::ParticipantJoined(participant) => json!({
+            "type": "participant_joined",
+            "participant_id": participant.id.as_str(),
+        }),
+        RoomEvent::ParticipantLeft(participant_id) => json!({
+            "type": "participant_left",
+            "participant_id": participant_id.as_str(),
+        }),
+        RoomEvent::SelectionChanged => json!({"type": "selection_changed"}),
+        RoomEvent::PhaseChanged(phase) => {
+            json!({"type": "phase_changed", "phase": phase_name(phase)})
+        }
+        RoomEvent::MatchStarted(match_id) => {
+            json!({"type": "match_started", "match_id": match_id.as_str()})
+        }
+        RoomEvent::ActionResolved { .. } => json!({"type": "action_resolved"}),
+        RoomEvent::MatchCompleted { .. } => json!({"type": "match_completed"}),
+        RoomEvent::MatchAborted { .. } => json!({"type": "match_aborted"}),
+        RoomEvent::StorageDegraded => json!({"type": "storage_degraded"}),
+        RoomEvent::RoomDeleted => json!({"type": "room_deleted"}),
+        RoomEvent::ServerShutdown => json!({"type": "server_shutdown"}),
+        RoomEvent::DecisionOpened { .. } => json!({"type": "decision_opened"}),
+    }
+}
+
+fn projection_value(projection: Option<AudienceProjection>) -> Value {
+    let Some(projection) = projection else {
+        return Value::Null;
+    };
+    let mut value = serde_json::to_value(projection).unwrap_or(Value::Null);
+    normalize_protocol_value(&mut value);
+    value
+}
+
+fn normalize_protocol_value(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if key == "mode" {
+                    if let Some(mode) = value.as_str().and_then(protocol_mode_name) {
+                        *value = Value::String(mode.to_owned());
+                        continue;
+                    }
+                }
+                if key == "kind" {
+                    if let Some(kind) = value.as_str() {
+                        *value = Value::String(kind.to_ascii_lowercase());
+                        continue;
+                    }
+                }
+                normalize_protocol_value(value);
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(normalize_protocol_value),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn protocol_mode_name(value: &str) -> Option<&'static str> {
+    Some(match value {
+        "FourPlayerRedEast" => "4p-red-east",
+        "FourPlayerRedHalf" => "4p-red-half",
+        "ThreePlayerRedEast" => "3p-red-east",
+        "ThreePlayerRedHalf" => "3p-red-half",
+        _ => return None,
+    })
+}
+
+#[derive(Serialize)]
+struct RoomListView {
+    join_code: String,
+    room_name: String,
+    game_mode: String,
+    phase: String,
+    connected_count: usize,
+    participant_count: usize,
+    selected_count: usize,
+    created_at: String,
+}
+
+#[derive(Serialize)]
+struct ParticipantView {
+    participant_id: String,
+    display_name: String,
+    kind: String,
+    presence: String,
+    selected: bool,
+    ready: bool,
+    character_id: String,
+    role: String,
+    controller: String,
+}
+
+#[derive(Serialize)]
+struct MatchPlayerView {
+    participant_id: String,
+    display_name: String,
+    kind: String,
+    seat: u8,
+    character_id: Option<String>,
+    controller: String,
+}
+
+#[derive(Serialize)]
+struct RoomDetailView {
+    #[serde(flatten)]
+    summary: RoomListView,
+    participants: Vec<ParticipantView>,
+    match_players: Vec<MatchPlayerView>,
+    roster: Vec<MatchPlayerView>,
+    result: Option<Value>,
+    revision: u64,
+    persistence_degraded: bool,
+    replay_available: bool,
+}
+
+fn room_list_view(snapshot: &RoomSnapshot) -> RoomListView {
+    RoomListView {
+        join_code: snapshot.join_code.as_str().to_owned(),
+        room_name: snapshot.room_name.clone(),
+        game_mode: snapshot.mode.as_str().to_owned(),
+        phase: phase_name(&snapshot.phase).to_owned(),
+        connected_count: snapshot
+            .participants
+            .iter()
+            .filter(|participant| participant.presence == Presence::Connected)
+            .count(),
+        participant_count: snapshot.participants.len(),
+        selected_count: snapshot
+            .participants
+            .iter()
+            .filter(|participant| participant.selected)
+            .count(),
+        created_at: unix_seconds_rfc3339(snapshot.created_at),
+    }
+}
+
+fn room_detail_view(snapshot: &RoomSnapshot) -> RoomDetailView {
+    RoomDetailView {
+        summary: room_list_view(snapshot),
+        participants: snapshot.participants.iter().map(participant_view).collect(),
+        match_players: snapshot
+            .match_players
+            .iter()
+            .map(match_player_view)
+            .collect(),
+        roster: snapshot.roster.iter().map(match_player_view).collect(),
+        result: snapshot
+            .result
+            .as_ref()
+            .and_then(|result| serde_json::to_value(result).ok()),
+        revision: snapshot.revision,
+        persistence_degraded: snapshot.persistence_degraded,
+        replay_available: snapshot.replay_available,
+    }
+}
+
+fn participant_view(participant: &double_riichi_core::RoomParticipantSnapshot) -> ParticipantView {
+    ParticipantView {
+        participant_id: participant.id.as_str().to_owned(),
+        display_name: participant.display_name.clone(),
+        kind: participant_kind(participant.kind).to_owned(),
+        presence: match participant.presence {
+            Presence::Connected => "connected",
+            Presence::Disconnected => "disconnected",
+        }
+        .to_owned(),
+        selected: participant.selected,
+        ready: participant.ready,
+        character_id: participant.character_id.clone(),
+        role: match participant.role {
+            MatchRole::None => "none".to_owned(),
+            MatchRole::Player(seat) => format!("player_{}", seat.index()),
+            MatchRole::Spectator => "spectator".to_owned(),
+        },
+        controller: controller_name(participant.controller),
+    }
+}
+
+fn match_player_view(player: &MatchPlayerSnapshot) -> MatchPlayerView {
+    MatchPlayerView {
+        participant_id: player.participant_id.as_str().to_owned(),
+        display_name: player.display_name.clone(),
+        kind: participant_kind(player.kind).to_owned(),
+        seat: player.seat.index(),
+        character_id: player.character_id.clone(),
+        controller: controller_name(player.controller),
+    }
+}
+
+fn participant_kind(kind: ParticipantKind) -> &'static str {
+    match kind {
+        ParticipantKind::Human => "human",
+        ParticipantKind::MJAI => "mjai",
+        ParticipantKind::MCP => "mcp",
+        ParticipantKind::BuiltInBot => "built_in_bot",
+    }
+}
+
+fn controller_name(controller: RoomController) -> String {
+    match controller {
+        RoomController::Interactive => "interactive".to_owned(),
+        RoomController::TemporaryAuto => "temporary_auto".to_owned(),
+        RoomController::PermanentAuto(reason) => {
+            format!(
+                "permanent_auto_{}",
+                format!("{reason:?}").to_ascii_lowercase()
+            )
+        }
+    }
+}
+
+fn room_detail_response(status: StatusCode, snapshot: &RoomSnapshot) -> Response {
+    json_response(
+        status,
+        serde_json::to_value(room_detail_view(snapshot)).unwrap_or(Value::Null),
+    )
+}
+
+fn room_snapshot_value(snapshot: &RoomSnapshot) -> Value {
+    json!({
+        "join_code": snapshot.join_code.as_str(),
+        "room_name": snapshot.room_name,
+        "game_mode": snapshot.mode.as_str(),
+        "phase": phase_name(&snapshot.phase),
+        "revision": snapshot.revision,
+        "participants": snapshot.participants.iter().map(participant_view).collect::<Vec<_>>(),
+        "match_players": snapshot.match_players.iter().map(match_player_view).collect::<Vec<_>>(),
+        "roster": snapshot.roster.iter().map(match_player_view).collect::<Vec<_>>(),
+        "result": snapshot.result.clone(),
+    })
+}
+
+fn phase_name(phase: &RoomPhase) -> &'static str {
+    match phase {
+        RoomPhase::Lobby => "lobby",
+        RoomPhase::Playing(_) => "playing",
+        RoomPhase::PostMatch(_) => "post_match",
+    }
+}
+
+fn invalid_request(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "Invalid request",
+        "The request body is invalid.",
+        "invalid_request",
+    )
+    .response(request_id)
+}
+
+fn internal_error(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Internal server error",
+        "The server could not complete the request.",
+        "internal_error",
+    )
+    .response(request_id)
+}
+
+fn room_not_found(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "Room not found",
+        "The room does not exist.",
+        "room_not_found",
+    )
+    .response(request_id)
+}
+
+fn invalid_credentials(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "Unauthorized",
+        "The supplied credentials are invalid.",
+        "invalid_credentials",
+    )
+    .response(request_id)
+}
+
+fn rate_limited(request_id: &RequestId, window: Duration) -> Response {
+    let mut response = ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many requests",
+        "The request rate limit has been exceeded.",
+        "rate_limited",
+    )
+    .response(request_id);
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&window.as_secs().to_string()).expect("retry value is valid"),
+    );
+    response
+}
+
+fn registry_error_response(error: RoomRegistryError, request_id: &RequestId) -> Response {
+    match error {
+        RoomRegistryError::NotFound => room_not_found(request_id),
+        RoomRegistryError::Full => ApiError::new(
+            StatusCode::CONFLICT,
+            "Room capacity reached",
+            "The server cannot create another room.",
+            "room_capacity_reached",
+        )
+        .response(request_id),
+        RoomRegistryError::CodeUnavailable => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Room code unavailable",
+            "The server could not allocate a room code.",
+            "room_code_unavailable",
+        )
+        .response(request_id),
+        RoomRegistryError::Room(error) => room_error_response(error, request_id),
+    }
+}
+
+fn room_error_response(error: RoomError, request_id: &RequestId) -> Response {
+    let (status, title, detail, code) = match error {
+        RoomError::Busy => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Room busy",
+            "The room is temporarily busy.",
+            "room_busy",
+        ),
+        RoomError::RoomFull => (
+            StatusCode::CONFLICT,
+            "Room full",
+            "The room cannot accept another participant.",
+            "room_full",
+        ),
+        RoomError::NotLobby => (
+            StatusCode::CONFLICT,
+            "Room is not in the Lobby",
+            "That command is unavailable in the current Room phase.",
+            "not_lobby",
+        ),
+        RoomError::NotEnoughPlayers | RoomError::NotReady => (
+            StatusCode::CONFLICT,
+            "Room is not ready",
+            "The Room does not have an eligible ready roster.",
+            "room_not_ready",
+        ),
+        RoomError::NotSelected => (
+            StatusCode::CONFLICT,
+            "Participant is not selected",
+            "The Participant is not selected for this Match.",
+            "not_selected",
+        ),
+        RoomError::ParticipantNotFound(_) => (
+            StatusCode::NOT_FOUND,
+            "Participant not found",
+            "The Participant does not exist in this Room.",
+            "participant_not_found",
+        ),
+        RoomError::InvalidCharacter | RoomError::PreloadIncomplete => (
+            StatusCode::BAD_REQUEST,
+            "Invalid Character selection",
+            "The Character selection or preload is invalid.",
+            "invalid_character",
+        ),
+        RoomError::AlreadySelected => (
+            StatusCode::CONFLICT,
+            "Participant already selected",
+            "The Participant is already selected.",
+            "already_selected",
+        ),
+        RoomError::Disconnected => (
+            StatusCode::CONFLICT,
+            "Participant disconnected",
+            "The Participant is disconnected.",
+            "participant_disconnected",
+        ),
+        RoomError::DeleteWhilePlaying => (
+            StatusCode::CONFLICT,
+            "Room is playing",
+            "The Room cannot be deleted while a Match is active.",
+            "delete_while_playing",
+        ),
+        RoomError::Deleted | RoomError::Closed => (
+            StatusCode::NOT_FOUND,
+            "Room not found",
+            "The room does not exist.",
+            "room_not_found",
+        ),
+        _ => (
+            StatusCode::CONFLICT,
+            "Room command rejected",
+            "The Room command is not available.",
+            "room_command_rejected",
+        ),
+    };
+    ApiError::new(status, title, detail, code).response(request_id)
+}
+
+async fn health(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let room_handles = state.rooms.list().await;
+    let rooms = room_handles.len();
+    let mut active_matches = 0usize;
+    for handle in room_handles {
+        if handle
+            .snapshot()
+            .await
+            .ok()
+            .is_some_and(|snapshot| matches!(snapshot.phase, RoomPhase::Playing(_)))
+        {
+            active_matches += 1;
+        }
+    }
+    let uptime = state.started_at.elapsed().as_secs();
+    json_response(
+        StatusCode::OK,
+        json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": option_env!("GIT_COMMIT").unwrap_or("unknown"),
+            "uptime_seconds": uptime,
+            "database": if state.storage.is_some() { "ok" } else { "not_configured" },
+            "replay_storage": if state.storage.is_some() { "ok" } else { "not_configured" },
+            "active_rooms": rooms,
+            "active_room_matches": active_matches,
+            "active_compat_matches": 0,
+        }),
+    )
+}
+
+async fn human_characters(State(state): State<Arc<ServerState>>) -> Response {
+    let Some(registry) = &state.registry else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    };
+    json_response(
+        StatusCode::OK,
+        serde_json::to_value(registry.human_characters()).unwrap_or(Value::Null),
+    )
+}
+
+async fn character_portrait(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    character_asset(&state, &id, CharacterAsset::Portrait, &headers)
+}
+
+async fn character_icon(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    character_asset(&state, &id, CharacterAsset::Icon, &headers)
+}
+
+async fn character_voice(
+    State(state): State<Arc<ServerState>>,
+    Path((id, voice)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(voice) = voice.strip_suffix(".ogg").and_then(|voice| match voice {
+        "chi" => Some(crate::VoiceLine::Chi),
+        "pon" => Some(crate::VoiceLine::Pon),
+        "kan" => Some(crate::VoiceLine::Kan),
+        "riichi" => Some(crate::VoiceLine::Riichi),
+        "ron" => Some(crate::VoiceLine::Ron),
+        "tsumo" => Some(crate::VoiceLine::Tsumo),
+        _ => None,
+    }) else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    };
+    character_asset(&state, &id, CharacterAsset::Voice(voice), &headers)
+}
+
+fn character_asset(
+    state: &ServerState,
+    id: &str,
+    asset: CharacterAsset,
+    headers: &HeaderMap,
+) -> Response {
+    let Some(registry) = &state.registry else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    };
+    let Some(asset) = registry.asset(id, asset) else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    };
+    let not_modified = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim() == asset.etag());
+    let mut response = Response::builder()
+        .status(if not_modified {
+            StatusCode::NOT_MODIFIED
+        } else {
+            StatusCode::OK
+        })
+        .header(header::CONTENT_TYPE, asset.content_type())
+        .header(header::CACHE_CONTROL, "public, no-cache")
+        .header(header::ETAG, asset.etag());
+    if !not_modified {
+        response = response.header(header::CONTENT_LENGTH, asset.bytes().len());
+    }
+    response
+        .body(if not_modified {
+            Body::empty()
+        } else {
+            Body::from(asset.bytes().to_vec())
+        })
+        .unwrap()
+}
+
+fn normalize_display_text(value: &str) -> Option<String> {
+    let value = value.trim_matches(char::is_whitespace);
+    if !(1..=64).contains(&value.chars().count()) || value.chars().any(char::is_control) {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn unix_seconds_rfc3339(seconds: i64) -> String {
+    system_time_rfc3339(std::time::UNIX_EPOCH + Duration::from_secs(seconds.max(0) as u64))
+}
+
+fn system_time_rfc3339(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        day_seconds / 3_600,
+        (day_seconds / 60) % 60,
+        day_seconds % 60
+    )
+}
+
+fn civil_from_days(days: i64) -> (i64, u8, u8) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year, month as u8, day as u8)
+}
+
+fn request_ip(
+    headers: &HeaderMap,
+    direct_peer: Option<SocketAddr>,
+    trusted_proxies: &[IpCidr],
+) -> IpAddr {
+    let direct = direct_peer
+        .map(|peer| peer.ip())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    if !trusted_proxies.iter().any(|cidr| cidr.contains(direct)) {
+        return direct;
+    }
+    let Some(header) = headers.get("x-forwarded-for") else {
+        return direct;
+    };
+    let Ok(header) = header.to_str() else {
+        return direct;
+    };
+    let mut addresses = Vec::new();
+    for value in header.split(',') {
+        let Ok(address) = value.trim().parse::<IpAddr>() else {
+            return direct;
+        };
+        addresses.push(address);
+    }
+    if addresses.is_empty() {
+        return direct;
+    }
+    addresses
+        .iter()
+        .rev()
+        .copied()
+        .find(|address| !trusted_proxies.iter().any(|cidr| cidr.contains(*address)))
+        .unwrap_or(addresses[0])
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum RateKind {
+    CodeLookup,
+    ParticipantCreation,
+    AdminLoginFailure,
+    AgentAuthFailure,
+}
+
+#[derive(Default)]
+struct RateLimiter {
+    entries: Mutex<HashMap<(RateKind, IpAddr), VecDeque<Instant>>>,
+}
+
+impl RateLimiter {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn available(&self, kind: RateKind, ip: IpAddr, limit: usize, window: Duration) -> bool {
+        let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
+        let now = Instant::now();
+        let entry = entries.entry((kind, ip)).or_default();
+        while entry
+            .front()
+            .is_some_and(|started| now.duration_since(*started) >= window)
+        {
+            entry.pop_front();
+        }
+        entry.len() < limit
+    }
+
+    fn allowed(&self, kind: RateKind, ip: IpAddr, limit: usize, window: Duration) -> bool {
+        let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
+        let now = Instant::now();
+        let entry = entries.entry((kind, ip)).or_default();
+        while entry
+            .front()
+            .is_some_and(|started| now.duration_since(*started) >= window)
+        {
+            entry.pop_front();
+        }
+        if entry.len() >= limit {
+            return false;
+        }
+        entry.push_back(now);
+        if entries.len() > 8_192 {
+            if let Some(key) = entries.keys().next().copied() {
+                entries.remove(&key);
+            }
+        }
+        true
+    }
+
+    fn record(&self, kind: RateKind, ip: IpAddr, window: Duration) {
+        let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
+        let now = Instant::now();
+        let entry = entries.entry((kind, ip)).or_default();
+        while entry
+            .front()
+            .is_some_and(|started| now.duration_since(*started) >= window)
+        {
+            entry.pop_front();
+        }
+        entry.push_back(now);
+    }
+}
+
+#[derive(Default)]
+struct GuestSessionStore {
+    sessions: Mutex<HashMap<[u8; 32], GuestSession>>,
+}
+
+struct GuestSession {
+    join_code: String,
+    participant_id: ParticipantId,
+}
+
+impl GuestSessionStore {
+    fn issue(&self, join_code: &str, participant_id: &ParticipantId) -> String {
+        let bytes: [u8; 32] = random();
+        let value = URL_SAFE_NO_PAD.encode(bytes);
+        self.sessions
+            .lock()
+            .expect("guest session lock poisoned")
+            .insert(
+                crate::hash_token(&value),
+                GuestSession {
+                    join_code: join_code.to_owned(),
+                    participant_id: participant_id.clone(),
+                },
+            );
+        value
+    }
+
+    fn authenticate(&self, join_code: &str, value: &str) -> Option<ParticipantId> {
+        self.sessions
+            .lock()
+            .expect("guest session lock poisoned")
+            .get(&crate::hash_token(value))
+            .filter(|session| session.join_code == join_code)
+            .map(|session| session.participant_id.clone())
+    }
+
+    fn invalidate_room(&self, join_code: &str) {
+        self.sessions
+            .lock()
+            .expect("guest session lock poisoned")
+            .retain(|_, session| session.join_code != join_code);
+    }
+
+    fn invalidate_participant(&self, join_code: &str, participant_id: &ParticipantId) {
+        self.sessions
+            .lock()
+            .expect("guest session lock poisoned")
+            .retain(|_, session| {
+                session.join_code != join_code || &session.participant_id != participant_id
+            });
+    }
+}
+
+fn _unused_types(_: &GameAction, _: &RoomJoinCode) {}
