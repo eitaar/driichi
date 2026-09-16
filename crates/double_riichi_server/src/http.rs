@@ -2085,7 +2085,9 @@ fn normalize_protocol_value(value: &mut Value) {
                         }
                     }
                     "kind" => {
-                        if let Some(kind) = value.as_str().and_then(protocol_kind_name) {
+                        if let Some(kind) = value.as_str().and_then(|kind| {
+                            protocol_kind_name(kind).or_else(|| protocol_decision_kind_name(kind))
+                        }) {
                             value = Value::String(kind.to_owned());
                         }
                     }
@@ -2173,6 +2175,14 @@ fn protocol_key(value: &str) -> &str {
         "BuiltInBot" => "built_in_bot",
         other => other,
     }
+}
+
+fn protocol_decision_kind_name(value: &str) -> Option<&'static str> {
+    Some(match value {
+        "Turn" => "turn",
+        "Response" => "response",
+        _ => return None,
+    })
 }
 
 fn protocol_kind_name(value: &str) -> Option<&'static str> {
@@ -2997,10 +3007,11 @@ mod tests {
 
     #[test]
     fn protocol_normalization_snake_cases_enum_values() {
-        let mut value = json!({"controller":{"PermanentAuto":"ConnectionLost"},"role":{"Player":2},"display_name":"East"});
+        let mut value = json!({"controller":{"PermanentAuto":"ConnectionLost"},"role":{"Player":2},"kind":"Turn","display_name":"East"});
         normalize_protocol_value(&mut value);
         assert_eq!(value["controller"]["permanent_auto"], "connection_lost");
         assert_eq!(value["role"]["player"], 2);
+        assert_eq!(value["kind"], "turn");
         assert_eq!(value["display_name"], "East");
     }
 
