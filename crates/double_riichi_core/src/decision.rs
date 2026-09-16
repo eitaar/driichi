@@ -644,11 +644,7 @@ impl Decision {
             return Ok(None);
         }
         self.closed = true;
-        let mut resolution = self.accepted_resolution();
-        for action in &mut resolution.actions {
-            action.timed_out = timed_out.contains(&action.seat);
-        }
-        Ok(Some(resolution))
+        Ok(Some(self.accepted_resolution()))
     }
 
     fn accepted_resolution(&self) -> DecisionResolution {
