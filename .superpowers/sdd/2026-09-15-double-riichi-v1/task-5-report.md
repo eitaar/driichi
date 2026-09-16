@@ -115,3 +115,63 @@ After the required commit:
 ```text
 C:/Users/eitab/.pi/agent/git/github.com/obra/superpowers/skills/subagent-driven-development/scripts/review-package docs/superpowers/plans/2026-09-15-double-riichi-v1.md 426bdaec6e4f18c36ac9fac25a43da4a527ab173 HEAD
 ```
+
+## Review round 1/5 follow-up
+
+The authoritative yamai gate remains deferred under the owner ruling; no source was fabricated or substituted. The local Critical/Important findings were addressed as follows:
+
+- Kita now removes one North tile from the sanma concealed hand and therefore updates `hand` and `concealed_count`; a focused three-player Kita frame test covers it.
+- Auxiliary records are rejected when outside the event timeline, when `after` is requested before any event, or when a pending `before` record is finalized without a following event.
+- Startup cleanup matches the exact `_<match_id>.mjson` filename component instead of using substring matching; unsafe underscore-containing IDs are rejected.
+- Finalize validates auxiliary positions and cleans the `.part` path on every post-flush failure, including destination-directory failure.
+- Incomplete files now use exactly `.incomplete/<match_id>.mjson.part`; timestamp/mode remain only in the completed destination filename.
+- MJSON parsing now requires a `start_kyoku` mode and terminal `end_game` before accepting a ReplayReader input.
+- Noncanonical `kyotaku`, `ura_markers`, and `deltas` aliases are rejected; only canonical field names are accepted.
+- The 64 MiB boundary now exercises `encode_replay_frames` at exactly the limit and at limit-plus-one; Player/Public projection assertions now serialize real core projections.
+
+### Follow-up RED
+
+```text
+cargo test -p double_riichi_replay --test task5_replay
+# 14 tests ran with 7 expected failures before the fixes:
+# Kita retained 13 concealed tiles; invalid auxiliary positions were dropped;
+# cleanup removed ABCDEF for unfinished ABC; finalize left .part; the part path
+# still contained timestamp/mode; end_game-only input parsed successfully; and
+# the new Player/Public assertion plus encoder boundary assertion failed.
+```
+
+### Follow-up GREEN
+
+```text
+cargo test -p double_riichi_replay --test task5_replay
+# 14 passed; 0 failed
+```
+
+Fix commit: `fix(replay): close task 5 review findings` (final hash recorded by `git rev-parse HEAD`).
+
+### Follow-up verification
+
+```text
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace tests passed; replay integration: 14 passed, 0 failed
+
+npm run typecheck --prefix frontend
+# tsc --noEmit passed
+
+bash tests/workspace-smoke.sh
+# passed
+
+grep -Fq 'Basic accessibility is a v1 requirement.' spec/implementation-v1.md && grep -Fq 'Reduced-motion fallbacks are a v1 requirement.' spec/implementation-v1.md && grep -Fq 'Mobile gameplay layout remains deferred.' spec/implementation-v1.md && grep -Fq 'Full Pixi keyboard and screen-reader narration remains deferred.' spec/implementation-v1.md
+# passed
+
+git diff --check
+# passed
+```
+
+`just check` remains unavailable in this environment; direct equivalent recipes are green. The yamai command was deliberately not run because the authoritative source/revision remains unavailable.

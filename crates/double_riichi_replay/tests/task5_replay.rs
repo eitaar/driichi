@@ -1,15 +1,40 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::PathBuf, time::UNIX_EPOCH};
 
-use double_riichi_core::{GameEvent, GameMode, Seat, Tile, Wind};
+use double_riichi_core::{
+    Audience, GameEvent, GameMode, Participant, ParticipantKind, Seat, TableState, Tile, Wind,
+};
 use double_riichi_replay::{
     AuxiliaryEvent, AuxiliaryPhase, CanonicalEvent, MAX_REPLAY_FRAME_BYTES, ReplayError,
-    ReplayFrame, ReplayWriter, build_replay_frames, frames_from_artifact, parse_mjson,
-    resolve_replay_path, serialize_event, startup_cleanup,
+    ReplayFrame, ReplayWriter, build_replay_frames, encode_replay_frames, frames_from_artifact,
+    parse_mjson, resolve_replay_path, serialize_event, startup_cleanup,
 };
+
+fn three_player_start_events() -> Vec<CanonicalEvent> {
+    vec![
+        GameEvent::StartGame {
+            names: Some(vec!["East".into(), "South".into(), "West".into()]),
+            id: Some("match-3p".into()),
+        },
+        GameEvent::StartKyoku {
+            bakaze: Wind::East,
+            kyoku: 1,
+            honba: 0,
+            kyotaku: 0,
+            oya: Seat::new(0).unwrap(),
+            scores: vec![25_000; 3],
+            dora_marker: Tile::from_id(0).unwrap(),
+            tehais: vec![
+                {
+                    let mut hand = vec![Tile::from_id(0).unwrap(); 12];
+                    hand.push(Tile::from_id(120).unwrap());
+                    hand
+                },
+                vec![Tile::from_id(0).unwrap(); 13],
+                vec![Tile::from_id(0).unwrap(); 13],
+            ],
+        },
+    ]
+}
 
 fn default_action(actions: &[double_riichi_core::GameAction]) -> double_riichi_core::GameAction {
     actions
@@ -219,6 +244,10 @@ fn writer_flushes_atomically_to_portable_relative_mode_path_and_orders_auxiliary
             .to_string_lossy()
             .ends_with(".mjson.part")
     );
+    assert_eq!(
+        writer.part_path(),
+        root.join(".incomplete/01JTESTMATCH.mjson.part")
+    );
     assert!(writer.relative_path().to_string_lossy().contains("4p/"));
     writer
         .record_auxiliary(
@@ -265,6 +294,36 @@ fn writer_flushes_atomically_to_portable_relative_mode_path_and_orders_auxiliary
 }
 
 #[test]
+fn auxiliary_positions_outside_timeline_and_after_before_any_event_are_rejected() {
+    let events = start_events();
+    let invalid = double_riichi_replay::AuxiliaryRecord {
+        event: AuxiliaryEvent::Disconnected {
+            seat: Seat::new(0).unwrap(),
+        },
+        line_index: events.len(),
+        phase: AuxiliaryPhase::Before,
+        sequence: 0,
+    };
+    assert!(matches!(
+        double_riichi_replay::build_replay_frames_with_auxiliary(&events, &[invalid]),
+        Err(ReplayError::InvalidEvent(_))
+    ));
+
+    let root = temp_root("auxiliary-invalid");
+    let mut writer = ReplayWriter::new(&root, "01JAUX", GameMode::FourPlayerRedEast).unwrap();
+    assert!(matches!(
+        writer.record_auxiliary(
+            AuxiliaryEvent::Reconnected {
+                seat: Seat::new(0).unwrap(),
+            },
+            AuxiliaryPhase::After,
+        ),
+        Err(ReplayError::InvalidEvent(_))
+    ));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn persistence_failures_are_typed_and_do_not_panic() {
     let root = temp_root("failure");
     let mut writer =
@@ -274,6 +333,21 @@ fn persistence_failures_are_typed_and_do_not_panic() {
     writer.append(start_events().remove(0)).unwrap();
     let error = writer.append(start_events().remove(0)).unwrap_err();
     assert!(matches!(error, ReplayError::Persistence(_)));
+    assert!(!part_path.exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn finalize_failure_cleans_partial_artifact() {
+    let root = temp_root("finalize-failure");
+    let mut writer = ReplayWriter::new(&root, "01JFINAL", GameMode::FourPlayerRedEast).unwrap();
+    writer.append(start_events()[0].clone()).unwrap();
+    let part_path = writer.part_path().to_path_buf();
+    fs::write(root.join("4p"), "not a directory").unwrap();
+    assert!(matches!(
+        writer.finalize(),
+        Err(ReplayError::Persistence(_))
+    ));
     assert!(!part_path.exists());
     let _ = fs::remove_dir_all(root);
 }
@@ -295,7 +369,12 @@ fn startup_cleanup_removes_parts_and_renamed_files_for_incomplete_matches_but_ke
         "complete",
     )
     .unwrap();
-    startup_cleanup(&root, ["UNFINISHED"]).unwrap();
+    fs::write(
+        root.join("4p/20260915T153845Z_4p-red-east_ABCDEF.mjson"),
+        "unrelated",
+    )
+    .unwrap();
+    startup_cleanup(&root, ["UNFINISHED", "ABC"]).unwrap();
     assert!(!root.join(".incomplete/unfinished.mjson.part").exists());
     assert!(
         !root
@@ -304,6 +383,10 @@ fn startup_cleanup_removes_parts_and_renamed_files_for_incomplete_matches_but_ke
     );
     assert!(
         root.join("4p/20260915T153845Z_4p-red-east_COMPLETE.mjson")
+            .exists()
+    );
+    assert!(
+        root.join("4p/20260915T153845Z_4p-red-east_ABCDEF.mjson")
             .exists()
     );
     let _ = fs::remove_dir_all(root);
@@ -323,14 +406,30 @@ fn corrupted_or_oversized_replays_are_rejected_at_the_exact_limit() {
         parse_mjson("{\"type\":\"end_game\"}\n\n"),
         Err(ReplayError::Corrupt { .. })
     ));
+    assert!(matches!(
+        parse_mjson(r#"{"type":"end_game"}"#),
+        Err(ReplayError::Corrupt { .. })
+    ));
+    let noncanonical_start = serialize_event(&start_events()[1])
+        .unwrap()
+        .replace("kyoutaku", "kyotaku");
+    assert!(matches!(
+        parse_mjson(&noncanonical_start),
+        Err(ReplayError::Corrupt { .. })
+    ));
     assert_eq!(MAX_REPLAY_FRAME_BYTES, 64 * 1024 * 1024);
     let frames: Vec<ReplayFrame> = build_replay_frames(&start_events()).unwrap();
     assert_eq!(frames[0].event_index, 0);
     assert!(frames[0].visible_event.kind() == "start_game");
-    let exact = double_riichi_replay::validate_frame_payload_size(MAX_REPLAY_FRAME_BYTES);
-    assert!(exact.is_ok());
+    let mut boundary = frames[0].clone();
+    boundary.visible_state.players[0].display_name.clear();
+    let baseline = encode_replay_frames(&[boundary.clone()]).unwrap().len();
+    boundary.visible_state.players[0].display_name = "x".repeat(MAX_REPLAY_FRAME_BYTES - baseline);
+    let exact = encode_replay_frames(&[boundary.clone()]).unwrap();
+    assert_eq!(exact.len(), MAX_REPLAY_FRAME_BYTES);
+    boundary.visible_state.players[0].display_name.push('x');
     assert!(matches!(
-        double_riichi_replay::validate_frame_payload_size(MAX_REPLAY_FRAME_BYTES + 1),
+        encode_replay_frames(&[boundary]),
         Err(ReplayError::ReplayTooLarge { .. })
     ));
 }
@@ -381,6 +480,25 @@ fn generated_four_player_match_events_are_valid_canonical_mjson_and_reconstructa
         frames
             .iter()
             .any(|frame| frame.visible_event.kind() == "end_game")
+    );
+}
+
+#[test]
+fn three_player_kita_removes_north_from_reconstructed_hand() {
+    let mut events = three_player_start_events();
+    events.push(GameEvent::Kita {
+        actor: Seat::new(0).unwrap(),
+    });
+    let frames = build_replay_frames(&events).unwrap();
+    let player = &frames[2].visible_state.players[0];
+    assert_eq!(player.concealed_count, 12);
+    assert!(
+        player
+            .hand
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|tile| tile.tile_type() != Tile::NORTH)
     );
 }
 
@@ -495,6 +613,30 @@ fn auxiliary_events_are_not_in_canonical_mjson_or_player_public_projection() {
     })
     .unwrap();
     assert!(!line.contains("disconnected"));
-    let _ = Duration::from_secs(0);
-    let _ = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+
+    let mode = GameMode::FourPlayerRedEast;
+    let players = (0..mode.seat_count())
+        .map(|seat| {
+            (
+                Seat::new(seat as u8).unwrap(),
+                Participant::new(
+                    format!("p{seat}"),
+                    format!("Player {seat}"),
+                    ParticipantKind::Human,
+                ),
+                25_000,
+            )
+        })
+        .collect();
+    let table = TableState::from_hands(mode, players, vec![vec![Tile::from_id(0).unwrap(); 13]; 4])
+        .unwrap();
+    let public_json = table.project(Audience::Public).to_json().unwrap();
+    let player_json = table
+        .project(Audience::Player(Seat::new(0).unwrap()))
+        .to_json()
+        .unwrap();
+    assert!(!public_json.contains("\"hand\""));
+    assert_eq!(player_json.matches("\"hand\"").count(), 1);
+    assert!(!public_json.contains("start_game"));
+    assert!(!player_json.contains("start_game"));
 }

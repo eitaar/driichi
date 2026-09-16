@@ -218,7 +218,7 @@ impl ReplayWriter {
         fs::create_dir_all(&directory).map_err(PersistenceError::from)?;
         let timestamp = utc_filename_timestamp(started_at);
         let filename = format!("{timestamp}_{}_{}.mjson", mode.as_str(), match_id);
-        let part_path = directory.join(format!("{filename}.part"));
+        let part_path = directory.join(format!("{match_id}.mjson.part"));
         let relative_path = PathBuf::from(format!("{}/{filename}", mode_directory(mode)));
         let file = File::create(&part_path).map_err(PersistenceError::from)?;
         Ok(Self {
@@ -292,7 +292,12 @@ impl ReplayWriter {
         self.ensure_open()?;
         let line_index = match phase {
             AuxiliaryPhase::Before => self.emitted_lines,
-            AuxiliaryPhase::After => self.emitted_lines.saturating_sub(1),
+            AuxiliaryPhase::After if self.emitted_lines > 0 => self.emitted_lines - 1,
+            AuxiliaryPhase::After => {
+                return Err(ReplayError::InvalidEvent(
+                    "after auxiliary event requires an emitted MJSON event".into(),
+                ));
+            }
         };
         let sequence = self.auxiliary_sequence;
         self.auxiliary_sequence += 1;
@@ -322,7 +327,21 @@ impl ReplayWriter {
     }
 
     pub fn finalize(mut self) -> Result<ReplayArtifact, ReplayError> {
-        self.flush_buffer()?;
+        if let Err(error) = self.validate_auxiliary_positions() {
+            self.fail_and_cleanup();
+            return Err(error);
+        }
+        if let Err(error) = self.flush_buffer() {
+            return Err(error);
+        }
+        let result = self.finalize_inner();
+        if result.is_err() {
+            self.fail_and_cleanup();
+        }
+        result
+    }
+
+    fn finalize_inner(&mut self) -> Result<ReplayArtifact, ReplayError> {
         let writer = self.writer.take().ok_or(PersistenceError::Closed)?;
         let file = writer
             .into_inner()
@@ -337,9 +356,9 @@ impl ReplayWriter {
             .map_err(PersistenceError::from)?
             .len();
         Ok(ReplayArtifact {
-            relative_path: self.relative_path,
+            relative_path: self.relative_path.clone(),
             file_size,
-            auxiliary_events: self.auxiliary_events,
+            auxiliary_events: self.auxiliary_events.clone(),
         })
     }
 
@@ -378,6 +397,20 @@ impl ReplayWriter {
         if let Err(error) = result {
             self.fail_and_cleanup();
             return Err(PersistenceError::Io(error).into());
+        }
+        Ok(())
+    }
+
+    fn validate_auxiliary_positions(&self) -> Result<(), ReplayError> {
+        if let Some(record) = self
+            .auxiliary_events
+            .iter()
+            .find(|record| record.line_index >= self.emitted_lines)
+        {
+            return Err(ReplayError::InvalidEvent(format!(
+                "auxiliary line index {} is outside emitted events",
+                record.line_index
+            )));
         }
         Ok(())
     }
@@ -440,12 +473,22 @@ where
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if ids.iter().any(|id| !id.is_empty() && name.contains(id)) {
+            if ids.iter().any(|id| filename_matches_match_id(name, id)) {
                 fs::remove_file(path)?;
             }
         }
     }
     Ok(())
+}
+
+fn filename_matches_match_id(name: &str, match_id: &str) -> bool {
+    if match_id.is_empty() {
+        return false;
+    }
+    let Some(name) = name.strip_suffix(".mjson") else {
+        return false;
+    };
+    name.ends_with(&format!("_{match_id}"))
 }
 
 fn mode_directory(mode: GameMode) -> &'static str {
@@ -458,6 +501,7 @@ fn validate_match_id(match_id: &str) -> Result<(), ReplayError> {
         || match_id == ".."
         || match_id.contains('/')
         || match_id.contains('\\')
+        || match_id.contains('_')
         || match_id.contains('\0')
     {
         return Err(ReplayError::InvalidPath(
