@@ -257,3 +257,39 @@ git diff --check
 ```
 
 This round records verification only; no local source change was required beyond the already-committed Kita fix.
+
+## Review round 4/5 follow-up
+
+The local Important finding remains addressed without regression: four-player `Kita` is rejected by mode-aware validation before replay state mutation, and the existing malformed four-player regression remains green. The review package for this round is report-only; no additional local Critical/Important breakage was found, so no duplicate test or speculative implementation was added.
+
+The Critical pinned yamai gate remains owner-deferred. The authoritative repository/package, immutable revision, license, and `ReplayProcessor` source are still unavailable. Per instruction, no yamai implementation, substitute, execution, or compatibility claim was fabricated. Local MJSON round-trip and projection tests do not establish that external acceptance.
+
+### Follow-up verification
+
+```text
+cargo test -p double_riichi_replay --test task5_replay
+# 15 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace tests passed; replay integration: 15 passed, 0 failed
+
+npm run typecheck --prefix frontend
+# tsc --noEmit passed
+
+bash tests/workspace-smoke.sh
+# passed
+
+# required implementation-v1 spec assertions
+# passed
+
+git diff --check
+# passed
+```
+
+This round required no local code/test edits; the report records the repeated gate deferral and verification evidence.
