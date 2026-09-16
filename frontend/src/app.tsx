@@ -8,6 +8,9 @@ import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { api, ApiProblem, type AdminRoomDetail, type AdminRoomSummary, type BotTokenRecord, type CreatedBotToken, type GameMode, type HumanCharacter, type ProblemDetails, type RoomParticipant, type TimeControl } from "./api";
 import { TileVignette } from "./pixi-vignette";
+import { GameplaySurface } from "./game/gameplay";
+import { useGameStore, type Transport } from "./game/store";
+import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate, routeForPath, type Route } from "./routes";
 import "./styles.css";
 
@@ -149,11 +152,102 @@ function OneTimeTokenDialog({ token, onClose }: { token: CreatedBotToken | null;
 function ConfirmDialog({ open, title, description, confirmLabel, onClose, onConfirm }: { open: boolean; title: string; description: string; confirmLabel: string; onClose: () => void; onConfirm: () => void }) { return <ModalDialog open={open} onClose={onClose} className="confirm-dialog" labelledBy="confirm-heading"><div className="dialog-top"><p className="eyebrow">CONFIRMATION</p><button className="icon-button" aria-label="Close dialog" onClick={onClose}><X aria-hidden="true" weight="regular" /></button></div><h2 id="confirm-heading">{title}</h2><p>{description}</p><div className="dialog-actions"><button data-dialog-autofocus className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" onClick={onConfirm}>{confirmLabel}</button></div></ModalDialog>; }
 function CreateRoomDialog({ open, onClose, mutation }: { open: boolean; onClose: () => void; mutation: CreateMutation }) { const [name, setName] = useState(""); const [mode, setMode] = useState<GameMode>("4p-red-east"); const [timeControl, setTimeControl] = useState<TimeControl>("casual"); const seats = mode.startsWith("3p") ? 3 : 4; return <ModalDialog open={open} onClose={onClose} className="confirm-dialog create-dialog" labelledBy="create-heading"><div className="dialog-top"><p className="eyebrow">NEW ROOM</p><button className="icon-button" aria-label="Close dialog" onClick={onClose}><X aria-hidden="true" weight="regular" /></button></div><h2 id="create-heading">Create a Room.</h2><div className="form-block"><label htmlFor="new-room-name">Room name</label><input id="new-room-name" value={name} onChange={(event) => setName(event.target.value)} data-dialog-autofocus /></div><div className="form-block"><label htmlFor="new-room-mode">Game mode</label><select id="new-room-mode" value={mode} onChange={(event) => setMode(event.target.value as GameMode)}><option value="4p-red-east">4p red East</option><option value="4p-red-half">4p red half</option><option value="3p-red-east">3p red East</option><option value="3p-red-half">3p red half</option></select></div><div className="form-block"><label htmlFor="new-room-time">Time control</label><select id="new-room-time" value={timeControl} onChange={(event) => setTimeControl(event.target.value as TimeControl)}><option value="casual">Casual 30 / 10</option><option value="riichi_dev">Riichi.dev</option><option value="unlimited">Unlimited</option></select></div>{mutation.isError && <ProblemInline error={mutation.error} />}<div className="dialog-actions"><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate({ room_name: name.trim(), game_mode: mode, time_control: timeControl, replay_save: true, participant_limit: seats })}>{mutation.isPending ? "Creating Room" : "Create Room"}</button></div></ModalDialog>; }
 
-interface SocketRoom { join_code: string; room_name: string; game_mode: string; phase: string; revision: number; participants: RoomParticipant[]; match_players: Array<{ participant_id: string; display_name: string; kind: string; seat: number; character_id: string | null; controller: string }>; roster: Array<{ participant_id: string; display_name: string; kind: string; seat: number; character_id: string | null; controller: string }>; result: unknown; }
-function useHumanSocket(joinCode: string) { const [room, setRoom] = useState<SocketRoom | null>(null); const [projection, setProjection] = useState<unknown>(null); const [status, setStatus] = useState<"connecting" | "connected" | "reconnecting" | "closed" | "error">("connecting"); const [reason, setReason] = useState(""); const [commandError, setCommandError] = useState(""); const [connectionGeneration, setConnectionGeneration] = useState(0); const socketRef = useRef<WebSocket | null>(null); const reconnectRef = useRef<number | null>(null); const attemptRef = useRef(0); const generationRef = useRef(0); const stoppedRef = useRef(false); const participantKey = `driichi:participant:${joinCode}`;
-  const send = useCallback((value: unknown) => { if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(value)); }, []);
-  useEffect(() => { stoppedRef.current = false; attemptRef.current = 0; const connect = () => { if (stoppedRef.current) return; const generation = generationRef.current + 1; generationRef.current = generation; setStatus(attemptRef.current ? "reconnecting" : "connecting"); const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"; const socket = new WebSocket(`${protocol}//${window.location.host}/ws/v1/rooms/${joinCode}/human`); socketRef.current = socket; socket.onopen = () => { if (generationRef.current !== generation || socketRef.current !== socket) return; attemptRef.current = 0; setReason(""); setCommandError(""); setConnectionGeneration((value) => value + 1); setStatus("connected"); }; socket.onmessage = (event) => { if (generationRef.current !== generation || socketRef.current !== socket) return; try { const message = JSON.parse(event.data) as { type: string; room?: SocketRoom; state?: unknown; code?: string }; if (message.room) { if (message.room.join_code !== joinCode) return; setCommandError(""); setRoom(message.room); const saved = sessionStorage.getItem(participantKey); if (!saved) { const human = message.room.participants.filter((participant) => participant.kind === "human"); if (human.length === 1) sessionStorage.setItem(participantKey, human[0].participant_id); } } if (message.state !== undefined) setProjection(message.state); if (message.type === "error") setCommandError(message.code ?? "request_failed"); } catch { setCommandError("invalid_message"); } }; socket.onerror = () => { if (generationRef.current !== generation || socketRef.current !== socket) return; setStatus("error"); setReason("network_error"); }; socket.onclose = (event) => { if (stoppedRef.current || generationRef.current !== generation || socketRef.current !== socket) return; const semantic: Record<number, string> = { 4001: "connected_elsewhere", 4002: "room_deleted", 4005: "slow_consumer", 4006: "session_expired" }; const semanticReason = semantic[event.code] ?? event.reason; if (semanticReason && [4001, 4002, 4006].includes(event.code)) { setStatus("closed"); setReason(semanticReason); return; } attemptRef.current += 1; setReason(""); setStatus("reconnecting"); const delay = Math.min(10000, 500 * 2 ** Math.min(attemptRef.current - 1, 4)); reconnectRef.current = window.setTimeout(() => { if (generationRef.current === generation && !stoppedRef.current) connect(); }, delay); }; }; connect(); return () => { stoppedRef.current = true; generationRef.current += 1; if (reconnectRef.current) window.clearTimeout(reconnectRef.current); socketRef.current?.close(); socketRef.current = null; }; }, [joinCode, participantKey]);
-  return { room, projection, status, reason, commandError, connectionGeneration, send };
+type SocketRoom = RoomSnapshot;
+type HumanSocketMessage = { type: string; room?: SocketRoom; state?: unknown; event?: unknown; code?: string; status?: string; decision_id?: string };
+function useHumanSocket(joinCode: string) {
+  const room = useGameStore((state) => state.room);
+  const projection = useGameStore((state) => state.projection);
+  const status = useGameStore((state) => state.status);
+  const reason = useGameStore((state) => state.reason);
+  const commandError = useGameStore((state) => state.commandError);
+  const connectionGeneration = useGameStore((state) => state.connectionGeneration);
+  const socketRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<number | null>(null);
+  const attemptRef = useRef(0);
+  const generationRef = useRef(0);
+  const stoppedRef = useRef(false);
+  const participantKey = `driichi:participant:${joinCode}`;
+  const [sessionReady, setSessionReady] = useState(false);
+  const send = useCallback<Transport>((value) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(value));
+  }, []);
+  useEffect(() => {
+    stoppedRef.current = false;
+    attemptRef.current = 0;
+    useGameStore.getState().reset();
+    useGameStore.getState().setTransport(send);
+    setSessionReady(true);
+    const connect = () => {
+      if (stoppedRef.current || (socketRef.current && socketRef.current.readyState !== 3)) return;
+      const generation = generationRef.current + 1;
+      generationRef.current = generation;
+      useGameStore.getState().setStatus(attemptRef.current ? "reconnecting" : "connecting");
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(`${protocol}//${window.location.host}/ws/v1/rooms/${joinCode}/human`);
+      socketRef.current = socket;
+      socket.onopen = () => {
+        if (generationRef.current !== generation || socketRef.current !== socket) return;
+        attemptRef.current = 0;
+        useGameStore.getState().setStatus("connected");
+        useGameStore.setState((state) => ({ connectionGeneration: state.connectionGeneration + 1, reason: "", commandError: "" }));
+      };
+      socket.onmessage = (event) => {
+        if (generationRef.current !== generation || socketRef.current !== socket) return;
+        try {
+          const message = JSON.parse(event.data) as HumanSocketMessage;
+          if (message.room && message.room.join_code !== joinCode) return;
+          if (message.type === "snapshot") {
+            useGameStore.getState().receiveSnapshot(message.room ?? null, message.state);
+          } else if (message.type === "action_result") {
+            useGameStore.getState().receiveActionResult(message);
+            if (message.status === "rejected") useGameStore.getState().setCommandError("");
+            if (message.room || message.state !== undefined) useGameStore.getState().receiveUpdate(message.room ?? null, message.state, message.event);
+          } else if (message.type === "error") {
+            useGameStore.getState().setCommandError(message.code ?? "request_failed");
+          } else {
+            useGameStore.getState().receiveUpdate(message.room ?? null, message.state, message.event ?? message);
+          }
+          if (message.room) {
+            const saved = sessionStorage.getItem(participantKey);
+            if (!saved) {
+              const human = message.room.participants.filter((participant) => participant.kind === "human");
+              if (human.length === 1) sessionStorage.setItem(participantKey, human[0].participant_id);
+            }
+          }
+        } catch {
+          useGameStore.getState().setCommandError("invalid_message");
+        }
+      };
+      socket.onerror = () => {
+        if (generationRef.current !== generation || socketRef.current !== socket) return;
+        useGameStore.getState().setStatus("error", "network_error");
+      };
+      socket.onclose = (event) => {
+        if (stoppedRef.current || generationRef.current !== generation || socketRef.current !== socket) return;
+        const semantic: Record<number, string> = { 4001: "connected_elsewhere", 4002: "room_deleted", 4005: "slow_consumer", 4006: "session_expired" };
+        const semanticReason = semantic[event.code] ?? event.reason;
+        if (semanticReason && [4001, 4002, 4006].includes(event.code)) {
+          useGameStore.getState().setStatus("closed", semanticReason);
+          return;
+        }
+        attemptRef.current += 1;
+        socketRef.current = null;
+        useGameStore.getState().resetForReconnect();
+        const delay = Math.min(10000, 500 * 2 ** Math.min(attemptRef.current - 1, 4));
+        reconnectRef.current = window.setTimeout(() => { if (generationRef.current === generation && !stoppedRef.current) connect(); }, delay);
+      };
+    };
+    connect();
+    return () => {
+      stoppedRef.current = true;
+      generationRef.current += 1;
+      if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
+      socketRef.current?.close();
+      socketRef.current = null;
+      useGameStore.getState().setTransport(null);
+    };
+  }, [joinCode]);
+  return { room: sessionReady ? room : null, projection: sessionReady ? projection : null, status, reason, commandError, connectionGeneration, sessionReady, send };
 }
 
 function decodeCharacterAsset(id: string, kind: "portrait" | "icon"): Promise<void> {
@@ -169,7 +263,55 @@ function decodeCharacterAsset(id: string, kind: "portrait" | "icon"): Promise<vo
   });
 }
 
-function HumanLobby({ joinCode }: { joinCode: string }) { const { room, status, reason, commandError, connectionGeneration, send } = useHumanSocket(joinCode); const participantId = sessionStorage.getItem(`driichi:participant:${joinCode}`); const participants = room?.participants ?? []; const selected = participants.filter((participant) => participant.selected); const own = participants.find((participant) => participant.participant_id === participantId) ?? (participants.filter((participant) => participant.kind === "human").length === 1 ? participants.find((participant) => participant.kind === "human") : undefined); const seatCount = room?.game_mode.startsWith("3p") ? 3 : 4; const [preload, setPreload] = useState<"idle" | "loading" | "complete" | "error">("idle"); const selectedIds = selected.map((participant) => participant.character_id).filter(Boolean).sort().join(","); const seatRoster = room ? (room.roster.length ? room.roster : room.match_players) : []; const seatByParticipant = new Map(seatRoster.map((player) => [player.participant_id, player.seat])); useEffect(() => { let active = true; const ids = selectedIds ? selectedIds.split(",") : []; if (ids.length === 0) { setPreload("complete"); return () => { active = false; }; } setPreload("loading"); void Promise.all(ids.flatMap((id) => (['portrait', 'icon'] as const).map((kind) => decodeCharacterAsset(id, kind)))).then(() => { if (active) setPreload("complete"); }).catch(() => { if (active) setPreload("error"); }); return () => { active = false; }; }, [selectedIds, connectionGeneration]); const canReady = status === "connected" && room?.phase === "lobby" && Boolean(own?.selected) && selected.length === seatCount && preload === "complete" && !own?.ready; const closeMessage = reason === "connected_elsewhere" ? "This Participant connected in another tab." : reason === "room_deleted" ? "The host deleted this Room." : reason === "session_expired" ? "This Guest Session has expired." : reason === "slow_consumer" ? "The connection was closed because it could not keep up." : reason ? `The live Room connection reported ${reason}.` : ""; return <div className="app-shell lobby-shell"><Topbar action={<RouteLink href="/" className="nav-link"><ArrowLeft aria-hidden="true" weight="regular" />Entry</RouteLink>} /><main className="lobby-workspace"><header className="lobby-heading"><div><p className="eyebrow">ROOM / {joinCode}</p><h1>{room ? `${room.room_name} Lobby` : "Room Lobby"}</h1><p className="detail-lede">Authoritative Room state, delivered live from the host.</p></div><div className={`connection-state connection-${status}`}><span className="state-dot" aria-hidden="true" />{status}</div></header>{closeMessage && <section className="inline-notice lobby-notice" role="alert"><WarningCircle aria-hidden="true" weight="regular" />{closeMessage}<RouteLink href={`/room/${joinCode}`} className="button button-secondary small-button">Return to join</RouteLink></section>}{commandError && <p className="form-error" role="alert"><WarningCircle aria-hidden="true" weight="regular" />Room command rejected: {commandError}</p>}{status === "error" && !closeMessage && <ProblemInline error={{ detail: "The live Room connection failed. Reconnecting shortly.", code: reason }} />}{!room && <LoadingPanel label={status === "reconnecting" ? "Reconnecting to Room" : "Connecting to Room"} />}{room && <div className="lobby-grid"><section className="flat-section lobby-roster"><div className="section-heading"><div><p className="eyebrow">ROSTER / {selected.length} OF {seatCount}</p><h2>Participant rail</h2></div><span className="state-label">REV {room.revision}</span></div>{participants.length === 0 ? <p className="field-hint">No Participants are connected yet.</p> : <div className="lobby-participants">{participants.map((participant) => <LobbyParticipant key={participant.participant_id} participant={participant} own={participant.participant_id === own?.participant_id} seat={seatByParticipant.get(participant.participant_id)} />)}</div>}<div className="ready-block"><div><p className="eyebrow">YOUR READY STATE</p><strong>{own?.ready ? "Ready for the next Match" : "Not ready"}</strong><p className="field-hint">{preload === "loading" ? "Preloading every selected Character." : preload === "error" ? "A selected Character asset could not be preloaded." : selected.length === seatCount ? "The complete selected roster is available." : `The host needs ${seatCount} selected Players.`}</p></div><button className="button button-primary" disabled={!canReady} onClick={() => send({ type: "set_ready", preloaded_characters: selected.map((participant) => participant.character_id) })}>{own?.ready ? "Ready set" : preload === "loading" ? "Preloading roster" : "Set Ready"} <Check aria-hidden="true" weight="regular" /></button></div></section><section className="flat-section character-panel"><p className="eyebrow">CHARACTER</p><h2>Your selection</h2>{own ? <><CharacterImage character={{ id: own.character_id, name: own.display_name }} kind="portrait" /><strong>{own.character_id}</strong><label htmlFor="lobby-character">Character selection</label><select id="lobby-character" value={own.character_id} disabled><option value={own.character_id}>{own.character_id}</option></select><p className="field-hint">Character selection is set before joining and remains cosmetic.</p></> : <p className="field-hint">Waiting for your Participant identity.</p>}<LifecycleStatus phase={room.phase} /></section></div>}</main></div>; }
+function HumanLobby({ joinCode }: { joinCode: string }) {
+  const { room, projection, status, reason, commandError, connectionGeneration, sessionReady, send } = useHumanSocket(joinCode);
+  const reducedMotion = useReducedMotion();
+  const participantId = sessionStorage.getItem(`driichi:participant:${joinCode}`);
+  const participants = room?.participants ?? [];
+  const selected = participants.filter((participant) => participant.selected);
+  const own = participants.find((participant) => participant.participant_id === participantId)
+    ?? (participants.filter((participant) => participant.kind === "human").length === 1
+      ? participants.find((participant) => participant.kind === "human")
+      : undefined);
+  const seatCount = room?.game_mode.startsWith("3p") ? 3 : 4;
+  const [preload, setPreload] = useState<"idle" | "loading" | "complete" | "error">("idle");
+  const selectedIds = sessionReady ? selected.map((participant) => participant.character_id).filter(Boolean).sort().join(",") : "";
+  const seatRoster = room ? (room.roster.length ? room.roster : room.match_players) : [];
+  const seatByParticipant = new Map(seatRoster.map((player) => [player.participant_id, player.seat]));
+  useEffect(() => {
+    let active = true;
+    const ids = selectedIds ? selectedIds.split(",") : [];
+    if (ids.length === 0) {
+      setPreload("complete");
+      return () => { active = false; };
+    }
+    setPreload("loading");
+    let completionTimer: number | undefined;
+    void Promise.all(ids.flatMap((id) => (["portrait", "icon"] as const).map((kind) => decodeCharacterAsset(id, kind))))
+      .then(() => { completionTimer = window.setTimeout(() => { if (active) setPreload("complete"); }, 0); })
+      .catch(() => { if (active) setPreload("error"); });
+    return () => { active = false; if (completionTimer !== undefined) window.clearTimeout(completionTimer); };
+  }, [selectedIds]);
+  const canReady = status === "connected" && room?.phase === "lobby" && Boolean(own?.selected)
+    && selected.length === seatCount && preload === "complete" && !own?.ready;
+  const closeMessage = reason === "connected_elsewhere"
+    ? "This Participant connected in another tab."
+    : reason === "room_deleted"
+      ? "The host deleted this Room."
+      : reason === "session_expired"
+        ? "This Guest Session has expired."
+        : reason === "slow_consumer"
+          ? "The connection was closed because it could not keep up."
+          : reason
+            ? `The live Room connection reported ${reason}.`
+            : "";
+
+  if (room && (room.phase === "playing" || room.phase === "post_match")) {
+    return <GameplaySurface room={room} projection={projection} status={status} reason={reason} commandError={commandError} connectionGeneration={connectionGeneration} send={send} reducedMotion={reducedMotion} />;
+  }
+
+  return <div className="app-shell lobby-shell"><Topbar action={<RouteLink href="/" className="nav-link"><ArrowLeft aria-hidden="true" weight="regular" />Entry</RouteLink>} /><main className="lobby-workspace"><header className="lobby-heading"><div><p className="eyebrow">ROOM / {joinCode}</p><h1>{room ? `${room.room_name} Lobby` : "Room Lobby"}</h1><p className="detail-lede">Authoritative Room state, delivered live from the host.</p></div><div className={`connection-state connection-${status}`}><span className="state-dot" aria-hidden="true" />{status}</div></header>{closeMessage && <section className="inline-notice lobby-notice" role="alert"><WarningCircle aria-hidden="true" weight="regular" />{closeMessage}<RouteLink href={`/room/${joinCode}`} className="button button-secondary small-button">Return to join</RouteLink></section>}{commandError && <p className="form-error" role="alert"><WarningCircle aria-hidden="true" weight="regular" />Room command rejected: {commandError}</p>}{status === "error" && !closeMessage && <ProblemInline error={{ detail: "The live Room connection failed. Reconnecting shortly.", code: reason }} />}{!room && <LoadingPanel label={status === "reconnecting" ? "Reconnecting to Room" : "Connecting to Room"} />}{room && <div className="lobby-grid"><section className="flat-section lobby-roster"><div className="section-heading"><div><p className="eyebrow">ROSTER / {selected.length} OF {seatCount}</p><h2>Participant rail</h2></div><span className="state-label">REV {room.revision}</span></div>{participants.length === 0 ? <p className="field-hint">No Participants are connected yet.</p> : <div className="lobby-participants">{participants.map((participant) => <LobbyParticipant key={participant.participant_id} participant={participant} own={participant.participant_id === own?.participant_id} seat={seatByParticipant.get(participant.participant_id)} />)}</div>}<div className="ready-block"><div><p className="eyebrow">YOUR READY STATE</p><strong>{own?.ready ? "Ready for the next Match" : "Not ready"}</strong><p className="field-hint">{preload === "loading" ? "Preloading every selected Character." : preload === "error" ? "A selected Character asset could not be preloaded." : selected.length === seatCount ? "The complete selected roster is available." : `The host needs ${seatCount} selected Players.`}</p></div><button className="button button-primary" disabled={!canReady} onClick={() => send({ type: "set_ready", preloaded_characters: selected.map((participant) => participant.character_id) })}>{own?.ready ? "Ready set" : preload === "loading" ? "Preloading roster" : "Set Ready"} <Check aria-hidden="true" weight="regular" /></button></div></section><section className="flat-section character-panel"><p className="eyebrow">CHARACTER</p><h2>Your selection</h2>{own ? <><CharacterImage character={{ id: own.character_id, name: own.display_name }} kind="portrait" /><strong>{own.character_id}</strong><label htmlFor="lobby-character">Character selection</label><select id="lobby-character" value={own.character_id} disabled><option value={own.character_id}>{own.character_id}</option></select><p className="field-hint">Character selection is set before joining and remains cosmetic.</p></> : <p className="field-hint">Waiting for your Participant identity.</p>}<LifecycleStatus phase={room.phase} /></section></div>}</main></div>;
+}
 function LobbyParticipant({ participant, own, seat }: { participant: RoomParticipant; own: boolean; seat?: number }) { return <article className={`lobby-participant${own ? " is-own" : ""}`}><CharacterImage character={{ id: participant.character_id, name: participant.display_name }} kind="icon" /><div><strong>{participant.display_name}{own ? " / you" : ""}</strong><span className="state-label">{participant.kind}</span></div><dl className="lobby-axes"><div><dt>Identity</dt><dd>{participant.participant_id.slice(0, 8)}</dd></div><div><dt>Presence</dt><dd>{participant.presence}</dd></div><div><dt>Selection</dt><dd>{participant.selected ? "selected" : "unselected"}</dd></div><div><dt>Seat</dt><dd>{seat === undefined ? "unassigned" : `Seat ${seat + 1}`}</dd></div><div><dt>Controller</dt><dd>{participant.controller.replaceAll("_", " ")}</dd></div></dl><span className={`ready-mark${participant.ready ? " is-ready" : ""}`}>{participant.ready ? "ready" : "not ready"}</span></article>; }
 function LifecycleStatus({ phase }: { phase: string }) { return <div className="lifecycle-status"><p className="eyebrow">ROOM LIFECYCLE</p><ol><li className={phase === "lobby" ? "is-current" : "is-complete"}>Lobby</li><li className={phase === "playing" ? "is-current" : phase === "post_match" ? "is-complete" : ""}>Playing</li><li className={phase === "post_match" ? "is-current" : ""}>Post-Match</li></ol>{phase === "playing" && <p className="field-hint">The Pixi table arrives in the next surface. Your connection remains authoritative.</p>}</div>; }
 
