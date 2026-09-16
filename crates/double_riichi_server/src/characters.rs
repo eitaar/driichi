@@ -338,7 +338,7 @@ impl CharacterRegistry {
         let mut ids = HashSet::new();
         let mut paths = HashSet::new();
         let mut case_folded_paths = HashMap::new();
-        let mut file_identities = HashSet::new();
+        let mut file_identities = HashSet::<same_file::Handle>::new();
 
         for entry in folders {
             let path = entry.path();
@@ -423,7 +423,7 @@ fn validate_pack(
     manifest: ManifestFile,
     paths: &mut HashSet<PathBuf>,
     case_folded_paths: &mut HashMap<String, PathBuf>,
-    file_identities: &mut HashSet<(u64, u64)>,
+    file_identities: &mut HashSet<same_file::Handle>,
 ) -> Result<CharacterPack, CharacterRegistryError> {
     let folder = pack_path
         .file_name()
@@ -573,14 +573,14 @@ fn register_path(
     path: PathBuf,
     paths: &mut HashSet<PathBuf>,
     case_folded_paths: &mut HashMap<String, PathBuf>,
-    file_identities: &mut HashSet<(u64, u64)>,
+    file_identities: &mut HashSet<same_file::Handle>,
 ) -> Result<(), CharacterRegistryError> {
     if !paths.insert(path.clone()) {
         return Err(CharacterRegistryError::DuplicatePath);
     }
-    if let Some(identity) = file_identity(&path)
-        && !file_identities.insert(identity)
-    {
+    let identity =
+        same_file::Handle::from_path(&path).map_err(|_| CharacterRegistryError::UnsafePath)?;
+    if !file_identities.insert(identity) {
         return Err(CharacterRegistryError::DuplicatePath);
     }
     let key = path
@@ -592,26 +592,6 @@ fn register_path(
         return Err(CharacterRegistryError::DuplicatePath);
     }
     Ok(())
-}
-
-#[cfg(unix)]
-fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = fs::metadata(path).ok()?;
-    Some((metadata.dev(), metadata.ino()))
-}
-
-#[cfg(windows)]
-fn file_identity(_path: &Path) -> Option<(u64, u64)> {
-    // Stable Rust does not expose Windows file handles' volume/index identity.
-    // Canonical component checks and rejection of symlink/reparse points remain
-    // the traversal boundary; case-folded canonical paths catch path aliases.
-    None
-}
-
-#[cfg(not(any(unix, windows)))]
-fn file_identity(_path: &Path) -> Option<(u64, u64)> {
-    None
 }
 
 fn is_webp(bytes: &[u8]) -> bool {

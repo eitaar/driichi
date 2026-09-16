@@ -267,6 +267,22 @@ fn config_rejects_unknown_character_fields_and_invalid_character_mappings() {
 }
 
 #[test]
+#[cfg(windows)]
+fn registry_rejects_windows_hardlink_aliases() {
+    let root = temp_root("windows-hardlink-aliases");
+    write_pack(&root, "one", "human", "One");
+    write_pack(&root, "two", "human", "Two");
+    fs::remove_file(root.join("two/portrait.webp")).unwrap();
+    fs::hard_link(
+        root.join("one/portrait.webp"),
+        root.join("two/portrait.webp"),
+    )
+    .unwrap();
+    assert!(CharacterRegistry::scan(&root).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 #[cfg(unix)]
 fn registry_rejects_canonical_path_aliases_and_symlink_escape() {
     use std::os::unix::fs::symlink;
@@ -467,10 +483,12 @@ fn starter_generator_is_deterministic_and_covers_every_required_pack_asset() {
             ("mcp-agent", "mcp"),
         ] {
             for asset in ["portrait.webp", "icon.webp"] {
-                assert!(notice.contains(&format!("character-packs/{id}/{asset}")));
+                assert!(notice.contains(&format!("{id}/{asset}")));
+                assert!(!notice.contains(&format!("character-packs/{id}/{asset}")));
             }
             for voice in VOICES {
-                assert!(notice.contains(&format!("character-packs/{id}/voices/{voice}.ogg")));
+                assert!(notice.contains(&format!("{id}/voices/{voice}.ogg")));
+                assert!(!notice.contains(&format!("character-packs/{id}/voices/{voice}.ogg")));
             }
         }
         for line in fs::read_to_string(output.join("SHA256SUMS"))
