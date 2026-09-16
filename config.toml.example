@@ -6,6 +6,15 @@ unlimited_watchdog_seconds = 300
 empty_room_cleanup_seconds = 3600
 shutdown_seconds = 10
 
+[network]
+max_connections = 256
+room_participant_limit = 32
+code_lookup_per_minute = 20
+participant_creation_per_minute = 10
+admin_login_failures_per_15_minutes = 5
+agent_auth_failures_per_minute = 20
+trusted_proxy_cidrs = []
+
 [characters]
 # These packs must exist under character-packs/ and use matching manifest usage.
 mjai = "mjai-bot"

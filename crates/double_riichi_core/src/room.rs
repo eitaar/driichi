@@ -412,6 +412,13 @@ pub enum RoomCommand {
     SetMaxParticipants {
         max_participants: usize,
     },
+    Configure {
+        room_name: Option<String>,
+        mode: Option<GameMode>,
+        time_control: Option<TimeControl>,
+        replay_save: Option<bool>,
+        max_participants: Option<usize>,
+    },
     SetReady {
         participant_id: ParticipantId,
         preloaded_characters: Vec<String>,
@@ -523,6 +530,22 @@ impl RoomCommand {
 
     pub fn set_max_participants(max_participants: usize) -> Self {
         Self::SetMaxParticipants { max_participants }
+    }
+
+    pub fn configure(
+        room_name: Option<String>,
+        mode: Option<GameMode>,
+        time_control: Option<TimeControl>,
+        replay_save: Option<bool>,
+        max_participants: Option<usize>,
+    ) -> Self {
+        Self::Configure {
+            room_name,
+            mode,
+            time_control,
+            replay_save,
+            max_participants,
+        }
     }
 
     pub fn set_ready(
@@ -910,6 +933,9 @@ impl RoomState {
             .participants
             .get(participant_id)
             .ok_or_else(|| RoomError::ParticipantNotFound(participant_id.clone()))?;
+        if matches!(participant.controller, RoomController::PermanentAuto(_)) {
+            return Err(RoomError::ControllerNotInteractive);
+        }
         let audience = match participant.role {
             MatchRole::Player(seat) => Audience::Player(seat),
             MatchRole::None | MatchRole::Spectator => Audience::Public,
@@ -1142,6 +1168,58 @@ impl RoomState {
             participant.selected = false;
             participant.ready = false;
             participant.role = MatchRole::None;
+        }
+        self.bump_revision();
+        Ok(())
+    }
+
+    fn configure(
+        &mut self,
+        room_name: Option<String>,
+        mode: Option<GameMode>,
+        time_control: Option<TimeControl>,
+        replay_save: Option<bool>,
+        max_participants: Option<usize>,
+    ) -> Result<(), RoomError> {
+        if !matches!(self.phase, RoomPhase::Lobby) {
+            return Err(RoomError::NotLobby);
+        }
+        let target_name = room_name
+            .as_deref()
+            .map(|value| normalize_name(value).ok_or(RoomError::InvalidRoomName))
+            .transpose()?;
+        let target_mode = mode.unwrap_or(self.config.mode);
+        if target_mode.is_three_player()
+            && self
+                .participants
+                .values()
+                .any(|participant| participant.participant.kind == ParticipantKind::MJAI)
+        {
+            return Err(RoomError::InvalidCharacter);
+        }
+        let target_limit = max_participants.unwrap_or(self.config.max_participants);
+        if !(target_mode.seat_count()..=DEFAULT_MAX_PARTICIPANTS).contains(&target_limit)
+            || self.participants.len() > target_limit
+        {
+            return Err(RoomError::InvalidParticipantLimit);
+        }
+        let mode_changed = target_mode != self.config.mode;
+        if let Some(name) = target_name {
+            self.config.room_name = name;
+        }
+        self.config.mode = target_mode;
+        self.config.time_control = time_control.unwrap_or(self.config.time_control);
+        if let Some(enabled) = replay_save {
+            self.config.replay_save = enabled;
+            self.replay_available = enabled;
+        }
+        self.config.max_participants = target_limit;
+        if mode_changed {
+            for participant in self.participants.values_mut() {
+                participant.selected = false;
+                participant.ready = false;
+                participant.role = MatchRole::None;
+            }
         }
         self.bump_revision();
         Ok(())
@@ -1496,19 +1574,17 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::SetMaxParticipants { max_participants } => {
-                if !matches!(self.phase, RoomPhase::Lobby) {
-                    return Err(RoomError::NotLobby);
-                }
-                if !(self.config.mode.seat_count()..=DEFAULT_MAX_PARTICIPANTS)
-                    .contains(&max_participants)
-                {
-                    return Err(RoomError::InvalidParticipantLimit);
-                }
-                if self.participants.len() > max_participants {
-                    return Err(RoomError::RoomFull);
-                }
-                self.config.max_participants = max_participants;
-                self.bump_revision();
+                self.configure(None, None, None, None, Some(max_participants))?;
+                RoomResponse::Accepted(self.snapshot())
+            }
+            RoomCommand::Configure {
+                room_name,
+                mode,
+                time_control,
+                replay_save,
+                max_participants,
+            } => {
+                self.configure(room_name, mode, time_control, replay_save, max_participants)?;
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::SetReady {
@@ -2417,16 +2493,31 @@ impl RoomRegistry {
         let code = RoomJoinCode::new(join_code).map_err(|_| RoomRegistryError::NotFound)?;
         let handle = self
             .rooms
-            .write()
+            .read()
             .await
-            .remove(&code)
+            .get(&code)
+            .cloned()
             .ok_or(RoomRegistryError::NotFound)?;
-        self.cooldowns
-            .write()
-            .await
-            .insert(code, Instant::now() + ROOM_CODE_COOLDOWN);
-        let _ = handle.send(RoomCommand::Delete).await;
-        Ok(())
+        let mut result = Err(RoomError::Busy);
+        for _ in 0..=ROOM_COMMAND_CAPACITY {
+            result = handle.send(RoomCommand::Delete).await;
+            if !matches!(result, Err(RoomError::Busy)) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        match result {
+            Ok(RoomResponse::Deleted) | Err(RoomError::Closed | RoomError::Deleted) => {
+                self.rooms.write().await.remove(&code);
+                self.cooldowns
+                    .write()
+                    .await
+                    .insert(code, Instant::now() + ROOM_CODE_COOLDOWN);
+                Ok(())
+            }
+            Ok(_) => Err(RoomRegistryError::Room(RoomError::Closed)),
+            Err(error) => Err(RoomRegistryError::Room(error)),
+        }
     }
 
     pub async fn revoke_token(&self, token_id: &str) -> Result<(), RoomRegistryError> {

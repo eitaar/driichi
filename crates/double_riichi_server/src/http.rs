@@ -25,10 +25,10 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use double_riichi_core::{
     AudienceProjection, CharacterCatalog, CharacterUsage as CoreCharacterUsage, GameAction,
-    GameMode, MatchPlayerSnapshot, MatchRole, Participant, ParticipantId, ParticipantKind,
-    Presence, RoomCommand, RoomConfig, RoomController, RoomError, RoomEvent, RoomHandle,
-    RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot,
-    TimeControl,
+    GameEvent, GameMode, MatchPlayerSnapshot, MatchRole, Participant, ParticipantId,
+    ParticipantKind, Presence, RoomCommand, RoomConfig, RoomController, RoomError, RoomEvent,
+    RoomHandle, RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse,
+    RoomSnapshot, Seat, TimeControl,
 };
 use futures_util::{SinkExt, StreamExt};
 use rand::random;
@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
-    sync::mpsc,
+    sync::{Mutex as AsyncMutex, OwnedMutexGuard, mpsc},
     time::{self, MissedTickBehavior},
 };
 use url::Url;
@@ -51,6 +51,8 @@ const HUMAN_WS_MESSAGE_LIMIT: usize = 64 * 1024;
 const ADMIN_SESSION_COOKIE: &str = "driichi_admin";
 const GUEST_COOKIE_PREFIX: &str = "driichi_guest_";
 const ADMIN_SESSION_MAX_AGE: u64 = 12 * 60 * 60;
+const GUEST_SESSION_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+const GUEST_SESSION_MAX_ENTRIES: usize = 8_192;
 const HUMAN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const HUMAN_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 const HUMAN_OUTBOUND_CAPACITY: usize = 64;
@@ -59,6 +61,7 @@ const SERVER_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self
 #[derive(Clone, Debug)]
 pub struct ServerLimits {
     pub max_connections: usize,
+    pub room_participant_limit: usize,
     pub code_lookup_limit: usize,
     pub participant_creation_limit: usize,
     pub admin_login_failure_limit: usize,
@@ -74,6 +77,7 @@ impl Default for ServerLimits {
     fn default() -> Self {
         Self {
             max_connections: 256,
+            room_participant_limit: 32,
             code_lookup_limit: 20,
             participant_creation_limit: 10,
             admin_login_failure_limit: 5,
@@ -179,6 +183,8 @@ pub enum ServerInitError {
     Storage(#[source] crate::StorageError),
     #[error("Character registry could not be initialized")]
     Characters(#[source] CharacterRegistryError),
+    #[error("trusted proxy CIDR is invalid")]
+    TrustedProxy,
 }
 
 #[derive(Clone)]
@@ -195,6 +201,7 @@ pub struct ServerState {
     rate_limiter: Arc<RateLimiter>,
     connection_count: Arc<AtomicUsize>,
     limits: ServerLimits,
+    shutdown_seconds: u64,
     started_at: Instant,
     storage: Option<Arc<Storage>>,
 }
@@ -263,6 +270,22 @@ impl ServerState {
                 .await
                 .map_err(ServerInitError::Storage)?,
         );
+        let trusted_proxy_cidrs = config
+            .network
+            .trusted_proxy_cidrs
+            .iter()
+            .map(|value| value.parse().map_err(|_| ServerInitError::TrustedProxy))
+            .collect::<Result<Vec<IpCidr>, _>>()?;
+        let limits = ServerLimits {
+            max_connections: config.network.max_connections,
+            room_participant_limit: config.network.room_participant_limit,
+            code_lookup_limit: config.network.code_lookup_per_minute,
+            participant_creation_limit: config.network.participant_creation_per_minute,
+            admin_login_failure_limit: config.network.admin_login_failures_per_15_minutes,
+            agent_auth_failure_limit: config.network.agent_auth_failures_per_minute,
+            trusted_proxy_cidrs,
+            ..ServerLimits::default()
+        };
         let registry = Arc::new(
             config
                 .load_character_registry()
@@ -274,6 +297,8 @@ impl ServerState {
             RoomRegistry::new(),
             registry,
         );
+        state.limits = limits;
+        state.shutdown_seconds = config.shutdown_seconds;
         state.storage = Some(storage);
         Ok(state)
     }
@@ -286,7 +311,7 @@ impl ServerState {
         character_catalog: CharacterCatalog,
         limits: ServerLimits,
     ) -> Self {
-        let public_origin_url = Url::parse(&public_origin).expect("validated public origin");
+        let (public_origin, public_origin_url) = canonical_origin(&public_origin);
         let secure_cookies = public_origin_url.scheme() == "https";
         Self {
             public_origin,
@@ -301,13 +326,20 @@ impl ServerState {
             rate_limiter: Arc::new(RateLimiter::new()),
             connection_count: Arc::new(AtomicUsize::new(0)),
             limits,
+            shutdown_seconds: 10,
             started_at: Instant::now(),
             storage: None,
         }
     }
 
+    pub fn shutdown_seconds(&self) -> u64 {
+        self.shutdown_seconds
+    }
+
     fn room_config(&self, room_name: String, mode: GameMode) -> RoomConfig {
-        RoomConfig::new(room_name, mode, self.character_catalog.clone())
+        let mut config = RoomConfig::new(room_name, mode, self.character_catalog.clone());
+        config.max_participants = self.limits.room_participant_limit;
+        config
     }
 
     fn connection_permit(&self) -> Option<ConnectionPermit> {
@@ -461,6 +493,29 @@ async fn request_context(mut request: Request<Body>, next: Next) -> Response {
     let path = request.uri().path().to_owned();
     request.extensions_mut().insert(request_id.clone());
     let mut response = next.run(request).await;
+    if (path.starts_with("/api/v1/") || path.starts_with("/ws/v1/"))
+        && response.status().is_client_error()
+        && !response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/problem+json"))
+    {
+        let (title, detail, code) = if response.status() == StatusCode::METHOD_NOT_ALLOWED {
+            (
+                "Method not allowed",
+                "The HTTP method is not allowed.",
+                "method_not_allowed",
+            )
+        } else {
+            (
+                "Invalid request",
+                "The request could not be processed.",
+                "invalid_request",
+            )
+        };
+        response = problem_response(response.status(), title, detail, code, &request_id.0);
+    }
     response.headers_mut().insert(
         "x-request-id",
         HeaderValue::from_str(&request_id.0).expect("ULID is a valid header"),
@@ -576,7 +631,8 @@ fn public_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool {
     headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| origin == state.public_origin)
+        .and_then(|origin| Url::parse(origin).ok())
+        .is_some_and(|origin| same_origin(&origin, &state.public_origin_url))
 }
 
 fn unsafe_admin_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool {
@@ -584,7 +640,8 @@ fn unsafe_admin_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool
         return origin
             .to_str()
             .ok()
-            .is_some_and(|origin| origin == state.public_origin);
+            .and_then(|origin| Url::parse(origin).ok())
+            .is_some_and(|origin| same_origin(&origin, &state.public_origin_url));
     }
     headers
         .get(header::REFERER)
@@ -603,6 +660,30 @@ fn same_origin(left: &Url, right: &Url) -> bool {
 
 fn effective_port(url: &Url) -> Option<u16> {
     url.port_or_known_default()
+}
+
+fn canonical_origin(value: &str) -> (String, Url) {
+    let parsed = Url::parse(value).expect("validated public origin");
+    let host = parsed.host_str().expect("validated public origin");
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let mut origin = format!("{}://{host}", parsed.scheme());
+    if let Some(port) = parsed.port() {
+        let default_port = match parsed.scheme() {
+            "http" => 80,
+            "https" => 443,
+            _ => 0,
+        };
+        if port != default_port {
+            origin.push(':');
+            origin.push_str(&port.to_string());
+        }
+    }
+    let url = Url::parse(&origin).expect("canonical origin is valid");
+    (origin, url)
 }
 
 fn require_admin(
@@ -850,7 +931,7 @@ async fn admin_create_room(
         config.replay_save = replay_save;
     }
     if let Some(limit) = payload.participant_limit {
-        if !(mode.seat_count()..=32).contains(&limit) {
+        if !(mode.seat_count()..=state.limits.room_participant_limit).contains(&limit) {
             return invalid_request(&request_id);
         }
         config.max_participants = limit;
@@ -935,46 +1016,35 @@ async fn admin_patch_room(
     let Some(handle) = state.rooms.get(&join_code).await else {
         return room_not_found(&request_id);
     };
-    let current = match handle.snapshot().await {
-        Ok(snapshot) => snapshot,
-        Err(_) => return room_not_found(&request_id),
+    let mode = match payload.game_mode.as_deref() {
+        Some(value) => match parse_mode(value) {
+            Some(mode) => Some(mode),
+            None => return invalid_request(&request_id),
+        },
+        None => None,
     };
-    if let Some(value) = payload.game_mode.as_deref() {
-        let Some(mode) = parse_mode(value) else {
-            return invalid_request(&request_id);
-        };
-        if let Err(error) = handle.send(RoomCommand::set_mode(mode)).await {
-            return room_error_response(error, &request_id);
-        }
+    let time_control = match payload.time_control.as_deref() {
+        Some(value) => match parse_time_control(value) {
+            Some(time_control) => Some(time_control),
+            None => return invalid_request(&request_id),
+        },
+        None => None,
+    };
+    if payload
+        .participant_limit
+        .is_some_and(|limit| limit > state.limits.room_participant_limit)
+    {
+        return invalid_request(&request_id);
     }
-    if let Some(value) = payload.room_name {
-        if let Err(error) = handle.send(RoomCommand::set_room_name(value)).await {
-            return room_error_response(error, &request_id);
-        }
-    }
-    if let Some(value) = payload.time_control.as_deref() {
-        let Some(time_control) = parse_time_control(value) else {
-            return invalid_request(&request_id);
-        };
-        if let Err(error) = handle
-            .send(RoomCommand::set_time_control(time_control))
-            .await
-        {
-            return room_error_response(error, &request_id);
-        }
-    }
-    if let Some(value) = payload.replay_save {
-        if let Err(error) = handle.send(RoomCommand::set_replay_save(value)).await {
-            return room_error_response(error, &request_id);
-        }
-    }
-    if let Some(limit) = payload.participant_limit {
-        if !(current.mode.seat_count()..=32).contains(&limit) {
-            return invalid_request(&request_id);
-        }
-        if let Err(error) = handle.send(RoomCommand::set_max_participants(limit)).await {
-            return room_error_response(error, &request_id);
-        }
+    let command = RoomCommand::configure(
+        payload.room_name,
+        mode,
+        time_control,
+        payload.replay_save,
+        payload.participant_limit,
+    );
+    if let Err(error) = handle.send(command).await {
+        return room_error_response(error, &request_id);
     }
     match handle.snapshot().await {
         Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
@@ -1100,6 +1170,9 @@ async fn admin_participant_command(
                 state
                     .guest_sessions
                     .invalidate_participant(&join_code, &participant_id);
+                state
+                    .connections
+                    .close(&participant_id, 4006, "session_expired");
             }
             match handle.snapshot().await {
                 Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
@@ -1263,6 +1336,7 @@ async fn public_join(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    state.guest_sessions.prune();
     let ip = request_ip(
         &headers,
         peer.as_ref().map(|value| value.0.0),
@@ -1327,6 +1401,7 @@ async fn human_upgrade(
     headers: HeaderMap,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
+    state.guest_sessions.prune();
     if !public_origin_allowed(&headers, &state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1369,6 +1444,18 @@ async fn human_upgrade(
         )
         .response(&request_id);
     };
+    let operation = state.connections.operation_lock(&participant_id).await;
+    if handle
+        .send(RoomCommand::reconnect(participant_id.clone()))
+        .await
+        .is_err()
+    {
+        drop(operation);
+        drop(permit);
+        return invalid_credentials(&request_id);
+    }
+    let (generation, control) = state.connections.register(participant_id.clone()).await;
+    drop(operation);
     let state_for_upgrade = state.clone();
     let handle_for_upgrade = handle.clone();
     let join_code_for_upgrade = join_code.clone();
@@ -1377,13 +1464,6 @@ async fn human_upgrade(
     ws.max_message_size(ws_limit)
         .max_frame_size(ws_limit)
         .on_upgrade(move |socket| async move {
-            let _ = handle_for_upgrade
-                .send(RoomCommand::reconnect(participant_for_upgrade.clone()))
-                .await;
-            let (generation, control) = state_for_upgrade
-                .connections
-                .register(participant_for_upgrade.clone())
-                .await;
             run_human(
                 socket,
                 state_for_upgrade,
@@ -1415,6 +1495,7 @@ impl Drop for ConnectionPermit {
 struct HumanConnections {
     next_generation: AtomicU64,
     entries: Mutex<HashMap<ParticipantId, ActiveConnection>>,
+    participant_locks: Mutex<HashMap<ParticipantId, Arc<AsyncMutex<()>>>>,
 }
 
 struct ActiveConnection {
@@ -1444,6 +1525,28 @@ impl HumanConnections {
             });
         }
         (generation, receiver)
+    }
+
+    async fn operation_lock(&self, participant_id: &ParticipantId) -> OwnedMutexGuard<()> {
+        let lock = self
+            .participant_locks
+            .lock()
+            .expect("connection lock poisoned")
+            .entry(participant_id.clone())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone();
+        lock.lock_owned().await
+    }
+
+    fn close(&self, participant_id: &ParticipantId, code: u16, reason: &'static str) {
+        if let Some(entry) = self
+            .entries
+            .lock()
+            .expect("connection lock poisoned")
+            .get(participant_id)
+        {
+            let _ = entry.control.try_send(Control::Close { code, reason });
+        }
     }
 
     fn is_current(&self, participant_id: &ParticipantId, generation: u64) -> bool {
@@ -1477,7 +1580,7 @@ async fn run_human(
 ) {
     let (mut sender, mut receiver) = socket.split();
     let (outbound, mut outbound_receiver) = mpsc::channel::<Message>(HUMAN_OUTBOUND_CAPACITY);
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(message) = outbound_receiver.recv().await {
             let close = matches!(message, Message::Close(_));
             if sender.send(message).await.is_err() {
@@ -1492,7 +1595,13 @@ async fn run_human(
         Ok(connection) => connection,
         Err(_) => {
             let _ = outbound.send(close_message(4002, "room_deleted")).await;
-            writer.abort();
+            drop(outbound);
+            if time::timeout(Duration::from_secs(1), &mut writer)
+                .await
+                .is_err()
+            {
+                writer.abort();
+            }
             drop(permit);
             return;
         }
@@ -1541,9 +1650,25 @@ async fn run_human(
                             let _ = enqueue(&outbound, close_message(1009, "message_too_large"));
                             break;
                         }
-                        if !handle_human_message(&outbound, &room, &participant_id, text.as_str()).await {
-                            let _ = enqueue(&outbound, close_message(1008, "invalid_message"));
-                            break;
+                        match handle_human_message(
+                            &outbound,
+                            &state,
+                            &room,
+                            &join_code,
+                            &participant_id,
+                            text.as_str(),
+                        )
+                        .await
+                        {
+                            HumanMessageOutcome::Continue => {}
+                            HumanMessageOutcome::Close(reason) => {
+                                let _ = enqueue(&outbound, close_message(4006, reason));
+                                break;
+                            }
+                            HumanMessageOutcome::Invalid => {
+                                let _ = enqueue(&outbound, close_message(1008, "invalid_message"));
+                                break;
+                            }
                         }
                     }
                     Some(Ok(Message::Binary(bytes))) => {
@@ -1575,13 +1700,21 @@ async fn run_human(
             }
         }
     }
+    let operation = state.connections.operation_lock(&participant_id).await;
     if state.connections.is_current(&participant_id, generation) {
         let _ = room
             .send(RoomCommand::disconnect(participant_id.clone()))
             .await;
     }
+    drop(operation);
     state.connections.remove(&participant_id, generation);
-    writer.abort();
+    drop(outbound);
+    if time::timeout(Duration::from_secs(1), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
     drop(permit);
     let _ = join_code;
 }
@@ -1605,7 +1738,10 @@ async fn send_snapshot(
     let Ok(snapshot) = room.snapshot().await else {
         return enqueue(outbound, close_message(4002, "room_deleted"));
     };
-    let projection = room.projection(participant_id.clone()).await.ok().flatten();
+    let projection = match room.projection(participant_id.clone()).await {
+        Ok(projection) => projection,
+        Err(_) => return enqueue(outbound, close_message(4006, "session_expired")),
+    };
     let value = json!({
         "type": "snapshot",
         "room": room_snapshot_value(&snapshot),
@@ -1623,14 +1759,23 @@ async fn queue_room_event(
     let Ok(snapshot) = room.snapshot().await else {
         return false;
     };
-    let projection = room.projection(participant_id.clone()).await.ok().flatten();
+    if let RoomEvent::ParticipantLeft(left_id) = &event {
+        if left_id == participant_id {
+            return enqueue(outbound, close_message(4006, "session_expired"));
+        }
+    }
+    let projection = match room.projection(participant_id.clone()).await {
+        Ok(projection) => projection,
+        Err(_) => return enqueue(outbound, close_message(4006, "session_expired")),
+    };
+    let viewer_seat = projection.as_ref().and_then(projection_viewer_seat);
     let value = match event {
         RoomEvent::ActionResolved { result, .. } => json!({
             "type": "game_update",
             "event": {
                 "type": "action_resolved",
                 "decision_id": decision_result_id(&result),
-                "events": result.events().iter().map(|event| json!({"type": event.kind()})).collect::<Vec<_>>(),
+                "events": result.events().iter().map(|event| visible_game_event(event, viewer_seat)).collect::<Vec<_>>(),
             },
             "state": projection_value(projection),
         }),
@@ -1656,12 +1801,21 @@ fn decision_result_id(result: &double_riichi_core::DecisionResult) -> &str {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum HumanMessageOutcome {
+    Continue,
+    Close(&'static str),
+    Invalid,
+}
+
 async fn handle_human_message(
     outbound: &mpsc::Sender<Message>,
+    state: &ServerState,
     room: &RoomHandle,
+    join_code: &str,
     participant_id: &ParticipantId,
     text: &str,
-) -> bool {
+) -> HumanMessageOutcome {
     let input = match serde_json::from_str::<HumanInput>(text) {
         Ok(input) => input,
         Err(_) => {
@@ -1669,7 +1823,7 @@ async fn handle_human_message(
                 outbound,
                 Message::text(json!({"type":"error","code":"invalid_message"}).to_string()),
             );
-            return false;
+            return HumanMessageOutcome::Invalid;
         }
     };
     match input {
@@ -1682,11 +1836,17 @@ async fn handle_human_message(
             ))
             .await
         {
-            Ok(_) => send_snapshot(outbound, room, participant_id).await,
-            Err(_) => enqueue(
-                outbound,
-                Message::text(json!({"type":"error","code":"not_ready"}).to_string()),
-            ),
+            Ok(_) => {
+                let _ = send_snapshot(outbound, room, participant_id).await;
+                HumanMessageOutcome::Continue
+            }
+            Err(_) => {
+                let _ = enqueue(
+                    outbound,
+                    Message::text(json!({"type":"error","code":"not_ready"}).to_string()),
+                );
+                HumanMessageOutcome::Continue
+            }
         },
         HumanInput::SubmitAction {
             decision_id,
@@ -1703,10 +1863,11 @@ async fn handle_human_message(
                 let response = json!({
                     "type": "action_result",
                     "decision_id": decision_result_id(&result),
-                    "status": if result.is_resolved() { "accepted" } else { "accepted" },
+                    "status": "accepted",
                 });
-                enqueue(outbound, Message::text(response.to_string()))
-                    && send_snapshot(outbound, room, participant_id).await
+                let _ = enqueue(outbound, Message::text(response.to_string()));
+                let _ = send_snapshot(outbound, room, participant_id).await;
+                HumanMessageOutcome::Continue
             }
             Err(error) => {
                 let code = action_error_code(&error);
@@ -1716,15 +1877,26 @@ async fn handle_human_message(
                     "status": "rejected",
                     "code": code,
                 });
-                enqueue(outbound, Message::text(response.to_string()))
-                    && send_snapshot(outbound, room, participant_id).await
+                let _ = enqueue(outbound, Message::text(response.to_string()));
+                let _ = send_snapshot(outbound, room, participant_id).await;
+                HumanMessageOutcome::Continue
             }
-            Ok(_) => false,
+            Ok(_) => HumanMessageOutcome::Invalid,
         },
-        HumanInput::Leave => room
-            .send(RoomCommand::leave(participant_id.clone()))
-            .await
-            .is_ok(),
+        HumanInput::Leave => {
+            if room
+                .send(RoomCommand::leave(participant_id.clone()))
+                .await
+                .is_ok()
+            {
+                state
+                    .guest_sessions
+                    .invalidate_participant(join_code, participant_id);
+                HumanMessageOutcome::Close("session_expired")
+            } else {
+                HumanMessageOutcome::Continue
+            }
+        }
     }
 }
 
@@ -1784,6 +1956,57 @@ fn room_event_value(event: &RoomEvent) -> Value {
     }
 }
 
+fn projection_viewer_seat(projection: &AudienceProjection) -> Option<Seat> {
+    match projection {
+        AudienceProjection::Player(player) => Some(player.viewer_seat),
+        AudienceProjection::Public(_) | AudienceProjection::ReplayAdmin(_) => None,
+    }
+}
+
+fn visible_game_event(event: &GameEvent, viewer_seat: Option<Seat>) -> Value {
+    let mut value = serde_json::to_value(event).unwrap_or(Value::Null);
+    normalize_protocol_value(&mut value);
+    if let Value::Object(object) = &mut value {
+        if let Some(Value::Object(start)) = object.get_mut("start_kyoku") {
+            if let Some(tehais) = start.get_mut("tehais") {
+                if let Some(seat) = viewer_seat {
+                    if let Value::Array(all) = tehais {
+                        let own = all
+                            .get(seat.index() as usize)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        *tehais = json!([own]);
+                    }
+                } else {
+                    start.remove("tehais");
+                }
+            }
+        }
+        if let Some(Value::Object(tsumo)) = object.get_mut("tsumo") {
+            let actor = tsumo
+                .get("actor")
+                .and_then(Value::as_u64)
+                .map(|value| value as u8);
+            if viewer_seat.map(|seat| seat.index()) != actor {
+                tsumo.remove("tile");
+            }
+        }
+        if let Some(Value::Object(ankan)) = object.get_mut("ankan") {
+            let actor = ankan
+                .get("actor")
+                .and_then(Value::as_u64)
+                .map(|value| value as u8);
+            if viewer_seat.map(|seat| seat.index()) != actor {
+                ankan.remove("consumed");
+            }
+        }
+        if let Some(Value::Object(ryukyoku)) = object.get_mut("ryukyoku") {
+            ryukyoku.remove("tehais");
+        }
+    }
+    value
+}
+
 fn projection_value(projection: Option<AudienceProjection>) -> Value {
     let Some(projection) = projection else {
         return Value::Null;
@@ -1796,25 +2019,71 @@ fn projection_value(projection: Option<AudienceProjection>) -> Value {
 fn normalize_protocol_value(value: &mut Value) {
     match value {
         Value::Object(object) => {
-            for (key, value) in object.iter_mut() {
+            let keys: Vec<String> = object.keys().cloned().collect();
+            for key in keys {
+                let Some(mut value) = object.remove(&key) else {
+                    continue;
+                };
+                let key = protocol_key(&key).to_owned();
                 if key == "mode" {
                     if let Some(mode) = value.as_str().and_then(protocol_mode_name) {
-                        *value = Value::String(mode.to_owned());
+                        value = Value::String(mode.to_owned());
+                        object.insert(key, value);
                         continue;
                     }
                 }
                 if key == "kind" {
-                    if let Some(kind) = value.as_str() {
-                        *value = Value::String(kind.to_ascii_lowercase());
-                        continue;
+                    if let Some(kind) = value.as_str().and_then(protocol_kind_name) {
+                        value = Value::String(kind.to_owned());
                     }
                 }
-                normalize_protocol_value(value);
+                normalize_protocol_value(&mut value);
+                object.insert(key, value);
             }
         }
         Value::Array(values) => values.iter_mut().for_each(normalize_protocol_value),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
+}
+
+fn protocol_key(value: &str) -> &str {
+    match value {
+        "Player" => "player",
+        "Public" => "public",
+        "ReplayAdmin" => "replay_admin",
+        "StartGame" => "start_game",
+        "StartKyoku" => "start_kyoku",
+        "Tsumo" => "tsumo",
+        "Dahai" => "dahai",
+        "Pon" => "pon",
+        "Chi" => "chi",
+        "Daiminkan" => "daiminkan",
+        "Kakan" => "kakan",
+        "Ankan" => "ankan",
+        "Dora" => "dora",
+        "Reach" => "reach",
+        "ReachAccepted" => "reach_accepted",
+        "Hora" => "hora",
+        "Ryukyoku" => "ryukyoku",
+        "Kita" => "kita",
+        "EndKyoku" => "end_kyoku",
+        "EndGame" => "end_game",
+        "Discard" => "discard",
+        "RiichiDiscard" => "riichi_discard",
+        "AbortiveDraw" => "abortive_draw",
+        "BuiltInBot" => "built_in_bot",
+        other => other,
+    }
+}
+
+fn protocol_kind_name(value: &str) -> Option<&'static str> {
+    Some(match value {
+        "Human" => "human",
+        "MJAI" => "mjai",
+        "MCP" => "mcp",
+        "BuiltInBot" => "built_in_bot",
+        _ => return None,
+    })
 }
 
 fn protocol_mode_name(value: &str) -> Option<&'static str> {
@@ -2384,49 +2653,57 @@ impl RateLimiter {
     fn available(&self, kind: RateKind, ip: IpAddr, limit: usize, window: Duration) -> bool {
         let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
         let now = Instant::now();
-        let entry = entries.entry((kind, ip)).or_default();
-        while entry
-            .front()
-            .is_some_and(|started| now.duration_since(*started) >= window)
-        {
-            entry.pop_front();
-        }
-        entry.len() < limit
+        prune_rate_entries(&mut entries, now, window);
+        entries
+            .get(&(kind, ip))
+            .is_none_or(|entry| entry.len() < limit)
     }
 
     fn allowed(&self, kind: RateKind, ip: IpAddr, limit: usize, window: Duration) -> bool {
         let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
         let now = Instant::now();
+        prune_rate_entries(&mut entries, now, window);
         let entry = entries.entry((kind, ip)).or_default();
-        while entry
-            .front()
-            .is_some_and(|started| now.duration_since(*started) >= window)
-        {
-            entry.pop_front();
-        }
         if entry.len() >= limit {
             return false;
         }
         entry.push_back(now);
-        if entries.len() > 8_192 {
-            if let Some(key) = entries.keys().next().copied() {
-                entries.remove(&key);
-            }
-        }
+        enforce_rate_bound(&mut entries);
         true
     }
 
     fn record(&self, kind: RateKind, ip: IpAddr, window: Duration) {
         let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
         let now = Instant::now();
-        let entry = entries.entry((kind, ip)).or_default();
-        while entry
+        prune_rate_entries(&mut entries, now, window);
+        entries.entry((kind, ip)).or_default().push_back(now);
+        enforce_rate_bound(&mut entries);
+    }
+}
+
+fn prune_rate_entries(
+    entries: &mut HashMap<(RateKind, IpAddr), VecDeque<Instant>>,
+    now: Instant,
+    window: Duration,
+) {
+    for queue in entries.values_mut() {
+        while queue
             .front()
             .is_some_and(|started| now.duration_since(*started) >= window)
         {
-            entry.pop_front();
+            queue.pop_front();
         }
-        entry.push_back(now);
+    }
+    entries.retain(|_, queue| !queue.is_empty());
+    enforce_rate_bound(entries);
+}
+
+fn enforce_rate_bound(entries: &mut HashMap<(RateKind, IpAddr), VecDeque<Instant>>) {
+    while entries.len() > 8_192 {
+        let Some(key) = entries.keys().next().copied() else {
+            break;
+        };
+        entries.remove(&key);
     }
 }
 
@@ -2438,29 +2715,41 @@ struct GuestSessionStore {
 struct GuestSession {
     join_code: String,
     participant_id: ParticipantId,
+    issued_at: Instant,
 }
 
 impl GuestSessionStore {
     fn issue(&self, join_code: &str, participant_id: &ParticipantId) -> String {
         let bytes: [u8; 32] = random();
         let value = URL_SAFE_NO_PAD.encode(bytes);
-        self.sessions
-            .lock()
-            .expect("guest session lock poisoned")
-            .insert(
-                crate::hash_token(&value),
-                GuestSession {
-                    join_code: join_code.to_owned(),
-                    participant_id: participant_id.clone(),
-                },
-            );
+        let mut sessions = self.sessions.lock().expect("guest session lock poisoned");
+        let now = Instant::now();
+        prune_guest_sessions(&mut sessions, now);
+        while sessions.len() >= GUEST_SESSION_MAX_ENTRIES {
+            let Some(key) = sessions
+                .iter()
+                .min_by_key(|(_, session)| session.issued_at)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            sessions.remove(&key);
+        }
+        sessions.insert(
+            crate::hash_token(&value),
+            GuestSession {
+                join_code: join_code.to_owned(),
+                participant_id: participant_id.clone(),
+                issued_at: now,
+            },
+        );
         value
     }
 
     fn authenticate(&self, join_code: &str, value: &str) -> Option<ParticipantId> {
-        self.sessions
-            .lock()
-            .expect("guest session lock poisoned")
+        let mut sessions = self.sessions.lock().expect("guest session lock poisoned");
+        prune_guest_sessions(&mut sessions, Instant::now());
+        sessions
             .get(&crate::hash_token(value))
             .filter(|session| session.join_code == join_code)
             .map(|session| session.participant_id.clone())
@@ -2473,6 +2762,11 @@ impl GuestSessionStore {
             .retain(|_, session| session.join_code != join_code);
     }
 
+    fn prune(&self) {
+        let mut sessions = self.sessions.lock().expect("guest session lock poisoned");
+        prune_guest_sessions(&mut sessions, Instant::now());
+    }
+
     fn invalidate_participant(&self, join_code: &str, participant_id: &ParticipantId) {
         self.sessions
             .lock()
@@ -2480,6 +2774,20 @@ impl GuestSessionStore {
             .retain(|_, session| {
                 session.join_code != join_code || &session.participant_id != participant_id
             });
+    }
+}
+
+fn prune_guest_sessions(sessions: &mut HashMap<[u8; 32], GuestSession>, now: Instant) {
+    sessions.retain(|_, session| now.duration_since(session.issued_at) < GUEST_SESSION_LIFETIME);
+    while sessions.len() > GUEST_SESSION_MAX_ENTRIES {
+        let Some(key) = sessions
+            .iter()
+            .min_by_key(|(_, session)| session.issued_at)
+            .map(|(key, _)| *key)
+        else {
+            break;
+        };
+        sessions.remove(&key);
     }
 }
 

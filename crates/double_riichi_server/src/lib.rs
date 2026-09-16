@@ -17,7 +17,9 @@ pub use characters::{
     CharacterRequirements, CharacterSummary, CharacterUsage, VoiceLine, character_router,
     is_safe_character_id, starter_version,
 };
-pub use config::{CasualTimeControl, CharacterConfig, ConfigError, RuntimeConfig, TimeControls};
+pub use config::{
+    CasualTimeControl, CharacterConfig, ConfigError, NetworkConfig, RuntimeConfig, TimeControls,
+};
 pub use http::{IpCidr, ServerInitError, ServerLimits, ServerState, server_router};
 pub use storage::{Storage, StorageError};
 

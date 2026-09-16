@@ -1,9 +1,14 @@
 use std::sync::Arc;
 
 use axum::{body::Body, http::Request};
-use double_riichi_core::RoomRegistry;
+use double_riichi_core::{GameMode, RoomConfig, RoomRegistry};
 use double_riichi_server::{AdminAuthenticator, ServerState, hash_password, server_router};
+use futures_util::StreamExt;
 use serde_json::{Value, json};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message as WsMessage, client::IntoClientRequest},
+};
 use tower::ServiceExt;
 
 fn test_app() -> axum::Router {
@@ -156,4 +161,265 @@ async fn malformed_admin_json_is_rejected_without_mutating_a_room() {
     );
     let problem = body(response).await;
     assert_eq!(problem["code"], "invalid_request");
+}
+
+#[tokio::test]
+async fn custom_method_rejections_are_problem_details() {
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/rooms/123456")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 405);
+    assert_eq!(
+        response.headers()["content-type"],
+        "application/problem+json"
+    );
+    assert_eq!(body(response).await["code"], "method_not_allowed");
+}
+
+#[tokio::test]
+async fn trailing_slash_public_origin_accepts_browser_origin_without_slash() {
+    let password_hash = hash_password("correct horse battery staple").unwrap();
+    let admin = Arc::new(AdminAuthenticator::new("admin", password_hash).unwrap());
+    let state = Arc::new(ServerState::for_tests(
+        "http://127.0.0.1:3000/",
+        admin,
+        RoomRegistry::with_max_rooms(8),
+    ));
+    let response = server_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/login")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"username":"admin","password":"correct horse battery staple"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
+async fn patch_mode_and_participant_limit_is_atomic() {
+    let app = test_app();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/login")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"username":"admin","password":"correct horse battery staple"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/rooms")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"room_name":"Atomic","game_mode":"4p-red-east"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let room = body(response).await;
+    let join_code = room["join_code"].as_str().unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/admin/rooms/{join_code}"))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"game_mode":"3p-red-east","participant_limit":3}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let patched = body(response).await;
+    assert_eq!(patched["game_mode"], "3p-red-east");
+}
+
+#[tokio::test]
+async fn room_projection_rejects_permanent_auto_after_leave() {
+    let rooms = RoomRegistry::with_max_rooms(1);
+    let handle = rooms
+        .create(RoomConfig::new(
+            "Projection",
+            GameMode::FourPlayerRedEast,
+            double_riichi_core::CharacterCatalog::starter(),
+        ))
+        .await
+        .unwrap();
+    let participant =
+        double_riichi_core::Participant::new("h", "h", double_riichi_core::ParticipantKind::Human);
+    handle
+        .send(double_riichi_core::RoomCommand::join(participant))
+        .await
+        .unwrap();
+    handle
+        .send(double_riichi_core::RoomCommand::select_with_character(
+            "h",
+            "player-red",
+        ))
+        .await
+        .unwrap();
+    handle
+        .send(double_riichi_core::RoomCommand::fill_with_bots())
+        .await
+        .unwrap();
+    handle
+        .send(double_riichi_core::RoomCommand::set_ready(
+            "h",
+            vec!["player-red".into(), "tsumogiri-bot".into()],
+        ))
+        .await
+        .unwrap();
+    handle
+        .send(double_riichi_core::RoomCommand::start())
+        .await
+        .unwrap();
+    handle
+        .send(double_riichi_core::RoomCommand::leave("h"))
+        .await
+        .unwrap();
+    assert!(handle.projection("h").await.is_err());
+}
+
+#[tokio::test]
+async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_connection() {
+    let admin = Arc::new(
+        AdminAuthenticator::new(
+            "admin",
+            hash_password("correct horse battery staple").unwrap(),
+        )
+        .unwrap(),
+    );
+    let state = Arc::new(ServerState::for_tests(
+        "http://127.0.0.1:3000",
+        admin,
+        RoomRegistry::with_max_rooms(1),
+    ));
+    let room = state
+        .rooms()
+        .create(RoomConfig::new(
+            "Live",
+            GameMode::FourPlayerRedEast,
+            double_riichi_core::CharacterCatalog::starter(),
+        ))
+        .await
+        .unwrap();
+    let join_code = room.join_code().to_string();
+    let app = server_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/rooms/{join_code}/join"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"nickname":"Live","character_id":"player-red"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let cookie = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let serve_state = state.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            server_router(serve_state)
+                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let uri = format!("ws://{address}/ws/v1/rooms/{join_code}/human");
+    let mut request = uri.clone().into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("origin", "http://127.0.0.1:3000".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+    let (mut first, _) = connect_async(request).await.unwrap();
+    let first_snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), first.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let WsMessage::Text(first_snapshot) = first_snapshot else {
+        panic!("expected snapshot")
+    };
+    assert_eq!(
+        serde_json::from_str::<Value>(&first_snapshot).unwrap()["type"],
+        "snapshot"
+    );
+
+    let mut replacement_request = uri.into_client_request().unwrap();
+    replacement_request
+        .headers_mut()
+        .insert("origin", "http://127.0.0.1:3000".parse().unwrap());
+    replacement_request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+    let (mut second, _) = connect_async(replacement_request).await.unwrap();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match first.next().await {
+                Some(Ok(WsMessage::Close(Some(frame)))) => break frame,
+                Some(Ok(_)) => continue,
+                other => panic!("expected replacement close, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        frame.code,
+        tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4001)
+    ));
+    assert_eq!(frame.reason, "connected_elsewhere");
+    let _ = second.close(None).await;
+    server.abort();
 }
