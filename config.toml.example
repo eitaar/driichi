@@ -2,3 +2,10 @@
 # The config file's parent is the runtime data root.
 bind = "127.0.0.1:3000"
 public_origin = "http://127.0.0.1:3000"
+unlimited_watchdog_seconds = 300
+empty_room_cleanup_seconds = 3600
+shutdown_seconds = 10
+
+[time_controls.casual]
+turn_seconds = 30
+response_seconds = 10
