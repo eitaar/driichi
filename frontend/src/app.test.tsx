@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./app";
 
@@ -246,6 +246,7 @@ describe("admin room workspace", () => {
     expect(screen.getByText(/presence/i)).toBeVisible();
     expect(screen.getByText(/selection/i)).toBeVisible();
     expect(screen.getByText(/controller/i)).toBeVisible();
+    expect(screen.getAllByText(/seat open/i)).toHaveLength(4);
   });
 
   it("runs a Room mutation and refetches the exact Room detail key", async () => {
@@ -303,6 +304,135 @@ describe("admin room workspace", () => {
   });
 });
 
+describe("admin mutation coverage", () => {
+  const room = {
+    join_code: "123456", room_name: "Night Market", game_mode: "4p-red-east", phase: "lobby", time_control: "casual", replay_save: true, participant_limit: 4,
+    connected_count: 1, participant_count: 1, selected_count: 4, created_at: "2026-09-16T00:00:00Z",
+    participants: [{ participant_id: "P1", display_name: "Mika", kind: "human", presence: "connected", selected: true, ready: true, character_id: "player-red", role: "player_0", controller: "interactive" }],
+    match_players: [{ participant_id: "P1", display_name: "Mika", kind: "human", seat: 0, character_id: "player-red", controller: "interactive" }],
+    roster: [{ participant_id: "P1", display_name: "Mika", kind: "human", seat: 0, character_id: "player-red", controller: "interactive" }],
+    result: null, revision: 9, persistence_degraded: false, replay_available: true,
+  };
+
+  beforeEach(() => setPath("/admin/rooms/123456"));
+
+  it("covers PATCH, rematch, back to Lobby, logout, and modal Escape focus", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockImplementation((input, init) => {
+      const path = String(input);
+      if (path.endsWith("/admin/rooms/123456") && init?.method === "PATCH") return Promise.resolve(response(room));
+      if (path.endsWith("/admin/rooms/123456/rematch")) return Promise.resolve(response({ ...room, phase: "playing" }));
+      if (path.endsWith("/admin/rooms/123456/back-to-lobby")) return Promise.resolve(response({ ...room, phase: "lobby" }));
+      if (path.endsWith("/admin/rooms/123456")) return Promise.resolve(response(room));
+      if (path.endsWith("/admin/rooms")) return Promise.resolve(response([room]));
+      if (path.endsWith("/admin/tokens")) return Promise.resolve(response([]));
+      if (path.endsWith("/admin/logout")) return Promise.resolve(new Response(null, { status: 204 }));
+      return Promise.resolve(response([]));
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /night market/i });
+    fireEvent.click(screen.getByRole("button", { name: /save settings/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456", expect.objectContaining({ method: "PATCH" })));
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/logout", expect.objectContaining({ method: "POST" })));
+  });
+
+  it("runs Rematch only for a post-match Room", async () => {
+    const fetchMock = vi.fn().mockImplementation((input) => {
+      const path = String(input);
+      if (path.endsWith("/admin/rooms/123456")) return Promise.resolve(response({ ...room, phase: "post_match" }));
+      if (path.endsWith("/admin/rooms")) return Promise.resolve(response([room]));
+      if (path.endsWith("/admin/tokens")) return Promise.resolve(response([]));
+      if (path.endsWith("/admin/rooms/123456/rematch")) return Promise.resolve(response({ ...room, phase: "playing" }));
+      return Promise.resolve(response([]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByRole("heading", { name: /night market/i });
+    fireEvent.click(screen.getByRole("button", { name: /rematch/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/rematch", expect.objectContaining({ method: "POST" })));
+    fireEvent.click(screen.getByRole("button", { name: /back to lobby/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/back-to-lobby", expect.objectContaining({ method: "POST" })));
+  });
+
+  it("confirms destructive Room deletion with a focused dialog", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockImplementation((input) => {
+      const path = String(input);
+      if (path.endsWith("/admin/rooms/123456")) return Promise.resolve(response({ ...room, phase: "lobby" }));
+      if (path.endsWith("/admin/rooms")) return Promise.resolve(response([room]));
+      if (path.endsWith("/admin/tokens")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /night market/i });
+    const deleteButton = screen.getByRole("button", { name: /delete room/i });
+    fireEvent.click(deleteButton);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeVisible();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /cancel/i }));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(deleteButton).toHaveFocus();
+    fireEvent.click(deleteButton);
+    fireEvent.click(await screen.findByRole("button", { name: /confirm delete/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456", expect.objectContaining({ method: "DELETE" })));
+  });
+
+  it("covers participant selection, deselection, and match start mutations", async () => {
+    let selected = false;
+    const participant = { participant_id: "P2", display_name: "Nori", kind: "human", presence: "connected", selected: false, ready: false, character_id: "player-red", role: "none", controller: "interactive" };
+    const fetchMock = vi.fn().mockImplementation((input, init) => {
+      const path = String(input);
+      const detail = { ...room, selected_count: selected ? 4 : 3, participants: [{ ...participant, selected }] };
+      if (path.endsWith("/participants/P2/select")) { selected = true; return Promise.resolve(response(detail)); }
+      if (path.endsWith("/participants/P2/deselect")) { selected = false; return Promise.resolve(response(detail)); }
+      if (path.endsWith("/start")) return Promise.resolve(response({ ...detail, phase: "playing" }));
+      if (path.endsWith("/admin/rooms/123456") && init?.method === "GET") return Promise.resolve(response(detail));
+      if (path.endsWith("/admin/rooms")) return Promise.resolve(response([detail]));
+      if (path.endsWith("/admin/tokens")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByRole("heading", { name: /night market/i });
+    fireEvent.click(screen.getByRole("button", { name: /^select$/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P2/select", expect.objectContaining({ method: "POST" })));
+    await screen.findByRole("button", { name: /^deselect$/i });
+    fireEvent.click(screen.getByRole("button", { name: /^deselect$/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P2/deselect", expect.objectContaining({ method: "POST" })));
+    fireEvent.click(await screen.findByRole("button", { name: /^select$/i }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/participants/P2/select")).length).toBeGreaterThan(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: /start match/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /start match/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/start", expect.objectContaining({ method: "POST" })));
+  });
+
+  it("confirms participant kick and room creation mutations", async () => {
+    const fetchMock = vi.fn().mockImplementation((input, init) => {
+      const path = String(input);
+      if (path.endsWith("/admin/rooms") && init?.method === "POST") return Promise.resolve(response(room, 201));
+      if (path.endsWith("/admin/rooms/123456")) return Promise.resolve(response({ ...room, participants: [{ ...room.participants[0], selected: false }], selected_count: 3 }));
+      if (path.endsWith("/admin/rooms")) return Promise.resolve(response([room]));
+      if (path.endsWith("/admin/tokens")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByRole("heading", { name: /night market/i });
+    fireEvent.click(screen.getByRole("button", { name: /kick/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /confirm kick/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P1/kick", expect.objectContaining({ method: "POST" })));
+    fireEvent.click(screen.getByRole("button", { name: "Create Room" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText(/room name/i), { target: { value: "Second Room" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^create room$/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms", expect.objectContaining({ method: "POST" })));
+  });
+});
+
 describe("human lobby websocket", () => {
   beforeEach(() => {
     setPath("/room/123456/lobby");
@@ -324,7 +454,7 @@ describe("human lobby websocket", () => {
       close() { this.onclose?.({ code: 1000, reason: "client_closed" } as CloseEvent); }
       emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
     }
-    const socket = vi.fn((url: string) => new FakeWebSocket(url));
+    const socket = Object.assign(vi.fn((url: string) => new FakeWebSocket(url)), { OPEN: FakeWebSocket.OPEN });
     vi.stubGlobal("WebSocket", socket);
     render(<App />);
     const instance = await waitFor(() => {
@@ -339,7 +469,12 @@ describe("human lobby websocket", () => {
           { participant_id: "P1", display_name: "Mika", kind: "human", presence: "connected", selected: true, ready: false, character_id: "player-red", role: "none", controller: "interactive" },
           { participant_id: "B1", display_name: "Bot 1", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
           { participant_id: "B2", display_name: "Bot 2", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
-        ], match_players: [], roster: [], result: null,
+        ],
+        match_players: [
+          { participant_id: "P1", display_name: "Mika", kind: "human", seat: 0, character_id: "player-red", controller: "interactive" },
+          { participant_id: "B1", display_name: "Bot 1", kind: "built_in_bot", seat: 1, character_id: "tsumogiri-bot", controller: "permanent_auto_built_in_bot" },
+          { participant_id: "B2", display_name: "Bot 2", kind: "built_in_bot", seat: 2, character_id: "tsumogiri-bot", controller: "permanent_auto_built_in_bot" },
+        ], roster: [], result: null,
       },
       state: null,
     });
@@ -348,7 +483,31 @@ describe("human lobby websocket", () => {
     expect(screen.getByText(/presence/i)).toBeVisible();
     expect(screen.getByText(/selection/i)).toBeVisible();
     expect(screen.getByText(/controller/i)).toBeVisible();
+    expect(screen.getByText(/seat 1/i)).toBeVisible();
     expect(screen.getByText(/3 seats/i)).toBeVisible();
+  });
+
+  it("keeps the WebSocket connected when the server rejects a normal command", async () => {
+    class FakeWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      send() {}
+      close() {}
+      emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
+    }
+    const socket = new FakeWebSocket();
+    const webSocket = Object.assign(vi.fn(() => socket), { OPEN: FakeWebSocket.OPEN });
+    vi.stubGlobal("WebSocket", webSocket);
+    render(<App />);
+    socket.onopen?.();
+    socket.emit({ type: "snapshot", room: { join_code: "123456", room_name: "Night Market", game_mode: "3p-red-east", phase: "lobby", revision: 1, participants: [], match_players: [], roster: [], result: null }, state: null });
+    socket.emit({ type: "error", code: "not_ready" });
+    expect(await screen.findByText(/not_ready/i)).toBeVisible();
+    expect(screen.getByText(/^connected$/i)).toBeVisible();
   });
 
   it("does not send Ready until selected Character assets finish preloading", async () => {
@@ -366,8 +525,14 @@ describe("human lobby websocket", () => {
       emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
     }
     const instance = new FakeWebSocket("ws://test");
-    vi.stubGlobal("WebSocket", vi.fn(() => instance));
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new Blob(["asset"]), { status: 200 })));
+    vi.stubGlobal("WebSocket", Object.assign(vi.fn(() => instance), { OPEN: FakeWebSocket.OPEN }));
+    class FakeImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode = () => Promise.resolve();
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    }
+    vi.stubGlobal("Image", FakeImage);
     render(<App />);
     instance.emit({ type: "snapshot", room: { join_code: "123456", room_name: "Night Market", game_mode: "3p-red-east", phase: "lobby", revision: 1, participants: [
       { participant_id: "P1", display_name: "Mika", kind: "human", presence: "connected", selected: true, ready: false, character_id: "player-red", role: "none", controller: "interactive" },
@@ -379,5 +544,78 @@ describe("human lobby websocket", () => {
     await waitFor(() => expect(ready).toBeEnabled());
     fireEvent.click(ready);
     expect(JSON.parse(instance.sent.at(-1) ?? "{}")).toEqual({ type: "set_ready", preloaded_characters: ["player-red", "tsumogiri-bot", "tsumogiri-bot"] });
+  });
+
+  it("repeats selected asset preload for a fresh connection generation", async () => {
+    class FakeWebSocket {
+      static OPEN = 1;
+      readyState = 0;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      send() {}
+      close() {}
+      open() { this.readyState = FakeWebSocket.OPEN; this.onopen?.(); }
+      emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
+    }
+    const sockets: FakeWebSocket[] = [];
+    vi.stubGlobal("WebSocket", vi.fn(() => { const socket = new FakeWebSocket(); sockets.push(socket); return socket; }));
+    let imageCount = 0;
+    class FakeImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode = () => Promise.resolve();
+      set src(_value: string) { imageCount += 1; queueMicrotask(() => this.onload?.()); }
+    }
+    vi.stubGlobal("Image", FakeImage);
+    vi.useFakeTimers();
+    render(<App />);
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const snapshot = { type: "snapshot", room: { join_code: "123456", room_name: "Night Market", game_mode: "3p-red-east", phase: "lobby", revision: 1, participants: [
+      { participant_id: "P1", display_name: "Mika", kind: "human", presence: "connected", selected: true, ready: false, character_id: "player-red", role: "none", controller: "interactive" },
+      { participant_id: "B1", display_name: "Bot 1", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
+      { participant_id: "B2", display_name: "Bot 2", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
+    ], match_players: [], roster: [], result: null }, state: null };
+    sockets[0].open(); sockets[0].emit(snapshot);
+    await waitFor(() => expect(imageCount).toBe(6));
+    sockets[0].onclose?.({ code: 1006, reason: "" } as CloseEvent);
+    act(() => { vi.advanceTimersByTime(500); });
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    sockets[1].open(); sockets[1].emit(snapshot);
+    await waitFor(() => expect(imageCount).toBe(12));
+    sockets[0].emit({ ...snapshot, room: { ...snapshot.room, room_name: "Stale Room" } });
+    expect(screen.queryByRole("heading", { name: /stale room lobby/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /night market lobby/i })).toBeVisible();
+    vi.useRealTimers();
+  });
+
+  it("keeps Ready disabled when a 200 asset cannot decode", async () => {
+    class FakeWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      send() {}
+      close() {}
+      emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
+    }
+    class BrokenImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode = () => Promise.reject(new Error("malformed_image"));
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    }
+    const instance = new FakeWebSocket();
+    vi.stubGlobal("WebSocket", vi.fn(() => instance));
+    vi.stubGlobal("Image", BrokenImage);
+    render(<App />);
+    instance.emit({ type: "snapshot", room: { join_code: "123456", room_name: "Night Market", game_mode: "3p-red-east", phase: "lobby", revision: 1, participants: [
+      { participant_id: "P1", display_name: "Mika", kind: "human", presence: "connected", selected: true, ready: false, character_id: "player-red", role: "none", controller: "interactive" },
+      { participant_id: "B1", display_name: "Bot 1", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
+      { participant_id: "B2", display_name: "Bot 2", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
+    ], match_players: [], roster: [], result: null }, state: null });
+    const ready = await screen.findByRole("button", { name: /set ready/i });
+    await waitFor(() => expect(screen.getByText(/could not be preloaded/i)).toBeVisible());
+    expect(ready).toBeDisabled();
   });
 });
