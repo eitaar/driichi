@@ -221,3 +221,39 @@ git diff --check
 ```
 
 Fix commit: `fix(replay): reject four-player Kita` (final hash recorded by `git rev-parse HEAD`).
+
+## Review round 3/5 follow-up
+
+The review confirms the local four-player Kita finding remains addressed: `validate_event` rejects `Kita` for four-player modes before `ReplayState::apply`, and `four_player_kita_is_rejected` remains green. No additional local Critical/Important implementation defect was identified, so no duplicate test or speculative code was added.
+
+The pinned yamai acceptance gate remains owner-deferred. The brief's authoritative yamai repository/revision and `ReplayProcessor` source are still unavailable; no implementation, substitute, execution, or compatibility claim was fabricated. Local replay tests therefore remain evidence only for local behavior, not external yamai acceptance.
+
+### Follow-up verification
+
+```text
+cargo test -p double_riichi_replay --test task5_replay
+# 15 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace tests passed; replay integration: 15 passed, 0 failed
+
+npm run typecheck --prefix frontend
+# tsc --noEmit passed
+
+bash tests/workspace-smoke.sh
+# passed
+
+# required implementation-v1 spec assertions
+# passed
+
+git diff --check
+# passed
+```
+
+This round records verification only; no local source change was required beyond the already-committed Kita fix.
