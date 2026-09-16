@@ -293,3 +293,39 @@ git diff --check
 ```
 
 This round required no local code/test edits; the report records the repeated gate deferral and verification evidence.
+
+## Review round 5/5 follow-up
+
+The local Important finding remains fully addressed: `Kita` is mode-gated to sanma before `ReplayState::apply`, and `four_player_kita_is_rejected` remains green. The review found no new local Critical/Important breakage, so adding a duplicate failing test or speculative implementation would widen scope without covering a real defect.
+
+The Critical pinned yamai acceptance gate remains owner-deferred and cannot be honestly closed in this repository state. The brief requires an authoritative yamai repository/package, immutable revision, license, and `ReplayProcessor`; those inputs remain unavailable. No yamai implementation, substitute, execution, or compatibility claim was fabricated. Local MJSON round-trip/projection tests remain local evidence only.
+
+### Follow-up verification
+
+```text
+cargo test -p double_riichi_replay --test task5_replay
+# 15 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace tests passed; replay integration: 15 passed, 0 failed
+
+npm run typecheck --prefix frontend
+# tsc --noEmit passed
+
+bash tests/workspace-smoke.sh
+# passed
+
+# required implementation-v1 spec assertions
+# passed
+
+git diff --check
+# passed
+```
+
+Round 5 is verification/report-only by the explicit owner-deferred gate ruling; no local code change is warranted.
