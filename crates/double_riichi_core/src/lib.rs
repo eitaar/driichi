@@ -5,6 +5,7 @@ mod domain;
 pub mod engine;
 mod match_machine;
 mod projection;
+pub mod room;
 
 pub use decision::{
     ActionId, ControllerState, Decision, DecisionAction, DecisionError, DecisionId, DecisionKind,
@@ -22,4 +23,11 @@ pub use projection::{
     ProjectionError, PublicDecisionProjection, PublicProjection, ReplayAdminProjection,
     ReplayDecisionEntry, ReplayDecisionProjection, TablePlayerState, TableState, VisibleAction,
     VisibleMeld, VisiblePlayer, project_table_state, serialize_projection,
+};
+pub use room::{
+    CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, MatchId, MatchPlayerSnapshot,
+    MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY, ROOM_EFFECT_CAPACITY, RoomActor,
+    RoomCommand, RoomConfig, RoomConnection, RoomController, RoomEffect, RoomEffectError,
+    RoomError, RoomEvent, RoomHandle, RoomId, RoomJoinCode, RoomParticipantSnapshot, RoomPhase,
+    RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot, RoomState, ShutdownMode,
 };
