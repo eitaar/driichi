@@ -62,3 +62,9 @@ The owner-deferred yamai and authenticated riichi.dev evidence remains deferred;
 - Protocol normalization is key/context scoped rather than recursively rewriting arbitrary strings; `ConnectionLost` and nested controller/role values are serialized snake-case while display names remain unchanged.
 - Expanded live Human coverage to heartbeat Ping, Ready snapshot, match start/stale action rejection, replacement, and semantic Leave close; added bounded outbound-queue and protocol-string regressions alongside trusted-proxy/rate/guest-session/lock tests.
 - Final round-3 verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --test task9_http -- --nocapture`; `cargo test -p double_riichi_server --lib`; `cargo test -p double_riichi_core --tests` — all passed.
+
+## Security review round 4 follow-up
+
+- Added explicit DecisionKind protocol mapping (`turn`/`response`) in the context-scoped wire normalizer; the regression now covers nested controller reason, decision kind, role, and preservation of user display strings.
+- Extended the live Human test through match setup and stale-action handling while retaining heartbeat, Ready snapshot, replacement, and semantic Leave close assertions; the bounded outbound queue has a hard-capacity regression and existing room slow-connection coverage remains green.
+- Final round-4 verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --test task9_http -- --nocapture`; `cargo test -p double_riichi_server --lib`; `cargo test -p double_riichi_core --tests` — all passed.
