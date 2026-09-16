@@ -45,3 +45,12 @@ The owner-deferred yamai and authenticated riichi.dev evidence remains deferred;
 - Added `live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_connection`, covering a real TCP WebSocket upgrade, room-bound cookie authentication, snapshot delivery, and replacement close code/reason.
 - Focused verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --tests`; `cargo test -p double_riichi_core --tests` — all passed.
 - Remaining explicit boundary: no external yamai/riichi.dev compatibility or Design Freeze claim.
+
+## Security review round 2 follow-up
+
+- Shutdown now retries busy room queues, notifies every room before Axum drain, and bounds the combined room/connection drain by the configured shutdown deadline.
+- Guest sessions are invalidated on failed leave attempts, periodically reconciled against live room participants, and reconciled before public join/Human upgrade; disconnected expiry and empty-room deletion therefore cannot leave an accepted stale credential.
+- Reconnect/register and the connection permit now occur inside Axum's `on_upgrade` callback, so an HTTP upgrade that never completes does not mutate room presence or consume a permit. Participant operation locks reclaim their map entries after the final waiter.
+- Rate-limit buckets retain their own configured window; a short-window request cannot prune the 15-minute admin-failure bucket. Human wire values now normalize all protocol enum variants, including nested controller/role values.
+- Added regressions for rate-window isolation, lock reclamation, room-reconciled guest sessions, trusted-proxy IP derivation, enum serialization, live Human leave close behavior, and the existing live snapshot/replacement flow.
+- Final round-2 verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --test task9_http -- --nocapture`; `cargo test -p double_riichi_server --lib`; `cargo test -p double_riichi_core --tests` — all passed.

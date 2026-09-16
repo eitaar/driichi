@@ -61,23 +61,43 @@ async fn run_server(path: PathBuf) -> Result<(), String> {
         .await
         .map_err(|_| "could not bind server socket".to_owned())?;
     let state = Arc::new(state);
-    let shutdown_state = state.clone();
-    axum::serve(
-        listener,
-        server_router(state).into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(shutdown_state.shutdown_seconds()),
-            shutdown_state
-                .rooms()
-                .shutdown(double_riichi_core::ShutdownMode::Graceful),
+    let shutdown_seconds = state.shutdown_seconds();
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let mut server = Box::pin(
+        axum::serve(
+            listener,
+            server_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .await;
-    })
+        .with_graceful_shutdown(async move {
+            let _ = stop_rx.await;
+        })
+        .into_future(),
+    );
+    tokio::select! {
+        result = &mut server => {
+            return result.map_err(|_| "server stopped unexpectedly".to_owned());
+        }
+        _ = shutdown_signal() => {}
+    }
+    let rooms = state.rooms().clone();
+    let shutdown = tokio::spawn(async move {
+        rooms
+            .shutdown(double_riichi_core::ShutdownMode::Graceful)
+            .await;
+    });
+    let _ = stop_tx.send(());
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(shutdown_seconds),
+        &mut server,
+    )
     .await
-    .map_err(|_| "server stopped unexpectedly".to_owned())
+    {
+        Ok(result) => result.map_err(|_| "server stopped unexpectedly".to_owned()),
+        Err(_) => {
+            shutdown.abort();
+            Ok(())
+        }
+    }
 }
 
 async fn shutdown_signal() {
