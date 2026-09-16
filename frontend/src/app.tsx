@@ -18,18 +18,21 @@ import "./styles.css";
 
 type MotionQuery = MediaQueryList & { addListener?: (listener: () => void) => void; removeListener?: (listener: () => void) => void };
 
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 function useReducedMotion() {
-  const [reduced, setReduced] = useState(false);
+  const [reduced, setReduced] = useState(prefersReducedMotion);
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)") as MotionQuery;
     const update = () => setReduced(query.matches);
-    update();
-    query.addEventListener?.("change", update);
+    if (query.addEventListener) {
+      query.addEventListener("change", update);
+      return () => query.removeEventListener("change", update);
+    }
     query.addListener?.(update);
-    return () => {
-      query.removeEventListener?.("change", update);
-      query.removeListener?.(update);
-    };
+    return () => query.removeListener?.(update);
   }, []);
   return reduced;
 }
@@ -157,7 +160,7 @@ function EntryShell() {
         </section>
         <section className="entry-visual" data-entry-reveal aria-label="Mahjong tile vignette">
           <TileVignette />
-          <div className="visual-caption"><span>ROOM SIGNAL</span><span>01 / OPEN TABLE</span></div>
+          <div className="visual-caption"><span>ROOM SIGNAL</span><span>OPEN TABLE</span></div>
         </section>
       </main>
       <footer className="site-footer"><span>DOUBLE RIICHI / ENTRY</span><span>NO ACCOUNT REQUIRED</span></footer>
@@ -167,6 +170,7 @@ function EntryShell() {
 
 function RoomRoute({ joinCode }: { joinCode: string }) {
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; room?: RoomLookup; characters?: HumanCharacter[]; problem?: ProblemDetails }>({ status: "loading" });
+  const [characterRetry, setCharacterRetry] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -187,14 +191,14 @@ function RoomRoute({ joinCode }: { joinCode: string }) {
       if (active) setState({ status: "error", problem: problemFrom(error) });
     });
     return () => { active = false; };
-  }, [joinCode]);
+  }, [joinCode, characterRetry]);
 
   return (
     <div className="app-shell route-shell">
       <Topbar action={<RouteLink href="/" className="nav-link"><ArrowLeft aria-hidden="true" weight="regular" />Room code</RouteLink>} />
       {state.status === "loading" && <LoadingRoom />}
       {state.status === "error" && <ProblemState title="Room unavailable" problem={state.problem} actionLabel="Try another room" />}
-      {state.status === "ready" && state.room && <RoomJoin room={state.room} joinCode={joinCode} characters={state.characters ?? []} characterProblem={state.problem} />}
+      {state.status === "ready" && state.room && <RoomJoin room={state.room} joinCode={joinCode} characters={state.characters ?? []} characterProblem={state.problem} onRetryCharacters={() => setCharacterRetry((attempt) => attempt + 1)} />}
     </div>
   );
 }
@@ -221,7 +225,7 @@ function ProblemState({ title, problem, actionLabel }: { title: string; problem?
   );
 }
 
-function RoomJoin({ room, joinCode, characters, characterProblem }: { room: RoomLookup; joinCode: string; characters: HumanCharacter[]; characterProblem?: ProblemDetails }) {
+function RoomJoin({ room, joinCode, characters, characterProblem, onRetryCharacters }: { room: RoomLookup; joinCode: string; characters: HumanCharacter[]; characterProblem?: ProblemDetails; onRetryCharacters: () => void }) {
   const [nickname, setNickname] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [voiceStatus, setVoiceStatus] = useState("Preview riichi voice");
@@ -280,21 +284,29 @@ function RoomJoin({ room, joinCode, characters, characterProblem }: { room: Room
           </div>
           <fieldset className="character-fieldset">
             <legend>Character</legend>
-            {characterProblem && <p className="form-error" role="alert"><WarningCircle aria-hidden="true" weight="regular" />{characterProblem.detail ?? "Characters could not be loaded."}</p>}
+            {characterProblem && <>
+              <p className="form-error" role="alert"><WarningCircle aria-hidden="true" weight="regular" />{characterProblem.detail ?? "Characters could not be loaded."}</p>
+              <button type="button" className="button button-secondary retry-button" onClick={onRetryCharacters}>Retry character list <ArrowRight aria-hidden="true" weight="regular" /></button>
+            </>}
             {characters.length === 0 && !characterProblem && <p className="field-hint">Characters are not available yet.</p>}
-            <div className="character-list" role="listbox" aria-label="Choose a character">
+            <div className="character-list" role="radiogroup" aria-label="Choose a character">
               {characters.map((character) => (
-                <button
-                  type="button"
+                <label
                   key={character.id}
                   className={`character-option${selectedId === character.id ? " is-selected" : ""}`}
-                  aria-selected={selectedId === character.id}
-                  onClick={() => setSelectedId(character.id)}
                 >
+                  <input
+                    className="character-radio"
+                    type="radio"
+                    name="character"
+                    value={character.id}
+                    checked={selectedId === character.id}
+                    onChange={() => setSelectedId(character.id)}
+                  />
                   <CharacterImage character={character} kind="icon" />
                   <span>{character.name}</span>
                   {selectedId === character.id && <Check aria-hidden="true" weight="regular" />}
-                </button>
+                </label>
               ))}
             </div>
           </fieldset>

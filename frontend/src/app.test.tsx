@@ -100,6 +100,23 @@ describe("public room join", () => {
     expect(screen.getByRole("link", { name: /try another room/i })).toHaveAttribute("href", "/");
   });
 
+  it("retries a failed character request before enabling the join flow", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(response({ room_name: "Night Market", game_mode: "4p-red-east", phase: "Lobby", join_allowed: true, participant_count: 1, participant_limit: 4 }))
+        .mockResolvedValueOnce(response({ title: "Service unavailable", detail: "Characters could not be loaded.", code: "characters_unavailable" }, 503))
+        .mockResolvedValueOnce(response({ room_name: "Night Market", game_mode: "4p-red-east", phase: "Lobby", join_allowed: true, participant_count: 1, participant_limit: 4 }))
+        .mockResolvedValueOnce(response([{ id: "player-red", name: "Red Player" }])),
+    );
+
+    render(<App />);
+    await screen.findByRole("heading", { name: /join night market/i });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Characters could not be loaded.");
+    fireEvent.click(screen.getByRole("button", { name: /retry character list/i }));
+    expect(await screen.findByRole("radio", { name: /red player/i })).toBeVisible();
+  });
+
   it("joins with nickname and selected character without exposing the guest credential", async () => {
     vi.stubGlobal(
       "fetch",
@@ -127,7 +144,9 @@ describe("public room join", () => {
     fireEvent.change(screen.getByRole("textbox", { name: /display name/i }), {
       target: { value: "Mika" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: /red player/i }));
+    const redPlayer = await screen.findByRole("radio", { name: /red player/i });
+    fireEvent.click(redPlayer);
+    expect(redPlayer).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: /join room/i }));
 
     expect(await screen.findByRole("heading", { name: /you're in night market/i })).toBeVisible();

@@ -16,9 +16,12 @@ export function TileVignette() {
     const element = hostRef.current as HTMLDivElement | undefined;
     if (element === undefined) return;
     let disposed = false;
+    let initialized = false;
     let app: import("pixi.js").Application | undefined;
-    let stopMotion: () => void = () => undefined;
     let observer: ResizeObserver | undefined;
+    let motionQuery: MediaQueryList | undefined;
+    let tick: ((ticker: { deltaTime: number }) => void) | undefined;
+    let stopMotion: () => void = () => undefined;
 
     async function mount() {
       try {
@@ -30,9 +33,10 @@ export function TileVignette() {
           autoDensity: true,
           backgroundAlpha: 0,
           preference: "webgl",
-          resizeTo: element,
+          resizeTo: element!,
           resolution: Math.min(window.devicePixelRatio || 1, 2),
         });
+        initialized = true;
         if (disposed) {
           app.destroy({ removeView: true }, { children: true });
           app = undefined;
@@ -78,9 +82,19 @@ export function TileVignette() {
         observer = new ResizeObserver(layout);
         observer.observe(element!);
 
-        if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+        const updateMotion = () => {
+          if (!app) return;
+          if (motionQuery?.matches) {
+            if (tick) {
+              app.ticker.remove(tick);
+              tick = undefined;
+            }
+            return;
+          }
+          if (tick) return;
           let elapsed = 0;
-          const tick = (ticker: { deltaTime: number }) => {
+          tick = (ticker) => {
             elapsed += ticker.deltaTime * 0.002;
             sprites.forEach((sprite, index) => {
               sprite.y += Math.sin(elapsed + index) * 0.04;
@@ -88,10 +102,24 @@ export function TileVignette() {
             });
           };
           app.ticker.add(tick);
-          stopMotion = () => { app?.ticker.remove(tick); };
-        }
+        };
+        motionQuery.addEventListener("change", updateMotion);
+        stopMotion = () => {
+          motionQuery?.removeEventListener("change", updateMotion);
+          if (tick) {
+            app?.ticker.remove(tick);
+            tick = undefined;
+          }
+        };
+        updateMotion();
       } catch {
-        if (!disposed) element!.dataset.fallback = "true";
+        if (disposed) return;
+        stopMotion();
+        observer?.disconnect();
+        if (initialized) app?.destroy({ removeView: true }, { children: true });
+        app = undefined;
+        element!.replaceChildren();
+        element!.dataset.fallback = "true";
       }
     }
 
@@ -100,7 +128,8 @@ export function TileVignette() {
       disposed = true;
       observer?.disconnect();
       stopMotion();
-      app?.destroy({ removeView: true }, { children: true });
+      if (initialized) app?.destroy({ removeView: true }, { children: true });
+      app = undefined;
       element!.replaceChildren();
     };
   }, []);

@@ -23,6 +23,8 @@ for (const viewport of [
       const navHeight = await page.locator("nav").evaluate((element) => element.getBoundingClientRect().height);
       expect(navHeight).toBeLessThanOrEqual(80);
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+      expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(viewport.height);
+      await expect(page.locator("footer")).toBeVisible();
       expect(consoleErrors).toEqual([]);
       expect(failedRequests).toEqual([]);
       await page.screenshot({ path: `test-results/task-10/entry-${viewport.label}.png`, fullPage: false });
