@@ -48,7 +48,7 @@ The UI stays on the approved broadcast-noir foundation: flat split workspace, qu
 ## Commit
 
 Review-fix baseline: `ec4cd34`.
-Follow-up coverage/evidence fix: pending commit from `ec4cd34`.
+Follow-up coverage/evidence fix: `9ad0daa`.
 
 ## Concerns
 
