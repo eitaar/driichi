@@ -8,6 +8,8 @@ double-riichi.db-shm
 double-riichi.db-wal
 replays/
 character-packs/
+character-packs-*.zip
+character-packs-*.zip.sha256
 .cache/
 .superpowers/
 .worktrees/

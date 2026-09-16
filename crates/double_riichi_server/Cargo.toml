@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 argon2 = { version = "=0.5.3", features = ["std"] }
+axum = { version = "=0.8.9", default-features = false, features = ["json"] }
 base64 = "=0.22.1"
 double_riichi_core = { path = "../double_riichi_core" }
 double_riichi_mcp = { path = "../double_riichi_mcp" }
@@ -30,6 +31,9 @@ rust-embed = "=8.12.0"
 [[bin]]
 name = "driichi"
 path = "src/main.rs"
+
+[dev-dependencies]
+tower = { version = "=0.5.3", features = ["util"] }
 
 [lints]
 workspace = true

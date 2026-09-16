@@ -22,7 +22,10 @@ test-spec:
 test-smoke:
     bash tests/workspace-smoke.sh
 
-build-release:
+generate-starter-packs:
+    python scripts/generate_starter_packs.py --output character-packs --zip character-packs-1.0.0.zip
+
+build-release: generate-starter-packs
     npm ci --prefix frontend
     npm run build --prefix frontend
     cargo build --release

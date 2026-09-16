@@ -1,6 +1,7 @@
 //! Configuration, credentials, and durable storage for double-riichi.
 
 mod auth;
+mod characters;
 mod config;
 mod storage;
 
@@ -10,7 +11,12 @@ pub use auth::{
     CredentialError, PasswordError, SecretsError, TokenRevoked, TokenState, hash_password,
     hash_password_for_cli, hash_token, verify_password,
 };
-pub use config::{CasualTimeControl, ConfigError, RuntimeConfig, TimeControls};
+pub use characters::{
+    CharacterAsset, CharacterAssetFile, CharacterPack, CharacterRegistry, CharacterRegistryError,
+    CharacterRequirements, CharacterSummary, CharacterUsage, VoiceLine, character_router,
+    is_safe_character_id, starter_version,
+};
+pub use config::{CasualTimeControl, CharacterConfig, ConfigError, RuntimeConfig, TimeControls};
 pub use storage::{Storage, StorageError};
 
 #[cfg(frontend_dist)]
