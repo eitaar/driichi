@@ -200,9 +200,10 @@ impl MatchMachine {
             && self.decision.as_ref().is_some_and(|decision| {
                 !decision.actions_for(seat).is_empty() && decision.deadline_for(seat).is_none()
             })
-            && let Some(decision) = &mut self.decision {
-                decision.retime_for(seat, Instant::now(), Some(self.timing.watchdog), true);
-            }
+            && let Some(decision) = &mut self.decision
+        {
+            decision.retime_for(seat, Instant::now(), Some(self.timing.watchdog), true);
+        }
         Ok(())
     }
 
@@ -213,12 +214,13 @@ impl MatchMachine {
         if self.controllers[index] == ControllerState::TemporaryAuto {
             self.controllers[index] = ControllerState::Interactive;
             if let Some(decision) = &self.decision
-                && !decision.actions_for(seat).is_empty() {
-                    let (duration, watchdog) = self.decision_timing_for(decision.kind(), seat);
-                    if let Some(decision) = &mut self.decision {
-                        decision.retime_for(seat, Instant::now(), duration, watchdog);
-                    }
+                && !decision.actions_for(seat).is_empty()
+            {
+                let (duration, watchdog) = self.decision_timing_for(decision.kind(), seat);
+                if let Some(decision) = &mut self.decision {
+                    decision.retime_for(seat, Instant::now(), duration, watchdog);
                 }
+            }
         } else if self.time_control == TimeControl::Unlimited
             && self.players[index].kind == ParticipantKind::Human
             && self.decision.as_ref().is_some_and(|decision| {
@@ -257,7 +259,6 @@ impl MatchMachine {
     pub fn apply(&mut self, seat: Seat, action: GameAction) -> Result<Vec<GameEvent>, MatchError> {
         self.ensure_running()?;
         self.validate_seat(seat)?;
-        self.decision = None;
         let action = action.canonicalize();
         let legal = self
             .engine
@@ -266,6 +267,7 @@ impl MatchMachine {
         if !legal.contains(&action) {
             return Err(MatchError::IllegalAction { seat });
         }
+        self.decision = None;
         let new_events = match self.engine.apply(seat, &action) {
             Ok(events) => events,
             Err(error @ EngineError::Rejected(_)) => return Err(self.abort_for_engine(error)),
@@ -887,6 +889,55 @@ mod tests {
         let current = machine.current_decision().unwrap().unwrap();
         assert_eq!(current.id(), &decision_id);
         assert!(current.submitted_action_id(other).is_some());
+    }
+
+    #[test]
+    fn illegal_compatibility_action_preserves_open_decision() {
+        let mode = GameMode::FourPlayerRedEast;
+        let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0_u64).unwrap();
+        let seat = Seat::all(mode)[0];
+        let before = machine.current_decision().unwrap().expect("open decision");
+        let before_id = before.id().clone();
+        let before_action_ids: Vec<Vec<_>> = before
+            .entries()
+            .iter()
+            .map(|entry| {
+                entry
+                    .actions
+                    .iter()
+                    .map(|action| action.id.clone())
+                    .collect()
+            })
+            .collect();
+        let legal = machine.legal_actions(seat).unwrap();
+        let illegal = if !legal.contains(&GameAction::Pass) {
+            GameAction::Pass
+        } else {
+            GameAction::Tsumo
+        };
+        assert!(!legal.contains(&illegal));
+
+        assert!(matches!(
+            machine.apply(seat, illegal),
+            Err(MatchError::IllegalAction { .. })
+        ));
+        let after = machine
+            .current_decision()
+            .unwrap()
+            .expect("decision remains open");
+        assert_eq!(after.id(), &before_id);
+        let after_action_ids: Vec<Vec<_>> = after
+            .entries()
+            .iter()
+            .map(|entry| {
+                entry
+                    .actions
+                    .iter()
+                    .map(|action| action.id.clone())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(after_action_ids, before_action_ids);
     }
 
     #[test]
