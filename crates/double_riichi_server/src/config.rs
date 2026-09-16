@@ -18,6 +18,12 @@ const DEFAULT_SHUTDOWN_SECONDS: u64 = 10;
 const DEFAULT_MJAI_CHARACTER: &str = "mjai-bot";
 const DEFAULT_BUILTIN_CHARACTER: &str = "tsumogiri-bot";
 const DEFAULT_MCP_CHARACTER: &str = "mcp-agent";
+const DEFAULT_MAX_CONNECTIONS: usize = 256;
+const DEFAULT_ROOM_PARTICIPANT_LIMIT: usize = 32;
+const DEFAULT_CODE_LOOKUP_PER_MINUTE: usize = 20;
+const DEFAULT_PARTICIPANT_CREATION_PER_MINUTE: usize = 10;
+const DEFAULT_ADMIN_LOGIN_FAILURES: usize = 5;
+const DEFAULT_AGENT_AUTH_FAILURES: usize = 20;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -45,6 +51,8 @@ struct RawRuntimeConfig {
     empty_room_cleanup_seconds: u64,
     #[serde(default = "default_shutdown_seconds")]
     shutdown_seconds: u64,
+    #[serde(default)]
+    network: RawNetworkConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +93,39 @@ struct RawCasualTimeControl {
     turn_seconds: u64,
     #[serde(default = "default_response_seconds")]
     response_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNetworkConfig {
+    #[serde(default = "default_max_connections")]
+    max_connections: usize,
+    #[serde(default = "default_room_participant_limit")]
+    room_participant_limit: usize,
+    #[serde(default = "default_code_lookup_per_minute")]
+    code_lookup_per_minute: usize,
+    #[serde(default = "default_participant_creation_per_minute")]
+    participant_creation_per_minute: usize,
+    #[serde(default = "default_admin_login_failures")]
+    admin_login_failures_per_15_minutes: usize,
+    #[serde(default = "default_agent_auth_failures")]
+    agent_auth_failures_per_minute: usize,
+    #[serde(default)]
+    trusted_proxy_cidrs: Vec<String>,
+}
+
+impl Default for RawNetworkConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: default_max_connections(),
+            room_participant_limit: default_room_participant_limit(),
+            code_lookup_per_minute: default_code_lookup_per_minute(),
+            participant_creation_per_minute: default_participant_creation_per_minute(),
+            admin_login_failures_per_15_minutes: default_admin_login_failures(),
+            agent_auth_failures_per_minute: default_agent_auth_failures(),
+            trusted_proxy_cidrs: Vec::new(),
+        }
+    }
 }
 
 impl Default for RawTimeControls {
@@ -128,6 +169,30 @@ fn default_shutdown_seconds() -> u64 {
     DEFAULT_SHUTDOWN_SECONDS
 }
 
+fn default_max_connections() -> usize {
+    DEFAULT_MAX_CONNECTIONS
+}
+
+fn default_room_participant_limit() -> usize {
+    DEFAULT_ROOM_PARTICIPANT_LIMIT
+}
+
+fn default_code_lookup_per_minute() -> usize {
+    DEFAULT_CODE_LOOKUP_PER_MINUTE
+}
+
+fn default_participant_creation_per_minute() -> usize {
+    DEFAULT_PARTICIPANT_CREATION_PER_MINUTE
+}
+
+fn default_admin_login_failures() -> usize {
+    DEFAULT_ADMIN_LOGIN_FAILURES
+}
+
+fn default_agent_auth_failures() -> usize {
+    DEFAULT_AGENT_AUTH_FAILURES
+}
+
 fn default_mjai_character() -> String {
     DEFAULT_MJAI_CHARACTER.to_owned()
 }
@@ -160,6 +225,17 @@ pub struct TimeControls {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkConfig {
+    pub max_connections: usize,
+    pub room_participant_limit: usize,
+    pub code_lookup_per_minute: usize,
+    pub participant_creation_per_minute: usize,
+    pub admin_login_failures_per_15_minutes: usize,
+    pub agent_auth_failures_per_minute: usize,
+    pub trusted_proxy_cidrs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub bind: String,
     pub public_origin: String,
@@ -168,6 +244,7 @@ pub struct RuntimeConfig {
     pub unlimited_watchdog_seconds: u64,
     pub empty_room_cleanup_seconds: u64,
     pub shutdown_seconds: u64,
+    pub network: NetworkConfig,
     data_root: PathBuf,
 }
 
@@ -183,6 +260,7 @@ impl RuntimeConfig {
         validate_duration(raw.unlimited_watchdog_seconds, 10, 3_600)?;
         validate_duration(raw.empty_room_cleanup_seconds, 1, 86_400)?;
         validate_duration(raw.shutdown_seconds, 1, 86_400)?;
+        validate_network(&raw.network)?;
 
         let data_root = path
             .parent()
@@ -208,6 +286,17 @@ impl RuntimeConfig {
             unlimited_watchdog_seconds: raw.unlimited_watchdog_seconds,
             empty_room_cleanup_seconds: raw.empty_room_cleanup_seconds,
             shutdown_seconds: raw.shutdown_seconds,
+            network: NetworkConfig {
+                max_connections: raw.network.max_connections,
+                room_participant_limit: raw.network.room_participant_limit,
+                code_lookup_per_minute: raw.network.code_lookup_per_minute,
+                participant_creation_per_minute: raw.network.participant_creation_per_minute,
+                admin_login_failures_per_15_minutes: raw
+                    .network
+                    .admin_login_failures_per_15_minutes,
+                agent_auth_failures_per_minute: raw.network.agent_auth_failures_per_minute,
+                trusted_proxy_cidrs: raw.network.trusted_proxy_cidrs,
+            },
             data_root,
         })
     }
@@ -279,6 +368,37 @@ fn validate_character_config(config: &RawCharacterConfig) -> Result<(), ConfigEr
     )
     .map(|_| ())
     .map_err(|_| ConfigError::Invalid("character configuration is invalid"))
+}
+
+fn validate_network(network: &RawNetworkConfig) -> Result<(), ConfigError> {
+    if !(1..=4_096).contains(&network.max_connections)
+        || !(1..=32).contains(&network.room_participant_limit)
+        || network.room_participant_limit < 3
+        || network.code_lookup_per_minute == 0
+        || network.participant_creation_per_minute == 0
+        || network.admin_login_failures_per_15_minutes == 0
+        || network.agent_auth_failures_per_minute == 0
+    {
+        return Err(ConfigError::Invalid(
+            "network limit is outside its allowed range",
+        ));
+    }
+    for cidr in &network.trusted_proxy_cidrs {
+        let Some((address, prefix)) = cidr.split_once('/') else {
+            return Err(ConfigError::Invalid("trusted proxy CIDR is invalid"));
+        };
+        let address = address
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| ConfigError::Invalid("trusted proxy CIDR is invalid"))?;
+        let prefix = prefix
+            .parse::<u8>()
+            .map_err(|_| ConfigError::Invalid("trusted proxy CIDR is invalid"))?;
+        let max = if address.is_ipv4() { 32 } else { 128 };
+        if prefix > max {
+            return Err(ConfigError::Invalid("trusted proxy CIDR is invalid"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_duration(value: u64, minimum: u64, maximum: u64) -> Result<(), ConfigError> {

@@ -60,12 +60,43 @@ async fn run_server(path: PathBuf) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|_| "could not bind server socket".to_owned())?;
+    let state = Arc::new(state);
+    let shutdown_state = state.clone();
     axum::serve(
         listener,
-        server_router(Arc::new(state)).into_make_service_with_connect_info::<SocketAddr>(),
+        server_router(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(shutdown_state.shutdown_seconds()),
+            shutdown_state
+                .rooms()
+                .shutdown(double_riichi_core::ShutdownMode::Graceful),
+        )
+        .await;
+    })
     .await
     .map_err(|_| "server stopped unexpectedly".to_owned())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut signal) = signal(SignalKind::terminate()) {
+            let _ = signal.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 fn hash_password_command() -> Result<(), String> {

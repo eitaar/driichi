@@ -38,3 +38,10 @@
 Commit: `feat(server): expose admin and human room protocols` (the final commit SHA is recorded by git after this report is committed).
 
 The owner-deferred yamai and authenticated riichi.dev evidence remains deferred; this work does not claim Design Freeze or final external compatibility. Frontend implementation, MJAI/MCP, Replay Admin UI, TLS termination, and other out-of-scope surfaces remain untouched.
+
+## Security review follow-up
+
+- Added atomic room configuration validation/application, permanent-auto projection rejection, canonical Origin matching, Problem Details for method rejection, serialized participant reconnect/disconnect, leave-time guest-session invalidation, projection/event failure closes, bounded writer draining, bounded rate/session stores, configurable production network limits, graceful room shutdown, and deletion acknowledgement before registry removal.
+- Added `live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_connection`, covering a real TCP WebSocket upgrade, room-bound cookie authentication, snapshot delivery, and replacement close code/reason.
+- Focused verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --tests`; `cargo test -p double_riichi_core --tests` — all passed.
+- Remaining explicit boundary: no external yamai/riichi.dev compatibility or Design Freeze claim.
