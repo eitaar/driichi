@@ -42,8 +42,8 @@ use tokio::{
 use url::Url;
 
 use crate::{
-    AdminAuthenticator, AdminSecrets, CharacterAsset, CharacterRegistry, CharacterRegistryError,
-    CredentialError, RuntimeConfig, Storage,
+    AdminAuthenticator, AdminSecrets, BotTokenAuthority, BotTokenService, CharacterAsset,
+    CharacterRegistry, CharacterRegistryError, CredentialError, RuntimeConfig, Storage,
 };
 
 const HTTP_JSON_LIMIT: usize = 64 * 1024;
@@ -204,6 +204,7 @@ pub struct ServerState {
     shutdown_seconds: u64,
     started_at: Instant,
     storage: Option<Arc<Storage>>,
+    bot_tokens: Option<Arc<BotTokenService>>,
 }
 
 impl ServerState {
@@ -221,7 +222,13 @@ impl ServerState {
             ServerLimits::default(),
         );
         state.storage = None;
+        state.bot_tokens = None;
         state
+    }
+
+    pub fn with_bot_token_service(mut self, service: Arc<BotTokenService>) -> Self {
+        self.bot_tokens = Some(service);
+        self
     }
 
     pub fn with_registry(
@@ -270,6 +277,13 @@ impl ServerState {
                 .await
                 .map_err(ServerInitError::Storage)?,
         );
+        let token_authority = Arc::new(BotTokenAuthority::from_records(
+            storage
+                .load_bot_tokens()
+                .await
+                .map_err(ServerInitError::Storage)?,
+        ));
+        let token_service = Arc::new(BotTokenService::new(storage.clone(), token_authority));
         let trusted_proxy_cidrs = config
             .network
             .trusted_proxy_cidrs
@@ -300,6 +314,7 @@ impl ServerState {
         state.limits = limits;
         state.shutdown_seconds = config.shutdown_seconds;
         state.storage = Some(storage);
+        state.bot_tokens = Some(token_service);
         Ok(state)
     }
 
@@ -340,6 +355,7 @@ impl ServerState {
             shutdown_seconds: 10,
             started_at: Instant::now(),
             storage: None,
+            bot_tokens: None,
         }
     }
 
@@ -580,6 +596,14 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
         )
         .route("/api/v1/admin/login", post(admin_login))
         .route("/api/v1/admin/logout", post(admin_logout))
+        .route(
+            "/api/v1/admin/tokens",
+            get(admin_list_tokens).post(admin_create_token),
+        )
+        .route(
+            "/api/v1/admin/tokens/{token_id}/revoke",
+            post(admin_revoke_token),
+        )
         .route(
             "/api/v1/admin/rooms",
             get(admin_list_rooms).post(admin_create_room),
@@ -863,6 +887,160 @@ async fn admin_logout(
         HeaderValue::from_str(&cookie).expect("session cookie is valid"),
     );
     response
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTokenRequest {
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TokenView {
+    token_id: String,
+    name: String,
+    state: String,
+    created_at: String,
+    revoked_at: Option<String>,
+}
+
+fn token_view(record: &crate::BotTokenRecord) -> TokenView {
+    TokenView {
+        token_id: record.token_id().to_owned(),
+        name: record.name().to_owned(),
+        state: record.state().as_str().to_owned(),
+        created_at: unix_seconds_rfc3339(record.created_at()),
+        revoked_at: record.revoked_at().map(unix_seconds_rfc3339),
+    }
+}
+
+async fn admin_list_tokens(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let Some(service) = &state.bot_tokens else {
+        return internal_error(&request_id);
+    };
+    match service.list().await {
+        Ok(records) => json_response(
+            StatusCode::OK,
+            json!(records.iter().map(token_view).collect::<Vec<_>>()),
+        ),
+        Err(_) => internal_error(&request_id),
+    }
+}
+
+async fn admin_create_token(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let payload: CreateTokenRequest = match parse_json(&headers, body, &request_id) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let Some(service) = &state.bot_tokens else {
+        return internal_error(&request_id);
+    };
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    match service.create(&payload.name, now, &request_id.0).await {
+        Ok(created) => json_response(
+            StatusCode::CREATED,
+            json!({
+                "token_id": created.record().token_id(),
+                "name": created.record().name(),
+                "state": created.record().state().as_str(),
+                "created_at": unix_seconds_rfc3339(created.record().created_at()),
+                "revoked_at": Value::Null,
+                "token": created.secret().expose(),
+            }),
+        ),
+        Err(CredentialError::InvalidTokenName) => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid Token name",
+            "The Bot Token name is invalid.",
+            "invalid_token_name",
+        )
+        .response(&request_id),
+        Err(_) => internal_error(&request_id),
+    }
+}
+
+async fn admin_revoke_token(
+    State(state): State<Arc<ServerState>>,
+    Path(token_id): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let Some(service) = &state.bot_tokens else {
+        return internal_error(&request_id);
+    };
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    match service.revoke(&token_id, now, &request_id.0).await {
+        Ok(()) => {
+            if state.rooms.revoke_token(&token_id).await.is_err() {
+                return ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Token signal unavailable",
+                    "The Token was revoked, but active Room connections could not be updated.",
+                    "token_signal_unavailable",
+                )
+                .response(&request_id);
+            }
+            match service.list().await {
+                Ok(records) => records
+                    .iter()
+                    .find(|record| record.token_id() == token_id)
+                    .map(|record| json_response(StatusCode::OK, json!(token_view(record))))
+                    .unwrap_or_else(|| invalid_credentials(&request_id)),
+                Err(_) => internal_error(&request_id),
+            }
+        }
+        Err(CredentialError::AlreadyRevoked) => ApiError::new(
+            StatusCode::CONFLICT,
+            "Bot Token already revoked",
+            "The Bot Token has already been revoked.",
+            "token_already_revoked",
+        )
+        .response(&request_id),
+        Err(CredentialError::InvalidCredentials) => invalid_credentials(&request_id),
+        Err(_) => internal_error(&request_id),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2244,6 +2422,9 @@ struct MatchPlayerView {
 struct RoomDetailView {
     #[serde(flatten)]
     summary: RoomListView,
+    time_control: String,
+    replay_save: bool,
+    participant_limit: usize,
     participants: Vec<ParticipantView>,
     match_players: Vec<MatchPlayerView>,
     roster: Vec<MatchPlayerView>,
@@ -2277,6 +2458,14 @@ fn room_list_view(snapshot: &RoomSnapshot) -> RoomListView {
 fn room_detail_view(snapshot: &RoomSnapshot) -> RoomDetailView {
     RoomDetailView {
         summary: room_list_view(snapshot),
+        time_control: match snapshot.time_control {
+            TimeControl::Casual => "casual",
+            TimeControl::RiichiDev => "riichi_dev",
+            TimeControl::Unlimited => "unlimited",
+        }
+        .to_owned(),
+        replay_save: snapshot.replay_save,
+        participant_limit: snapshot.participant_limit,
         participants: snapshot.participants.iter().map(participant_view).collect(),
         match_players: snapshot
             .match_players

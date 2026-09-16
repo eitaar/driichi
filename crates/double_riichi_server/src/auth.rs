@@ -701,6 +701,13 @@ impl BotTokenService {
         })
     }
 
+    pub async fn list(&self) -> Result<Vec<BotTokenRecord>, CredentialError> {
+        self.storage
+            .load_bot_tokens()
+            .await
+            .map_err(map_storage_error)
+    }
+
     pub async fn revoke(
         &self,
         token_id: &str,
