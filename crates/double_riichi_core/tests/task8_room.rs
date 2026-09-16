@@ -1,6 +1,6 @@
 use double_riichi_core::room::{
-    CharacterCatalog, CharacterUsage, RoomActor, RoomCommand, RoomConfig, RoomEvent, RoomPhase,
-    RoomResponse,
+    CharacterCatalog, CharacterUsage, RoomActor, RoomCommand, RoomConfig, RoomController,
+    RoomEvent, RoomPhase, RoomRegistry, RoomResponse, ShutdownMode,
 };
 use double_riichi_core::{GameMode, Participant, ParticipantKind, TimeControl};
 
@@ -102,12 +102,54 @@ async fn three_player_mode_rejects_mjai_selection_and_mode_change_clears_selecti
     assert!(snapshot.participants.iter().all(|p| !p.selected));
 }
 
+#[tokio::test]
+async fn fill_with_bots_respects_participant_capacity() {
+    let mut cfg = config();
+    cfg.max_participants = 1;
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
+    let result = handle.send(RoomCommand::fill_with_bots()).await;
+    assert!(result.is_err());
+    assert!(handle.snapshot().await.unwrap().participants.len() <= 1);
+}
+
 #[test]
 fn character_catalog_keeps_usage_metadata_for_selection_validation() {
     let catalog = CharacterCatalog::starter();
     assert_eq!(catalog.usage("player-red"), Some(CharacterUsage::Human));
     assert_eq!(catalog.usage("mjai-bot"), Some(CharacterUsage::Mjai));
     assert_eq!(TimeControl::Casual.turn_duration().as_secs(), 30);
+}
+
+#[tokio::test(start_paused = true)]
+async fn disconnected_selected_lobby_participant_releases_its_seat_at_expiry() {
+    use std::time::Duration;
+
+    let mut cfg = config();
+    cfg.disconnected_participant_expiry = Duration::from_secs(1);
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
+    handle
+        .send(RoomCommand::join(human("h0", "player-red")))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::select("h0")).await.unwrap();
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    handle.send(RoomCommand::disconnect("h0")).await.unwrap();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    handle
+        .send(RoomCommand::join(human("h1", "player-blue")))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::select("h1")).await.unwrap();
+    assert!(
+        handle
+            .snapshot()
+            .await
+            .unwrap()
+            .participants
+            .iter()
+            .any(|participant| participant.id.as_str() == "h1" && participant.selected)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -125,6 +167,117 @@ async fn disconnected_unselected_participant_expires_without_a_new_join() {
     time::advance(std::time::Duration::from_secs(1)).await;
     tokio::task::yield_now().await;
     assert!(handle.snapshot().await.unwrap().participants.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn human_can_ready_again_in_post_match_for_rematch() {
+    use std::time::Duration;
+
+    let mut cfg = config();
+    cfg.mode = GameMode::ThreePlayerRedEast;
+    cfg.time_control = double_riichi_core::TimeControl::Unlimited;
+    cfg.replay_save = false;
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
+    handle
+        .send(RoomCommand::join(human("h", "player-red")))
+        .await
+        .unwrap();
+    handle
+        .send(RoomCommand::select_with_character("h", "player-red"))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    handle
+        .send(RoomCommand::set_ready(
+            "h",
+            vec!["player-red".to_owned(), "tsumogiri-bot".to_owned()],
+        ))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::start()).await.unwrap();
+    handle.send(RoomCommand::disconnect("h")).await.unwrap();
+    tokio::time::advance(Duration::from_secs(300)).await;
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        handle.snapshot().await.unwrap().phase,
+        RoomPhase::PostMatch(_)
+    ));
+    assert!(handle.send(RoomCommand::rematch()).await.is_err());
+    handle.send(RoomCommand::reconnect("h")).await.unwrap();
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot
+            .participants
+            .iter()
+            .find(|participant| participant.id.as_str() == "h")
+            .unwrap()
+            .controller,
+        RoomController::Interactive
+    );
+    assert_eq!(
+        snapshot
+            .match_players
+            .iter()
+            .find(|player| player.participant_id.as_str() == "h")
+            .unwrap()
+            .controller,
+        RoomController::Interactive
+    );
+    handle
+        .send(RoomCommand::set_ready(
+            "h",
+            vec!["player-red".to_owned(), "tsumogiri-bot".to_owned()],
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        handle.send(RoomCommand::rematch()).await.unwrap(),
+        RoomResponse::Started(_)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn registry_purges_empty_room_after_actor_cleanup() {
+    use std::time::Duration;
+
+    let registry = RoomRegistry::with_max_rooms(1);
+    let mut cfg = config();
+    cfg.empty_room_cleanup = Duration::from_secs(1);
+    let handle = registry.create(cfg).await.unwrap();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(registry.len().await, 0);
+    assert!(handle.snapshot().await.is_err());
+}
+
+#[tokio::test]
+async fn registry_shutdown_clears_rooms_and_revoke_token_reaches_room() {
+    let registry = RoomRegistry::with_max_rooms(2);
+    let handle = registry.create(config()).await.unwrap();
+    handle
+        .send(RoomCommand::join_with_token(
+            Participant::new("agent", "agent", ParticipantKind::MJAI),
+            "token-1",
+        ))
+        .await
+        .unwrap();
+    registry.revoke_token("token-1").await.unwrap();
+    assert!(handle.snapshot().await.unwrap().participants.is_empty());
+    registry.shutdown(ShutdownMode::Forced).await;
+    assert_eq!(registry.len().await, 0);
+}
+
+#[tokio::test]
+async fn explicit_leave_and_delete_invalidate_room_membership() {
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(config());
+    handle
+        .send(RoomCommand::join(human("h", "player-red")))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::leave("h")).await.unwrap();
+    assert!(handle.snapshot().await.unwrap().participants.is_empty());
+    handle.send(RoomCommand::Delete).await.unwrap();
+    assert!(handle.snapshot().await.is_err());
 }
 
 #[tokio::test]
@@ -147,6 +300,21 @@ async fn persistence_backpressure_does_not_prevent_match_start() {
         RoomPhase::Playing(_) | RoomPhase::PostMatch(_)
     ));
     let _ = receiver.try_recv();
+}
+
+#[tokio::test]
+async fn persistence_ack_failure_marks_replay_unavailable() {
+    let (handle, mut effects) = RoomActor::spawn_with_effect_channel(config());
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    handle.send(RoomCommand::start()).await.unwrap();
+    let effect = effects.recv().await.expect("open effect");
+    effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
+        "disk full".to_owned(),
+    )));
+    tokio::task::yield_now().await;
+    let snapshot = handle.snapshot().await.unwrap();
+    assert!(snapshot.persistence_degraded);
+    assert!(!snapshot.replay_available);
 }
 
 #[tokio::test]
