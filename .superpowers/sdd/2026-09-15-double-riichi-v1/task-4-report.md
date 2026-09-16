@@ -190,3 +190,35 @@ cargo fmt --all -- --check
 cargo test -p double_riichi_core
 # 9 unit + 3 Task 3 integration + 7 Decision + 4 timing + 4 projection tests passed; 0 failed; 0 doc tests
 ```
+
+## Review round 3/5 follow-up
+
+Follow-up commit: `fix(core): preserve staged timeout markers` (final hash: see `git rev-parse HEAD`).
+
+Removed the late-resolution overwrite that replaced persisted timeout markers with only the current call's local timeout list. Staged zero/ten-second expirations now report every timed-out entry in the final `DecisionResolution`.
+
+### Follow-up RED
+
+```text
+cargo test -p double_riichi_core --test task4_decisions staged_deadlines_preserve_all_timeout_markers
+# FAILED: the earlier zero-duration entry was reported with timed_out=false
+```
+
+### Follow-up GREEN
+
+```text
+cargo test -p double_riichi_core --test task4_decisions staged_deadlines_preserve_all_timeout_markers
+# 1 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace unit, integration, and doc tests passed
+
+git diff --check
+# passed
+```

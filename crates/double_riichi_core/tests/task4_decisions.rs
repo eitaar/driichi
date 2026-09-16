@@ -202,6 +202,31 @@ async fn response_decision_expires_after_exactly_ten_seconds() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn staged_deadlines_preserve_all_timeout_markers() {
+    let first = seat(0);
+    let second = seat(1);
+    let mut decision = Decision::new_with_timings(
+        DecisionId::new("staged-timeout"),
+        DecisionKind::Response,
+        vec![
+            (first, vec![GameAction::Pass], Some(Duration::ZERO), false),
+            (
+                second,
+                vec![GameAction::Pass],
+                Some(Duration::from_secs(10)),
+                true,
+            ),
+        ],
+        Instant::now(),
+    )
+    .unwrap();
+    assert!(decision.resolve_at(Instant::now()).unwrap().is_none());
+    time::advance(Duration::from_secs(10)).await;
+    let resolution = decision.resolve_at(Instant::now()).unwrap().unwrap();
+    assert!(resolution.actions.iter().all(|action| action.timed_out));
+}
+
+#[tokio::test(start_paused = true)]
 async fn casual_and_unlimited_timing_is_monotonic() {
     let casual = TimeControl::Casual;
     assert_eq!(casual.turn_duration(), Duration::from_secs(30));
