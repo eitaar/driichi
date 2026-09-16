@@ -69,6 +69,18 @@ pub fn parse_mjson(input: impl AsRef<str>) -> Result<Vec<CanonicalEvent>, Replay
             message: "replay contains no events".into(),
         });
     }
+    if mode.is_none() {
+        return Err(ReplayError::Corrupt {
+            line: 0,
+            message: "replay contains no start_kyoku event".into(),
+        });
+    }
+    if !matches!(events.last(), Some(GameEvent::EndGame)) {
+        return Err(ReplayError::Corrupt {
+            line: events.len(),
+            message: "replay does not terminate with end_game".into(),
+        });
+    }
     if let Some(mode) = mode {
         for (index, event) in events.iter().enumerate() {
             validate_event(event, mode).map_err(|message| ReplayError::Corrupt {
@@ -299,7 +311,6 @@ fn parse_value(value: &Value) -> Result<CanonicalEvent, String> {
                     "kyoku",
                     "honba",
                     "kyoutaku",
-                    "kyotaku",
                     "oya",
                     "scores",
                     "dora_marker",
@@ -315,9 +326,7 @@ fn parse_value(value: &Value) -> Result<CanonicalEvent, String> {
                 bakaze: parse_wind(required_string(object, "bakaze")?)?,
                 kyoku: required_u8(object, "kyoku")?,
                 honba: required_u8(object, "honba")?,
-                kyotaku: optional_u8(object, "kyoutaku")?
-                    .or(optional_u8(object, "kyotaku")?)
-                    .ok_or_else(|| "missing kyoutaku".to_owned())?,
+                kyotaku: required_u8(object, "kyoutaku")?,
                 oya: parse_seat(usize::from(required_u8(object, "oya")?))?,
                 scores,
                 dora_marker: parse_tile(required_string(object, "dora_marker")?)?,
@@ -407,13 +416,11 @@ fn parse_value(value: &Value) -> Result<CanonicalEvent, String> {
                     "target",
                     "pai",
                     "uradora_markers",
-                    "ura_markers",
                     "yaku",
                     "fu",
                     "han",
                     "scores",
                     "delta",
-                    "deltas",
                 ],
             )?;
             Ok(GameEvent::Hora {
@@ -422,25 +429,22 @@ fn parse_value(value: &Value) -> Result<CanonicalEvent, String> {
                 tile: optional_string(object, "pai")?
                     .map(|tile| parse_tile(&tile))
                     .transpose()?,
-                ura_markers: optional_string_vec_alias(object, "uradora_markers", "ura_markers")?
+                ura_markers: optional_string_vec(object, "uradora_markers")?
                     .map(|tiles| tiles.iter().map(|tile| parse_tile(tile)).collect())
                     .transpose()?,
                 yaku: optional_yaku(object, "yaku")?,
                 fu: optional_u32(object, "fu")?,
                 han: optional_u32(object, "han")?,
                 scores: optional_i32_vec(object, "scores")?,
-                delta: optional_i32_vec_alias(object, "delta", "deltas")?,
+                delta: optional_i32_vec(object, "delta")?,
             })
         }
         "ryukyoku" => {
-            check_fields(
-                object,
-                &["type", "reason", "tehais", "delta", "deltas", "scores"],
-            )?;
+            check_fields(object, &["type", "reason", "tehais", "delta", "scores"])?;
             Ok(GameEvent::Ryukyoku {
                 reason: optional_string(object, "reason")?,
                 tehais: optional_tile_hands(object, "tehais")?,
-                delta: optional_i32_vec_alias(object, "delta", "deltas")?,
+                delta: optional_i32_vec(object, "delta")?,
                 scores: optional_i32_vec(object, "scores")?,
             })
         }
@@ -752,18 +756,6 @@ fn optional_string_vec(
     }
 }
 
-fn optional_string_vec_alias(
-    object: &Map<String, Value>,
-    primary: &str,
-    alias: &str,
-) -> Result<Option<Vec<String>>, String> {
-    if object.contains_key(primary) {
-        optional_string_vec(object, primary)
-    } else {
-        optional_string_vec(object, alias)
-    }
-}
-
 fn required_bool(object: &Map<String, Value>, field: &str) -> Result<bool, String> {
     object
         .get(field)
@@ -777,13 +769,6 @@ fn required_u8(object: &Map<String, Value>, field: &str) -> Result<u8, String> {
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("{field} must be an unsigned integer"))?;
     u8::try_from(value).map_err(|_| format!("{field} is out of range"))
-}
-
-fn optional_u8(object: &Map<String, Value>, field: &str) -> Result<Option<u8>, String> {
-    match object.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(_) => required_u8(object, field).map(Some),
-    }
 }
 
 fn required_u32(object: &Map<String, Value>, field: &str) -> Result<u32, String> {
@@ -833,18 +818,6 @@ fn optional_i32_vec(object: &Map<String, Value>, field: &str) -> Result<Option<V
     match object.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(_) => required_i32_vec(object, field).map(Some),
-    }
-}
-
-fn optional_i32_vec_alias(
-    object: &Map<String, Value>,
-    primary: &str,
-    alias: &str,
-) -> Result<Option<Vec<i32>>, String> {
-    if object.contains_key(primary) {
-        optional_i32_vec(object, primary)
-    } else {
-        optional_i32_vec(object, alias)
     }
 }
 

@@ -199,9 +199,20 @@ impl ReplayState {
                 }
             }
             GameEvent::Kita { actor } => {
-                // Nuki is represented by its event; the core projection has no
-                // separate nuki collection, so do not invent a concealed meld.
-                let _ = self.player_mut(*actor)?;
+                // Sanma nuki removes one North from the concealed hand. The
+                // core projection has no separate nuki collection, so the
+                // concealed count is represented by the reduced hand.
+                let player = self.player_mut(*actor)?;
+                let Some(index) = player
+                    .hand
+                    .iter()
+                    .position(|tile| tile.tile_type() == Tile::NORTH)
+                else {
+                    return Err(ReplayError::InvalidEvent(
+                        "kita requires a North tile in the concealed hand".into(),
+                    ));
+                };
+                player.hand.remove(index);
             }
             GameEvent::EndKyoku | GameEvent::EndGame => {}
         }
@@ -301,6 +312,12 @@ pub fn build_replay_frames_with_auxiliary(
     let mut state = ReplayState::new(mode);
     let mut aux_by_line: HashMap<usize, Vec<AuxiliaryRecord>> = HashMap::new();
     for auxiliary in auxiliary_events {
+        if auxiliary.line_index >= events.len() {
+            return Err(ReplayError::InvalidEvent(format!(
+                "auxiliary line index {} is outside the replay timeline",
+                auxiliary.line_index
+            )));
+        }
         aux_by_line
             .entry(auxiliary.line_index)
             .or_default()
