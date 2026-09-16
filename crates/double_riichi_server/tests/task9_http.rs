@@ -334,11 +334,14 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
     ));
     let room = state
         .rooms()
-        .create(RoomConfig::new(
-            "Live",
-            GameMode::FourPlayerRedEast,
-            double_riichi_core::CharacterCatalog::starter(),
-        ))
+        .create(
+            RoomConfig::new(
+                "Live",
+                GameMode::FourPlayerRedEast,
+                double_riichi_core::CharacterCatalog::starter(),
+            )
+            .with_time_control(double_riichi_core::TimeControl::Unlimited),
+        )
         .await
         .unwrap();
     let join_code = room.join_code().to_string();
@@ -460,6 +463,69 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
     room.send(double_riichi_core::RoomCommand::start())
         .await
         .unwrap();
+    let decision = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Ok(Some(projection)) = room.projection(participant_id.clone()).await {
+                let value = serde_json::to_value(projection).unwrap();
+                if value["decision"]["actions"]
+                    .as_array()
+                    .is_some_and(|actions| !actions.is_empty())
+                {
+                    break value;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(decision["audience"], "player");
+    let decision_id = decision["decision"]["decision_id"].as_str().unwrap();
+    let action_id = decision["decision"]["actions"][0]["action_id"]
+        .as_str()
+        .unwrap();
+    second
+        .send(WsMessage::Text(
+            json!({"type":"submit_action","decision_id":decision_id,"action_id":action_id})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let accepted_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match second.next().await {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "action_result" {
+                        break value;
+                    }
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("expected accepted action result, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(accepted_result["status"], "accepted");
+    let game_update = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match second.next().await {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "game_update" {
+                        break value;
+                    }
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("expected game update, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(game_update["state"]["audience"], "player");
     second
         .send(WsMessage::Text(
             r#"{"type":"submit_action","decision_id":"stale","action_id":"stale"}"#.into(),
@@ -519,5 +585,91 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
         tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4006)
     ));
     assert_eq!(leave_frame.reason, "session_expired");
+    server.abort();
+}
+
+#[tokio::test]
+async fn live_human_slow_consumer_receives_semantic_close() {
+    let admin = Arc::new(
+        AdminAuthenticator::new(
+            "admin",
+            hash_password("correct horse battery staple").unwrap(),
+        )
+        .unwrap(),
+    );
+    let state = Arc::new(ServerState::for_tests(
+        "http://127.0.0.1:3000",
+        admin,
+        RoomRegistry::with_max_rooms(1),
+    ));
+    let room = state
+        .rooms()
+        .create(RoomConfig::new(
+            "Slow",
+            GameMode::FourPlayerRedEast,
+            double_riichi_core::CharacterCatalog::starter(),
+        ))
+        .await
+        .unwrap();
+    let join_code = room.join_code().to_string();
+    let response = server_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/rooms/{join_code}/join"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"nickname":"Slow","character_id":"player-red"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            server_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let mut request = format!("ws://{address}/ws/v1/rooms/{join_code}/human")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", "http://127.0.0.1:3000".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+    let (mut socket, _) = connect_async(request).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    for _ in 0..256 {
+        let _ = room.try_send(double_riichi_core::RoomCommand::set_mode(
+            GameMode::FourPlayerRedEast,
+        ));
+    }
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(WsMessage::Close(Some(frame)))) => break frame,
+                Some(Ok(_)) => continue,
+                other => panic!("expected slow-consumer close, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        frame.code,
+        tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4005)
+    ));
+    assert_eq!(frame.reason, "slow_consumer");
     server.abort();
 }
