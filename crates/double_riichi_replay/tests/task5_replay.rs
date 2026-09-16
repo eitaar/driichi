@@ -503,6 +503,22 @@ fn three_player_kita_removes_north_from_reconstructed_hand() {
 }
 
 #[test]
+fn four_player_kita_is_rejected() {
+    let mut events = start_events();
+    let GameEvent::StartKyoku { tehais, .. } = &mut events[1] else {
+        unreachable!();
+    };
+    tehais[0][0] = Tile::from_id(120).unwrap();
+    events.push(GameEvent::Kita {
+        actor: Seat::new(0).unwrap(),
+    });
+    assert!(matches!(
+        build_replay_frames(&events),
+        Err(ReplayError::InvalidEvent(message)) if message.contains("three-player")
+    ));
+}
+
+#[test]
 fn three_player_frames_have_no_dummy_fourth_player() {
     use double_riichi_core::{MatchMachine, Participant, ParticipantKind, Seat};
 
