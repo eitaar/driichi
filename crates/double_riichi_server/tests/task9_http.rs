@@ -624,7 +624,7 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
         )
         .with_bot_token_service(service),
     );
-    let app = server_router(state);
+    let app = server_router(state.clone());
     let login = app
         .clone()
         .oneshot(
@@ -660,6 +660,36 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
     let created_body = body(created).await;
     let raw = created_body["token"].as_str().unwrap().to_owned();
     let token_id = created_body["token_id"].as_str().unwrap().to_owned();
+    let room = state
+        .rooms()
+        .create(double_riichi_core::RoomConfig::new(
+            "Token room",
+            double_riichi_core::GameMode::FourPlayerRedEast,
+            double_riichi_core::CharacterCatalog::starter(),
+        ))
+        .await
+        .unwrap();
+    room.send(double_riichi_core::RoomCommand::join_with_token(
+        double_riichi_core::Participant::new(
+            "agent",
+            "agent",
+            double_riichi_core::ParticipantKind::MJAI,
+        ),
+        token_id.clone(),
+    ))
+    .await
+    .unwrap();
+    room.send(double_riichi_core::RoomCommand::select_with_character(
+        "agent", "mjai-bot",
+    ))
+    .await
+    .unwrap();
+    room.send(double_riichi_core::RoomCommand::fill_with_bots())
+        .await
+        .unwrap();
+    room.send(double_riichi_core::RoomCommand::start())
+        .await
+        .unwrap();
     let listed = app
         .clone()
         .oneshot(
@@ -689,6 +719,20 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
         .unwrap();
     assert_eq!(revoked.status(), 200);
     assert_eq!(body(revoked).await["state"], "revoked");
+    let active_seat = room
+        .snapshot()
+        .await
+        .unwrap()
+        .participants
+        .into_iter()
+        .find(|participant| participant.id.as_str() == "agent")
+        .unwrap();
+    assert_eq!(
+        active_seat.controller,
+        double_riichi_core::RoomController::PermanentAuto(
+            double_riichi_core::PermanentAutoReason::TokenRevoked
+        )
+    );
     let again = app
         .oneshot(
             Request::builder()
@@ -701,7 +745,7 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
         )
         .await
         .unwrap();
-    assert_eq!(again.status(), 409);
+    assert_eq!(again.status(), 200);
     storage.close().await;
     let _ = fs::remove_dir_all(root);
 }

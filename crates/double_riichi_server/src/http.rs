@@ -1012,7 +1012,9 @@ async fn admin_revoke_token(
         .unwrap_or_default()
         .as_secs() as i64;
     match service.revoke(&token_id, now, &request_id.0).await {
-        Ok(()) => {
+        Ok(()) | Err(CredentialError::AlreadyRevoked) => {
+            // SQLite/cache revocation is irreversible. A repeated request is the
+            // delivery retry that lets a transient Room signal failure recover.
             if state.rooms.revoke_token(&token_id).await.is_err() {
                 return ApiError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -1031,13 +1033,6 @@ async fn admin_revoke_token(
                 Err(_) => internal_error(&request_id),
             }
         }
-        Err(CredentialError::AlreadyRevoked) => ApiError::new(
-            StatusCode::CONFLICT,
-            "Bot Token already revoked",
-            "The Bot Token has already been revoked.",
-            "token_already_revoked",
-        )
-        .response(&request_id),
         Err(CredentialError::InvalidCredentials) => invalid_credentials(&request_id),
         Err(_) => internal_error(&request_id),
     }
