@@ -1,0 +1,347 @@
+use std::collections::HashMap;
+
+use crate::{
+    error::{MAX_REPLAY_FRAME_BYTES, ReplayError, validate_frame_payload_size},
+    mjson::{CanonicalEvent, event_value},
+    persistence::{AuxiliaryRecord, ReplayArtifact},
+};
+use double_riichi_core::{
+    Audience, GameEvent, GameMode, MeldState, Participant, ParticipantId, ParticipantKind,
+    ReplayAdminProjection, Seat, TablePlayerState, TableState, Tile, project_table_state,
+};
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
+
+#[derive(Debug, Clone)]
+pub struct ReplayFrame {
+    pub event_index: usize,
+    pub visible_event: CanonicalEvent,
+    pub visible_state: ReplayAdminProjection,
+    pub auxiliary_events: Vec<AuxiliaryRecord>,
+}
+
+impl Serialize for ReplayFrame {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut object = serializer.serialize_struct("ReplayFrame", 4)?;
+        object.serialize_field("event_index", &self.event_index)?;
+        object.serialize_field("visible_event", &event_value(&self.visible_event))?;
+        object.serialize_field("visible_state", &self.visible_state)?;
+        object.serialize_field("auxiliary_events", &self.auxiliary_events)?;
+        object.end()
+    }
+}
+
+impl ReplayFrame {
+    pub fn to_json(&self) -> Result<String, ReplayError> {
+        serde_json::to_string(self).map_err(ReplayError::Json)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReplayState {
+    mode: GameMode,
+    participants: Vec<Participant>,
+    scores: Vec<i32>,
+    hands: Vec<Vec<Tile>>,
+    discards: Vec<Vec<Tile>>,
+    melds: Vec<Vec<MeldState>>,
+    riichi: Vec<bool>,
+    dora_indicators: Vec<Tile>,
+}
+
+impl ReplayState {
+    fn new(mode: GameMode) -> Self {
+        let participants = (0..mode.seat_count())
+            .map(|seat| {
+                Participant::new(
+                    format!("seat{seat}"),
+                    format!("Seat {seat}"),
+                    ParticipantKind::BuiltInBot,
+                )
+            })
+            .collect::<Vec<_>>();
+        Self {
+            mode,
+            participants,
+            scores: vec![25_000; mode.seat_count()],
+            hands: vec![Vec::new(); mode.seat_count()],
+            discards: vec![Vec::new(); mode.seat_count()],
+            melds: vec![Vec::new(); mode.seat_count()],
+            riichi: vec![false; mode.seat_count()],
+            dora_indicators: Vec::new(),
+        }
+    }
+
+    fn apply(&mut self, event: &CanonicalEvent) -> Result<(), ReplayError> {
+        match event {
+            GameEvent::StartGame { names, .. } => {
+                if let Some(names) = names {
+                    for (seat, name) in names.iter().take(self.mode.seat_count()).enumerate() {
+                        self.participants[seat].display_name = name.clone();
+                    }
+                }
+            }
+            GameEvent::StartKyoku {
+                scores,
+                tehais,
+                dora_marker,
+                ..
+            } => {
+                if scores.len() != self.mode.seat_count() || tehais.len() != self.mode.seat_count()
+                {
+                    return Err(ReplayError::InvalidEvent(
+                        "start_kyoku does not match replay mode".into(),
+                    ));
+                }
+                self.scores.clone_from(scores);
+                self.hands.clone_from(tehais);
+                self.discards.iter_mut().for_each(Vec::clear);
+                self.melds.iter_mut().for_each(Vec::clear);
+                self.riichi.fill(false);
+                self.dora_indicators.clear();
+                self.dora_indicators.push(*dora_marker);
+            }
+            GameEvent::Tsumo { actor, tile } => {
+                self.player_mut(*actor)?.hands_mut().push(*tile);
+            }
+            GameEvent::Dahai { actor, tile, .. } => {
+                let mut player = self.player_mut(*actor)?;
+                remove_tile(&mut player.hand, *tile);
+                player.discards.push(*tile);
+            }
+            GameEvent::Pon {
+                actor,
+                target,
+                called,
+                consumed,
+            }
+            | GameEvent::Chi {
+                actor,
+                target,
+                called,
+                consumed,
+            }
+            | GameEvent::Daiminkan {
+                actor,
+                target,
+                called,
+                consumed,
+            } => {
+                let mut player = self.player_mut(*actor)?;
+                for tile in consumed {
+                    remove_tile(&mut player.hand, *tile);
+                }
+                let mut tiles = consumed.clone();
+                tiles.push(*called);
+                player.melds.push(MeldState {
+                    tiles,
+                    opened: true,
+                    from_who: Some(*target),
+                    called_tile: Some(*called),
+                });
+            }
+            GameEvent::Kakan { actor, called } => {
+                let mut player = self.player_mut(*actor)?;
+                if let Some(meld) = player.melds.iter_mut().find(|meld| {
+                    meld.opened
+                        && meld
+                            .tiles
+                            .iter()
+                            .any(|tile| tile.tile_type() == called.tile_type())
+                }) {
+                    remove_tile(&mut player.hand, *called);
+                    meld.tiles.push(*called);
+                    meld.called_tile = Some(*called);
+                } else {
+                    player.melds.push(MeldState {
+                        tiles: vec![*called],
+                        opened: true,
+                        from_who: None,
+                        called_tile: Some(*called),
+                    });
+                }
+            }
+            GameEvent::Ankan { actor, consumed } => {
+                let mut player = self.player_mut(*actor)?;
+                for tile in consumed {
+                    remove_tile(&mut player.hand, *tile);
+                }
+                player.melds.push(MeldState {
+                    tiles: consumed.clone(),
+                    opened: false,
+                    from_who: None,
+                    called_tile: None,
+                });
+            }
+            GameEvent::Dora { dora_marker } => self.dora_indicators.push(*dora_marker),
+            GameEvent::Reach { actor } | GameEvent::ReachAccepted { actor } => {
+                *self.player_mut(*actor)?.riichi = true;
+            }
+            GameEvent::Hora { scores, .. } => {
+                if let Some(scores) = scores {
+                    self.set_scores(scores)?;
+                }
+            }
+            GameEvent::Ryukyoku { tehais, scores, .. } => {
+                if let Some(tehais) = tehais {
+                    if tehais.len() != self.mode.seat_count() {
+                        return Err(ReplayError::InvalidEvent(
+                            "ryukyoku hand count mismatch".into(),
+                        ));
+                    }
+                    self.hands.clone_from(tehais);
+                }
+                if let Some(scores) = scores {
+                    self.set_scores(scores)?;
+                }
+            }
+            GameEvent::Kita { actor } => {
+                // Nuki is represented by its event; the core projection has no
+                // separate nuki collection, so do not invent a concealed meld.
+                let _ = self.player_mut(*actor)?;
+            }
+            GameEvent::EndKyoku | GameEvent::EndGame => {}
+        }
+        Ok(())
+    }
+
+    fn set_scores(&mut self, scores: &[i32]) -> Result<(), ReplayError> {
+        if scores.len() != self.mode.seat_count() {
+            return Err(ReplayError::InvalidEvent("score count mismatch".into()));
+        }
+        self.scores.clone_from_slice(scores);
+        Ok(())
+    }
+
+    fn player_mut(&mut self, seat: Seat) -> Result<PlayerStateMut<'_>, ReplayError> {
+        let index = usize::from(seat.index());
+        if index >= self.mode.seat_count() {
+            return Err(ReplayError::InvalidEvent(format!(
+                "seat {} is outside replay mode",
+                seat.index()
+            )));
+        }
+        Ok(PlayerStateMut {
+            hand: &mut self.hands[index],
+            discards: &mut self.discards[index],
+            melds: &mut self.melds[index],
+            riichi: &mut self.riichi[index],
+        })
+    }
+
+    fn projection(&self) -> Result<ReplayAdminProjection, ReplayError> {
+        let players = self
+            .participants
+            .iter()
+            .enumerate()
+            .map(|(index, participant)| TablePlayerState {
+                seat: Seat::new(index as u8).expect("mode seats are less than four"),
+                participant: participant.clone(),
+                score: self.scores[index],
+                hand: self.hands[index].clone(),
+                discards: self.discards[index].clone(),
+                melds: self.melds[index].clone(),
+                riichi: self.riichi[index],
+            })
+            .collect();
+        let table = TableState::new(self.mode, players, self.dora_indicators.clone())
+            .map_err(|error| ReplayError::InvalidEvent(error.to_string()))?;
+        match project_table_state(&table, Audience::ReplayAdmin) {
+            double_riichi_core::AudienceProjection::ReplayAdmin(projection) => Ok(projection),
+            _ => unreachable!("ReplayAdmin projection policy returned another audience"),
+        }
+    }
+}
+
+struct PlayerStateMut<'a> {
+    hand: &'a mut Vec<Tile>,
+    discards: &'a mut Vec<Tile>,
+    melds: &'a mut Vec<MeldState>,
+    riichi: &'a mut bool,
+}
+
+impl PlayerStateMut<'_> {
+    fn hands_mut(&mut self) -> &mut Vec<Tile> {
+        self.hand
+    }
+}
+
+fn remove_tile(hand: &mut Vec<Tile>, wanted: Tile) {
+    if let Some(index) = hand.iter().position(|tile| *tile == wanted) {
+        hand.remove(index);
+    }
+}
+
+/// Build the complete Admin-only timeline from validated canonical events.
+pub fn build_replay_frames(events: &[CanonicalEvent]) -> Result<Vec<ReplayFrame>, ReplayError> {
+    build_replay_frames_with_auxiliary(events, &[])
+}
+
+pub fn build_replay_frames_with_auxiliary(
+    events: &[CanonicalEvent],
+    auxiliary_events: &[AuxiliaryRecord],
+) -> Result<Vec<ReplayFrame>, ReplayError> {
+    let mode = events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::StartKyoku { scores, .. } => match scores.len() {
+                3 => Some(GameMode::ThreePlayerRedEast),
+                4 => Some(GameMode::FourPlayerRedEast),
+                _ => None,
+            },
+            _ => None,
+        })
+        .ok_or_else(|| ReplayError::InvalidEvent("replay has no start_kyoku event".into()))?;
+    for event in events {
+        crate::mjson::validate_event(event, mode).map_err(ReplayError::InvalidEvent)?;
+    }
+    let mut state = ReplayState::new(mode);
+    let mut aux_by_line: HashMap<usize, Vec<AuxiliaryRecord>> = HashMap::new();
+    for auxiliary in auxiliary_events {
+        aux_by_line
+            .entry(auxiliary.line_index)
+            .or_default()
+            .push(auxiliary.clone());
+    }
+    for records in aux_by_line.values_mut() {
+        records.sort_by_key(|record| (record.phase.sort_key(), record.sequence));
+    }
+
+    let mut frames = Vec::with_capacity(events.len());
+    for (event_index, event) in events.iter().enumerate() {
+        state.apply(event)?;
+        frames.push(ReplayFrame {
+            event_index,
+            visible_event: event.clone(),
+            visible_state: state.projection()?,
+            auxiliary_events: aux_by_line.remove(&event_index).unwrap_or_default(),
+        });
+    }
+    validate_frame_payload_size(serde_json::to_vec(&frames)?.len())?;
+    Ok(frames)
+}
+
+pub fn frames_from_artifact(
+    events: &[CanonicalEvent],
+    artifact: &ReplayArtifact,
+) -> Result<Vec<ReplayFrame>, ReplayError> {
+    build_replay_frames_with_auxiliary(events, &artifact.auxiliary_events)
+}
+
+pub fn encode_replay_frames(frames: &[ReplayFrame]) -> Result<Vec<u8>, ReplayError> {
+    let payload = serde_json::to_vec(frames)?;
+    validate_frame_payload_size(payload.len())?;
+    Ok(payload)
+}
+
+pub const fn replay_frame_limit() -> usize {
+    MAX_REPLAY_FRAME_BYTES
+}
+
+// Keep this import visible in generated docs: these are the domain types that
+// make ReplayAdmin reconstruction explicit rather than exposing engine values.
+#[allow(dead_code)]
+fn _domain_type_names(_: ParticipantId) {}
