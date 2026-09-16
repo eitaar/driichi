@@ -1,8 +1,15 @@
-use std::sync::Arc;
+use std::{
+    fs,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{body::Body, http::Request};
 use double_riichi_core::{GameMode, RoomConfig, RoomRegistry};
-use double_riichi_server::{AdminAuthenticator, ServerState, hash_password, server_router};
+use double_riichi_server::{
+    AdminAuthenticator, BotTokenAuthority, BotTokenService, ServerState, Storage, hash_password,
+    server_router,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::{
@@ -586,6 +593,117 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
     ));
     assert_eq!(leave_frame.reason, "session_expired");
     server.abort();
+}
+
+#[tokio::test]
+async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
+    let root = std::env::temp_dir().join(format!(
+        "double-riichi-task9-token-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    let service = Arc::new(BotTokenService::new(
+        storage.clone(),
+        Arc::new(BotTokenAuthority::empty()),
+    ));
+    let admin = Arc::new(
+        AdminAuthenticator::new(
+            "admin",
+            hash_password("correct horse battery staple").unwrap(),
+        )
+        .unwrap(),
+    );
+    let state = Arc::new(
+        ServerState::for_tests(
+            "http://127.0.0.1:3000",
+            admin,
+            RoomRegistry::with_max_rooms(2),
+        )
+        .with_bot_token_service(service),
+    );
+    let app = server_router(state);
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/login")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"username":"admin","password":"correct horse battery staple"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = login.headers()["set-cookie"].to_str().unwrap().to_owned();
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/tokens")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"name":"runner"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created_body = body(created).await;
+    let raw = created_body["token"].as_str().unwrap().to_owned();
+    let token_id = created_body["token_id"].as_str().unwrap().to_owned();
+    let listed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/tokens")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let listed_body = body(listed).await;
+    assert!(!listed_body.to_string().contains(&raw));
+    assert!(!listed_body.to_string().contains("token_hash"));
+    let revoked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/tokens/{token_id}/revoke"))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), 200);
+    assert_eq!(body(revoked).await["state"], "revoked");
+    let again = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/tokens/{token_id}/revoke"))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 409);
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]
