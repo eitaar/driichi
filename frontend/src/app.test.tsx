@@ -288,11 +288,12 @@ describe("admin room workspace", () => {
     });
 
     render(<App />);
-    await screen.findByRole("heading", { name: /bot tokens/i });
+    await screen.findByRole("heading", { name: /credentials for agents/i });
     fireEvent.change(screen.getByRole("textbox", { name: /token name/i }), { target: { value: "runner" } });
     fireEvent.click(screen.getByRole("button", { name: /create token/i }));
     expect(await screen.findByText("driichi_secret_once")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /close token/i }));
+    const tokenDialog = await screen.findByRole("dialog");
+    fireEvent.click(within(tokenDialog).getAllByRole("button", { name: /close token/i })[1]);
     expect(screen.queryByText("driichi_secret_once")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /revoke runner/i }));
     expect(await screen.findByRole("dialog")).toBeVisible();
@@ -369,6 +370,7 @@ describe("admin mutation coverage", () => {
     render(<App />);
     await screen.findByRole("heading", { name: /night market/i });
     const deleteButton = screen.getByRole("button", { name: /delete room/i });
+    deleteButton.focus();
     fireEvent.click(deleteButton);
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toBeVisible();
@@ -390,7 +392,7 @@ describe("admin mutation coverage", () => {
       if (path.endsWith("/participants/P2/select")) { selected = true; return Promise.resolve(response(detail)); }
       if (path.endsWith("/participants/P2/deselect")) { selected = false; return Promise.resolve(response(detail)); }
       if (path.endsWith("/start")) return Promise.resolve(response({ ...detail, phase: "playing" }));
-      if (path.endsWith("/admin/rooms/123456") && init?.method === "GET") return Promise.resolve(response(detail));
+      if (path.endsWith("/admin/rooms/123456")) return Promise.resolve(response(detail));
       if (path.endsWith("/admin/rooms")) return Promise.resolve(response([detail]));
       if (path.endsWith("/admin/tokens")) return Promise.resolve(response([]));
       return Promise.resolve(response([]));
@@ -438,6 +440,7 @@ describe("human lobby websocket", () => {
     setPath("/room/123456/lobby");
     sessionStorage.setItem("driichi:participant:123456", "P1");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 200 })));
+    vi.useRealTimers();
   });
 
   it("renders authoritative snapshots, separated identity axes, and a three-seat roster", async () => {
@@ -454,7 +457,7 @@ describe("human lobby websocket", () => {
       close() { this.onclose?.({ code: 1000, reason: "client_closed" } as CloseEvent); }
       emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
     }
-    const socket = Object.assign(vi.fn((url: string) => new FakeWebSocket(url)), { OPEN: FakeWebSocket.OPEN });
+    const socket = Object.assign(vi.fn(function (url: string) { return new FakeWebSocket(url); }), { OPEN: FakeWebSocket.OPEN });
     vi.stubGlobal("WebSocket", socket);
     render(<App />);
     const instance = await waitFor(() => {
@@ -479,12 +482,12 @@ describe("human lobby websocket", () => {
       state: null,
     });
     expect(await screen.findByRole("heading", { name: /night market lobby/i })).toBeVisible();
-    expect(screen.getByText(/your participant/i)).toBeVisible();
-    expect(screen.getByText(/presence/i)).toBeVisible();
-    expect(screen.getByText(/selection/i)).toBeVisible();
-    expect(screen.getByText(/controller/i)).toBeVisible();
+    expect(screen.getByText(/mika \/ you/i)).toBeVisible();
+    expect(screen.getAllByText("Presence")).toHaveLength(3);
+    expect(screen.getAllByText("Selection")).toHaveLength(3);
+    expect(screen.getAllByText("Controller")).toHaveLength(3);
     expect(screen.getByText(/seat 1/i)).toBeVisible();
-    expect(screen.getByText(/3 seats/i)).toBeVisible();
+    expect(screen.getByText(/3\s+OF\s+3/i)).toBeVisible();
   });
 
   it("keeps the WebSocket connected when the server rejects a normal command", async () => {
@@ -500,7 +503,7 @@ describe("human lobby websocket", () => {
       emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
     }
     const socket = new FakeWebSocket();
-    const webSocket = Object.assign(vi.fn(() => socket), { OPEN: FakeWebSocket.OPEN });
+    const webSocket = Object.assign(vi.fn(function () { return socket; }), { OPEN: FakeWebSocket.OPEN });
     vi.stubGlobal("WebSocket", webSocket);
     render(<App />);
     socket.onopen?.();
@@ -525,7 +528,7 @@ describe("human lobby websocket", () => {
       emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
     }
     const instance = new FakeWebSocket("ws://test");
-    vi.stubGlobal("WebSocket", Object.assign(vi.fn(() => instance), { OPEN: FakeWebSocket.OPEN }));
+    vi.stubGlobal("WebSocket", Object.assign(vi.fn(function () { return instance; }), { OPEN: FakeWebSocket.OPEN }));
     class FakeImage {
       onload: (() => void) | null = null;
       onerror: (() => void) | null = null;
@@ -559,7 +562,7 @@ describe("human lobby websocket", () => {
       emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
     }
     const sockets: FakeWebSocket[] = [];
-    vi.stubGlobal("WebSocket", vi.fn(() => { const socket = new FakeWebSocket(); sockets.push(socket); return socket; }));
+    vi.stubGlobal("WebSocket", Object.assign(vi.fn(function () { const socket = new FakeWebSocket(); sockets.push(socket); return socket; }), { OPEN: FakeWebSocket.OPEN }));
     let imageCount = 0;
     class FakeImage {
       onload: (() => void) | null = null;
@@ -570,19 +573,19 @@ describe("human lobby websocket", () => {
     vi.stubGlobal("Image", FakeImage);
     vi.useFakeTimers();
     render(<App />);
-    await waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets).toHaveLength(1);
     const snapshot = { type: "snapshot", room: { join_code: "123456", room_name: "Night Market", game_mode: "3p-red-east", phase: "lobby", revision: 1, participants: [
       { participant_id: "P1", display_name: "Mika", kind: "human", presence: "connected", selected: true, ready: false, character_id: "player-red", role: "none", controller: "interactive" },
       { participant_id: "B1", display_name: "Bot 1", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
       { participant_id: "B2", display_name: "Bot 2", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
     ], match_players: [], roster: [], result: null }, state: null };
-    sockets[0].open(); sockets[0].emit(snapshot);
-    await waitFor(() => expect(imageCount).toBe(6));
+    act(() => { sockets[0].open(); sockets[0].emit(snapshot); });
+    expect(imageCount).toBe(6);
     sockets[0].onclose?.({ code: 1006, reason: "" } as CloseEvent);
     act(() => { vi.advanceTimersByTime(500); });
-    await waitFor(() => expect(sockets).toHaveLength(2));
-    sockets[1].open(); sockets[1].emit(snapshot);
-    await waitFor(() => expect(imageCount).toBe(12));
+    expect(sockets).toHaveLength(2);
+    act(() => { sockets[1].open(); sockets[1].emit(snapshot); });
+    expect(imageCount).toBe(12);
     sockets[0].emit({ ...snapshot, room: { ...snapshot.room, room_name: "Stale Room" } });
     expect(screen.queryByRole("heading", { name: /stale room lobby/i })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /night market lobby/i })).toBeVisible();
@@ -606,7 +609,7 @@ describe("human lobby websocket", () => {
       set src(_value: string) { queueMicrotask(() => this.onload?.()); }
     }
     const instance = new FakeWebSocket();
-    vi.stubGlobal("WebSocket", vi.fn(() => instance));
+    vi.stubGlobal("WebSocket", Object.assign(vi.fn(function () { return instance; }), { OPEN: FakeWebSocket.OPEN }));
     vi.stubGlobal("Image", BrokenImage);
     render(<App />);
     instance.emit({ type: "snapshot", room: { join_code: "123456", room_name: "Night Market", game_mode: "3p-red-east", phase: "lobby", revision: 1, participants: [

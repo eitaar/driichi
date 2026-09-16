@@ -25,17 +25,20 @@ The raw `driichi_...` value is serialized only in the create response. The front
 ## TDD evidence
 
 - Added focused regressions for authoritative seats, every Admin mutation family, Rematch, command rejection ownership, connection-generation stale callbacks, reconnect asset preload, decode failures, and modal focus lifecycle.
-- Rust HTTP focused coverage passed 10/10. Frontend TypeScript passed. Vitest could not execute in this inherited MSYS environment: direct `node node_modules/vitest/vitest.mjs run src/app.test.tsx --reporter=verbose` terminated with segmentation fault (exit 139), so it is not claimed as passing evidence.
+- Frontend component coverage now produces durable JSON and JUnit artifacts: `frontend/test-results/task11-app-vitest.json` reports 21 total / 21 passed / 0 failed, and `frontend/test-results/task11-app-vitest.junit.xml` reports 21 tests / 0 failures.
+- Browser coverage produces `frontend/test-results/task11-playwright.json` and `frontend/test-results/task11-playwright.junit.xml`, with 9 total / 9 passed / 0 failed. Admin and Lobby screenshots were captured at both required desktop viewports and visually inspected.
 
 ## Validation commands
 
+- `npm ci --prefix frontend --no-audit --no-fund` — passed; repaired the stale optional native package installation.
 - `cargo fmt --all -- --check` — passed.
 - `cargo check --workspace` — passed.
 - `cargo test -p double_riichi_server --test task9_http` — passed, 10/10.
 - `npm run typecheck --prefix frontend` — passed.
-- `npm run build --prefix frontend` returned zero from the inherited wrapper without Vite output; direct Vite startup segfaulted (exit 139), so no frontend build is claimed.
-- `node node_modules/vitest/vitest.mjs run src/app.test.tsx --reporter=verbose` — environment failure, exit 139 (segmentation fault).
-- `node node_modules/@playwright/test/cli.js test tests/entry.spec.ts --workers=1` — environment failure: configured webServer exited early. Direct `node node_modules/vite/bin/vite.js --host 127.0.0.1` also exited 139 (segmentation fault). No browser pass or new screenshots are claimed.
+- `node node_modules/vitest/vitest.mjs run src/app.test.tsx --reporter=json --outputFile=test-results/task11-app-vitest.json` — passed, 21/21; JSON parsed with nonzero passing count.
+- `node node_modules/vitest/vitest.mjs run src/app.test.tsx --reporter=junit --outputFile=test-results/task11-app-vitest.junit.xml` — passed, 21 tests / 0 failures.
+- `node node_modules/@playwright/test/cli.js test tests/entry.spec.ts --workers=1 --reporter=json` — passed, 9/9; JSON parsed with nonzero passing count.
+- JUnit conversion from the passing Playwright JSON — 9 tests / 0 failures.
 - `git diff --check` — passed.
 
 ## Visual critique
@@ -44,9 +47,9 @@ The UI stays on the approved broadcast-noir foundation: flat split workspace, qu
 
 ## Commit
 
-Pending review-fix commit from `5516c35`.
+Review-fix baseline: `ec4cd34`.
+Follow-up coverage/evidence fix: pending commit from `ec4cd34`.
 
 ## Concerns
 
-1. Frontend component/browser runners and required Admin/Lobby screenshots need a native Node installation because this worktree's MSYS Node environment segfaults when loading Vitest/Vite and Playwright's configured web server exits early.
-2. Browser visual evidence is intentionally not marked as passing; rerun the required Admin and Lobby captures at 1024x600 and 1440x900 after the environment is repaired.
+None for the reviewed contracts. The Playwright captures use mocked Admin/Lobby data and intentionally expose the selected-character decode failure state when no character asset server is present; this is visible and keeps Ready disabled.
