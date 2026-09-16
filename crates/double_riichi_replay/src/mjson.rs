@@ -559,9 +559,13 @@ pub(crate) fn validate_event(event: &CanonicalEvent, mode: GameMode) -> Result<(
             Ok(())
         }
         GameEvent::Dora { dora_marker } => tile(*dora_marker),
-        GameEvent::Reach { actor }
-        | GameEvent::ReachAccepted { actor }
-        | GameEvent::Kita { actor } => seat(*actor),
+        GameEvent::Reach { actor } | GameEvent::ReachAccepted { actor } => seat(*actor),
+        GameEvent::Kita { actor } => {
+            if !mode.is_three_player() {
+                return Err("kita is only valid in three-player mode".into());
+            }
+            seat(*actor)
+        }
         GameEvent::Hora {
             actor,
             target,

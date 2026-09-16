@@ -175,3 +175,49 @@ git diff --check
 ```
 
 `just check` remains unavailable in this environment; direct equivalent recipes are green. The yamai command was deliberately not run because the authoritative source/revision remains unavailable.
+
+## Review round 2/5 follow-up
+
+The pinned yamai acceptance gate remains owner-deferred because the authoritative source/revision is unavailable; no substitute was fabricated or executed. The local Important finding was fixed by rejecting `Kita` during canonical event validation unless the inferred replay mode is three-player. Four-player reconstruction therefore cannot mutate state from malformed nuki input.
+
+### Follow-up RED
+
+```text
+cargo test -p double_riichi_replay --test task5_replay four_player_kita_is_rejected
+# failed: the four-player replay containing a North tile and Kita was accepted
+# and the assertion requiring a three-player validation error failed
+```
+
+### Follow-up GREEN
+
+```text
+cargo test -p double_riichi_replay --test task5_replay
+# 15 passed; 0 failed
+```
+
+### Follow-up verification
+
+```text
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace tests passed; replay integration: 15 passed, 0 failed
+
+npm run typecheck --prefix frontend
+# tsc --noEmit passed
+
+bash tests/workspace-smoke.sh
+# passed
+
+# required implementation-v1 spec assertions
+# passed
+
+git diff --check
+# passed
+```
+
+Fix commit: `fix(replay): reject four-player Kita` (final hash recorded by `git rev-parse HEAD`).
