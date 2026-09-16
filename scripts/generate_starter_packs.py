@@ -184,7 +184,7 @@ def generate(output: Path, archive: Path | None) -> None:
     notice = (
         "CC0-1.0 coverage for generated Starter assets\n\n"
         "The following project-owned generated binary files are dedicated to the public domain under CC0 1.0 Universal:\n"
-        + "\n".join(f"character-packs/{path}" for path in covered)
+        + "\n".join(covered)
         + "\n\nReal Characters, trademarks, tile art, and third-party assets are not included in this dedication.\n"
     )
     (output / "CC0-NOTICE.txt").write_text(notice, encoding="utf-8", newline="\n")

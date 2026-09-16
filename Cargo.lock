@@ -383,6 +383,7 @@ dependencies = [
  "rand 0.10.2",
  "rpassword",
  "rust-embed",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.10.9",
