@@ -678,21 +678,20 @@ impl BotTokenService {
         &self,
         name: &str,
         created_at: i64,
+        request_id: &str,
     ) -> Result<CreatedBotToken, CredentialError> {
-        if !validate_token_name(name) {
-            return Err(CredentialError::InvalidTokenName);
-        }
+        let name = normalize_token_name(name)?;
         let (raw, token_hash) = generate_bot_secret();
         let record = BotTokenRecord::new(
             generate_token_id(),
-            name.to_owned(),
+            name,
             token_hash,
             TokenState::Active,
             created_at,
             None,
         );
         self.storage
-            .insert_bot_token(&record)
+            .insert_bot_token(&record, request_id)
             .await
             .map_err(map_storage_error)?;
         self.authority.insert_active(record.clone());
@@ -702,10 +701,15 @@ impl BotTokenService {
         })
     }
 
-    pub async fn revoke(&self, token_id: &str, revoked_at: i64) -> Result<(), CredentialError> {
+    pub async fn revoke(
+        &self,
+        token_id: &str,
+        revoked_at: i64,
+        request_id: &str,
+    ) -> Result<(), CredentialError> {
         match self
             .storage
-            .revoke_bot_token(token_id, revoked_at)
+            .revoke_bot_token(token_id, revoked_at, request_id)
             .await
             .map_err(map_storage_error)?
         {
@@ -723,51 +727,95 @@ fn map_storage_error(_error: StorageError) -> CredentialError {
     CredentialError::Storage
 }
 
-pub(crate) fn validate_token_name(name: &str) -> bool {
+pub(crate) fn normalize_token_name(name: &str) -> Result<String, CredentialError> {
     let trimmed = name.trim_matches(char::is_whitespace);
-    !trimmed.is_empty()
-        && trimmed.chars().count() <= 64
-        && !trimmed.chars().any(char::is_control)
-        && trimmed == name
+    if trimmed.is_empty() || trimmed.chars().count() > 64 || trimmed.chars().any(char::is_control) {
+        return Err(CredentialError::InvalidTokenName);
+    }
+    Ok(trimmed.to_owned())
 }
 
 pub(crate) fn validate_audit_summary(action: &str, summary: &Value) -> bool {
     let Some(object) = summary.as_object() else {
         return false;
     };
-    let allowed = match action {
-        "login" | "logout" | "fill_with_bots" | "match_start" | "rematch" | "back_to_lobby" => {
-            &[][..]
-        }
-        "room_create" | "room_delete" => &["room_name"][..],
-        "room_configure" => &["changed_fields"][..],
-        "participant_select" | "participant_deselect" | "participant_kick" => {
-            &["participant_id"][..]
-        }
-        "token_create" => &["name"][..],
-        "token_revoke" => &["name", "token_id"][..],
-        "replay_delete" => &["match_id"][..],
-        _ => return false,
-    };
-    if object.keys().any(|key| {
-        let lower = key.to_ascii_lowercase();
-        lower.contains("password")
-            || lower.contains("secret")
-            || lower.contains("cookie")
-            || lower.contains("authorization")
-            || lower == "raw_token"
-            || lower == "token"
-    }) {
+    if contains_forbidden_key(summary) || contains_raw_token(summary) {
         return false;
     }
-    object.keys().all(|key| allowed.contains(&key.as_str())) && !contains_raw_token(summary)
+    match action {
+        "login" | "logout" | "fill_with_bots" | "match_start" | "rematch" | "back_to_lobby" => {
+            object.is_empty()
+        }
+        "room_create" | "room_delete" => object_has_string(object, "room_name"),
+        "room_configure" => object_has_string_array(object, "changed_fields"),
+        "participant_select" | "participant_deselect" | "participant_kick" => {
+            object_has_string(object, "participant_id")
+        }
+        "token_create" => object_has_string(object, "name"),
+        "token_revoke" => {
+            object.get("name").is_some_and(Value::is_string)
+                && object.iter().all(|(key, value)| {
+                    matches!(key.as_str(), "name" | "token_id") && value.is_string()
+                })
+        }
+        "replay_delete" => object_has_string(object, "match_id"),
+        _ => false,
+    }
+}
+
+fn object_has_string(object: &serde_json::Map<String, Value>, key: &str) -> bool {
+    object.len() == 1 && object.get(key).is_some_and(Value::is_string)
+}
+
+fn object_has_string_array(object: &serde_json::Map<String, Value>, key: &str) -> bool {
+    object.len() == 1
+        && object
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|values| values.iter().all(Value::is_string))
+}
+
+fn contains_forbidden_key(value: &Value) -> bool {
+    match value {
+        Value::Object(values) => values.iter().any(|(key, value)| {
+            let lower = key.to_ascii_lowercase();
+            lower.contains("password")
+                || lower.contains("secret")
+                || lower.contains("cookie")
+                || lower.contains("authorization")
+                || lower == "raw_token"
+                || lower == "token"
+                || contains_forbidden_key(value)
+        }),
+        Value::Array(values) => values.iter().any(contains_forbidden_key),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
 }
 
 fn contains_raw_token(value: &Value) -> bool {
     match value {
-        Value::String(value) => value.starts_with("driichi_"),
+        Value::String(value) => string_contains_raw_token(value),
         Value::Array(values) => values.iter().any(contains_raw_token),
         Value::Object(values) => values.values().any(contains_raw_token),
         Value::Null | Value::Bool(_) | Value::Number(_) => false,
     }
+}
+
+fn string_contains_raw_token(value: &str) -> bool {
+    const PREFIX: &[u8] = b"driichi_";
+    const SECRET_LENGTH: usize = 43;
+    let bytes = value.as_bytes();
+    bytes
+        .windows(PREFIX.len())
+        .enumerate()
+        .any(|(offset, window)| {
+            window == PREFIX
+                && bytes
+                    .get(offset + PREFIX.len()..offset + PREFIX.len() + SECRET_LENGTH)
+                    .is_some_and(|candidate| candidate.iter().all(is_token_character))
+        })
+}
+
+fn is_token_character(byte: &u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')
 }

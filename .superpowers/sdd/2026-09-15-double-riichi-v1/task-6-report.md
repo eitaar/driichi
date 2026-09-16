@@ -81,3 +81,22 @@ The focused tests cover strict TOML/data-root and `.env`, Argon2 policy/generic 
 Required commit subject: `feat(server): add configuration authentication and storage`.
 
 The HTTP, Room, protocol, Character, and frontend implementations remain intentionally out of scope. The storage API provides startup and explicit audit cleanup; the eventual server runtime still owns scheduling the specified 24-hour cleanup tick. No external yamai or protocol gate is claimed by this task.
+
+## Review fix round 1
+
+Applied the open Important findings and the related signal-test Minor finding:
+
+- `matches.source` now permits only persistent `room` and `ranked` values; the focused SQLite test proves `validate` and `compat` inserts fail.
+- Audit validation now recursively rejects forbidden keys, recursively scans for the exact 32-byte URL-safe Base64 Bot Token format even inside bearer/nested values, enforces action-specific JSON value shapes, and permits normalized names such as `driichi_runner`.
+- Bot Token create/revoke APIs now require and transactionally persist the originating request ID; focused assertions query both audit rows.
+- Relative `config.toml` paths normalize an empty parent to `.`; the focused test exercises a current-directory config file.
+- Bot Token display names trim surrounding Unicode whitespace before validation and persistence; the focused test asserts the normalized value.
+- The reload test subscribes before revocation and receives the actual broadcast `TokenRevoked` event/state rather than constructing one directly.
+
+Fix-round verification:
+
+- `cargo test -p double_riichi_server --test task6_config_auth_storage` — passed, 10/10.
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace` — passed.
+- `cargo test --workspace` — passed, including 10 Task 6 and 15 Task 5 tests.
+- `npm run typecheck --prefix frontend` — passed.
