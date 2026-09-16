@@ -222,3 +222,32 @@ cargo test --workspace
 git diff --check
 # passed
 ```
+
+## Review round 4/5 follow-up
+
+The round 4 review independently verified all prior Critical/Important/Minor findings as addressed. No additional source change or new failing behavior slice was required; the existing RED/GREEN tests cover each finding.
+
+### Verification
+
+```text
+cargo test -p double_riichi_core --test task4_decisions
+# 8 passed; 0 failed
+
+cargo test -p double_riichi_core --test task4_machine
+# 4 passed; 0 failed
+
+cargo test -p double_riichi_core --test task4_projection
+# 4 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace unit, integration, and doc tests passed
+
+git diff --check
+# passed
+```
