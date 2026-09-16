@@ -173,17 +173,18 @@ export class AudioManager {
 
   private start(request: VoiceRequest): void {
     if (this.destroyed) return;
-    let audio: HTMLAudioElement;
+    let audio: HTMLAudioElement | undefined;
     try {
       audio = this.audioFactory(voiceAssetPath(request.characterId, request.kind));
       audio.volume = this.volume;
       audio.preload = "auto";
-      audio.onended = () => this.finished(audio);
-      const timeout = window.setTimeout(() => this.finished(audio), 10_000);
+      audio.onended = () => this.finished(audio!);
+      const timeout = window.setTimeout(() => this.finished(audio!), 10_000);
       this.active = { request, audio, timeout };
       const play = audio.play();
-      if (play) void play.catch(() => this.finished(audio));
+      if (play) void play.catch(() => this.finished(audio!));
     } catch {
+      if (audio) this.clearActive(audio);
       this.startNext(request);
     }
   }

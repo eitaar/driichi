@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { actionCandidates } from "./actions";
-import { animationKindForEvent, enqueueAnimationEvents, ANIMATION_QUEUE_CAP } from "./animation";
+import { animationKindForEvent, animationVisualForKind, enqueueAnimationEvents, ANIMATION_QUEUE_CAP } from "./animation";
 import { AudioManager, loadAudioSettings, saveAudioSettings, voiceAssetPath } from "./audio";
+import { preloadRosterAssets } from "./gameplay";
 import { seatPositions } from "./orientation";
 import { useGameStore } from "./store";
 import { tileAssetUrl, tileFileName, tileLabel } from "./tiles";
@@ -42,6 +43,27 @@ describe("Task 12 table invariants", () => {
     expect(animationKindForEvent({ hora: { actor: 0, target: 0, han: 5 } })).toBe("win");
   });
 
+  it("keeps the first queued animation stable across unrelated updates", () => {
+    const room = (revision: number) => ({ revision }) as never;
+    useGameStore.getState().receiveSnapshot(room(1), {
+      audience: "player", viewer_seat: 0, mode: "4p-red-east", players: [], decision: null,
+    });
+    useGameStore.getState().receiveUpdate(room(2), undefined, { type: "game_update", event: { dahai: { actor: 0, tile: 1 } } });
+    const queue = useGameStore.getState().animationQueue;
+    expect(queue).toHaveLength(1);
+    useGameStore.getState().receiveUpdate(room(3), undefined, { type: "room_update" });
+    expect(useGameStore.getState().animationQueue).toBe(queue);
+    expect(animationVisualForKind(queue[0].kind).shape).toBe("square");
+  });
+
+  it("keeps Riichi discard candidates available for the persistent legal highlight", () => {
+    const grouped = actionCandidates({ decision_id: "d", kind: "turn", actions: [
+      { action_id: "r1", action: { riichi_discard: { tile: 52 } } },
+    ] });
+    expect(grouped.riichiDiscard).toHaveLength(1);
+    expect(animationVisualForKind("draw").shape).not.toBe(animationVisualForKind("discard").shape);
+  });
+
   it("submits only the authoritative action IDs and never mutates projection optimistically", () => {
     const sent: unknown[] = [];
     useGameStore.getState().receiveSnapshot(null, {
@@ -74,6 +96,35 @@ describe("Task 12 table invariants", () => {
   it("derives a visible Mangan result from the projected resolution event", () => {
     const room = { roster: [{ seat: 0, participant_id: "p1", display_name: "Mika", kind: "human", character_id: "player-red", controller: "interactive" }] } as never;
     expect(portraitFromEvents([{ hora: { actor: 0, target: 1, han: 5, fu: 30, delta: [8000, -8000] } }], room)).toMatchObject({ displayName: "Mika", result: "Ron", limit: "Mangan" });
+  });
+
+  it("advances the voice queue when playback throws synchronously", () => {
+    const first = { play: vi.fn(() => { throw new Error("blocked"); }), pause: vi.fn(), volume: 0, preload: "", onended: null, src: "", muted: false } as unknown as HTMLAudioElement;
+    const second = { play: vi.fn(() => Promise.resolve()), pause: vi.fn(), volume: 0, preload: "", onended: null, src: "", muted: false } as unknown as HTMLAudioElement;
+    const factory = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const manager = new AudioManager(factory, { master: 1, sfx: 1, voice: 1, voiceEnabled: true });
+    manager.playVoice("red", "ron");
+    manager.playVoice("red", "chi");
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(second.play).toHaveBeenCalledTimes(1);
+    manager.destroy();
+  });
+
+  it("recovers from a character decode that never settles after three seconds", async () => {
+    vi.useFakeTimers();
+    class HangingImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {}
+    }
+    vi.stubGlobal("Image", HangingImage);
+    let settled = false;
+    const result = preloadRosterAssets(["red"]).then((loaded) => { settled = true; return loaded; });
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toEqual({ red: false });
+    vi.useRealTimers();
   });
 
   it("fails media playback silently and force-stops at ten seconds", () => {

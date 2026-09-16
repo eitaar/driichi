@@ -157,6 +157,93 @@ fn closed_meld_tiles_are_redacted_from_public_and_opponent_players_in_both_modes
 }
 
 #[test]
+fn match_machine_projection_includes_authoritative_round_and_wall_data_for_all_audiences() {
+    for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+        let participants = (0..mode.seat_count())
+            .map(|seat| participant(seat as u8))
+            .collect();
+        let mut machine = MatchMachine::new(mode, participants).expect("match");
+        for audience in [
+            Audience::Player(Seat::new(0).unwrap()),
+            Audience::Public,
+            Audience::ReplayAdmin,
+        ] {
+            let value =
+                serde_json::from_str::<serde_json::Value>(&machine.serialize(audience).unwrap())
+                    .unwrap();
+            assert_eq!(value["round"], "East");
+            assert_eq!(value["kyoku"], 1);
+            assert_eq!(value["dealer"], 0);
+            assert_eq!(value["honba"], 0);
+            assert_eq!(value["kyotaku"], 0);
+            assert!(value["remaining_wall"].as_u64().is_some());
+        }
+    }
+}
+
+#[test]
+fn frontend_task12_fixture_is_checked_against_the_real_audience_projection() {
+    let fixture = serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../../frontend/tests/fixtures/task12-projection.json"
+    ))
+    .unwrap();
+    for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+        let order: &[(&str, &str)] = if mode.is_three_player() {
+            &[("P2", "Nori"), ("P1", "Mika"), ("P3", "Ren")]
+        } else {
+            &[("P2", "Nori"), ("P1", "Mika"), ("P4", "Aya"), ("P3", "Ren")]
+        };
+        let participants = order
+            .iter()
+            .map(|(id, name)| Participant::new(*id, *name, ParticipantKind::Human))
+            .collect();
+        let mut machine = MatchMachine::with_seed(mode, participants, 42).expect("match");
+        let serialized = machine
+            .serialize(Audience::Player(Seat::new(0).unwrap()))
+            .unwrap();
+        let mut actual = serde_json::from_str::<serde_json::Value>(&serialized).unwrap();
+        let expected = &fixture["projections"][mode.as_str()];
+        for field in [
+            "audience",
+            "viewer_seat",
+            "mode",
+            "round",
+            "kyoku",
+            "dealer",
+            "honba",
+            "kyotaku",
+            "remaining_wall",
+            "players",
+            "dora_indicators",
+            "decision",
+        ] {
+            assert!(actual.get(field).is_some(), "real projection lacks {field}");
+            assert!(expected.get(field).is_some(), "fixture lacks {field}");
+        }
+        assert_eq!(actual["audience"], expected["audience"]);
+        assert_eq!(actual["mode"], expected["mode"]);
+        assert_eq!(actual["round"], expected["round"]);
+        assert_eq!(actual["kyoku"], expected["kyoku"]);
+        assert_eq!(actual["dealer"], expected["dealer"]);
+        assert_eq!(actual["honba"], expected["honba"]);
+        assert_eq!(actual["kyotaku"], expected["kyotaku"]);
+        assert!(actual["remaining_wall"].as_u64().is_some());
+        assert!(expected["remaining_wall"].as_u64().is_some());
+        assert_eq!(
+            actual["players"].as_array().unwrap().len(),
+            mode.seat_count()
+        );
+        assert_eq!(
+            expected["players"].as_array().unwrap().len(),
+            mode.seat_count()
+        );
+        // A live deadline is the only volatile value; every nested wire field is exact.
+        actual["decision"]["remaining_ms"] = expected["decision"]["remaining_ms"].clone();
+        assert_eq!(actual, *expected);
+    }
+}
+
+#[test]
 fn match_machine_projection_uses_the_same_boundary_for_three_and_four_players() {
     for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
         let participants = (0..mode.seat_count())

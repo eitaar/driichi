@@ -105,6 +105,14 @@ impl MatchMachine {
         Self::new_internal(mode, participants, rand::random())
     }
 
+    pub fn with_seed(
+        mode: GameMode,
+        participants: Vec<Participant>,
+        seed: u64,
+    ) -> Result<Self, MatchError> {
+        Self::new_internal(mode, participants, seed)
+    }
+
     pub fn with_time_control(
         mode: GameMode,
         participants: Vec<Participant>,
@@ -192,11 +200,9 @@ impl MatchMachine {
             && self.decision.as_ref().is_some_and(|decision| {
                 !decision.actions_for(seat).is_empty() && decision.deadline_for(seat).is_none()
             })
-        {
-            if let Some(decision) = &mut self.decision {
+            && let Some(decision) = &mut self.decision {
                 decision.retime_for(seat, Instant::now(), Some(self.timing.watchdog), true);
             }
-        }
         Ok(())
     }
 
@@ -206,14 +212,13 @@ impl MatchMachine {
         self.presence[index] = Presence::Connected;
         if self.controllers[index] == ControllerState::TemporaryAuto {
             self.controllers[index] = ControllerState::Interactive;
-            if let Some(decision) = &self.decision {
-                if !decision.actions_for(seat).is_empty() {
+            if let Some(decision) = &self.decision
+                && !decision.actions_for(seat).is_empty() {
                     let (duration, watchdog) = self.decision_timing_for(decision.kind(), seat);
                     if let Some(decision) = &mut self.decision {
                         decision.retime_for(seat, Instant::now(), duration, watchdog);
                     }
                 }
-            }
         } else if self.time_control == TimeControl::Unlimited
             && self.players[index].kind == ParticipantKind::Human
             && self.decision.as_ref().is_some_and(|decision| {
