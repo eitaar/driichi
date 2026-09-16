@@ -10,6 +10,7 @@ import { api, ApiProblem, type AdminRoomDetail, type AdminRoomSummary, type BotT
 import { TileVignette } from "./pixi-vignette";
 import { GameplaySurface } from "./game/gameplay";
 import { useGameStore, type Transport } from "./game/store";
+import { decodeCharacterAsset } from "./game/assets";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate, routeForPath, type Route } from "./routes";
 import "./styles.css";
@@ -154,6 +155,14 @@ function CreateRoomDialog({ open, onClose, mutation }: { open: boolean; onClose:
 
 type SocketRoom = RoomSnapshot;
 type HumanSocketMessage = { type: string; room?: SocketRoom; state?: unknown; event?: unknown; code?: string; status?: string; decision_id?: string };
+
+export function reconnectDelay(attempt: number, random = Math.random): number {
+  const count = Math.max(1, Math.floor(attempt));
+  const base = Math.min(10_000, 500 * 2 ** Math.min(count - 1, 4));
+  if (count === 1) return base;
+  const jitter = Math.round((random() * 2 - 1) * base * 0.2);
+  return Math.min(10_000, Math.max(250, base + jitter));
+}
 function useHumanSocket(joinCode: string) {
   const room = useGameStore((state) => state.room);
   const projection = useGameStore((state) => state.projection);
@@ -227,13 +236,18 @@ function useHumanSocket(joinCode: string) {
         const semantic: Record<number, string> = { 4001: "connected_elsewhere", 4002: "room_deleted", 4005: "slow_consumer", 4006: "session_expired" };
         const semanticReason = semantic[event.code] ?? event.reason;
         if (semanticReason && [4001, 4002, 4006].includes(event.code)) {
+          useGameStore.getState().reset();
           useGameStore.getState().setStatus("closed", semanticReason);
+          if ([4002, 4006].includes(event.code)) {
+            sessionStorage.removeItem(participantKey);
+            navigate(`/room/${joinCode}`);
+          }
           return;
         }
         attemptRef.current += 1;
         socketRef.current = null;
         useGameStore.getState().resetForReconnect();
-        const delay = Math.min(10000, 500 * 2 ** Math.min(attemptRef.current - 1, 4));
+        const delay = reconnectDelay(attemptRef.current);
         reconnectRef.current = window.setTimeout(() => { if (generationRef.current === generation && !stoppedRef.current) connect(); }, delay);
       };
     };
@@ -248,19 +262,6 @@ function useHumanSocket(joinCode: string) {
     };
   }, [joinCode]);
   return { room: sessionReady ? room : null, projection: sessionReady ? projection : null, status, reason, commandError, connectionGeneration, sessionReady, send };
-}
-
-function decodeCharacterAsset(id: string, kind: "portrait" | "icon"): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => {
-      const decoded = image.decode?.();
-      if (decoded) decoded.then(() => resolve()).catch(reject);
-      else resolve();
-    };
-    image.onerror = () => reject(new Error("asset_unavailable"));
-    image.src = `/assets/characters/${encodeURIComponent(id)}/${kind}.webp`;
-  });
 }
 
 function HumanLobby({ joinCode }: { joinCode: string }) {

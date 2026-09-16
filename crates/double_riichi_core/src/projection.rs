@@ -6,7 +6,7 @@ use tokio::time::Instant;
 
 use crate::{
     ActionId, Decision, DecisionAction, DecisionId, DecisionKind, GameAction, GameMode,
-    Participant, ParticipantId, ParticipantKind, Seat, Tile,
+    Participant, ParticipantId, ParticipantKind, Seat, Tile, Wind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +49,12 @@ pub struct TableState {
     mode: GameMode,
     players: Vec<TablePlayerState>,
     dora_indicators: Vec<Tile>,
+    round: Option<Wind>,
+    kyoku: Option<u8>,
+    dealer: Option<Seat>,
+    honba: Option<u8>,
+    kyotaku: Option<u32>,
+    remaining_wall: Option<u8>,
     decision: Option<Decision>,
 }
 
@@ -105,6 +111,12 @@ impl TableState {
             mode,
             players,
             dora_indicators,
+            round: None,
+            kyoku: None,
+            dealer: None,
+            honba: None,
+            kyotaku: None,
+            remaining_wall: None,
             decision: None,
         })
     }
@@ -122,6 +134,24 @@ impl TableState {
             })
             .collect();
         Self::new(mode, table_players, Vec::new())
+    }
+
+    pub fn with_round_data(
+        mut self,
+        round: Wind,
+        kyoku: u8,
+        dealer: Seat,
+        honba: u8,
+        kyotaku: u32,
+        remaining_wall: u8,
+    ) -> Self {
+        self.round = Some(round);
+        self.kyoku = Some(kyoku);
+        self.dealer = Some(dealer);
+        self.honba = Some(honba);
+        self.kyotaku = Some(kyotaku);
+        self.remaining_wall = Some(remaining_wall);
+        self
     }
 
     pub fn with_decision(mut self, decision: Decision) -> Self {
@@ -183,6 +213,12 @@ impl AudienceProjection {
 pub struct PlayerProjection {
     pub viewer_seat: Seat,
     pub mode: GameMode,
+    pub round: Option<Wind>,
+    pub kyoku: Option<u8>,
+    pub dealer: Option<Seat>,
+    pub honba: Option<u8>,
+    pub kyotaku: Option<u32>,
+    pub remaining_wall: Option<u8>,
     pub players: Vec<VisiblePlayer>,
     pub dora_indicators: Vec<Tile>,
     pub decision: Option<PlayerDecisionProjection>,
@@ -191,6 +227,12 @@ pub struct PlayerProjection {
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicProjection {
     pub mode: GameMode,
+    pub round: Option<Wind>,
+    pub kyoku: Option<u8>,
+    pub dealer: Option<Seat>,
+    pub honba: Option<u8>,
+    pub kyotaku: Option<u32>,
+    pub remaining_wall: Option<u8>,
     pub players: Vec<VisiblePlayer>,
     pub dora_indicators: Vec<Tile>,
     pub decision: Option<PublicDecisionProjection>,
@@ -199,6 +241,12 @@ pub struct PublicProjection {
 #[derive(Debug, Clone, Serialize)]
 pub struct ReplayAdminProjection {
     pub mode: GameMode,
+    pub round: Option<Wind>,
+    pub kyoku: Option<u8>,
+    pub dealer: Option<Seat>,
+    pub honba: Option<u8>,
+    pub kyotaku: Option<u32>,
+    pub remaining_wall: Option<u8>,
     pub players: Vec<VisiblePlayer>,
     pub dora_indicators: Vec<Tile>,
     pub decision: Option<ReplayDecisionProjection>,
@@ -277,6 +325,12 @@ pub fn project_table_state(state: &TableState, audience: Audience) -> AudiencePr
         Audience::Player(viewer_seat) => AudienceProjection::Player(PlayerProjection {
             viewer_seat,
             mode: state.mode,
+            round: state.round,
+            kyoku: state.kyoku,
+            dealer: state.dealer,
+            honba: state.honba,
+            kyotaku: state.kyotaku,
+            remaining_wall: state.remaining_wall,
             players: state
                 .players
                 .iter()
@@ -290,6 +344,12 @@ pub fn project_table_state(state: &TableState, audience: Audience) -> AudiencePr
         }),
         Audience::Public => AudienceProjection::Public(PublicProjection {
             mode: state.mode,
+            round: state.round,
+            kyoku: state.kyoku,
+            dealer: state.dealer,
+            honba: state.honba,
+            kyotaku: state.kyotaku,
+            remaining_wall: state.remaining_wall,
             players: state
                 .players
                 .iter()
@@ -300,6 +360,12 @@ pub fn project_table_state(state: &TableState, audience: Audience) -> AudiencePr
         }),
         Audience::ReplayAdmin => AudienceProjection::ReplayAdmin(ReplayAdminProjection {
             mode: state.mode,
+            round: state.round,
+            kyoku: state.kyoku,
+            dealer: state.dealer,
+            honba: state.honba,
+            kyotaku: state.kyotaku,
+            remaining_wall: state.remaining_wall,
             players: state
                 .players
                 .iter()
@@ -354,7 +420,11 @@ fn visible_player(player: &TablePlayerState, visibility: HandVisibility) -> Visi
 fn visible_meld(meld: &MeldState, reveal_closed: bool) -> VisibleMeld {
     let reveal = meld.opened || reveal_closed;
     VisibleMeld {
-        tiles: reveal.then(|| meld.tiles.clone()).unwrap_or_default(),
+        tiles: if reveal {
+            meld.tiles.clone()
+        } else {
+            Default::default()
+        },
         opened: meld.opened,
         from_who: reveal.then_some(meld.from_who).flatten(),
         called_tile: reveal.then_some(meld.called_tile).flatten(),

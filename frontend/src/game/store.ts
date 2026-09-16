@@ -115,7 +115,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     const events = animationEvents(envelope);
     const result = discontinuity
       ? { queue: [], overflow: false }
-      : enqueueAnimationEvents(state.animationQueue, events, state.animationQueue.length);
+      : enqueueAnimationEvents(state.animationQueue, events);
     const projectionValue = projection === undefined ? state.projection : projectedState(projection);
     const pending = state.pendingAction && projectionValue?.decision?.decision_id !== state.pendingAction.decisionId
       ? null

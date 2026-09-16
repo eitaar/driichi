@@ -7,17 +7,35 @@ export interface OrientedSeat {
   position: TableSeatPosition;
 }
 
+function isThreePlayerMode(mode: string | undefined): boolean {
+  return (
+    mode?.startsWith("3p") === true ||
+    mode === "ThreePlayerRedEast" ||
+    mode === "ThreePlayerRedHalf"
+  );
+}
+
 /**
  * Return the fixed broadcast orientation for a table. A spectator has no
  * viewer seat, so Seat 0 is deliberately the bottom seat.
  */
-export function seatPositions(mode: string | undefined, viewerSeat?: number): OrientedSeat[] {
-  const count = mode?.startsWith("3p") ? 3 : 4;
-  const anchor = Number.isInteger(viewerSeat) && (viewerSeat as number) >= 0 ? viewerSeat as number : 0;
-  const positions: TableSeatPosition[] = count === 3
-    ? ["bottom", "right", "left"]
-    : ["bottom", "right", "top", "left"];
-  return positions.map((position, offset) => ({ seat: (anchor + offset) % count, position }));
+export function seatPositions(
+  mode: string | undefined,
+  viewerSeat?: number,
+): OrientedSeat[] {
+  const count = isThreePlayerMode(mode) ? 3 : 4;
+  const anchor =
+    Number.isInteger(viewerSeat) && (viewerSeat as number) >= 0
+      ? (viewerSeat as number)
+      : 0;
+  const positions: TableSeatPosition[] =
+    count === 3
+      ? ["bottom", "right", "left"]
+      : ["bottom", "right", "top", "left"];
+  return positions.map((position, offset) => ({
+    seat: (anchor + offset) % count,
+    position,
+  }));
 }
 
 export function seatPositionFor(
@@ -25,7 +43,8 @@ export function seatPositionFor(
   seat: number,
   viewerSeat?: number,
 ): TableSeatPosition | undefined {
-  return seatPositions(mode, viewerSeat).find((entry) => entry.seat === seat)?.position;
+  return seatPositions(mode, viewerSeat).find((entry) => entry.seat === seat)
+    ?.position;
 }
 
 export function orientedPlayers(

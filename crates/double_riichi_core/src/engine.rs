@@ -174,6 +174,7 @@ impl EngineAdapter {
     ) -> Result<TableState, EngineError> {
         let mut players = Vec::with_capacity(mode.seat_count());
         let dora_indicators;
+        let round_data = self.round_data();
         match &self.state {
             GameStateVariant::FourPlayer(state) => {
                 dora_indicators = state
@@ -221,6 +222,16 @@ impl EngineAdapter {
             }
         }
         TableState::new(mode, players, dora_indicators)
+            .map(|table| {
+                table.with_round_data(
+                    round_data.0,
+                    round_data.1,
+                    round_data.2,
+                    round_data.3,
+                    round_data.4,
+                    round_data.5,
+                )
+            })
             .map_err(|error| EngineError::Divergence(error.to_string()))
     }
 
@@ -373,13 +384,12 @@ impl EngineAdapter {
     ) -> Result<ApplyCommand, EngineError> {
         for action in raw {
             if action.action_type == ActionType::Riichi && action.tile.is_none() {
-                if let GameAction::RiichiDiscard { tile } = desired {
-                    if self
+                if let GameAction::RiichiDiscard { tile } = desired
+                    && self
                         .riichi_candidates_for_raw(seat, action)?
                         .contains(&tile.id())
-                    {
-                        return Ok(ApplyCommand::RiichiDiscard { tile: tile.id() });
-                    }
+                {
+                    return Ok(ApplyCommand::RiichiDiscard { tile: tile.id() });
                 }
                 continue;
             }
@@ -502,6 +512,27 @@ impl EngineAdapter {
         Ok(())
     }
 
+    fn round_data(&self) -> (Wind, u8, Seat, u8, u32, u8) {
+        match &self.state {
+            GameStateVariant::FourPlayer(state) => (
+                Wind::from_index(state.round_wind),
+                state.kyoku_idx.saturating_add(1),
+                Seat::new(state.oya).expect("engine dealer is a valid seat"),
+                state.honba,
+                state.riichi_sticks,
+                state.wall.drawable_count,
+            ),
+            GameStateVariant::ThreePlayer(state) => (
+                Wind::from_index(state.round_wind),
+                state.kyoku_idx.saturating_add(1),
+                Seat::new(state.oya).expect("engine dealer is a valid seat"),
+                state.honba,
+                state.riichi_sticks,
+                state.wall.drawable_count,
+            ),
+        }
+    }
+
     fn needs_initialize_next_round(&self) -> bool {
         match &self.state {
             GameStateVariant::FourPlayer(state) => state.needs_initialize_next_round,
@@ -556,11 +587,7 @@ fn player_snapshot(
                     } else {
                         Seat::new(meld.from_who as u8)
                     },
-                    called_tile: meld
-                        .called_tile
-                        .as_ref()
-                        .map(|tile| parse(tile))
-                        .transpose()?,
+                    called_tile: meld.called_tile.as_ref().map(&parse).transpose()?,
                 })
             })
             .collect::<Result<Vec<_>, EngineError>>()?,
@@ -773,10 +800,7 @@ fn parse_event(line: &str, mode: GameMode) -> Result<GameEvent, EngineError> {
         } => Ok(GameEvent::Hora {
             actor: parse_seat_for_mode(actor)?,
             target: parse_seat_for_mode(target)?,
-            tile: pai
-                .as_deref()
-                .map(|tile| parse_tile_for_mode(tile))
-                .transpose()?,
+            tile: pai.as_deref().map(&parse_tile_for_mode).transpose()?,
             ura_markers: uradora_markers
                 .as_ref()
                 .map(|tiles| tiles.iter().map(|tile| parse_tile_for_mode(tile)).collect())

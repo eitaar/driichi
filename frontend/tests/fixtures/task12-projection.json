@@ -1,0 +1,98 @@
+{
+  "room_envelopes": {
+    "3p-red-east": {
+      "join_code": "123456", "room_name": "Night Market", "game_mode": "3p-red-east", "phase": "playing", "revision": 12,
+      "participants": [
+        { "participant_id": "P1", "display_name": "Mika", "kind": "human", "presence": "connected", "selected": true, "ready": true, "character_id": "player-red", "role": "player_0", "controller": "interactive" },
+        { "participant_id": "P2", "display_name": "Nori", "kind": "built_in_bot", "presence": "connected", "selected": true, "ready": true, "character_id": "tsumogiri-bot", "role": "player_1", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P3", "display_name": "Ren", "kind": "built_in_bot", "presence": "connected", "selected": true, "ready": true, "character_id": "tsumogiri-bot", "role": "player_2", "controller": "permanent_auto_built_in_bot" }
+      ],
+      "match_players": [
+        { "participant_id": "P1", "display_name": "Mika", "kind": "human", "seat": 0, "character_id": "player-red", "controller": "interactive" },
+        { "participant_id": "P2", "display_name": "Nori", "kind": "built_in_bot", "seat": 1, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P3", "display_name": "Ren", "kind": "built_in_bot", "seat": 2, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" }
+      ],
+      "roster": [
+        { "participant_id": "P1", "display_name": "Mika", "kind": "human", "seat": 0, "character_id": "player-red", "controller": "interactive" },
+        { "participant_id": "P2", "display_name": "Nori", "kind": "built_in_bot", "seat": 1, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P3", "display_name": "Ren", "kind": "built_in_bot", "seat": 2, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" }
+      ],
+      "result": null
+    },
+    "4p-red-east": {
+      "join_code": "123456", "room_name": "Night Market", "game_mode": "4p-red-east", "phase": "playing", "revision": 12,
+      "participants": [
+        { "participant_id": "P1", "display_name": "Mika", "kind": "human", "presence": "connected", "selected": true, "ready": true, "character_id": "player-red", "role": "player_0", "controller": "interactive" },
+        { "participant_id": "P2", "display_name": "Nori", "kind": "built_in_bot", "presence": "connected", "selected": true, "ready": true, "character_id": "tsumogiri-bot", "role": "player_1", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P3", "display_name": "Ren", "kind": "built_in_bot", "presence": "connected", "selected": true, "ready": true, "character_id": "tsumogiri-bot", "role": "player_2", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P4", "display_name": "Aya", "kind": "built_in_bot", "presence": "connected", "selected": true, "ready": true, "character_id": "tsumogiri-bot", "role": "player_3", "controller": "permanent_auto_built_in_bot" }
+      ],
+      "match_players": [
+        { "participant_id": "P1", "display_name": "Mika", "kind": "human", "seat": 0, "character_id": "player-red", "controller": "interactive" },
+        { "participant_id": "P2", "display_name": "Nori", "kind": "built_in_bot", "seat": 1, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P3", "display_name": "Ren", "kind": "built_in_bot", "seat": 2, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P4", "display_name": "Aya", "kind": "built_in_bot", "seat": 3, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" }
+      ],
+      "roster": [
+        { "participant_id": "P1", "display_name": "Mika", "kind": "human", "seat": 0, "character_id": "player-red", "controller": "interactive" },
+        { "participant_id": "P2", "display_name": "Nori", "kind": "built_in_bot", "seat": 1, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P3", "display_name": "Ren", "kind": "built_in_bot", "seat": 2, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" },
+        { "participant_id": "P4", "display_name": "Aya", "kind": "built_in_bot", "seat": 3, "character_id": "tsumogiri-bot", "controller": "permanent_auto_built_in_bot" }
+      ],
+      "result": null
+    }
+  },
+  "projections": {
+    "3p-red-east": {
+      "audience": "player", "viewer_seat": 0, "mode": "ThreePlayerRedEast", "round": "East", "kyoku": 1, "dealer": 0, "honba": 0, "kyotaku": 0, "remaining_wall": 54,
+      "players": [
+        { "seat": 0, "participant_id": "P1", "display_name": "Mika", "kind": "Human", "score": 35000, "hand": [1, 35, 39, 44, 49, 58, 69, 79, 96, 103, 108, 129, 133, 42], "concealed_count": 14, "discards": [], "melds": [], "riichi": false },
+        { "seat": 1, "participant_id": "P2", "display_name": "Nori", "kind": "Human", "score": 35000, "concealed_count": 13, "discards": [], "melds": [], "riichi": false },
+        { "seat": 2, "participant_id": "P3", "display_name": "Ren", "kind": "Human", "score": 35000, "concealed_count": 13, "discards": [], "melds": [], "riichi": false }
+      ],
+      "dora_indicators": [115],
+      "decision": { "decision_id": "d1", "kind": "Turn", "actions": [
+        { "action_id": "a1", "action": { "Discard": { "tile": 1, "tsumogiri": false } } },
+        { "action_id": "a2", "action": { "Discard": { "tile": 35, "tsumogiri": false } } },
+        { "action_id": "a3", "action": { "Discard": { "tile": 39, "tsumogiri": false } } },
+        { "action_id": "a4", "action": { "Discard": { "tile": 42, "tsumogiri": true } } },
+        { "action_id": "a5", "action": { "Discard": { "tile": 44, "tsumogiri": false } } },
+        { "action_id": "a6", "action": { "Discard": { "tile": 49, "tsumogiri": false } } },
+        { "action_id": "a7", "action": { "Discard": { "tile": 58, "tsumogiri": false } } },
+        { "action_id": "a8", "action": { "Discard": { "tile": 69, "tsumogiri": false } } },
+        { "action_id": "a9", "action": { "Discard": { "tile": 79, "tsumogiri": false } } },
+        { "action_id": "a10", "action": { "Discard": { "tile": 96, "tsumogiri": false } } },
+        { "action_id": "a11", "action": { "Discard": { "tile": 103, "tsumogiri": false } } },
+        { "action_id": "a12", "action": { "Discard": { "tile": 108, "tsumogiri": false } } },
+        { "action_id": "a13", "action": { "Discard": { "tile": 129, "tsumogiri": false } } },
+        { "action_id": "a14", "action": { "Discard": { "tile": 133, "tsumogiri": false } } }
+      ], "default_action_id": "a4", "duration_ms": 30000, "remaining_ms": 29999, "watchdog": false }
+    },
+    "4p-red-east": {
+      "audience": "player", "viewer_seat": 0, "mode": "FourPlayerRedEast", "round": "East", "kyoku": 1, "dealer": 0, "honba": 0, "kyotaku": 0, "remaining_wall": 69,
+      "players": [
+        { "seat": 0, "participant_id": "P1", "display_name": "Mika", "kind": "Human", "score": 25000, "hand": [1, 29, 49, 51, 55, 68, 75, 81, 83, 100, 114, 117, 131, 53], "concealed_count": 14, "discards": [], "melds": [], "riichi": false },
+        { "seat": 1, "participant_id": "P2", "display_name": "Nori", "kind": "Human", "score": 25000, "concealed_count": 13, "discards": [], "melds": [], "riichi": false },
+        { "seat": 2, "participant_id": "P3", "display_name": "Ren", "kind": "Human", "score": 25000, "concealed_count": 13, "discards": [], "melds": [], "riichi": false },
+        { "seat": 3, "participant_id": "P4", "display_name": "Aya", "kind": "Human", "score": 25000, "concealed_count": 13, "discards": [], "melds": [], "riichi": false }
+      ],
+      "dora_indicators": [71],
+      "decision": { "decision_id": "d1", "kind": "Turn", "actions": [
+        { "action_id": "a1", "action": { "Discard": { "tile": 1, "tsumogiri": false } } },
+        { "action_id": "a2", "action": { "Discard": { "tile": 29, "tsumogiri": false } } },
+        { "action_id": "a3", "action": { "Discard": { "tile": 49, "tsumogiri": false } } },
+        { "action_id": "a4", "action": { "Discard": { "tile": 51, "tsumogiri": false } } },
+        { "action_id": "a5", "action": { "Discard": { "tile": 55, "tsumogiri": false } } },
+        { "action_id": "a6", "action": { "Discard": { "tile": 53, "tsumogiri": true } } },
+        { "action_id": "a7", "action": { "Discard": { "tile": 68, "tsumogiri": false } } },
+        { "action_id": "a8", "action": { "Discard": { "tile": 75, "tsumogiri": false } } },
+        { "action_id": "a9", "action": { "Discard": { "tile": 81, "tsumogiri": false } } },
+        { "action_id": "a10", "action": { "Discard": { "tile": 83, "tsumogiri": false } } },
+        { "action_id": "a11", "action": { "Discard": { "tile": 100, "tsumogiri": false } } },
+        { "action_id": "a12", "action": { "Discard": { "tile": 114, "tsumogiri": false } } },
+        { "action_id": "a13", "action": { "Discard": { "tile": 117, "tsumogiri": false } } },
+        { "action_id": "a14", "action": { "Discard": { "tile": 131, "tsumogiri": false } } }
+      ], "default_action_id": "a6", "duration_ms": 30000, "remaining_ms": 29999, "watchdog": false }
+    }
+  }
+}
