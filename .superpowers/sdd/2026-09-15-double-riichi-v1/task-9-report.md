@@ -68,3 +68,9 @@ The owner-deferred yamai and authenticated riichi.dev evidence remains deferred;
 - Added explicit DecisionKind protocol mapping (`turn`/`response`) in the context-scoped wire normalizer; the regression now covers nested controller reason, decision kind, role, and preservation of user display strings.
 - Extended the live Human test through match setup and stale-action handling while retaining heartbeat, Ready snapshot, replacement, and semantic Leave close assertions; the bounded outbound queue has a hard-capacity regression and existing room slow-connection coverage remains green.
 - Final round-4 verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --test task9_http -- --nocapture`; `cargo test -p double_riichi_server --lib`; `cargo test -p double_riichi_core --tests` — all passed.
+
+## Security review round 5 follow-up
+
+- Added a deterministic live Human match flow using unlimited time control: the test now asserts a player projection with legal actions, submits one legal action over WebSocket, verifies the accepted action result and a `game_update` projection, then verifies stale rejection and Leave/replacement close behavior.
+- Added a live slow-consumer integration regression that floods room updates without reading the socket and asserts semantic `4005 slow_consumer` closure; the bounded outbound queue regression remains as a unit guard.
+- Final round-5 verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --test task9_http -- --nocapture`; `cargo test -p double_riichi_server --lib`; `cargo test -p double_riichi_core --tests` — all passed (9 live HTTP/WS tests, 6 server unit tests, and all core tests).
