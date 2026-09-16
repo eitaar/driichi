@@ -693,7 +693,10 @@ impl RoomHandle {
         &self.join_code
     }
 
-    pub async fn send(&self, command: RoomCommand) -> Result<RoomResponse, RoomError> {
+    pub fn try_send(
+        &self,
+        command: RoomCommand,
+    ) -> Result<oneshot::Receiver<Result<RoomResponse, RoomError>>, RoomError> {
         let (reply, receiver) = oneshot::channel();
         self.sender
             .try_send(Envelope {
@@ -703,6 +706,11 @@ impl RoomHandle {
                 mpsc::error::TrySendError::Full(_) => RoomError::Busy,
                 mpsc::error::TrySendError::Closed(_) => RoomError::Closed,
             })?;
+        Ok(receiver)
+    }
+
+    pub async fn send(&self, command: RoomCommand) -> Result<RoomResponse, RoomError> {
+        let receiver = self.try_send(command)?;
         receiver.await.map_err(|_| RoomError::Closed)?
     }
 
@@ -1861,12 +1869,18 @@ impl Actor {
                 Ok(Ok(Ok(())))
             );
             let (reply, _receiver) = oneshot::channel();
-            let _ = commands.try_send(Envelope {
-                request: ActorRequest::Command {
-                    command: RoomCommand::PersistenceCompleted { success },
-                    reply,
-                },
-            });
+            if commands
+                .send(Envelope {
+                    request: ActorRequest::Command {
+                        command: RoomCommand::PersistenceCompleted { success },
+                        reply,
+                    },
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
         });
         Ok(())
     }

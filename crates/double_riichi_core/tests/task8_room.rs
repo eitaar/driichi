@@ -318,6 +318,53 @@ async fn persistence_ack_failure_marks_replay_unavailable() {
 }
 
 #[tokio::test]
+async fn persistence_ack_delivery_survives_full_command_queue() {
+    use double_riichi_core::ROOM_COMMAND_CAPACITY;
+
+    let (handle, mut effects) = RoomActor::spawn_with_effect_channel(config());
+    handle
+        .send(RoomCommand::join(human("h", "player-red")))
+        .await
+        .unwrap();
+    handle
+        .send(RoomCommand::select_with_character("h", "player-red"))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    handle
+        .send(RoomCommand::set_ready(
+            "h",
+            vec!["player-red".to_owned(), "tsumogiri-bot".to_owned()],
+        ))
+        .await
+        .unwrap();
+    let start = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.send(RoomCommand::start()).await }
+    });
+    let effect = effects.recv().await.expect("open effect");
+    let mut pending = Vec::new();
+    for _ in 0..ROOM_COMMAND_CAPACITY {
+        pending.push(handle.try_send(RoomCommand::GetSnapshot).unwrap());
+    }
+    effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
+        "queue pressure".to_owned(),
+    )));
+    let response = start.await.unwrap().unwrap();
+    assert!(matches!(response, RoomResponse::Started(_)));
+    for task in pending {
+        let _ = task.await;
+    }
+    for _ in 0..8 {
+        if handle.snapshot().await.unwrap().persistence_degraded {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("persistence acknowledgement was lost under command pressure");
+}
+
+#[tokio::test]
 async fn slow_connection_is_closed_without_blocking_room_commands() {
     use tokio::time::{self, Duration};
 
