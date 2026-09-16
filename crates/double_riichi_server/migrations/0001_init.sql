@@ -13,7 +13,7 @@ CREATE TABLE bot_tokens (
 
 CREATE TABLE matches (
     match_id TEXT PRIMARY KEY NOT NULL,
-    source TEXT NOT NULL CHECK (source IN ('room', 'ranked', 'validate', 'compat')),
+    source TEXT NOT NULL CHECK (source IN ('room', 'ranked')),
     room_name TEXT,
     game_mode TEXT NOT NULL,
     started_at INTEGER NOT NULL,

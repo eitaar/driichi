@@ -267,6 +267,7 @@ impl Storage {
     pub(crate) async fn insert_bot_token(
         &self,
         record: &BotTokenRecord,
+        request_id: &str,
     ) -> Result<(), StorageError> {
         let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
         sqlx::query(
@@ -282,7 +283,7 @@ impl Storage {
         insert_audit_tx(
             &mut transaction,
             record.created_at(),
-            "system",
+            request_id,
             "token_create",
             "bot_token",
             record.token_id(),
@@ -296,6 +297,7 @@ impl Storage {
         &self,
         token_id: &str,
         occurred_at: i64,
+        request_id: &str,
     ) -> Result<RevokeOutcome, StorageError> {
         let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
         let row = sqlx::query("SELECT name, state FROM bot_tokens WHERE token_id = ?")
@@ -324,7 +326,7 @@ impl Storage {
         insert_audit_tx(
             &mut transaction,
             occurred_at,
-            "system",
+            request_id,
             "token_revoke",
             "bot_token",
             token_id,
@@ -382,8 +384,10 @@ async fn insert_audit_tx(
     target_id: &str,
     summary: &Value,
 ) -> Result<(), StorageError> {
-    if request_id.starts_with("driichi_")
-        || target_id.starts_with("driichi_")
+    if request_id.is_empty()
+        || target_id.is_empty()
+        || string_contains_raw_token(request_id)
+        || string_contains_raw_token(target_id)
         || !validate_audit_summary(action, summary)
     {
         return Err(StorageError::InvalidAuditSummary);
@@ -403,6 +407,25 @@ async fn insert_audit_tx(
     .await
     .map_err(StorageError::Sqlx)?;
     Ok(())
+}
+
+fn string_contains_raw_token(value: &str) -> bool {
+    const PREFIX: &[u8] = b"driichi_";
+    const SECRET_LENGTH: usize = 43;
+    let bytes = value.as_bytes();
+    bytes
+        .windows(PREFIX.len())
+        .enumerate()
+        .any(|(offset, window)| {
+            window == PREFIX
+                && bytes
+                    .get(offset + PREFIX.len()..offset + PREFIX.len() + SECRET_LENGTH)
+                    .is_some_and(|candidate| candidate.iter().all(is_token_character))
+        })
+}
+
+fn is_token_character(byte: &u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')
 }
 
 fn remove_if_exists(path: &Path) -> Result<(), StorageError> {

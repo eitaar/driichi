@@ -134,7 +134,8 @@ impl RuntimeConfig {
 
         let data_root = path
             .parent()
-            .ok_or(ConfigError::Invalid("configuration path has no parent"))?
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
 
         Ok(Self {

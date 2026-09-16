@@ -48,6 +48,16 @@ fn config_uses_config_parent_as_data_root_and_rejects_unknown_or_duplicate_field
     assert_eq!(config.replay_root(), path.parent().unwrap().join("replays"));
     assert_eq!(config.bind, "127.0.0.1:3000");
 
+    let relative_name = format!("double-riichi-task6-relative-{}.toml", std::process::id());
+    fs::write(
+        &relative_name,
+        "public_origin = \"http://127.0.0.1:3000\"\n",
+    )
+    .unwrap();
+    let relative = RuntimeConfig::from_path(Path::new(&relative_name)).unwrap();
+    assert_eq!(relative.data_root(), Path::new("."));
+    let _ = fs::remove_file(&relative_name);
+
     let unknown = write_config(
         &root,
         "public_origin = \"http://127.0.0.1:3000\"\nnot_a_setting = true\n",
@@ -223,6 +233,16 @@ async fn sqlite_storage_applies_exact_pragmas_migrations_and_replay_paths() {
         .unwrap();
         assert_eq!(exists, 1, "missing {table}");
     }
+    for source in ["validate", "compat"] {
+        assert!(sqlx::query(
+            "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status) VALUES (?, ?, NULL, '4p-red-east', 1, 'writing')",
+        )
+        .bind(format!("NON-PERSISTENT-{source}"))
+        .bind(source)
+        .execute(storage.pool())
+        .await
+        .is_err());
+    }
     let path = storage.resolve_replay_path("4p/replay.mjson").unwrap();
     assert!(path.starts_with(storage.replay_root()));
     assert!(storage.resolve_replay_path("../outside.mjson").is_err());
@@ -293,7 +313,12 @@ async fn bot_tokens_are_presented_once_hashed_cached_and_globally_revoked_after_
     let storage = std::sync::Arc::new(Storage::connect(&root).await.unwrap());
     let authority = std::sync::Arc::new(BotTokenAuthority::empty());
     let service = BotTokenService::new(storage.clone(), authority.clone());
-    let created = service.create("runner", 100).await.unwrap();
+    let normalized = service
+        .create(" \u{2003}driichi_runner\u{2003} ", 50, "req-normalize")
+        .await
+        .unwrap();
+    assert_eq!(normalized.record().name(), "driichi_runner");
+    let created = service.create("runner", 100, "req-create").await.unwrap();
     let raw = created.secret().expose().to_owned();
     assert!(raw.starts_with("driichi_"));
     assert_eq!(raw.trim_start_matches("driichi_").len(), 43);
@@ -313,7 +338,7 @@ async fn bot_tokens_are_presented_once_hashed_cached_and_globally_revoked_after_
     assert!(!format!("{:?}", created.record()).contains(&raw));
     let mut revocations = authority.subscribe_revocations();
     service
-        .revoke(created.record().token_id(), 200)
+        .revoke(created.record().token_id(), 200, "req-revoke")
         .await
         .unwrap();
     assert!(matches!(
@@ -325,9 +350,27 @@ async fn bot_tokens_are_presented_once_hashed_cached_and_globally_revoked_after_
         created.record().token_id()
     );
     assert!(matches!(
-        service.revoke(created.record().token_id(), 300).await,
+        service
+            .revoke(created.record().token_id(), 300, "req-revoke-again")
+            .await,
         Err(CredentialError::AlreadyRevoked)
     ));
+    let request_id: String = sqlx::query_scalar(
+        "SELECT request_id FROM audit_logs WHERE action = 'token_create' AND target_id = ?",
+    )
+    .bind(created.record().token_id())
+    .fetch_one(storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(request_id, "req-create");
+    let request_id: String = sqlx::query_scalar(
+        "SELECT request_id FROM audit_logs WHERE action = 'token_revoke' AND target_id = ?",
+    )
+    .bind(created.record().token_id())
+    .fetch_one(storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(request_id, "req-revoke");
     let state: String = sqlx::query_scalar("SELECT state FROM bot_tokens WHERE token_id = ?")
         .bind(created.record().token_id())
         .fetch_one(storage.pool())
@@ -349,7 +392,7 @@ async fn audit_summaries_are_allowlisted_and_ninety_day_cleanup_is_retryable() {
             "token_create",
             "bot_token",
             "TOKEN-ID",
-            json!({"name": "runner"}),
+            json!({"name": "driichi_runner"}),
         )
         .await
         .unwrap();
@@ -377,6 +420,19 @@ async fn audit_summaries_are_allowlisted_and_ninety_day_cleanup_is_retryable() {
             .await
             .is_err()
     );
+    assert!(
+        storage
+            .insert_audit(
+                3,
+                "req-4",
+                "room_configure",
+                "room",
+                "ROOM-ID",
+                json!({"changed_fields": {"Authorization": "Bearer driichi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}),
+            )
+            .await
+            .is_err()
+    );
     let removed = storage.cleanup_audit(90 * 24 * 60 * 60 + 1).await.unwrap();
     assert_eq!(removed, 1);
     let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
@@ -400,19 +456,21 @@ async fn bot_token_authority_reload_preserves_revoked_state_and_emits_seat_signa
     let storage = std::sync::Arc::new(Storage::connect(&root).await.unwrap());
     let authority = std::sync::Arc::new(BotTokenAuthority::empty());
     let service = BotTokenService::new(storage.clone(), authority.clone());
-    let created = service.create("runner", 100).await.unwrap();
+    let created = service.create("runner", 100, "req-create").await.unwrap();
+    let mut revocations = authority.subscribe_revocations();
     service
-        .revoke(created.record().token_id(), 200)
+        .revoke(created.record().token_id(), 200, "req-revoke")
         .await
         .unwrap();
+    let event = revocations.recv().await.unwrap();
+    assert_eq!(event.token_id(), created.record().token_id());
+    assert_eq!(event.state(), TokenState::Revoked);
     let loaded = storage.load_bot_tokens().await.unwrap();
     let reloaded = BotTokenAuthority::from_records(loaded);
     assert!(matches!(
         reloaded.authenticate(created.secret().expose()),
         Err(CredentialError::InvalidCredentials)
     ));
-    let event = double_riichi_server::TokenRevoked::new(created.record().token_id().to_owned());
-    assert_eq!(event.state(), TokenState::Revoked);
     storage.close().await;
     let _ = fs::remove_dir_all(root);
 }
