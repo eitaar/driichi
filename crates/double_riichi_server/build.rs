@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=../../frontend/dist");
+    println!("cargo:rerun-if-changed=migrations");
     println!("cargo:rustc-check-cfg=cfg(frontend_dist)");
 
     if std::env::var("PROFILE").as_deref() != Ok("release") {

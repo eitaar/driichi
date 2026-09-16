@@ -1,4 +1,17 @@
-//! HTTP server crate for double-riichi.
+//! Configuration, credentials, and durable storage for double-riichi.
+
+mod auth;
+mod config;
+mod storage;
+
+pub use auth::{
+    AdminAuthenticator, AdminSecrets, AdminSession, AdminSessionCredential, AdminSessionStore,
+    BotTokenAuthority, BotTokenRecord, BotTokenSecret, BotTokenService, CreatedBotToken,
+    CredentialError, PasswordError, SecretsError, TokenRevoked, TokenState, hash_password,
+    hash_password_for_cli, hash_token, verify_password,
+};
+pub use config::{CasualTimeControl, ConfigError, RuntimeConfig, TimeControls};
+pub use storage::{Storage, StorageError};
 
 #[cfg(frontend_dist)]
 use rust_embed::RustEmbed;
