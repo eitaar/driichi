@@ -161,3 +161,32 @@ cargo test --workspace
 git diff --check
 # passed
 ```
+
+## Review round 2/5 follow-up
+
+Follow-up commit: `fix(core): preserve partial timeout state` (final hash: see `git rev-parse HEAD`).
+
+The partial per-seat timeout state is now stored on each Decision entry. A watchdog/zero-duration entry that defaults while a connected Human remains pending stays marked `timed_out` through the final resolution. `MatchMachine::resolve_expired` also promotes a disconnected Interactive seat to TemporaryAuto as soon as its partial timeout is recorded, before the rest of the response window resolves.
+
+### Follow-up RED
+
+```text
+cargo test -p double_riichi_core --test task4_decisions mixed_unlimited_decision_keeps_connected_human_open_while_auto_times_out
+# FAILED: final bot ResolvedAction.timed_out was false
+```
+
+### Follow-up GREEN
+
+```text
+cargo test -p double_riichi_core --test task4_decisions mixed_unlimited_decision_keeps_connected_human_open_while_auto_times_out
+# 1 passed; 0 failed
+
+cargo test -p double_riichi_core --lib partial_timeout_promotes_disconnected_seat_and_preserves_timeout_marker -- --nocapture
+# 1 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo test -p double_riichi_core
+# 9 unit + 3 Task 3 integration + 7 Decision + 4 timing + 4 projection tests passed; 0 failed; 0 doc tests
+```

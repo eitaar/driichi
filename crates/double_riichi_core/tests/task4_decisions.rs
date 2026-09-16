@@ -164,7 +164,18 @@ async fn mixed_unlimited_decision_keeps_connected_human_open_while_auto_times_ou
     assert!(decision.resolve_at(Instant::now()).unwrap().is_none());
     assert!(decision.submitted_action_id(bot).is_some());
     let human_action = decision.actions_for(human)[0].id.clone();
-    assert!(decision.submit(human, human_action).unwrap().is_resolved());
+    let resolution = match decision.submit(human, human_action).unwrap() {
+        double_riichi_core::DecisionSubmission::Resolved(resolution) => resolution,
+        other => panic!("expected resolution, got {other:?}"),
+    };
+    assert!(
+        resolution
+            .actions
+            .iter()
+            .find(|action| action.seat == bot)
+            .expect("bot action")
+            .timed_out
+    );
 }
 
 #[tokio::test(start_paused = true)]

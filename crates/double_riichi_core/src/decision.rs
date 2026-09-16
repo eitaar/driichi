@@ -102,6 +102,7 @@ pub struct DecisionSeat {
     duration: Option<Duration>,
     deadline: Option<Instant>,
     watchdog: bool,
+    timed_out: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,6 +371,7 @@ impl Decision {
                     duration,
                     deadline: duration.map(|duration| opened_at + duration),
                     watchdog,
+                    timed_out: false,
                 })
             })
             .collect::<Result<Vec<_>, DecisionError>>()?;
@@ -439,6 +441,10 @@ impl Decision {
             .iter()
             .find(|entry| entry.seat == seat)
             .and_then(|entry| entry.submitted_action_id.as_ref())
+    }
+
+    pub fn timed_out(&self, seat: Seat) -> bool {
+        self.entry(seat).is_some_and(|entry| entry.timed_out)
     }
 
     pub fn opened_at(&self) -> Instant {
@@ -625,6 +631,7 @@ impl Decision {
                 && entry.deadline.is_some_and(|deadline| now >= deadline)
             {
                 entry.submitted_action_id = Some(entry.default_action_id.clone());
+                entry.timed_out = true;
                 timed_out.push(entry.seat);
             }
         }
@@ -662,7 +669,7 @@ impl Decision {
                     seat: entry.seat,
                     action_id: action.id.clone(),
                     action: action.action.clone(),
-                    timed_out: false,
+                    timed_out: entry.timed_out,
                 }
             })
             .collect();
