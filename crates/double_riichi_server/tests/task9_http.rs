@@ -361,6 +361,19 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
         .to_str()
         .unwrap()
         .to_owned();
+    let participant_id = body(response).await["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    room.send(double_riichi_core::RoomCommand::select_with_character(
+        participant_id.clone(),
+        "player-red",
+    ))
+    .await
+    .unwrap();
+    room.send(double_riichi_core::RoomCommand::fill_with_bots())
+        .await
+        .unwrap();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -404,6 +417,72 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
         .headers_mut()
         .insert("cookie", cookie.parse().unwrap());
     let (mut second, _) = connect_async(replacement_request).await.unwrap();
+    let _heartbeat = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match second.next().await {
+                Some(Ok(WsMessage::Ping(payload))) => break payload,
+                Some(Ok(_)) => continue,
+                other => panic!("expected heartbeat ping, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    second
+        .send(WsMessage::Text(
+            r#"{"type":"set_ready","preloaded_characters":["player-red","tsumogiri-bot"]}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let ready_snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match second.next().await {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "snapshot" {
+                        break value;
+                    }
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("expected ready snapshot, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(ready_snapshot["type"], "snapshot");
+    room.send(double_riichi_core::RoomCommand::set_ready(
+        participant_id.clone(),
+        vec!["player-red".into(), "tsumogiri-bot".into()],
+    ))
+    .await
+    .unwrap();
+    room.send(double_riichi_core::RoomCommand::start())
+        .await
+        .unwrap();
+    second
+        .send(WsMessage::Text(
+            r#"{"type":"submit_action","decision_id":"stale","action_id":"stale"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let stale_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match second.next().await {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "action_result" {
+                        break value;
+                    }
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("expected action result, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(stale_result["status"], "rejected");
     second
         .send(WsMessage::Text(r#"{"type":"leave"}"#.into()))
         .await

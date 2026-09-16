@@ -1169,6 +1169,11 @@ async fn admin_participant_command(
     };
     let participant_id = ParticipantId::new(participant_id);
     let is_leave = matches!(command, RoomCommand::Leave { .. });
+    let _operation = if is_leave {
+        Some(state.connections.operation_lock(&participant_id).await)
+    } else {
+        None
+    };
     if is_leave {
         state
             .guest_sessions
@@ -1430,6 +1435,7 @@ async fn human_upgrade(
     let Some(participant_id) = state.guest_sessions.authenticate(&join_code, cookie) else {
         return invalid_credentials(&request_id);
     };
+    let guest_cookie = cookie.to_owned();
     let snapshot = match handle.snapshot().await {
         Ok(snapshot) => snapshot,
         Err(_) => return room_not_found(&request_id),
@@ -1460,6 +1466,16 @@ async fn human_upgrade(
                 .connections
                 .operation_lock(&participant_for_upgrade)
                 .await;
+            if state_for_upgrade
+                .guest_sessions
+                .authenticate(&join_code_for_upgrade, &guest_cookie)
+                .is_none()
+            {
+                drop(operation);
+                let _ = socket.send(close_message(4006, "session_expired")).await;
+                drop(permit);
+                return;
+            }
             if handle_for_upgrade
                 .send(RoomCommand::reconnect(participant_for_upgrade.clone()))
                 .await
@@ -1925,10 +1941,12 @@ async fn handle_human_message(
             Ok(_) => HumanMessageOutcome::Invalid,
         },
         HumanInput::Leave => {
+            let operation = state.connections.operation_lock(participant_id).await;
             let result = room.send(RoomCommand::leave(participant_id.clone())).await;
             state
                 .guest_sessions
                 .invalidate_participant(join_code, participant_id);
+            drop(operation);
             let _ = result;
             HumanMessageOutcome::Close("session_expired")
         }
@@ -2060,29 +2078,32 @@ fn normalize_protocol_value(value: &mut Value) {
                     continue;
                 };
                 let key = protocol_key(&key).to_owned();
-                if key == "mode" {
-                    if let Some(mode) = value.as_str().and_then(protocol_mode_name) {
-                        value = Value::String(mode.to_owned());
-                        object.insert(key, value);
-                        continue;
+                match key.as_str() {
+                    "mode" => {
+                        if let Some(mode) = value.as_str().and_then(protocol_mode_name) {
+                            value = Value::String(mode.to_owned());
+                        }
                     }
-                }
-                if key == "kind" {
-                    if let Some(kind) = value.as_str().and_then(protocol_kind_name) {
-                        value = Value::String(kind.to_owned());
+                    "kind" => {
+                        if let Some(kind) = value.as_str().and_then(protocol_kind_name) {
+                            value = Value::String(kind.to_owned());
+                        }
                     }
+                    "controller" | "presence" | "role" | "time_control" | "permanent_auto" => {
+                        if let Value::String(name) = &value {
+                            if let Some(name) = protocol_value_name(name) {
+                                value = Value::String(name.to_owned());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 normalize_protocol_value(&mut value);
                 object.insert(key, value);
             }
         }
         Value::Array(values) => values.iter_mut().for_each(normalize_protocol_value),
-        Value::String(string) => {
-            if let Some(name) = protocol_value_name(string) {
-                *string = name.to_owned();
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 
@@ -2098,6 +2119,7 @@ fn protocol_value_name(value: &str) -> Option<&'static str> {
         "LeftDuringMatch" => "left_during_match",
         "AgentLeft" => "agent_left",
         "TokenRevoked" => "token_revoked",
+        "ConnectionLost" => "connection_lost",
         "Disconnect" => "disconnect",
         "Connected" => "connected",
         "Disconnected" => "disconnected",
@@ -2127,6 +2149,7 @@ fn protocol_key(value: &str) -> &str {
         "LeftDuringMatch" => "left_during_match",
         "AgentLeft" => "agent_left",
         "TokenRevoked" => "token_revoked",
+        "ConnectionLost" => "connection_lost",
         "StartGame" => "start_game",
         "StartKyoku" => "start_kyoku",
         "Tsumo" => "tsumo",
@@ -2873,12 +2896,15 @@ impl GuestSessionStore {
         let mut invalid = Vec::new();
         for (key, join_code, participant_id) in candidates {
             let valid = if let Some(handle) = rooms.get(&join_code).await {
-                handle.snapshot().await.ok().is_some_and(|snapshot| {
-                    snapshot
+                match handle.snapshot().await {
+                    Ok(snapshot) => snapshot
                         .participants
                         .iter()
-                        .any(|participant| participant.id == participant_id)
-                })
+                        .any(|participant| participant.id == participant_id),
+                    Err(RoomError::Busy) => true,
+                    Err(RoomError::Closed | RoomError::Deleted) => false,
+                    Err(_) => true,
+                }
             } else {
                 false
             };
@@ -2971,11 +2997,20 @@ mod tests {
 
     #[test]
     fn protocol_normalization_snake_cases_enum_values() {
-        let mut value =
-            json!({"controller":{"PermanentAuto":"LeftDuringMatch"},"role":{"Player":2}});
+        let mut value = json!({"controller":{"PermanentAuto":"ConnectionLost"},"role":{"Player":2},"display_name":"East"});
         normalize_protocol_value(&mut value);
-        assert_eq!(value["controller"]["permanent_auto"], "left_during_match");
+        assert_eq!(value["controller"]["permanent_auto"], "connection_lost");
         assert_eq!(value["role"]["player"], 2);
+        assert_eq!(value["display_name"], "East");
+    }
+
+    #[test]
+    fn outbound_queue_has_a_hard_capacity() {
+        let (sender, _receiver) = mpsc::channel(HUMAN_OUTBOUND_CAPACITY);
+        for _ in 0..HUMAN_OUTBOUND_CAPACITY {
+            assert!(enqueue(&sender, Message::text("x")));
+        }
+        assert!(!enqueue(&sender, Message::text("overflow")));
     }
 
     #[test]

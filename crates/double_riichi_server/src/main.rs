@@ -79,24 +79,18 @@ async fn run_server(path: PathBuf) -> Result<(), String> {
         }
         _ = shutdown_signal() => {}
     }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(shutdown_seconds);
     let rooms = state.rooms().clone();
-    let shutdown = tokio::spawn(async move {
-        rooms
-            .shutdown(double_riichi_core::ShutdownMode::Graceful)
-            .await;
-    });
-    let _ = stop_tx.send(());
-    match tokio::time::timeout(
+    let _ = tokio::time::timeout(
         std::time::Duration::from_secs(shutdown_seconds),
-        &mut server,
+        rooms.shutdown(double_riichi_core::ShutdownMode::Graceful),
     )
-    .await
-    {
+    .await;
+    let _ = stop_tx.send(());
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    match tokio::time::timeout(remaining, &mut server).await {
         Ok(result) => result.map_err(|_| "server stopped unexpectedly".to_owned()),
-        Err(_) => {
-            shutdown.abort();
-            Ok(())
-        }
+        Err(_) => Ok(()),
     }
 }
 

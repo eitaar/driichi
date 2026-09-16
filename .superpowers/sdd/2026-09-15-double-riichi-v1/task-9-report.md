@@ -54,3 +54,11 @@ The owner-deferred yamai and authenticated riichi.dev evidence remains deferred;
 - Rate-limit buckets retain their own configured window; a short-window request cannot prune the 15-minute admin-failure bucket. Human wire values now normalize all protocol enum variants, including nested controller/role values.
 - Added regressions for rate-window isolation, lock reclamation, room-reconciled guest sessions, trusted-proxy IP derivation, enum serialization, live Human leave close behavior, and the existing live snapshot/replacement flow.
 - Final round-2 verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --test task9_http -- --nocapture`; `cargo test -p double_riichi_server --lib`; `cargo test -p double_riichi_core --tests` — all passed.
+
+## Security review round 3 follow-up
+
+- Shutdown now completes the bounded room notification/retry phase before releasing Axum's graceful-drain gate; the remaining configured deadline bounds connection drain.
+- Reconciliation preserves sessions when a room snapshot is transiently busy and only revokes on a successful absence check or closed/deleted room. Leave invalidation and close signalling now hold the participant operation lock, and upgrade callbacks re-authenticate after acquiring that lock, closing the replacement race.
+- Protocol normalization is key/context scoped rather than recursively rewriting arbitrary strings; `ConnectionLost` and nested controller/role values are serialized snake-case while display names remain unchanged.
+- Expanded live Human coverage to heartbeat Ping, Ready snapshot, match start/stale action rejection, replacement, and semantic Leave close; added bounded outbound-queue and protocol-string regressions alongside trusted-proxy/rate/guest-session/lock tests.
+- Final round-3 verification: `cargo fmt --all -- --check`; `cargo test -p double_riichi_server --test task9_http -- --nocapture`; `cargo test -p double_riichi_server --lib`; `cargo test -p double_riichi_core --tests` — all passed.
