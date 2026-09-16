@@ -251,3 +251,32 @@ cargo test --workspace
 git diff --check
 # passed
 ```
+
+## Review round 5/5 follow-up
+
+The final review again verified all listed findings as addressed. No source change or new failing behavior slice was warranted; this was a clean verification gate and the report-only commit records the evidence.
+
+### Verification
+
+```text
+cargo test -p double_riichi_core --test task4_decisions
+# 8 passed; 0 failed
+
+cargo test -p double_riichi_core --test task4_machine
+# 4 passed; 0 failed
+
+cargo test -p double_riichi_core --test task4_projection
+# 4 passed; 0 failed
+
+cargo fmt --all -- --check
+# passed
+
+cargo check --workspace
+# passed
+
+cargo test --workspace
+# all workspace unit, integration, and doc tests passed
+
+git diff --check
+# passed
+```
