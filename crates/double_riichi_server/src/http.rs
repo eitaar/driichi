@@ -313,6 +313,17 @@ impl ServerState {
     ) -> Self {
         let (public_origin, public_origin_url) = canonical_origin(&public_origin);
         let secure_cookies = public_origin_url.scheme() == "https";
+        let guest_sessions = Arc::new(GuestSessionStore::default());
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let cleanup_sessions = guest_sessions.clone();
+            let cleanup_rooms = rooms.clone();
+            handle.spawn(async move {
+                loop {
+                    time::sleep(Duration::from_secs(60)).await;
+                    cleanup_sessions.prune_for_rooms(&cleanup_rooms).await;
+                }
+            });
+        }
         Self {
             public_origin,
             public_origin_url,
@@ -321,7 +332,7 @@ impl ServerState {
             rooms,
             registry,
             character_catalog,
-            guest_sessions: Arc::new(GuestSessionStore::default()),
+            guest_sessions,
             connections: Arc::new(HumanConnections::default()),
             rate_limiter: Arc::new(RateLimiter::new()),
             connection_count: Arc::new(AtomicUsize::new(0)),
@@ -1158,6 +1169,14 @@ async fn admin_participant_command(
     };
     let participant_id = ParticipantId::new(participant_id);
     let is_leave = matches!(command, RoomCommand::Leave { .. });
+    if is_leave {
+        state
+            .guest_sessions
+            .invalidate_participant(&join_code, &participant_id);
+        state
+            .connections
+            .close(&participant_id, 4006, "session_expired");
+    }
     let command = match command {
         RoomCommand::Select { .. } => RoomCommand::select(participant_id.clone()),
         RoomCommand::Deselect { .. } => RoomCommand::deselect(participant_id.clone()),
@@ -1165,20 +1184,10 @@ async fn admin_participant_command(
         _ => unreachable!(),
     };
     match handle.send(command).await {
-        Ok(_) => {
-            if is_leave {
-                state
-                    .guest_sessions
-                    .invalidate_participant(&join_code, &participant_id);
-                state
-                    .connections
-                    .close(&participant_id, 4006, "session_expired");
-            }
-            match handle.snapshot().await {
-                Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
-                Err(_) => room_not_found(&request_id),
-            }
-        }
+        Ok(_) => match handle.snapshot().await {
+            Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
+            Err(_) => room_not_found(&request_id),
+        },
         Err(error) => room_error_response(error, &request_id),
     }
 }
@@ -1336,7 +1345,7 @@ async fn public_join(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    state.guest_sessions.prune();
+    state.guest_sessions.prune_for_rooms(&state.rooms).await;
     let ip = request_ip(
         &headers,
         peer.as_ref().map(|value| value.0.0),
@@ -1401,7 +1410,7 @@ async fn human_upgrade(
     headers: HeaderMap,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    state.guest_sessions.prune();
+    state.guest_sessions.prune_for_rooms(&state.rooms).await;
     if !public_origin_allowed(&headers, &state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1435,27 +1444,6 @@ async fn human_upgrade(
             .invalidate_participant(&join_code, &participant_id);
         return invalid_credentials(&request_id);
     }
-    let Some(permit) = state.connection_permit() else {
-        return ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Server busy",
-            "The server connection limit has been reached.",
-            "server_busy",
-        )
-        .response(&request_id);
-    };
-    let operation = state.connections.operation_lock(&participant_id).await;
-    if handle
-        .send(RoomCommand::reconnect(participant_id.clone()))
-        .await
-        .is_err()
-    {
-        drop(operation);
-        drop(permit);
-        return invalid_credentials(&request_id);
-    }
-    let (generation, control) = state.connections.register(participant_id.clone()).await;
-    drop(operation);
     let state_for_upgrade = state.clone();
     let handle_for_upgrade = handle.clone();
     let join_code_for_upgrade = join_code.clone();
@@ -1463,7 +1451,30 @@ async fn human_upgrade(
     let ws_limit = state.limits.human_ws_message_limit;
     ws.max_message_size(ws_limit)
         .max_frame_size(ws_limit)
-        .on_upgrade(move |socket| async move {
+        .on_upgrade(move |mut socket| async move {
+            let Some(permit) = state_for_upgrade.connection_permit() else {
+                let _ = socket.send(close_message(1013, "server_busy")).await;
+                return;
+            };
+            let operation = state_for_upgrade
+                .connections
+                .operation_lock(&participant_for_upgrade)
+                .await;
+            if handle_for_upgrade
+                .send(RoomCommand::reconnect(participant_for_upgrade.clone()))
+                .await
+                .is_err()
+            {
+                drop(operation);
+                let _ = socket.send(close_message(4006, "session_expired")).await;
+                drop(permit);
+                return;
+            }
+            let (generation, control) = state_for_upgrade
+                .connections
+                .register(participant_for_upgrade.clone())
+                .await;
+            drop(operation);
             run_human(
                 socket,
                 state_for_upgrade,
@@ -1498,6 +1509,29 @@ struct HumanConnections {
     participant_locks: Mutex<HashMap<ParticipantId, Arc<AsyncMutex<()>>>>,
 }
 
+struct ParticipantOperationGuard {
+    connections: Arc<HumanConnections>,
+    participant_id: ParticipantId,
+    lock: Option<OwnedMutexGuard<()>>,
+}
+
+impl Drop for ParticipantOperationGuard {
+    fn drop(&mut self) {
+        self.lock.take();
+        let mut locks = self
+            .connections
+            .participant_locks
+            .lock()
+            .expect("connection lock poisoned");
+        if locks
+            .get(&self.participant_id)
+            .is_some_and(|lock| Arc::strong_count(lock) == 1)
+        {
+            locks.remove(&self.participant_id);
+        }
+    }
+}
+
 struct ActiveConnection {
     generation: u64,
     control: mpsc::Sender<Control>,
@@ -1527,7 +1561,10 @@ impl HumanConnections {
         (generation, receiver)
     }
 
-    async fn operation_lock(&self, participant_id: &ParticipantId) -> OwnedMutexGuard<()> {
+    async fn operation_lock(
+        self: &Arc<Self>,
+        participant_id: &ParticipantId,
+    ) -> ParticipantOperationGuard {
         let lock = self
             .participant_locks
             .lock()
@@ -1535,7 +1572,11 @@ impl HumanConnections {
             .entry(participant_id.clone())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone();
-        lock.lock_owned().await
+        ParticipantOperationGuard {
+            connections: self.clone(),
+            participant_id: participant_id.clone(),
+            lock: Some(lock.lock_owned().await),
+        }
     }
 
     fn close(&self, participant_id: &ParticipantId, code: u16, reason: &'static str) {
@@ -1884,18 +1925,12 @@ async fn handle_human_message(
             Ok(_) => HumanMessageOutcome::Invalid,
         },
         HumanInput::Leave => {
-            if room
-                .send(RoomCommand::leave(participant_id.clone()))
-                .await
-                .is_ok()
-            {
-                state
-                    .guest_sessions
-                    .invalidate_participant(join_code, participant_id);
-                HumanMessageOutcome::Close("session_expired")
-            } else {
-                HumanMessageOutcome::Continue
-            }
+            let result = room.send(RoomCommand::leave(participant_id.clone())).await;
+            state
+                .guest_sessions
+                .invalidate_participant(join_code, participant_id);
+            let _ = result;
+            HumanMessageOutcome::Close("session_expired")
         }
     }
 }
@@ -2042,8 +2077,43 @@ fn normalize_protocol_value(value: &mut Value) {
             }
         }
         Value::Array(values) => values.iter_mut().for_each(normalize_protocol_value),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        Value::String(string) => {
+            if let Some(name) = protocol_value_name(string) {
+                *string = name.to_owned();
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
+}
+
+fn protocol_value_name(value: &str) -> Option<&'static str> {
+    Some(match value {
+        "Human" => "human",
+        "MJAI" => "mjai",
+        "MCP" => "mcp",
+        "BuiltInBot" => "built_in_bot",
+        "Interactive" => "interactive",
+        "TemporaryAuto" => "temporary_auto",
+        "PermanentAuto" => "permanent_auto",
+        "LeftDuringMatch" => "left_during_match",
+        "AgentLeft" => "agent_left",
+        "TokenRevoked" => "token_revoked",
+        "Disconnect" => "disconnect",
+        "Connected" => "connected",
+        "Disconnected" => "disconnected",
+        "None" => "none",
+        "Player" => "player",
+        "Spectator" => "spectator",
+        "Turn" => "turn",
+        "Response" => "response",
+        "RiichiDev" => "riichi_dev",
+        "Casual" => "casual",
+        "East" => "east",
+        "South" => "south",
+        "West" => "west",
+        "North" => "north",
+        _ => return None,
+    })
 }
 
 fn protocol_key(value: &str) -> &str {
@@ -2051,6 +2121,12 @@ fn protocol_key(value: &str) -> &str {
         "Player" => "player",
         "Public" => "public",
         "ReplayAdmin" => "replay_admin",
+        "Interactive" => "interactive",
+        "TemporaryAuto" => "temporary_auto",
+        "PermanentAuto" => "permanent_auto",
+        "LeftDuringMatch" => "left_during_match",
+        "AgentLeft" => "agent_left",
+        "TokenRevoked" => "token_revoked",
         "StartGame" => "start_game",
         "StartKyoku" => "start_kyoku",
         "Tsumo" => "tsumo",
@@ -2640,9 +2716,14 @@ enum RateKind {
     AgentAuthFailure,
 }
 
+struct RateBucket {
+    window: Duration,
+    hits: VecDeque<Instant>,
+}
+
 #[derive(Default)]
 struct RateLimiter {
-    entries: Mutex<HashMap<(RateKind, IpAddr), VecDeque<Instant>>>,
+    entries: Mutex<HashMap<(RateKind, IpAddr), RateBucket>>,
 }
 
 impl RateLimiter {
@@ -2650,24 +2731,27 @@ impl RateLimiter {
         Self::default()
     }
 
-    fn available(&self, kind: RateKind, ip: IpAddr, limit: usize, window: Duration) -> bool {
+    fn available(&self, kind: RateKind, ip: IpAddr, limit: usize, _window: Duration) -> bool {
         let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
         let now = Instant::now();
-        prune_rate_entries(&mut entries, now, window);
+        prune_rate_entries(&mut entries, now);
         entries
             .get(&(kind, ip))
-            .is_none_or(|entry| entry.len() < limit)
+            .is_none_or(|entry| entry.hits.len() < limit)
     }
 
     fn allowed(&self, kind: RateKind, ip: IpAddr, limit: usize, window: Duration) -> bool {
         let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
         let now = Instant::now();
-        prune_rate_entries(&mut entries, now, window);
-        let entry = entries.entry((kind, ip)).or_default();
-        if entry.len() >= limit {
+        prune_rate_entries(&mut entries, now);
+        let entry = entries.entry((kind, ip)).or_insert_with(|| RateBucket {
+            window,
+            hits: VecDeque::new(),
+        });
+        if entry.hits.len() >= limit {
             return false;
         }
-        entry.push_back(now);
+        entry.hits.push_back(now);
         enforce_rate_bound(&mut entries);
         true
     }
@@ -2675,30 +2759,34 @@ impl RateLimiter {
     fn record(&self, kind: RateKind, ip: IpAddr, window: Duration) {
         let mut entries = self.entries.lock().expect("rate limiter lock poisoned");
         let now = Instant::now();
-        prune_rate_entries(&mut entries, now, window);
-        entries.entry((kind, ip)).or_default().push_back(now);
+        prune_rate_entries(&mut entries, now);
+        entries
+            .entry((kind, ip))
+            .or_insert_with(|| RateBucket {
+                window,
+                hits: VecDeque::new(),
+            })
+            .hits
+            .push_back(now);
         enforce_rate_bound(&mut entries);
     }
 }
 
-fn prune_rate_entries(
-    entries: &mut HashMap<(RateKind, IpAddr), VecDeque<Instant>>,
-    now: Instant,
-    window: Duration,
-) {
-    for queue in entries.values_mut() {
-        while queue
+fn prune_rate_entries(entries: &mut HashMap<(RateKind, IpAddr), RateBucket>, now: Instant) {
+    for bucket in entries.values_mut() {
+        while bucket
+            .hits
             .front()
-            .is_some_and(|started| now.duration_since(*started) >= window)
+            .is_some_and(|started| now.duration_since(*started) >= bucket.window)
         {
-            queue.pop_front();
+            bucket.hits.pop_front();
         }
     }
-    entries.retain(|_, queue| !queue.is_empty());
+    entries.retain(|_, bucket| !bucket.hits.is_empty());
     enforce_rate_bound(entries);
 }
 
-fn enforce_rate_bound(entries: &mut HashMap<(RateKind, IpAddr), VecDeque<Instant>>) {
+fn enforce_rate_bound(entries: &mut HashMap<(RateKind, IpAddr), RateBucket>) {
     while entries.len() > 8_192 {
         let Some(key) = entries.keys().next().copied() else {
             break;
@@ -2767,6 +2855,43 @@ impl GuestSessionStore {
         prune_guest_sessions(&mut sessions, Instant::now());
     }
 
+    async fn prune_for_rooms(&self, rooms: &RoomRegistry) {
+        self.prune();
+        let candidates: Vec<_> = self
+            .sessions
+            .lock()
+            .expect("guest session lock poisoned")
+            .iter()
+            .map(|(key, session)| {
+                (
+                    *key,
+                    session.join_code.clone(),
+                    session.participant_id.clone(),
+                )
+            })
+            .collect();
+        let mut invalid = Vec::new();
+        for (key, join_code, participant_id) in candidates {
+            let valid = if let Some(handle) = rooms.get(&join_code).await {
+                handle.snapshot().await.ok().is_some_and(|snapshot| {
+                    snapshot
+                        .participants
+                        .iter()
+                        .any(|participant| participant.id == participant_id)
+                })
+            } else {
+                false
+            };
+            if !valid {
+                invalid.push(key);
+            }
+        }
+        let mut sessions = self.sessions.lock().expect("guest session lock poisoned");
+        for key in invalid {
+            sessions.remove(&key);
+        }
+    }
+
     fn invalidate_participant(&self, join_code: &str, participant_id: &ParticipantId) {
         self.sessions
             .lock()
@@ -2792,3 +2917,78 @@ fn prune_guest_sessions(sessions: &mut HashMap<[u8; 32], GuestSession>, now: Ins
 }
 
 fn _unused_types(_: &GameAction, _: &RoomJoinCode) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_pruning_keeps_each_kind_window() {
+        let limiter = RateLimiter::new();
+        let ip = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let now = Instant::now();
+        limiter.entries.lock().unwrap().insert(
+            (RateKind::AdminLoginFailure, ip),
+            RateBucket {
+                window: Duration::from_secs(15 * 60),
+                hits: VecDeque::from([now - Duration::from_secs(70)]),
+            },
+        );
+        assert!(limiter.available(RateKind::CodeLookup, ip, 1, Duration::from_secs(60)));
+        assert_eq!(
+            limiter
+                .entries
+                .lock()
+                .unwrap()
+                .get(&(RateKind::AdminLoginFailure, ip))
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn participant_operation_locks_are_reclaimed() {
+        let connections = Arc::new(HumanConnections::default());
+        let participant = ParticipantId::new("participant");
+        {
+            let _guard = connections.operation_lock(&participant).await;
+            assert_eq!(connections.participant_locks.lock().unwrap().len(), 1);
+        }
+        assert!(connections.participant_locks.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn guest_sessions_drop_participants_removed_by_room_cleanup() {
+        let sessions = GuestSessionStore::default();
+        let participant = ParticipantId::new("participant");
+        let credential = sessions.issue("MISSING", &participant);
+        let rooms = RoomRegistry::with_max_rooms(1);
+        sessions.prune_for_rooms(&rooms).await;
+        assert!(sessions.authenticate("MISSING", &credential).is_none());
+    }
+
+    #[test]
+    fn protocol_normalization_snake_cases_enum_values() {
+        let mut value =
+            json!({"controller":{"PermanentAuto":"LeftDuringMatch"},"role":{"Player":2}});
+        normalize_protocol_value(&mut value);
+        assert_eq!(value["controller"]["permanent_auto"], "left_during_match");
+        assert_eq!(value["role"]["player"], 2);
+    }
+
+    #[test]
+    fn trusted_proxy_ip_uses_first_untrusted_forwarded_address() {
+        let proxies = vec![
+            IpCidr::new("10.0.0.0".parse().unwrap(), 8).unwrap(),
+            IpCidr::new("192.168.0.0".parse().unwrap(), 16).unwrap(),
+        ];
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.7, 10.1.2.3".parse().unwrap());
+        assert_eq!(
+            request_ip(&headers, Some("10.1.2.3:3000".parse().unwrap()), &proxies,),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+}

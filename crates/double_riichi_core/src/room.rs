@@ -2549,7 +2549,13 @@ impl RoomRegistry {
     pub async fn shutdown(&self, mode: ShutdownMode) {
         let handles: Vec<_> = self.rooms.read().await.values().cloned().collect();
         for handle in handles {
-            let _ = handle.send(RoomCommand::shutdown(mode)).await;
+            loop {
+                match handle.send(RoomCommand::shutdown(mode)).await {
+                    Ok(_) | Err(RoomError::Closed | RoomError::Deleted) => break,
+                    Err(RoomError::Busy) => tokio::task::yield_now().await,
+                    Err(_) => break,
+                }
+            }
         }
         self.rooms.write().await.clear();
     }

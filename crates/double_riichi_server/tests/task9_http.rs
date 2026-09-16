@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{body::Body, http::Request};
 use double_riichi_core::{GameMode, RoomConfig, RoomRegistry};
 use double_riichi_server::{AdminAuthenticator, ServerState, hash_password, server_router};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::{
     connect_async,
@@ -404,6 +404,10 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
         .headers_mut()
         .insert("cookie", cookie.parse().unwrap());
     let (mut second, _) = connect_async(replacement_request).await.unwrap();
+    second
+        .send(WsMessage::Text(r#"{"type":"leave"}"#.into()))
+        .await
+        .unwrap();
     let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             match first.next().await {
@@ -420,6 +424,21 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
         tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4001)
     ));
     assert_eq!(frame.reason, "connected_elsewhere");
-    let _ = second.close(None).await;
+    let leave_frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match second.next().await {
+                Some(Ok(WsMessage::Close(Some(frame)))) => break frame,
+                Some(Ok(_)) => continue,
+                other => panic!("expected leave close, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        leave_frame.code,
+        tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4006)
+    ));
+    assert_eq!(leave_frame.reason, "session_expired");
     server.abort();
 }
