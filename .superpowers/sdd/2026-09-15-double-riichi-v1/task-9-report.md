@@ -1,0 +1,40 @@
+# Task 9 report — HTTP and Human WebSocket
+
+## Scope delivered
+
+- Added Axum 0.8.9 HTTP/WS server router and `driichi` runtime startup (`--config`, default `config.toml`, `--version`).
+- Added Admin login/logout, room list/detail/create/configure/delete, participant selection/deselection/kick, fill/start/rematch/back-to-lobby commands.
+- Added public room lookup and atomic Human join issuance with room-scoped HttpOnly/SameSite guest cookies.
+- Added Human upgrade-time cookie authentication, audience projection snapshots, authoritative room/game updates, `set_ready`, action result/stale responses, reconnect/disconnect handling, bounded outbound flow, heartbeat, replacement, and semantic close reasons.
+- Added RFC Problem Details, server-generated uppercase ULID request IDs, JSON/body and WebSocket limits, rate limiting, trusted-proxy client-IP derivation, strict Origin/Referer checks, and security/cache headers.
+- Extended the RoomHandle boundary with participant-scoped projection retrieval and room metadata required by HTTP; no canonical match state is serialized to Human clients.
+
+## Routes/contracts/security matrix
+
+| Surface | Contract/security behavior |
+|---|---|
+| `/api/v1/admin/login`, `/logout` | strict JSON, same-origin Origin or exact same-origin Referer fallback, HttpOnly/SameSite=Strict cookie, HTTPS `Secure`, fixed session lifetime |
+| `/api/v1/admin/rooms*` | Admin cookie only; HTTP mutations; strict JSON and Problem Details; list/detail metadata and RoomHandle commands |
+| `/api/v1/rooms/{join_code}` | public metadata only; lookup rate limit and no participant identity leakage |
+| `/api/v1/rooms/{join_code}/join` | nickname/Character validation, participant creation rate limit, no raw credential in JSON, Room-bound guest cookie scoped to `/ws/v1/rooms/{join_code}` |
+| `/ws/v1/rooms/{join_code}/human` | exact `Origin`, cookie authentication during upgrade, 64 KiB message/frame limit, 20s Ping/60s Pong timeout, 64-message bounded outbound, 1008/1009 and authenticated semantic close reasons |
+| all custom responses | generated uppercase ULID `X-Request-ID`, `nosniff`, no-referrer, DENY framing, Permissions-Policy, CSP, API `no-store` |
+
+## TDD evidence
+
+- **RED:** `cargo test -p double_riichi_server --test task9_http` before implementation failed because `ServerState` and `server_router` did not exist (the test also initially exposed a test-only response-borrow error, fixed before implementation).
+- **GREEN:** `cargo test -p double_riichi_server --test task9_http -- --nocapture` — 3/3 passing, including Problem Details/request IDs, Admin cookie/room creation/public redaction, and strict unknown-field rejection.
+
+## Verification commands
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace` — passed.
+- `cargo test -p double_riichi_server --tests` — passed (24 tests).
+- `cargo test --workspace` — passed (all workspace tests; 100+ tests including Task 3/4/5/6/7/8/9).
+- `npm run typecheck --prefix frontend` — passed.
+
+## Commit and residual concerns
+
+Commit: `feat(server): expose admin and human room protocols` (the final commit SHA is recorded by git after this report is committed).
+
+The owner-deferred yamai and authenticated riichi.dev evidence remains deferred; this work does not claim Design Freeze or final external compatibility. Frontend implementation, MJAI/MCP, Replay Admin UI, TLS termination, and other out-of-scope surfaces remain untouched.
