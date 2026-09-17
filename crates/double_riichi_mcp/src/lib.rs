@@ -340,10 +340,45 @@ fn server_config(info: &rmcp::model::ServerPeerInfo) -> ServerConfig {
     config
 }
 
-/// Run one authenticated HTTP-to-stdio bridge.
-pub async fn run() -> Result<(), BridgeError> {
-    let config = parse_args(env::args_os()).map_err(BridgeError::Config)?;
+/// Run one authenticated HTTP-to-stdio bridge using the process token.
+///
+/// The downstream transport is injectable so an in-process caller can exercise
+/// the same stdio protocol without starting another process. Authentication is
+/// still read exclusively from `DRIICHI_MCP_TOKEN`.
+pub async fn run_with_transport<T, E, A>(
+    config: BridgeConfig,
+    downstream_transport: T,
+) -> Result<(), BridgeError>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let token = token_from_environment().map_err(BridgeError::Config)?;
+    run_with_token_and_transport_inner(config, token, downstream_transport).await
+}
+
+#[cfg(feature = "test-support")]
+pub async fn run_with_token_and_transport<T, E, A>(
+    config: BridgeConfig,
+    token: String,
+    downstream_transport: T,
+) -> Result<(), BridgeError>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    run_with_token_and_transport_inner(config, token, downstream_transport).await
+}
+
+async fn run_with_token_and_transport_inner<T, E, A>(
+    config: BridgeConfig,
+    token: String,
+    downstream_transport: T,
+) -> Result<(), BridgeError>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let downstream = Arc::new(OnceLock::new());
     let transport_config = StreamableHttpClientTransportConfig::with_uri(config.server.to_string())
         .auth_header(token)
@@ -360,7 +395,7 @@ pub async fn run() -> Result<(), BridgeError> {
         server_config(&upstream_info),
     );
     let local = proxy
-        .serve(stdio())
+        .serve(downstream_transport)
         .await
         .map_err(|_| BridgeError::Downstream)?;
     let upstream_cancel = upstream.cancellation_token();
@@ -375,6 +410,12 @@ pub async fn run() -> Result<(), BridgeError> {
             result.map(|_| ()).map_err(|_| BridgeError::Upstream)
         }
     }
+}
+
+/// Run one authenticated HTTP-to-stdio bridge.
+pub async fn run() -> Result<(), BridgeError> {
+    let config = parse_args(env::args_os()).map_err(BridgeError::Config)?;
+    run_with_transport(config, stdio()).await
 }
 
 /// Entry-point helper that keeps process errors free of credentials.

@@ -2294,6 +2294,7 @@ impl Actor {
     }
 
     async fn handle_decision_result(&mut self, result: DecisionResult) -> Result<(), RoomError> {
+        self.state.bump_revision();
         let match_id = match self.state.phase {
             RoomPhase::Playing(ref id) => id.clone(),
             _ => return Ok(()),
@@ -2348,6 +2349,7 @@ impl Actor {
             .state
             .finish_match(result.clone())
             .ok_or(RoomError::Playing)?;
+        self.state.bump_revision();
         self.publish(RoomEvent::PhaseChanged(self.state.phase.clone()));
         self.publish(RoomEvent::MatchCompleted {
             match_id: match_id.clone(),

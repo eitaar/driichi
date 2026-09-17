@@ -38,6 +38,7 @@ name = "driichi"
 path = "src/main.rs"
 
 [dev-dependencies]
+double_riichi_mcp = { path = "../double_riichi_mcp", features = ["test-support"] }
 tower = { version = "=0.5.3", features = ["util"] }
 tokio-tungstenite = "=0.29.0"
 
