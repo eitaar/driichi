@@ -30,7 +30,7 @@ use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
-    sync::{Mutex as AsyncMutex, Semaphore, broadcast, mpsc, oneshot},
+    sync::{Mutex as AsyncMutex, Notify, Semaphore, broadcast, mpsc, oneshot},
     task::JoinHandle,
     time::{self, Instant},
 };
@@ -55,6 +55,8 @@ const CLOSE_SESSION_EXPIRED: u16 = 4006;
 const CLOSE_PROTOCOL: u16 = 1008;
 const CLOSE_TOO_LARGE: u16 = 1009;
 const CLOSE_BUSY: u16 = 1013;
+const REVOCATION_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
+const REVOCATION_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompatKind {
@@ -124,7 +126,9 @@ pub(crate) struct CompatState {
     max_queue: AtomicUsize,
     active_matches: AtomicUsize,
     shutting_down: AtomicBool,
+    shutdown_notify: Notify,
     token_service: OnceLock<Arc<BotTokenService>>,
+    revocation_task: Mutex<Option<JoinHandle<()>>>,
     inner: AsyncMutex<CompatInner>,
     pub(crate) room_connections: Arc<AgentConnections>,
 }
@@ -136,7 +140,9 @@ impl CompatState {
             max_queue: AtomicUsize::new(max_queue),
             active_matches: AtomicUsize::new(0),
             shutting_down: AtomicBool::new(false),
+            shutdown_notify: Notify::new(),
             token_service: OnceLock::new(),
+            revocation_task: Mutex::new(None),
             inner: AsyncMutex::new(CompatInner {
                 queue: VecDeque::new(),
                 active: HashMap::new(),
@@ -163,29 +169,47 @@ impl CompatState {
     ) {
         let _ = self.token_service.set(service.clone());
         let state = Arc::clone(self);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
+            for token_id in service.revoked_token_ids() {
+                if !deliver_revocation(&state, &rooms, &token_id).await {
+                    return;
+                }
+            }
             loop {
-                match receiver.recv().await {
-                    Ok(event) => revoke_everywhere(&state, &rooms, event.token_id()).await,
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        for token_id in service.revoked_token_ids() {
-                            revoke_everywhere(&state, &rooms, &token_id).await;
-                        }
-                        loop {
-                            match receiver.try_recv() {
-                                Ok(event) => {
-                                    revoke_everywhere(&state, &rooms, event.token_id()).await;
-                                }
-                                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
-                                Err(broadcast::error::TryRecvError::Empty) => break,
-                                Err(broadcast::error::TryRecvError::Closed) => return,
+                tokio::select! {
+                    _ = state.shutdown_notify.notified() => return,
+                    result = receiver.recv() => match result {
+                        Ok(event) => {
+                            if !deliver_revocation(&state, &rooms, event.token_id()).await {
+                                return;
                             }
                         }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            for token_id in service.revoked_token_ids() {
+                                if !deliver_revocation(&state, &rooms, &token_id).await {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => return,
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
+        let previous = self
+            .revocation_task
+            .lock()
+            .expect("revocation task lock poisoned")
+            .replace(task);
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        if !self.shutting_down.swap(true, Ordering::AcqRel) {
+            self.shutdown_notify.notify_waiters();
+        }
     }
 
     pub(crate) async fn active_count(&self) -> usize {
@@ -353,8 +377,9 @@ impl CompatState {
             if inner.queue.is_empty() {
                 inner.timer_running = false;
                 None
-            } else if self.active_matches.load(Ordering::Acquire)
-                >= self.max_active.load(Ordering::Acquire)
+            } else if self.shutting_down.load(Ordering::Acquire)
+                || self.active_matches.load(Ordering::Acquire)
+                    >= self.max_active.load(Ordering::Acquire)
             {
                 inner.timer_running = false;
                 inner.timer_generation = inner.timer_generation.saturating_add(1);
@@ -375,34 +400,38 @@ impl CompatState {
         if batch.is_empty() {
             return;
         }
-        let (match_id, released) = {
+        let start = {
             let mut inner = self.inner.lock().await;
             if inner.shutting_down
+                || self.shutting_down.load(Ordering::Acquire)
                 || self.active_matches.load(Ordering::Acquire)
                     >= self.max_active.load(Ordering::Acquire)
             {
-                drop(inner);
-                for bot in batch {
-                    let _ = bot.assignment.send(Err(AssignmentError {
-                        code: CLOSE_BUSY,
-                        reason: "server_busy",
-                    }));
-                }
-                return;
+                None
+            } else {
+                let id = inner.next_match;
+                inner.next_match = inner.next_match.saturating_add(1);
+                let released = Arc::new(AtomicBool::new(false));
+                self.active_matches.fetch_add(1, Ordering::AcqRel);
+                inner.active.insert(
+                    id,
+                    ActiveCompat {
+                        controls: Vec::new(),
+                        task: None,
+                        released: Arc::clone(&released),
+                    },
+                );
+                Some((id, released))
             }
-            let id = inner.next_match;
-            inner.next_match = inner.next_match.saturating_add(1);
-            let released = Arc::new(AtomicBool::new(false));
-            self.active_matches.fetch_add(1, Ordering::AcqRel);
-            inner.active.insert(
-                id,
-                ActiveCompat {
-                    controls: Vec::new(),
-                    task: None,
-                    released: Arc::clone(&released),
-                },
-            );
-            (id, released)
+        };
+        let Some((match_id, released)) = start else {
+            for bot in batch {
+                let _ = bot.assignment.send(Err(AssignmentError {
+                    code: CLOSE_BUSY,
+                    reason: "server_busy",
+                }));
+            }
+            return;
         };
         let prepared = prepare_match(match_id, kind, batch);
         let (mut actor, assignments, controls) = match prepared {
@@ -510,14 +539,13 @@ impl CompatState {
         self.schedule_ranked_timer().await;
     }
 
-    async fn revoke_token(self: &Arc<Self>, token_id: &str) {
-        let transition = self
-            .room_connections
-            .transition
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("agent transition semaphore closed");
+    async fn revoke_token(self: &Arc<Self>, token_id: &str) -> bool {
+        let transition = tokio::select! {
+            _ = self.shutdown_notify.notified() => return false,
+            permit = self.room_connections.transition.clone().acquire_owned() => {
+                permit.expect("agent transition semaphore closed")
+            }
+        };
         let (waiting, mut controls) = {
             let mut inner = self.inner.lock().await;
             let mut waiting = Vec::new();
@@ -555,14 +583,20 @@ impl CompatState {
             }));
         }
         for sender in controls {
-            let _ = sender
-                .send(CompatControl::Close {
+            let delivered = time::timeout(
+                REVOCATION_ATTEMPT_TIMEOUT,
+                sender.send(CompatControl::Close {
                     code: CLOSE_SESSION_EXPIRED,
                     reason: "token_revoked",
-                })
-                .await;
+                }),
+            )
+            .await;
+            if delivered.is_err() {
+                return false;
+            }
         }
         self.schedule_ranked_timer().await;
+        true
     }
 
     pub(crate) fn is_shutting_down(&self) -> bool {
@@ -570,7 +604,7 @@ impl CompatState {
     }
 
     pub(crate) async fn shutdown(&self) {
-        self.shutting_down.store(true, Ordering::Release);
+        self.begin_shutdown();
         let (waiting, mut controls, tasks) = {
             let mut inner = self.inner.lock().await;
             inner.shutting_down = true;
@@ -602,22 +636,56 @@ impl CompatState {
             }));
         }
         for sender in controls {
-            let _ = sender
-                .send(CompatControl::Close {
+            let _ = time::timeout(
+                REVOCATION_ATTEMPT_TIMEOUT,
+                sender.send(CompatControl::Close {
                     code: CLOSE_SESSION_EXPIRED,
                     reason: "server_shutdown",
-                })
-                .await;
+                }),
+            )
+            .await;
         }
-        for task in tasks {
+        for mut task in tasks {
+            task.abort();
+            let _ = time::timeout(REVOCATION_ATTEMPT_TIMEOUT, &mut task).await;
+        }
+        let revocation_task = self
+            .revocation_task
+            .lock()
+            .expect("revocation task lock poisoned")
+            .take();
+        if let Some(mut task) = revocation_task
+            && time::timeout(REVOCATION_ATTEMPT_TIMEOUT, &mut task)
+                .await
+                .is_err()
+        {
             task.abort();
         }
     }
 }
 
-async fn revoke_everywhere(state: &Arc<CompatState>, rooms: &RoomRegistry, token_id: &str) {
-    state.revoke_token(token_id).await;
-    let _ = rooms.revoke_token(token_id).await;
+async fn deliver_revocation(
+    state: &Arc<CompatState>,
+    rooms: &RoomRegistry,
+    token_id: &str,
+) -> bool {
+    loop {
+        if state.is_shutting_down() {
+            return false;
+        }
+        let compat_delivered = state.revoke_token(token_id).await;
+        let rooms_delivered = matches!(
+            time::timeout(REVOCATION_ATTEMPT_TIMEOUT, rooms.revoke_token(token_id)).await,
+            Ok(Ok(()))
+        );
+        if compat_delivered && rooms_delivered {
+            return true;
+        }
+        tokio::select! {
+            _ = state.shutdown_notify.notified() => return false,
+            _ = time::sleep(REVOCATION_RETRY_DELAY) => {}
+        }
+    }
 }
 
 struct ActiveMatchLease {
@@ -1014,25 +1082,18 @@ impl CompatReplay {
 
     async fn finish(mut self, result: Option<&double_riichi_core::MatchResult>) {
         if self.failed {
-            if let Some(storage) = &self.storage
-                && self.metadata_open
-            {
-                let _ = storage.delete_writing_match(&self.match_id).await;
-            }
+            self.delete_metadata().await;
             return;
         }
         let Some(writer) = self.writer.take() else {
+            self.delete_metadata().await;
             return;
         };
         let artifact = match writer.finalize() {
             Ok(artifact) => artifact,
             Err(error) => {
                 report_replay_failure(&self.match_id, "finalize", &error);
-                if let Some(storage) = &self.storage
-                    && self.metadata_open
-                {
-                    let _ = storage.delete_writing_match(&self.match_id).await;
-                }
+                self.delete_metadata().await;
                 return;
             }
         };
@@ -1040,14 +1101,12 @@ impl CompatReplay {
             report_replay_failure(&self.match_id, "result", &"completed match had no result");
             if let Some(storage) = &self.storage {
                 let _ = storage.remove_replay_file(&artifact.relative_path_string());
-                if self.metadata_open {
-                    let _ = storage.delete_writing_match(&self.match_id).await;
-                }
             }
+            self.delete_metadata().await;
             return;
         };
-        if let Some(storage) = &self.storage
-            && let Err(error) = storage
+        if let Some(storage) = &self.storage {
+            match storage
                 .complete_ranked_match(
                     &self.match_id,
                     &artifact,
@@ -1058,10 +1117,47 @@ impl CompatReplay {
                         .as_secs() as i64,
                 )
                 .await
-        {
-            report_replay_failure(&self.match_id, "metadata", &error);
-            let _ = storage.remove_replay_file(&artifact.relative_path_string());
-            let _ = storage.delete_writing_match(&self.match_id).await;
+            {
+                Ok(()) => self.metadata_open = false,
+                Err(error) => {
+                    report_replay_failure(&self.match_id, "metadata", &error);
+                    let _ = storage.remove_replay_file(&artifact.relative_path_string());
+                    self.delete_metadata().await;
+                }
+            }
+        }
+    }
+
+    async fn abort(self) {
+        let mut this = self;
+        this.writer.take();
+        this.delete_metadata().await;
+    }
+
+    async fn delete_metadata(&mut self) {
+        if self.metadata_open {
+            if let Some(storage) = &self.storage {
+                let _ = storage.delete_writing_match(&self.match_id).await;
+            }
+            self.metadata_open = false;
+        }
+    }
+}
+
+impl Drop for CompatReplay {
+    fn drop(&mut self) {
+        if !self.metadata_open {
+            return;
+        }
+        self.metadata_open = false;
+        let Some(storage) = self.storage.clone() else {
+            return;
+        };
+        let match_id = self.match_id.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(async move {
+                let _ = storage.delete_writing_match(&match_id).await;
+            });
         }
     }
 }
@@ -1250,6 +1346,7 @@ impl CompatMatch {
         let initial = self.machine.events().to_vec();
         if !self.broadcast(&initial).await {
             self.close(CLOSE_PROTOCOL, "protocol_error");
+            self.abort_replay().await;
             return;
         }
         let mut recent = Vec::new();
@@ -1278,6 +1375,7 @@ impl CompatMatch {
                     Ok(_) => {}
                     Err(_) => {
                         self.close(CLOSE_PROTOCOL, "protocol_error");
+                        self.abort_replay().await;
                         return;
                     }
                 }
@@ -1347,6 +1445,7 @@ impl CompatMatch {
         }
         if !self.machine.is_complete() {
             self.close(CLOSE_PROTOCOL, "protocol_error");
+            self.abort_replay().await;
             return;
         }
         if self.kind == CompatKind::Validate {
@@ -1368,6 +1467,12 @@ impl CompatMatch {
     fn record_replay(&mut self, events: &[GameEvent]) {
         if let Some(replay) = self.replay.as_mut() {
             replay.record(events);
+        }
+    }
+
+    async fn abort_replay(&mut self) {
+        if let Some(replay) = self.replay.take() {
+            replay.abort().await;
         }
     }
 
@@ -2269,6 +2374,63 @@ mod tests {
         };
         drop(lease);
         assert_eq!(state.active_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn dropped_compat_replay_cleans_partial_file_and_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("double-riichi-compat-abort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let mode = GameMode::FourPlayerRedHalf;
+        let players = (0..4)
+            .map(|seat| {
+                Participant::new(
+                    format!("abort{seat}"),
+                    format!("Abort {seat}"),
+                    ParticipantKind::MJAI,
+                )
+            })
+            .collect::<Vec<_>>();
+        let writer = ReplayWriter::new(storage.replay_root(), "abortmatch", mode).unwrap();
+        let part = writer.part_path().to_path_buf();
+        storage
+            .open_ranked_match(
+                "abortmatch",
+                mode,
+                1,
+                &writer.relative_path_string(),
+                &players,
+            )
+            .await
+            .unwrap();
+        drop(CompatReplay {
+            writer: Some(writer),
+            storage: Some(storage.clone()),
+            metadata_open: true,
+            failed: false,
+            match_id: "abortmatch".to_owned(),
+        });
+        for _ in 0..100 {
+            let count: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'abortmatch'")
+                    .fetch_one(storage.pool())
+                    .await
+                    .unwrap();
+            if count == 0 && !part.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'abortmatch'")
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        assert!(!part.exists());
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn queued_bot(ticket: u64) -> QueuedBot {

@@ -1,5 +1,7 @@
 use std::{
     fs,
+    fs::OpenOptions,
+    io::Write,
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -129,6 +131,41 @@ impl Storage {
 
     pub fn replay_root(&self) -> &Path {
         &self.replay_root
+    }
+
+    pub fn probe_replay(&self) -> Result<(), StorageError> {
+        for directory in ["", "4p", "3p", ".incomplete"] {
+            let path = if directory.is_empty() {
+                self.replay_root.clone()
+            } else {
+                self.replay_root.join(directory)
+            };
+            if !fs::metadata(path).map_err(StorageError::Io)?.is_dir() {
+                return Err(StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotADirectory,
+                    "replay path is not a directory",
+                )));
+            }
+        }
+        let probe = self.replay_root.join(".incomplete").join(format!(
+            ".health-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&probe)
+                .map_err(StorageError::Io)?;
+            file.write_all(b"health\n").map_err(StorageError::Io)?;
+            file.sync_all().map_err(StorageError::Io)
+        })();
+        let _ = fs::remove_file(&probe);
+        result
     }
 
     pub async fn scalar_text(&self, statement: &str) -> Result<String, StorageError> {
