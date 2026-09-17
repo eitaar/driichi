@@ -579,6 +579,14 @@ impl BotTokenAuthority {
             .collect()
     }
 
+    pub(crate) fn is_active_token_id(&self, token_id: &str) -> bool {
+        self.records
+            .read()
+            .expect("token authority lock poisoned")
+            .values()
+            .any(|record| record.token_id == token_id && record.state == TokenState::Active)
+    }
+
     pub(crate) fn insert_active(&self, record: BotTokenRecord) {
         self.records
             .write()
@@ -694,6 +702,10 @@ impl BotTokenService {
 
     pub fn revoked_token_ids(&self) -> Vec<String> {
         self.authority.revoked_token_ids()
+    }
+
+    pub(crate) fn is_active_token_id(&self, token_id: &str) -> bool {
+        self.authority.is_active_token_id(token_id)
     }
 
     pub async fn create(

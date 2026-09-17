@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -18,7 +18,7 @@ use axum::{
 use double_riichi_core::{
     AudienceProjection, Decision, DecisionId, GameEvent, GameMode, MatchMachine, Participant,
     ParticipantId, ParticipantKind, PlayerDecisionProjection, RoomCommand, RoomError, RoomEvent,
-    RoomHandle, RoomResponse, Seat, TimeControl, TimingConfig,
+    RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl, TimingConfig,
 };
 use double_riichi_mjai::{
     ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition, RequestTime,
@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
     sync::{Mutex as AsyncMutex, Semaphore, broadcast, mpsc, oneshot},
+    task::JoinHandle,
     time::{self, Instant},
 };
 use url::Url;
@@ -65,9 +66,15 @@ struct QueuedBot {
     ticket: u64,
     token: BotTokenRecord,
     display_name: String,
-    assignment: oneshot::Sender<Result<StartAssignment, ()>>,
+    assignment: oneshot::Sender<Result<StartAssignment, AssignmentError>>,
     permit: Option<ConnectionPermit>,
     replay_root: Option<std::path::PathBuf>,
+}
+
+#[derive(Clone, Copy)]
+struct AssignmentError {
+    code: u16,
+    reason: &'static str,
 }
 
 struct StartAssignment {
@@ -79,6 +86,7 @@ struct StartAssignment {
     permit: ConnectionPermit,
 }
 
+#[derive(Clone, Copy)]
 enum CompatControl {
     Close { code: u16, reason: &'static str },
 }
@@ -89,6 +97,8 @@ enum MatchInput {
 
 struct ActiveCompat {
     controls: Vec<(String, mpsc::Sender<CompatControl>)>,
+    task: Option<JoinHandle<()>>,
+    released: Arc<AtomicBool>,
 }
 struct CompatInner {
     queue: VecDeque<QueuedBot>,
@@ -103,7 +113,9 @@ struct CompatInner {
 pub(crate) struct CompatState {
     max_active: AtomicUsize,
     max_queue: AtomicUsize,
+    active_matches: AtomicUsize,
     shutting_down: AtomicBool,
+    token_service: OnceLock<Arc<BotTokenService>>,
     inner: AsyncMutex<CompatInner>,
     pub(crate) room_connections: Arc<AgentConnections>,
 }
@@ -113,7 +125,9 @@ impl CompatState {
         Self {
             max_active: AtomicUsize::new(max_active),
             max_queue: AtomicUsize::new(max_queue),
+            active_matches: AtomicUsize::new(0),
             shutting_down: AtomicBool::new(false),
+            token_service: OnceLock::new(),
             inner: AsyncMutex::new(CompatInner {
                 queue: VecDeque::new(),
                 active: HashMap::new(),
@@ -136,15 +150,27 @@ impl CompatState {
         self: &Arc<Self>,
         mut receiver: broadcast::Receiver<TokenRevoked>,
         service: Arc<BotTokenService>,
+        rooms: RoomRegistry,
     ) {
+        let _ = self.token_service.set(service.clone());
         let state = Arc::clone(self);
         tokio::spawn(async move {
             loop {
                 match receiver.recv().await {
-                    Ok(event) => state.revoke_token(event.token_id()).await,
+                    Ok(event) => revoke_everywhere(&state, &rooms, event.token_id()).await,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         for token_id in service.revoked_token_ids() {
-                            state.revoke_token(&token_id).await;
+                            revoke_everywhere(&state, &rooms, &token_id).await;
+                        }
+                        loop {
+                            match receiver.try_recv() {
+                                Ok(event) => {
+                                    revoke_everywhere(&state, &rooms, event.token_id()).await;
+                                }
+                                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                                Err(broadcast::error::TryRecvError::Empty) => break,
+                                Err(broadcast::error::TryRecvError::Closed) => return,
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -154,7 +180,26 @@ impl CompatState {
     }
 
     pub(crate) async fn active_count(&self) -> usize {
-        self.inner.lock().await.active.len()
+        self.active_matches.load(Ordering::Acquire)
+    }
+
+    fn token_is_active(&self, token_id: &str) -> bool {
+        self.token_service
+            .get()
+            .is_none_or(|service| service.is_active_token_id(token_id))
+    }
+
+    fn release_slot(&self, released: &AtomicBool) {
+        if released
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let _ =
+                self.active_matches
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_sub(1)
+                    });
+        }
     }
     async fn enqueue_ranked(
         self: &Arc<Self>,
@@ -162,7 +207,13 @@ impl CompatState {
         display_name: String,
         replay_root: Option<std::path::PathBuf>,
         permit: ConnectionPermit,
-    ) -> Result<(u64, oneshot::Receiver<Result<StartAssignment, ()>>), ()> {
+    ) -> Result<
+        (
+            u64,
+            oneshot::Receiver<Result<StartAssignment, AssignmentError>>,
+        ),
+        (),
+    > {
         let (tx, rx) = oneshot::channel();
         let mut batch = None;
         let mut start_timer = None;
@@ -186,13 +237,17 @@ impl CompatState {
                 replay_root,
             });
             if inner.queue.len() >= 4
-                && inner.active.len() < self.max_active.load(Ordering::Acquire)
+                && self.active_matches.load(Ordering::Acquire)
+                    < self.max_active.load(Ordering::Acquire)
             {
                 cancel_ranked_timer(&mut inner);
                 batch = Some(drain_batch(&mut inner));
             } else {
-                start_timer =
-                    start_ranked_timer(&mut inner, self.max_active.load(Ordering::Acquire));
+                start_timer = start_ranked_timer(
+                    &mut inner,
+                    self.active_matches.load(Ordering::Acquire),
+                    self.max_active.load(Ordering::Acquire),
+                );
             }
         }
         if let Some(generation) = start_timer {
@@ -210,13 +265,14 @@ impl CompatState {
         token: BotTokenRecord,
         display_name: String,
         permit: ConnectionPermit,
-    ) -> Result<oneshot::Receiver<Result<StartAssignment, ()>>, ()> {
+    ) -> Result<oneshot::Receiver<Result<StartAssignment, AssignmentError>>, ()> {
         let (tx, rx) = oneshot::channel();
         let ticket = {
             let mut inner = self.inner.lock().await;
             if inner.shutting_down
                 || self.shutting_down.load(Ordering::Acquire)
-                || inner.active.len() >= self.max_active.load(Ordering::Acquire)
+                || self.active_matches.load(Ordering::Acquire)
+                    >= self.max_active.load(Ordering::Acquire)
             {
                 return Err(());
             }
@@ -250,7 +306,11 @@ impl CompatState {
     async fn schedule_ranked_timer(self: &Arc<Self>) {
         let generation = {
             let mut inner = self.inner.lock().await;
-            start_ranked_timer(&mut inner, self.max_active.load(Ordering::Acquire))
+            start_ranked_timer(
+                &mut inner,
+                self.active_matches.load(Ordering::Acquire),
+                self.max_active.load(Ordering::Acquire),
+            )
         };
         if let Some(generation) = generation {
             self.spawn_ranked_timer(generation);
@@ -261,7 +321,11 @@ impl CompatState {
         let generation = {
             let mut inner = self.inner.lock().await;
             cancel_ranked_timer(&mut inner);
-            start_ranked_timer(&mut inner, self.max_active.load(Ordering::Acquire))
+            start_ranked_timer(
+                &mut inner,
+                self.active_matches.load(Ordering::Acquire),
+                self.max_active.load(Ordering::Acquire),
+            )
         };
         if let Some(generation) = generation {
             self.spawn_ranked_timer(generation);
@@ -277,7 +341,9 @@ impl CompatState {
             if inner.queue.is_empty() {
                 inner.timer_running = false;
                 None
-            } else if inner.active.len() >= self.max_active.load(Ordering::Acquire) {
+            } else if self.active_matches.load(Ordering::Acquire)
+                >= self.max_active.load(Ordering::Acquire)
+            {
                 inner.timer_running = false;
                 inner.timer_generation = inner.timer_generation.saturating_add(1);
                 None
@@ -297,25 +363,34 @@ impl CompatState {
         if batch.is_empty() {
             return;
         }
-        let match_id = {
+        let (match_id, released) = {
             let mut inner = self.inner.lock().await;
-            if inner.shutting_down || inner.active.len() >= self.max_active.load(Ordering::Acquire)
+            if inner.shutting_down
+                || self.active_matches.load(Ordering::Acquire)
+                    >= self.max_active.load(Ordering::Acquire)
             {
                 drop(inner);
                 for bot in batch {
-                    let _ = bot.assignment.send(Err(()));
+                    let _ = bot.assignment.send(Err(AssignmentError {
+                        code: CLOSE_BUSY,
+                        reason: "server_busy",
+                    }));
                 }
                 return;
             }
             let id = inner.next_match;
             inner.next_match = inner.next_match.saturating_add(1);
+            let released = Arc::new(AtomicBool::new(false));
+            self.active_matches.fetch_add(1, Ordering::AcqRel);
             inner.active.insert(
                 id,
                 ActiveCompat {
                     controls: Vec::new(),
+                    task: None,
+                    released: Arc::clone(&released),
                 },
             );
-            id
+            (id, released)
         };
         let prepared = prepare_match(match_id, kind, batch);
         let (mut actor, assignments, controls) = match prepared {
@@ -323,31 +398,88 @@ impl CompatState {
             Err((_error, bots)) => {
                 self.finish(match_id).await;
                 for bot in bots {
-                    let _ = bot.assignment.send(Err(()));
+                    let _ = bot.assignment.send(Err(AssignmentError {
+                        code: CLOSE_PROTOCOL,
+                        reason: "protocol_error",
+                    }));
                 }
                 return;
             }
         };
-        {
+        let revoked = {
             let mut inner = self.inner.lock().await;
-            if let Some(active) = inner.active.get_mut(&match_id) {
-                active.controls = controls;
+            if !actor
+                .bots
+                .iter()
+                .all(|bot| self.token_is_active(bot.token.token_id()))
+            {
+                inner.active.remove(&match_id);
+                true
+            } else {
+                if let Some(active) = inner.active.get_mut(&match_id) {
+                    active.controls = controls.clone();
+                }
+                false
             }
+        };
+        if revoked {
+            self.release_slot(&released);
+            for bot in actor.bots.drain(..) {
+                let _ = bot.assignment.send(Err(AssignmentError {
+                    code: CLOSE_SESSION_EXPIRED,
+                    reason: "token_revoked",
+                }));
+            }
+            self.restart_ranked_timer().await;
+            return;
         }
         for (bot, assignment) in actor.bots.drain(..).zip(assignments) {
             let _ = bot.assignment.send(Ok(assignment));
         }
-        let state = Arc::clone(self);
-        tokio::spawn(async move {
-            let _ = std::panic::AssertUnwindSafe(actor.run())
+        let supervisor_controls = controls;
+        let lease = ActiveMatchLease {
+            state: Arc::clone(self),
+            match_id,
+            released,
+        };
+        let task = tokio::spawn(async move {
+            let _lease = lease;
+            let panicked = std::panic::AssertUnwindSafe(actor.run())
                 .catch_unwind()
-                .await;
-            state.finish(match_id).await;
+                .await
+                .is_err();
+            if panicked {
+                for (_, sender) in supervisor_controls {
+                    let _ = sender.try_send(CompatControl::Close {
+                        code: CLOSE_PROTOCOL,
+                        reason: "protocol_error",
+                    });
+                }
+            }
         });
+        let mut task = Some(task);
+        let abort = {
+            let mut inner = self.inner.lock().await;
+            if inner.shutting_down {
+                true
+            } else if let Some(active) = inner.active.get_mut(&match_id) {
+                active.task = task.take();
+                false
+            } else {
+                true
+            }
+        };
+        if abort
+            && let Some(task) = task {
+                task.abort();
+            }
     }
 
     async fn finish(self: &Arc<Self>, match_id: u64) {
-        self.inner.lock().await.active.remove(&match_id);
+        let active = self.inner.lock().await.active.remove(&match_id);
+        if let Some(active) = active {
+            self.release_slot(&active.released);
+        }
         self.restart_ranked_timer().await;
     }
 
@@ -364,13 +496,29 @@ impl CompatState {
     }
 
     async fn revoke_token(self: &Arc<Self>, token_id: &str) {
-        let mut controls = {
+        let transition = self
+            .room_connections
+            .transition
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("agent transition semaphore closed");
+        let (waiting, mut controls) = {
             let mut inner = self.inner.lock().await;
-            inner.queue.retain(|bot| bot.token.token_id() != token_id);
+            let mut waiting = Vec::new();
+            let mut retained = VecDeque::with_capacity(inner.queue.len());
+            while let Some(bot) = inner.queue.pop_front() {
+                if bot.token.token_id() == token_id {
+                    waiting.push(bot.assignment);
+                } else {
+                    retained.push_back(bot);
+                }
+            }
+            inner.queue = retained;
             if inner.queue.is_empty() {
                 cancel_ranked_timer(&mut inner);
             }
-            inner
+            let controls = inner
                 .active
                 .values()
                 .flat_map(|active| {
@@ -380,53 +528,111 @@ impl CompatState {
                         .filter(|(id, _)| id == token_id)
                         .map(|(_, sender)| sender.clone())
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (waiting, controls)
         };
-        controls.extend(
-            self.room_connections
-                .entries
-                .lock()
-                .expect("agent connection lock poisoned")
-                .values()
-                .filter(|entry| entry.token_id == token_id)
-                .map(|entry| entry.control.clone()),
-        );
-        for sender in controls {
-            let _ = sender.try_send(CompatControl::Close {
+        controls.extend(self.room_connections.controls_for_token(token_id));
+        drop(transition);
+        for assignment in waiting {
+            let _ = assignment.send(Err(AssignmentError {
                 code: CLOSE_SESSION_EXPIRED,
                 reason: "token_revoked",
-            });
+            }));
+        }
+        for sender in controls {
+            let _ = sender
+                .send(CompatControl::Close {
+                    code: CLOSE_SESSION_EXPIRED,
+                    reason: "token_revoked",
+                })
+                .await;
         }
         self.schedule_ranked_timer().await;
     }
 
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
     pub(crate) async fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Release);
-        let controls = {
+        let (waiting, mut controls, tasks) = {
             let mut inner = self.inner.lock().await;
             inner.shutting_down = true;
-            inner.queue.clear();
             inner.timer_running = false;
             inner.timer_generation = inner.timer_generation.saturating_add(1);
-            inner
-                .active
-                .values()
-                .flat_map(|active| active.controls.iter().map(|(_, sender)| sender.clone()))
-                .collect::<Vec<_>>()
+            let waiting = inner
+                .queue
+                .drain(..)
+                .map(|bot| bot.assignment)
+                .collect::<Vec<_>>();
+            let active = std::mem::take(&mut inner.active);
+            let mut controls = Vec::new();
+            let mut tasks = Vec::new();
+            for (_, mut active) in active {
+                active.released.store(true, Ordering::Release);
+                controls.extend(active.controls.into_iter().map(|(_, sender)| sender));
+                if let Some(task) = active.task.take() {
+                    tasks.push(task);
+                }
+            }
+            self.active_matches.store(0, Ordering::Release);
+            (waiting, controls, tasks)
         };
-        for sender in controls {
-            let _ = sender.try_send(CompatControl::Close {
+        controls.extend(self.room_connections.all_controls());
+        for assignment in waiting {
+            let _ = assignment.send(Err(AssignmentError {
                 code: CLOSE_SESSION_EXPIRED,
                 reason: "server_shutdown",
+            }));
+        }
+        for sender in controls {
+            let _ = sender
+                .send(CompatControl::Close {
+                    code: CLOSE_SESSION_EXPIRED,
+                    reason: "server_shutdown",
+                })
+                .await;
+        }
+        for task in tasks {
+            task.abort();
+        }
+    }
+}
+
+async fn revoke_everywhere(state: &Arc<CompatState>, rooms: &RoomRegistry, token_id: &str) {
+    state.revoke_token(token_id).await;
+    let _ = rooms.revoke_token(token_id).await;
+}
+
+struct ActiveMatchLease {
+    state: Arc<CompatState>,
+    match_id: u64,
+    released: Arc<AtomicBool>,
+}
+
+impl Drop for ActiveMatchLease {
+    fn drop(&mut self) {
+        self.state.release_slot(&self.released);
+        let state = Arc::clone(&self.state);
+        let match_id = self.match_id;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = state.inner.lock().await.active.remove(&match_id);
+                state.restart_ranked_timer().await;
             });
         }
     }
 }
 
-fn start_ranked_timer(inner: &mut CompatInner, max_active: usize) -> Option<u64> {
+fn start_ranked_timer(
+    inner: &mut CompatInner,
+    active_matches: usize,
+    max_active: usize,
+) -> Option<u64> {
     if inner.shutting_down
         || inner.queue.is_empty()
-        || inner.active.len() >= max_active
+        || active_matches >= max_active
         || inner.timer_running
     {
         return None;
@@ -511,6 +717,25 @@ impl AgentConnections {
         {
             entries.remove(id);
         }
+    }
+
+    fn controls_for_token(&self, token_id: &str) -> Vec<mpsc::Sender<CompatControl>> {
+        self.entries
+            .lock()
+            .expect("agent connection lock poisoned")
+            .values()
+            .filter(|entry| entry.token_id == token_id)
+            .map(|entry| entry.control.clone())
+            .collect()
+    }
+
+    fn all_controls(&self) -> Vec<mpsc::Sender<CompatControl>> {
+        self.entries
+            .lock()
+            .expect("agent connection lock poisoned")
+            .values()
+            .map(|entry| entry.control.clone())
+            .collect()
     }
 }
 
@@ -603,13 +828,16 @@ async fn run_waiting_socket(
     mut socket: WebSocket,
     compat: Arc<CompatState>,
     ticket: Option<u64>,
-    mut assignment: oneshot::Receiver<Result<StartAssignment, ()>>,
+    mut assignment: oneshot::Receiver<Result<StartAssignment, AssignmentError>>,
 ) {
     loop {
         tokio::select! {
             result = &mut assignment => {
-                match result { Ok(Ok(assignment)) => run_assigned_socket(socket, assignment).await,
-                    _ => { let _ = socket.send(close_message(CLOSE_SESSION_EXPIRED, "session_expired")).await; } }
+                match result {
+                    Ok(Ok(assignment)) => run_assigned_socket(socket, assignment).await,
+                    Ok(Err(error)) => { let _ = socket.send(close_message(error.code, error.reason)).await; }
+                    Err(_) => { let _ = socket.send(close_message(CLOSE_SESSION_EXPIRED, "session_expired")).await; }
+                }
                 return;
             }
             message = socket.next() => match message {
@@ -654,10 +882,10 @@ async fn run_assigned_socket(socket: WebSocket, assignment: StartAssignment) {
             }
             message = receiver.next() => match message {
                 Some(Ok(Message::Text(text))) => {
-                    if text.len() > MAX_FRAME_BYTES { let _ = output.try_send(close_message(CLOSE_TOO_LARGE, "message_too_large")); close_queued = true; break; }
+                    if text.len() > MAX_FRAME_BYTES { let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large")); close_queued = true; break; }
                     if input.try_send(MatchInput::Frame { seat, bytes: text.as_bytes().to_vec() }).is_err() { let _ = queue_output(&output, close_message(CLOSE_SLOW_CONSUMER, "slow_consumer")); close_queued = true; break; }
                 }
-                Some(Ok(Message::Ping(payload))) => { let _ = output.try_send(Message::Pong(payload)); }
+                Some(Ok(Message::Ping(payload))) => { let _ = queue_output(&output, Message::Pong(payload)); }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             }
@@ -819,9 +1047,8 @@ fn close_message(code: u16, reason: &'static str) -> Message {
 
 fn queue_output(output: &mpsc::Sender<Message>, message: Message) -> bool {
     if !matches!(message, Message::Close(_)) && output.capacity() <= 1 {
-        return output
-            .try_send(close_message(CLOSE_SLOW_CONSUMER, "slow_consumer"))
-            .is_ok();
+        let _ = output.try_send(close_message(CLOSE_SLOW_CONSUMER, "slow_consumer"));
+        return false;
     }
     output.try_send(message).is_ok()
 }
@@ -1255,6 +1482,22 @@ pub(crate) async fn room_mjai_upgrade(
                 .acquire_owned()
                 .await
                 .expect("agent transition semaphore closed");
+            if state_for_upgrade.compat.is_shutting_down()
+                || !state_for_upgrade.bot_token_active(&token_id)
+            {
+                drop(transition);
+                let mut socket = socket;
+                let reason = if state_for_upgrade.compat.is_shutting_down() {
+                    "server_shutdown"
+                } else {
+                    "token_revoked"
+                };
+                let _ = socket
+                    .send(close_message(CLOSE_SESSION_EXPIRED, reason))
+                    .await;
+                drop(permit);
+                return;
+            }
             let (generation, control) =
                 connections.register(participant_id.clone(), token_id.clone());
             if room_for_upgrade
@@ -1359,14 +1602,14 @@ async fn run_room_socket(
     }
     loop {
         tokio::select! {
-            command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = output.try_send(close_message(code, reason)); close_queued = true; } break; }
+            command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = queue_output(&output, close_message(code, reason)); close_queued = true; } break; }
             message = receiver.next() => match message {
                 Some(Ok(Message::Text(text))) => { if text.len() > MAX_FRAME_BYTES { let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large")); close_queued = true; break; } room_reply(&room, &participant_id, mode, &mut adapter, &mut timing, request_time, request_opened, &mut last_decision, &output, text.as_bytes()).await; }
                 Some(Ok(Message::Ping(payload))) => { let _ = queue_output(&output, Message::Pong(payload)); }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             },
-            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = output.try_send(close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_decision, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
+            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_decision, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
         }
     }
     let transition = state
@@ -1753,7 +1996,65 @@ mod tests {
         cancel_ranked_timer(&mut inner);
         assert!(!inner.timer_running);
         assert_eq!(inner.timer_generation, 8);
-        assert_eq!(start_ranked_timer(&mut inner, 1), None);
+        assert_eq!(start_ranked_timer(&mut inner, 0, 1), None);
+    }
+
+    #[test]
+    fn compat_full_queue_reserves_and_emits_slow_consumer_close() {
+        let (sender, mut receiver) = mpsc::channel(OUTBOUND_CAPACITY + 1);
+        for _ in 0..OUTBOUND_CAPACITY {
+            assert!(queue_output(&sender, Message::text("event")));
+        }
+        assert!(!queue_output(&sender, Message::text("overflow")));
+        match receiver.try_recv().unwrap() {
+            Message::Text(_) => {}
+            other => panic!("expected queued text before close, got {other:?}"),
+        }
+        for _ in 1..OUTBOUND_CAPACITY {
+            assert!(matches!(receiver.try_recv(), Ok(Message::Text(_))));
+        }
+        match receiver.try_recv().unwrap() {
+            Message::Close(Some(frame)) => {
+                assert_eq!(frame.code, CLOSE_SLOW_CONSUMER);
+                assert_eq!(frame.reason, "slow_consumer");
+            }
+            other => panic!("expected slow-consumer close, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_join_rejects_unknown_fields() {
+        assert!(
+            serde_json::from_str::<AgentJoinRequest>(r#"{"display_name":"bot","unexpected":true}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn replacement_disconnect_cannot_remove_new_generation() {
+        let connections = AgentConnections::default();
+        let participant = ParticipantId::new("agent");
+        let (old_generation, _old_control) =
+            connections.register(participant.clone(), "token".to_owned());
+        let (new_generation, _new_control) =
+            connections.register(participant.clone(), "token".to_owned());
+        assert!(!connections.is_current(&participant, old_generation));
+        assert!(connections.is_current(&participant, new_generation));
+        connections.remove(&participant, old_generation);
+        assert!(connections.is_current(&participant, new_generation));
+    }
+
+    #[tokio::test]
+    async fn cancelled_match_lease_releases_active_capacity() {
+        let state = Arc::new(CompatState::new(1, 1));
+        state.active_matches.store(1, Ordering::Release);
+        let lease = ActiveMatchLease {
+            state: state.clone(),
+            match_id: 1,
+            released: Arc::new(AtomicBool::new(false)),
+        };
+        drop(lease);
+        assert_eq!(state.active_count().await, 0);
     }
 
     fn queued_bot(ticket: u64) -> QueuedBot {
@@ -1785,8 +2086,11 @@ mod tests {
                 1,
                 ActiveCompat {
                     controls: Vec::new(),
+                    task: None,
+                    released: Arc::new(AtomicBool::new(false)),
                 },
             );
+            state.active_matches.store(1, Ordering::Release);
             inner.timer_running = true;
             inner.timer_generation = 7;
         }
