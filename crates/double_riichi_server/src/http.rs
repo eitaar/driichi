@@ -13,7 +13,7 @@ use axum::{
     Extension, Router,
     body::{Body, Bytes},
     extract::{
-        ConnectInfo, DefaultBodyLimit, Path, State, WebSocketUpgrade,
+        ConnectInfo, DefaultBodyLimit, Path, RawQuery, State, WebSocketUpgrade,
         rejection::BytesRejection,
         ws::{CloseFrame, Message, WebSocket},
     },
@@ -30,6 +30,7 @@ use double_riichi_core::{
     RoomHandle, RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse,
     RoomSnapshot, Seat, TimeControl,
 };
+use double_riichi_replay::MAX_DECOMPRESSED_REPLAY_BYTES;
 use futures_util::{SinkExt, StreamExt};
 use rand::random;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -43,6 +44,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::compat::CompatState;
+use crate::storage::{ReplayPlayer, ReplaySummary, ReplayView};
 use crate::{
     AdminAuthenticator, AdminSecrets, BotTokenAuthority, BotTokenService, CharacterAsset,
     CharacterRegistry, CharacterRegistryError, CredentialError, RuntimeConfig, Storage,
@@ -785,6 +787,11 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
             "/api/v1/admin/rooms",
             get(admin_list_rooms).post(admin_create_room),
         )
+        .route("/api/v1/admin/replays", get(admin_list_replays))
+        .route(
+            "/api/v1/admin/replays/{match_id}",
+            get(admin_view_replay).delete(admin_delete_replay),
+        )
         .route(
             "/api/v1/admin/rooms/{join_code}",
             get(admin_room_detail)
@@ -1311,6 +1318,232 @@ async fn admin_create_room(
         Err(_) => return internal_error(&request_id),
     };
     room_detail_response(StatusCode::CREATED, &snapshot)
+}
+
+#[derive(Debug, Default)]
+struct ReplayListQuery {
+    offset: Option<u64>,
+    limit: Option<u64>,
+}
+
+fn parse_replay_list_query(raw_query: Option<&str>) -> Result<ReplayListQuery, ()> {
+    let mut query = ReplayListQuery::default();
+    for (key, value) in url::form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "offset"
+                if query
+                    .offset
+                    .replace(value.parse().map_err(|_| ())?)
+                    .is_some() =>
+            {
+                return Err(());
+            }
+            "limit"
+                if query
+                    .limit
+                    .replace(value.parse().map_err(|_| ())?)
+                    .is_some() =>
+            {
+                return Err(());
+            }
+            _ => {}
+        }
+    }
+    Ok(query)
+}
+
+async fn admin_list_replays(
+    State(state): State<Arc<ServerState>>,
+    RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let query = match parse_replay_list_query(raw_query.as_deref()) {
+        Ok(query) => query,
+        Err(()) => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Invalid pagination",
+                "Replay pagination is outside the allowed range.",
+                "invalid_pagination",
+            )
+            .response(&request_id);
+        }
+    };
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50);
+    if limit == 0 || limit > 100 || offset > i64::MAX as u64 {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid pagination",
+            "Replay pagination is outside the allowed range.",
+            "invalid_pagination",
+        )
+        .response(&request_id);
+    }
+    let Some(storage) = state.replay_storage() else {
+        return internal_error(&request_id);
+    };
+    match storage.list_replays(offset, limit).await {
+        Ok((replays, total)) => json_response(
+            StatusCode::OK,
+            json!({
+                "replays": replays.iter().map(replay_summary_view).collect::<Vec<_>>(),
+                "offset": offset,
+                "limit": limit,
+                "total": total,
+                "has_more": offset.saturating_add(replays.len() as u64) < total,
+            }),
+        ),
+        Err(_) => internal_error(&request_id),
+    }
+}
+
+async fn admin_view_replay(
+    State(state): State<Arc<ServerState>>,
+    Path(match_id): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let Some(storage) = state.replay_storage() else {
+        return internal_error(&request_id);
+    };
+    match storage.load_replay(&match_id).await {
+        Ok(replay) => replay_view_response(&replay, &request_id),
+        Err(error) => {
+            if matches!(
+                error,
+                crate::storage::StorageError::ReplayUnavailable
+                    | crate::storage::StorageError::ReplayTooLarge
+                    | crate::storage::StorageError::ReplayCorrupt
+                    | crate::storage::StorageError::UnsafeReplayPath
+            ) {
+                tracing::warn!(match_id = %match_id, error = ?error, "admin replay view unavailable");
+            }
+            replay_error_response(error, &request_id)
+        }
+    }
+}
+
+async fn admin_delete_replay(
+    State(state): State<Arc<ServerState>>,
+    Path(match_id): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return origin_not_allowed(&request_id);
+    }
+    let Some(storage) = state.replay_storage() else {
+        return internal_error(&request_id);
+    };
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    match storage.delete_replay(&match_id, now, &request_id.0).await {
+        Ok(()) => Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .unwrap_or_else(|_| Response::new(Body::empty())),
+        Err(error) => replay_error_response(error, &request_id),
+    }
+}
+
+fn replay_summary_view(summary: &ReplaySummary) -> Value {
+    json!({
+        "match_id": summary.match_id,
+        "source": summary.source,
+        "room_name": summary.room_name,
+        "game_mode": summary.game_mode,
+        "started_at": unix_seconds_rfc3339(summary.started_at),
+        "completed_at": unix_seconds_rfc3339(summary.completed_at),
+        "file_size": summary.file_size,
+        "availability": summary.availability,
+        "replay_available": summary.availability == "available",
+    })
+}
+
+fn replay_player_view(player: &ReplayPlayer) -> Value {
+    json!({
+        "participant_id": player.participant_id,
+        "display_name": player.display_name,
+        "participant_kind": player.participant_kind,
+        "seat": player.seat,
+        "character_id": player.character_id,
+        "final_points": player.final_points,
+    })
+}
+
+fn replay_view_response(replay: &ReplayView, request_id: &RequestId) -> Response {
+    let mut body = replay_summary_view(&replay.summary);
+    if let Value::Object(ref mut object) = body {
+        object.insert(
+            "players".to_owned(),
+            json!(
+                replay
+                    .players
+                    .iter()
+                    .map(replay_player_view)
+                    .collect::<Vec<_>>()
+            ),
+        );
+        let frames = match serde_json::to_value(&replay.frames) {
+            Ok(frames) => frames,
+            Err(_) => return internal_error(request_id),
+        };
+        object.insert("frames".to_owned(), frames);
+    }
+    let payload = match serde_json::to_vec(&body) {
+        Ok(payload) if payload.len() <= MAX_DECOMPRESSED_REPLAY_BYTES => payload,
+        Ok(_) => {
+            return replay_error_response(crate::storage::StorageError::ReplayTooLarge, request_id);
+        }
+        Err(_) => return internal_error(request_id),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(payload))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn replay_error_response(error: crate::storage::StorageError, request_id: &RequestId) -> Response {
+    match error {
+        crate::storage::StorageError::ReplayNotFound => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "Replay not found",
+            "The requested Replay does not exist.",
+            "replay_not_found",
+        )
+        .response(request_id),
+        crate::storage::StorageError::ReplayTooLarge => ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Replay too large",
+            "The Replay timeline exceeds the maximum size.",
+            "replay_too_large",
+        )
+        .response(request_id),
+        crate::storage::StorageError::ReplayUnavailable
+        | crate::storage::StorageError::ReplayCorrupt
+        | crate::storage::StorageError::UnsafeReplayPath => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Replay unavailable",
+            "The Replay cannot be viewed, but it remains available for deletion.",
+            "replay_unavailable",
+        )
+        .response(request_id),
+        _ => internal_error(request_id),
+    }
 }
 
 async fn admin_list_rooms(
@@ -2950,7 +3183,9 @@ async fn health(
             let database_ok = time::timeout(Duration::from_secs(1), storage.scalar_i64("SELECT 1"))
                 .await
                 .is_ok_and(|result| result.is_ok());
-            let replay_ok = !state.compat.replay_degraded() && storage.probe_replay().is_ok();
+            let replay_ok = !state.compat.replay_degraded()
+                && !storage.replay_degraded()
+                && storage.probe_replay().is_ok();
             (
                 if database_ok { "ok" } else { "degraded" },
                 if replay_ok { "ok" } else { "degraded" },

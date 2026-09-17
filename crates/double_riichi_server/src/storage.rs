@@ -3,11 +3,15 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use double_riichi_core::{GameMode, MatchResult, Participant};
-use double_riichi_replay::ReplayArtifact;
+use double_riichi_replay::{
+    AuxiliaryPhase, AuxiliaryRecord, MAX_DECOMPRESSED_REPLAY_BYTES, ReplayArtifact, ReplayError,
+    ReplayFrame, ReplayReader,
+};
 use serde_json::{Value, json};
 use sqlx::{
     Row, SqlitePool,
@@ -36,6 +40,14 @@ pub enum StorageError {
     InvalidTokenRecord,
     #[error("replay metadata operation failed")]
     ReplayMetadata,
+    #[error("replay was not found")]
+    ReplayNotFound,
+    #[error("replay is unavailable")]
+    ReplayUnavailable,
+    #[error("replay is too large")]
+    ReplayTooLarge,
+    #[error("replay is corrupt")]
+    ReplayCorrupt,
 }
 
 impl From<sqlx::Error> for StorageError {
@@ -51,10 +63,40 @@ pub(crate) enum RevokeOutcome {
     NotFound,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ReplaySummary {
+    pub match_id: String,
+    pub source: String,
+    pub room_name: Option<String>,
+    pub game_mode: String,
+    pub started_at: i64,
+    pub completed_at: i64,
+    pub file_size: i64,
+    pub availability: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReplayPlayer {
+    pub participant_id: String,
+    pub display_name: String,
+    pub participant_kind: String,
+    pub seat: i64,
+    pub character_id: Option<String>,
+    pub final_points: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReplayView {
+    pub summary: ReplaySummary,
+    pub players: Vec<ReplayPlayer>,
+    pub frames: Vec<ReplayFrame>,
+}
+
 pub struct Storage {
     pool: SqlitePool,
     data_root: PathBuf,
     replay_root: PathBuf,
+    replay_degraded: AtomicBool,
     max_connections: u32,
 }
 
@@ -104,6 +146,7 @@ impl Storage {
             pool,
             data_root: data_root.to_path_buf(),
             replay_root,
+            replay_degraded: AtomicBool::new(false),
             max_connections: 4,
         };
         storage.startup_cleanup().await?;
@@ -131,6 +174,14 @@ impl Storage {
 
     pub fn replay_root(&self) -> &Path {
         &self.replay_root
+    }
+
+    pub fn replay_degraded(&self) -> bool {
+        self.replay_degraded.load(Ordering::Acquire)
+    }
+
+    fn mark_replay_degraded(&self) {
+        self.replay_degraded.store(true, Ordering::Release);
     }
 
     pub fn probe_replay(&self) -> Result<(), StorageError> {
@@ -411,6 +462,260 @@ impl Storage {
         Ok(result.rows_affected())
     }
 
+    pub(crate) async fn list_replays(
+        &self,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<ReplaySummary>, u64), StorageError> {
+        let total =
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE status = 'completed'")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(StorageError::Sqlx)?;
+        let rows = sqlx::query(
+            "SELECT match_id, source, room_name, game_mode, started_at, completed_at, replay_path, file_size
+             FROM matches WHERE status = 'completed' ORDER BY completed_at DESC, match_id DESC LIMIT ? OFFSET ?",
+        )
+        .bind(i64::try_from(limit).map_err(|_| StorageError::ReplayMetadata)?)
+        .bind(i64::try_from(offset).map_err(|_| StorageError::ReplayMetadata)?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        let mut summaries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let match_id = row
+                .try_get::<String, _>("match_id")
+                .map_err(StorageError::Sqlx)?;
+            let replay_path = row
+                .try_get::<String, _>("replay_path")
+                .map_err(StorageError::Sqlx)?;
+            let file_size = row
+                .try_get::<i64, _>("file_size")
+                .map_err(StorageError::Sqlx)?;
+            summaries.push(ReplaySummary {
+                match_id,
+                source: row.try_get("source").map_err(StorageError::Sqlx)?,
+                room_name: row.try_get("room_name").map_err(StorageError::Sqlx)?,
+                game_mode: row.try_get("game_mode").map_err(StorageError::Sqlx)?,
+                started_at: row.try_get("started_at").map_err(StorageError::Sqlx)?,
+                completed_at: row.try_get("completed_at").map_err(StorageError::Sqlx)?,
+                file_size,
+                availability: self.replay_availability(&replay_path, file_size),
+            });
+        }
+        Ok((summaries, u64::try_from(total).unwrap_or(0)))
+    }
+
+    pub(crate) async fn load_replay(&self, match_id: &str) -> Result<ReplayView, StorageError> {
+        let row = sqlx::query(
+            "SELECT match_id, source, room_name, game_mode, started_at, completed_at, replay_path, file_size
+             FROM matches WHERE match_id = ? AND status = 'completed'",
+        )
+        .bind(match_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?
+        .ok_or(StorageError::ReplayNotFound)?;
+        let replay_path = row
+            .try_get::<String, _>("replay_path")
+            .map_err(StorageError::Sqlx)?;
+        let file_size = row
+            .try_get::<i64, _>("file_size")
+            .map_err(StorageError::Sqlx)?;
+        let summary = ReplaySummary {
+            match_id: row.try_get("match_id").map_err(StorageError::Sqlx)?,
+            source: row.try_get("source").map_err(StorageError::Sqlx)?,
+            room_name: row.try_get("room_name").map_err(StorageError::Sqlx)?,
+            game_mode: row.try_get("game_mode").map_err(StorageError::Sqlx)?,
+            started_at: row.try_get("started_at").map_err(StorageError::Sqlx)?,
+            completed_at: row.try_get("completed_at").map_err(StorageError::Sqlx)?,
+            file_size,
+            availability: "available",
+        };
+        if file_size < 0 || file_size as u64 > MAX_DECOMPRESSED_REPLAY_BYTES as u64 {
+            self.mark_replay_degraded();
+            return Err(StorageError::ReplayTooLarge);
+        }
+        let path = match self.resolve_replay_path(&replay_path) {
+            Ok(path) => path,
+            Err(error @ StorageError::UnsafeReplayPath) => {
+                self.mark_replay_degraded();
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let metadata = fs::metadata(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                self.mark_replay_degraded();
+                StorageError::ReplayUnavailable
+            } else {
+                StorageError::Io(error)
+            }
+        })?;
+        if metadata.len() > MAX_DECOMPRESSED_REPLAY_BYTES as u64 {
+            self.mark_replay_degraded();
+            return Err(StorageError::ReplayTooLarge);
+        }
+        let reader = ReplayReader::open(&path).map_err(|error| {
+            self.mark_replay_degraded();
+            match error {
+                ReplayError::ReplayTooLarge { .. } => StorageError::ReplayTooLarge,
+                ReplayError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+                    StorageError::ReplayUnavailable
+                }
+                _ => StorageError::ReplayCorrupt,
+            }
+        })?;
+        let auxiliary = match self.load_auxiliary(match_id).await {
+            Ok(auxiliary) => auxiliary,
+            Err(error) => {
+                self.mark_replay_degraded();
+                return Err(error);
+            }
+        };
+        let frames = reader.frames_with_auxiliary(&auxiliary).map_err(|error| {
+            self.mark_replay_degraded();
+            match error {
+                ReplayError::ReplayTooLarge { .. } => StorageError::ReplayTooLarge,
+                _ => StorageError::ReplayCorrupt,
+            }
+        })?;
+        let players = sqlx::query(
+            "SELECT participant_id, display_name, participant_kind, seat, character_id, final_points
+             FROM match_players WHERE match_id = ? ORDER BY seat",
+        )
+        .bind(match_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?
+        .into_iter()
+        .map(|row| {
+            Ok(ReplayPlayer {
+                participant_id: row.try_get("participant_id").map_err(StorageError::Sqlx)?,
+                display_name: row.try_get("display_name").map_err(StorageError::Sqlx)?,
+                participant_kind: row.try_get("participant_kind").map_err(StorageError::Sqlx)?,
+                seat: row.try_get("seat").map_err(StorageError::Sqlx)?,
+                character_id: row.try_get("character_id").map_err(StorageError::Sqlx)?,
+                final_points: row.try_get("final_points").map_err(StorageError::Sqlx)?,
+            })
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+        Ok(ReplayView {
+            summary,
+            players,
+            frames,
+        })
+    }
+
+    async fn load_auxiliary(&self, match_id: &str) -> Result<Vec<AuxiliaryRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT line_index, phase, sequence, payload_json FROM replay_auxiliary_events
+             WHERE match_id = ? ORDER BY line_index, CASE phase WHEN 'before' THEN 0 ELSE 2 END, sequence",
+        )
+        .bind(match_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        rows.into_iter()
+            .map(|row| {
+                let line_index = row
+                    .try_get::<i64, _>("line_index")
+                    .map_err(StorageError::Sqlx)?;
+                let sequence = row
+                    .try_get::<i64, _>("sequence")
+                    .map_err(StorageError::Sqlx)?;
+                let phase = row
+                    .try_get::<String, _>("phase")
+                    .map_err(StorageError::Sqlx)?;
+                let payload = row
+                    .try_get::<String, _>("payload_json")
+                    .map_err(StorageError::Sqlx)?;
+                let phase = serde_json::from_value::<AuxiliaryPhase>(Value::String(phase))
+                    .map_err(|_| StorageError::ReplayCorrupt)?;
+                let event =
+                    serde_json::from_str(&payload).map_err(|_| StorageError::ReplayCorrupt)?;
+                Ok(AuxiliaryRecord {
+                    event,
+                    line_index: usize::try_from(line_index)
+                        .map_err(|_| StorageError::ReplayCorrupt)?,
+                    phase,
+                    sequence: u64::try_from(sequence).map_err(|_| StorageError::ReplayCorrupt)?,
+                })
+            })
+            .collect()
+    }
+
+    fn replay_availability(&self, replay_path: &str, file_size: i64) -> &'static str {
+        let Ok(path) = self.resolve_replay_path(replay_path) else {
+            self.mark_replay_degraded();
+            return "unavailable";
+        };
+        if file_size < 0 || file_size as u64 > MAX_DECOMPRESSED_REPLAY_BYTES as u64 {
+            self.mark_replay_degraded();
+            return "too_large";
+        }
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.len() > MAX_DECOMPRESSED_REPLAY_BYTES as u64 => {
+                self.mark_replay_degraded();
+                "too_large"
+            }
+            Ok(_) => match ReplayReader::open(path) {
+                Ok(_) => "available",
+                Err(ReplayError::ReplayTooLarge { .. }) => {
+                    self.mark_replay_degraded();
+                    "too_large"
+                }
+                Err(_) => {
+                    self.mark_replay_degraded();
+                    "unavailable"
+                }
+            },
+            Err(_) => {
+                self.mark_replay_degraded();
+                "unavailable"
+            }
+        }
+    }
+
+    pub(crate) async fn delete_replay(
+        &self,
+        match_id: &str,
+        occurred_at: i64,
+        request_id: &str,
+    ) -> Result<(), StorageError> {
+        let replay_path = sqlx::query_scalar::<_, String>(
+            "SELECT replay_path FROM matches WHERE match_id = ? AND status = 'completed'",
+        )
+        .bind(match_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?
+        .ok_or(StorageError::ReplayNotFound)?;
+        let path = self.resolve_replay_path(&replay_path)?;
+        remove_if_exists(&path)?;
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        let deleted =
+            sqlx::query("DELETE FROM matches WHERE match_id = ? AND status = 'completed'")
+                .bind(match_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(StorageError::Sqlx)?;
+        if deleted.rows_affected() != 1 {
+            return Err(StorageError::ReplayNotFound);
+        }
+        insert_audit_tx(
+            &mut transaction,
+            occurred_at,
+            request_id,
+            "replay_delete",
+            "match",
+            match_id,
+            &json!({"match_id": match_id}),
+        )
+        .await?;
+        transaction.commit().await.map_err(StorageError::Sqlx)
+    }
+
     pub(crate) async fn open_ranked_match(
         &self,
         match_id: &str,
@@ -481,6 +786,25 @@ impl Storage {
             .bind(player.final_score)
             .bind(match_id)
             .bind(i64::from(player.seat.index()))
+            .execute(&mut *transaction)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        }
+        for auxiliary in &artifact.auxiliary_events {
+            let phase = match auxiliary.phase {
+                AuxiliaryPhase::Before => "before",
+                AuxiliaryPhase::After => "after",
+            };
+            let payload = serde_json::to_string(&auxiliary.event)
+                .map_err(|_| StorageError::ReplayMetadata)?;
+            sqlx::query(
+                "INSERT INTO replay_auxiliary_events (match_id, line_index, phase, sequence, payload_json) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(match_id)
+            .bind(i64::try_from(auxiliary.line_index).map_err(|_| StorageError::ReplayMetadata)?)
+            .bind(phase)
+            .bind(i64::try_from(auxiliary.sequence).map_err(|_| StorageError::ReplayMetadata)?)
+            .bind(payload)
             .execute(&mut *transaction)
             .await
             .map_err(StorageError::Sqlx)?;

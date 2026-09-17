@@ -435,6 +435,14 @@ impl ReplayWriter {
 }
 
 pub fn read_mjson(path: impl AsRef<Path>) -> Result<Vec<CanonicalEvent>, ReplayError> {
+    let path = path.as_ref();
+    let size = fs::metadata(path)?.len();
+    if size > crate::error::MAX_DECOMPRESSED_REPLAY_BYTES as u64 {
+        return Err(ReplayError::ReplayTooLarge {
+            actual: usize::try_from(size).unwrap_or(usize::MAX),
+            limit: crate::error::MAX_DECOMPRESSED_REPLAY_BYTES,
+        });
+    }
     let bytes = fs::read(path)?;
     let contents = String::from_utf8(bytes).map_err(|error| ReplayError::Corrupt {
         line: 0,
