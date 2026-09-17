@@ -103,6 +103,54 @@ export interface CreatedBotToken extends BotTokenRecord {
   token: string;
 }
 
+export interface ReplaySummary {
+  match_id: string;
+  source: "room" | "ranked" | string;
+  room_name: string | null;
+  game_mode: GameMode | string;
+  started_at: string;
+  completed_at: string;
+  file_size: number;
+  availability: "available" | "unavailable" | "too_large" | string;
+  replay_available: boolean;
+}
+
+export interface ReplayListResponse {
+  replays: ReplaySummary[];
+  offset: number;
+  limit: number;
+  total: number;
+  has_more: boolean;
+}
+
+export interface ReplayAuxiliaryEvent {
+  event: unknown;
+  line_index: number;
+  phase: "before" | "after" | string;
+  sequence: number;
+}
+
+export interface ReplayFrame {
+  event_index: number;
+  visible_event: unknown;
+  visible_state: import("./game/types").ProjectedState;
+  auxiliary_events: ReplayAuxiliaryEvent[];
+}
+
+export interface ReplayPlayer {
+  participant_id: string;
+  display_name: string;
+  participant_kind: string;
+  seat: number;
+  character_id: string | null;
+  final_points: number | null;
+}
+
+export interface ReplayView extends ReplaySummary {
+  players: ReplayPlayer[];
+  frames: ReplayFrame[];
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
@@ -148,6 +196,11 @@ function adminRoomPath(joinCode: string): string {
   return `/api/v1/admin/rooms/${encodeURIComponent(joinCode)}`;
 }
 
+function adminReplayPath(matchId: string): string {
+  if (!/^[A-Za-z0-9-]{1,128}$/.test(matchId)) throw new ApiProblem({ code: "invalid_match_id" });
+  return `/api/v1/admin/replays/${encodeURIComponent(matchId)}`;
+}
+
 export const api = {
   lookupRoom(joinCode: string) { return requestJson<RoomLookup>(roomPath(joinCode)); },
   listHumanCharacters() { return requestJson<HumanCharacter[]>("/api/v1/characters/human"); },
@@ -177,6 +230,13 @@ export const api = {
   listBotTokens() { return requestJson<BotTokenRecord[]>("/api/v1/admin/tokens"); },
   createBotToken(name: string) { return requestJson<CreatedBotToken>("/api/v1/admin/tokens", { method: "POST", body: JSON.stringify({ name }) }); },
   revokeBotToken(tokenId: string) { return requestJson<BotTokenRecord>(`/api/v1/admin/tokens/${encodeURIComponent(tokenId)}/revoke`, { method: "POST" }); },
+  listAdminReplays(offset = 0, limit = 50) {
+    if (offset === 0 && limit === 50) return requestJson<ReplayListResponse>("/api/v1/admin/replays");
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    return requestJson<ReplayListResponse>(`/api/v1/admin/replays?${params.toString()}`);
+  },
+  getAdminReplay(matchId: string) { return requestJson<ReplayView>(adminReplayPath(matchId)); },
+  deleteAdminReplay(matchId: string) { return requestJson<void>(adminReplayPath(matchId), { method: "DELETE" }); },
 };
 
 function adminParticipantCommand(joinCode: string, participantId: string, command: "select" | "deselect" | "kick") {
