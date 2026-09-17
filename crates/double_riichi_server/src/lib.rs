@@ -5,6 +5,7 @@ mod characters;
 mod compat;
 mod config;
 mod http;
+mod mcp;
 mod storage;
 
 pub use auth::{

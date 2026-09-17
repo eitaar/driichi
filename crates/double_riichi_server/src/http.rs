@@ -212,6 +212,9 @@ pub struct ServerState {
     storage: Option<Arc<Storage>>,
     bot_tokens: Option<Arc<BotTokenService>>,
     pub(crate) compat: Arc<CompatState>,
+    mcp_session_idle_seconds: u64,
+    mcp_character: String,
+    mcp_provider_characters: std::collections::BTreeMap<String, String>,
 }
 
 impl ServerState {
@@ -291,6 +294,25 @@ impl ServerState {
         self.bot_tokens
             .as_ref()
             .is_some_and(|service| service.is_active_token_id(token_id))
+    }
+
+    pub(crate) fn mcp_session_idle_seconds(&self) -> u64 {
+        self.mcp_session_idle_seconds
+    }
+
+    pub(crate) fn mcp_character_for_provider(&self, provider: &str) -> String {
+        self.mcp_provider_characters
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| self.mcp_character.clone())
+    }
+
+    pub(crate) fn subscribe_bot_revocations(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::TokenRevoked>> {
+        self.bot_tokens
+            .as_ref()
+            .map(|service| service.subscribe_revocations())
     }
 
     pub(crate) fn authenticate_bot(
@@ -401,6 +423,9 @@ impl ServerState {
             .set_limits(limits.max_compat_matches, limits.max_ranked_queue);
         state.limits = limits;
         state.shutdown_seconds = config.shutdown_seconds;
+        state.mcp_session_idle_seconds = config.mcp_session_idle_seconds;
+        state.mcp_character = config.characters.mcp.clone();
+        state.mcp_provider_characters = config.characters.mcp_providers.clone();
         state.storage = Some(storage);
         state.compat.watch_revocations(
             token_service.subscribe_revocations(),
@@ -421,6 +446,9 @@ impl ServerState {
     ) -> Self {
         let (public_origin, public_origin_url) = canonical_origin(&public_origin);
         let secure_cookies = public_origin_url.scheme() == "https";
+        let mcp_character = character_catalog
+            .default_for(ParticipantKind::MCP)
+            .unwrap_or_else(|| "mcp-agent".to_owned());
         let compat = Arc::new(CompatState::new(
             limits.max_compat_matches,
             limits.max_ranked_queue,
@@ -455,6 +483,9 @@ impl ServerState {
             storage: None,
             bot_tokens: None,
             compat,
+            mcp_session_idle_seconds: 30 * 60,
+            mcp_character,
+            mcp_provider_characters: std::collections::BTreeMap::new(),
         }
     }
 
@@ -719,6 +750,7 @@ async fn not_found(Extension(request_id): Extension<RequestId>) -> Response {
 }
 
 pub fn server_router(state: Arc<ServerState>) -> Router {
+    let mcp_runtime = crate::mcp::McpRuntime::new(state.clone());
     Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/characters/human", get(human_characters))
@@ -790,9 +822,11 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
         .route("/ws/ranked", any(crate::compat::ranked_upgrade))
         .route("/ws/validate", any(crate::compat::validate_upgrade))
         .route("/status", get(crate::compat::status))
+        .route("/mcp", any(crate::mcp::mcp_endpoint))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(state.limits.http_json_limit))
         .layer(middleware::from_fn(request_context))
+        .layer(Extension(mcp_runtime))
         .layer(Extension(state.clone()))
         .with_state(state)
 }
@@ -834,7 +868,7 @@ fn unsafe_admin_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool
         .is_some_and(|referer| same_origin(&referer, &state.public_origin_url))
 }
 
-fn same_origin(left: &Url, right: &Url) -> bool {
+pub(crate) fn same_origin(left: &Url, right: &Url) -> bool {
     left.scheme() == right.scheme()
         && left.host_str() == right.host_str()
         && effective_port(left) == effective_port(right)
@@ -3030,7 +3064,7 @@ fn character_asset(
         .unwrap()
 }
 
-fn normalize_display_text(value: &str) -> Option<String> {
+pub(crate) fn normalize_display_text(value: &str) -> Option<String> {
     let value = value.trim_matches(char::is_whitespace);
     if !(1..=64).contains(&value.chars().count()) || value.chars().any(char::is_control) {
         return None;
