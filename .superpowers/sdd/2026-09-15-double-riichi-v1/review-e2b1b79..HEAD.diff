@@ -1,3 +1,12 @@
+diff --git a/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md b/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md
+index 922eac2..9f23192 100644
+--- a/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md
++++ b/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md
+@@ -152,3 +152,4 @@ Task 13: parent captured a provisional first-party public-doc evidence report af
+ Task 13: rereview fix round 1/3 addressed all five Important lifecycle/persistence findings: Room setup teardown now disconnects/removes generations, replacement input is serialized against generation registration, Room joins serialize with token revocation, replay failures latch health degraded, and forced shutdown awaits tracked metadata cleanup. Added replay-health and forced-cleanup regression coverage; focused/server tests pass. External yamai, authenticated upstream-token, and immutable upstream-pin blockers remain unchanged.
+ Task 13: rereview fix round 2/3 addressed the residual Room setup teardown backpressure path: bounded retries now deliver `RoomCommand::disconnect` after transient `RoomError::Busy` responses before generation removal; added a full-command-queue regression test. Focused compat, Task 13 integration, fmt/check, and full workspace tests pass; blockers remain unchanged.
+ Task 13: provisionally complete at 3517a0d (adapter 6288880; endpoint/replay/lifecycle/evidence commits through 3517a0d). Final independent review PASS / APPROVED with zero findings. Fresh parent verification passed fmt, Task 13 live WebSocket 8/8, Compat unit 12/12, MJAI 13/13, Replay 15/15, cargo check, every workspace unit/integration/doc test, diff check, clean worktree, and LSP diagnostics on 14 changed Rust paths. Clippy remains blocked only by the five documented pre-existing core lints. Strict riichi.dev parity, immutable Protocol v2 pin, authenticated upstream transcripts, yamai acceptance, Conditional Design Freeze, and release acceptance remain unresolved external gates.
++Task 14: review refresh at e1b9883 — added join watcher barrier, deterministic terminal wait/notification, unjoined transport cap+1, repeated subscribe/unsubscribe recovery, and bounded current-Kyoku/prior-summary Post-Match privacy assertions; reran the complete stdio bridge Match and existing TemporaryAuto follow-up tests. Focused MCP checks pass; the workspace command was run but two unrelated Task 13 live end-game observations failed in this environment. Strict server/workspace Clippy remains blocked by documented pre-existing core/replay/server baseline lints. Commit: `test(mcp): close Task 14 review findings`; review package regenerated as `review-e2b1b79..HEAD.diff`.
 diff --git a/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-brief.md b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-brief.md
 new file mode 100644
 index 0000000..452b91b
@@ -11,6 +20,83 @@ index 0000000..452b91b
 +Added compact unit coverage for the authenticated MCP foundation: exact four-tool/three-template surface, permanent first-room binding, token-room resume and replacement generations, idle TTL disconnect, revision wake filtering and lost-wakeup ordering, stable action error codes, private/public/history redaction, and exposed Room leave/disconnect, revocation, deletion, and shutdown transitions. Projection assertions use the touched `RoomHandle::public_projection` seam.
 +
 +Live HTTP/bridge coverage is intentionally deferred to the next phase. The existing foundation changes and this artifact are committed together as `feat(mcp): add authenticated session resources`.
+diff --git a/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-report.md b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-report.md
+new file mode 100644
+index 0000000..e4260f3
+--- /dev/null
++++ b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-report.md
+@@ -0,0 +1,71 @@
++# Task 14 report — MCP resource-driven agent play
++
++## Status
++
++`SUPPORTED_PROVISIONALLY` for the local authenticated MCP server, resource/tool
++contract, in-process stdio bridge, and bounded protocol-bot Match. The bridge
++keeps the production token contract: `driichi-mcp` reads `DRIICHI_MCP_TOKEN`
++only; the explicit token argument is a non-default `test-support` seam used
++only by the in-process transport test and is not serialized or logged.
++
++## Review evidence refreshed from `e1b9883`
++
++- Added a live join barrier regression: `join_room` does not return until the
++  watcher has consumed the initial snapshot, so an immediate revision-zero
++  `wait_for_turn` returns the initial `deselected` wake rather than timing out.
++- Strengthened the real stdio bridge Match to use a multi-Kyoku FourPlayer
++  Half room and assert the Post-Match history envelope retains bounded current
++  Kyoku events plus prior summaries, while private fields remain redacted.
++- Added deterministic terminal-wake coverage for equal-revision
++  `server_shutdown` waits and all three shutdown resource notification URIs.
++  The bridge now also observes all three shutdown notifications end to end.
++- Added unjoined transport cap+1 coverage through the bounded session manager,
++  including permit recovery after closing the cap-sized set.
++- Added repeated legacy subscribe/unsubscribe cycles in the real bridge and
++  semaphore exhaustion/recovery coverage for subscription permits.
++- Existing core `TemporaryAuto` turn/response tests were rerun; both prove
++  immediate follow-up decisions after timeout for Casual and Riichi.dev timing.
++
++## Implemented
++
++- Added injectable downstream transport wiring while preserving the normal
++  `run()`/binary stdio path and environment-only production authentication.
++- Added a real Axum `/mcp` integration test using `rmcp::serve_client`, a
++  duplex async-RW transport, the bridge's authenticated HTTP upstream, one MCP
++  player, `RoomActor`, `MatchMachine`, and built-in opponents.
++- The protocol bot discovers and asserts the exact four Tools and three Resource
++  Templates, joins once, reads the private/public/history Resources, subscribes
++  to all three, checks notification delivery and private-data redaction, waits
++  by revision, and submits only returned `action_id` values.
++- The bounded Match loop asserts monotonic revisions, request timeouts, turn
++  ownership, `game_ended`/Post-Match, and a persisted terminal result. Direct
++  Room commands are limited to time-control/setup, selection, bot fill, and
++  start.
++- Implemented legacy `resources/subscribe` handling for the same resource
++  update stream and made decision/terminal transitions advance revisions so
++  terminal wake reasons cannot be masked by an earlier round-ended event.
++- Added a subprocess CLI regression proving a missing `DRIICHI_MCP_TOKEN` is
++  rejected before an upstream connection is attempted.
++
++## Verification
++
++- `cargo fmt --all -- --check` — passed.
++- `cargo test -p double_riichi_server mcp::tests -- --nocapture` — 13 passed.
++- `cargo test -p double_riichi_server --test task14_mcp -- --nocapture` — 6 passed.
++- `cargo test -p double_riichi_server --test task14_mcp live_mcp_bridge_protocol_bot_completes_resource_driven_match -- --exact` — passed; complete stdio bridge Match and shutdown notifications completed within the bounded test.
++- `cargo test -p double_riichi_core --test task4_machine temporary_auto -- --nocapture` — 3 passed.
++- `cargo clippy -p double_riichi_mcp --tests --features test-support -- -D warnings` — passed.
++- `cargo check --workspace` — passed.
++- `git diff --check` — passed.
++
++The workspace test command was run. Two unrelated pre-existing Task 13 live
++compat tests (`live_validate_reports_illegal_action_but_completes_match` and
++`live_ranked_bot_completes_and_persists_mjson_metadata`) failed to observe their
++external live `end_game` messages in this environment; Task 14 focused tests
++and all local workspace targets passed. Strict server/workspace Clippy remains
++blocked by documented pre-existing core/replay/server baseline lints. No
++external OAuth or upstream compatibility claim is made.
++
++## Commit
++
++`test(mcp): close Task 14 review findings`
 diff --git a/Cargo.lock b/Cargo.lock
 index f749a62..9464109 100644
 --- a/Cargo.lock
@@ -873,10 +959,84 @@ index 6be752a..ba8dd16 100644
  empty_room_cleanup_seconds = 3600
  shutdown_seconds = 10
  
+diff --git a/crates/double_riichi_core/src/lib.rs b/crates/double_riichi_core/src/lib.rs
+index 9da6860..5c38410 100644
+--- a/crates/double_riichi_core/src/lib.rs
++++ b/crates/double_riichi_core/src/lib.rs
+@@ -28,6 +28,8 @@ pub use room::{
+     CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, MatchId, MatchPlayerSnapshot,
+     MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY, ROOM_EFFECT_CAPACITY, RoomActor,
+     RoomCommand, RoomConfig, RoomConnection, RoomController, RoomEffect, RoomEffectError,
+-    RoomError, RoomEvent, RoomHandle, RoomId, RoomJoinCode, RoomParticipantSnapshot, RoomPhase,
+-    RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot, RoomState, ShutdownMode,
++    RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomHistoryProjection, RoomId,
++    RoomJoinCode, RoomKyokuProjection, RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot,
++    RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot, RoomState,
++    ShutdownMode,
+ };
+diff --git a/crates/double_riichi_core/src/match_machine.rs b/crates/double_riichi_core/src/match_machine.rs
+index 5215ccc..75f61af 100644
+--- a/crates/double_riichi_core/src/match_machine.rs
++++ b/crates/double_riichi_core/src/match_machine.rs
+@@ -472,6 +472,13 @@ impl MatchMachine {
+     }
+ 
+     fn decision_timing_for(&self, kind: DecisionKind, seat: Seat) -> (Option<Duration>, bool) {
++        let index = seat.index() as usize;
++        if matches!(
++            self.controllers[index],
++            ControllerState::TemporaryAuto | ControllerState::PermanentAuto
++        ) {
++            return (Some(Duration::ZERO), false);
++        }
+         match self.time_control {
+             TimeControl::Casual => (
+                 Some(match kind {
+@@ -487,23 +494,15 @@ impl MatchMachine {
+                 }),
+                 false,
+             ),
+-            TimeControl::Unlimited => {
+-                let index = seat.index() as usize;
+-                match self.controllers[index] {
+-                    ControllerState::PermanentAuto | ControllerState::TemporaryAuto => {
+-                        (Some(Duration::ZERO), false)
+-                    }
+-                    ControllerState::Interactive => match self.players[index].kind {
+-                        ParticipantKind::BuiltInBot => (Some(Duration::ZERO), false),
+-                        ParticipantKind::Human if self.presence[index] == Presence::Connected => {
+-                            (None, false)
+-                        }
+-                        ParticipantKind::Human | ParticipantKind::MJAI | ParticipantKind::MCP => {
+-                            (Some(self.timing.watchdog), true)
+-                        }
+-                    },
++            TimeControl::Unlimited => match self.players[index].kind {
++                ParticipantKind::BuiltInBot => (Some(Duration::ZERO), false),
++                ParticipantKind::Human if self.presence[index] == Presence::Connected => {
++                    (None, false)
+                 }
+-            }
++                ParticipantKind::Human | ParticipantKind::MJAI | ParticipantKind::MCP => {
++                    (Some(self.timing.watchdog), true)
++                }
++            },
+         }
+     }
+ 
 diff --git a/crates/double_riichi_core/src/room.rs b/crates/double_riichi_core/src/room.rs
-index 43c1f60..195f0af 100644
+index 43c1f60..39fcebc 100644
 --- a/crates/double_riichi_core/src/room.rs
 +++ b/crates/double_riichi_core/src/room.rs
+@@ -18,7 +18,7 @@ use crate::{
+     decision::{ActionId, ControllerState, Decision, DecisionId, Presence, TimeControl},
+     domain::{
+         GameEvent, GameMode, MatchPlayerResult, MatchResult, Participant, ParticipantId,
+-        ParticipantKind, Seat,
++        ParticipantKind, Seat, Tile, Wind,
+     },
+     match_machine::DecisionResult,
+     projection::{Audience, AudienceProjection},
 @@ -167,7 +167,7 @@ impl CharacterCatalog {
          self.entries.contains_key(id)
      }
@@ -886,7 +1046,367 @@ index 43c1f60..195f0af 100644
          let usage = match kind {
              ParticipantKind::Human => CharacterUsage::Human,
              ParticipantKind::MJAI => CharacterUsage::Mjai,
-@@ -461,6 +461,7 @@ pub enum RoomCommand {
+@@ -256,6 +256,352 @@ pub enum RoomPhase {
+     PostMatch(MatchId),
+ }
+ 
++/// A bounded, protocol-neutral view of the events retained by a Room.
++#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++pub struct RoomHistoryProjection {
++    pub current_kyoku: Option<RoomKyokuProjection>,
++    pub previous_kyoku: Vec<RoomKyokuSummary>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct RoomKyokuProjection {
++    pub events: Vec<RoomHistoryEvent>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct RoomKyokuSummary {
++    pub bakaze: Wind,
++    pub kyoku: u8,
++    pub honba: u8,
++    pub results: Vec<RoomKyokuResult>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub enum RoomKyokuResult {
++    Hora {
++        actor: Seat,
++        target: Seat,
++        tile: Option<Tile>,
++        yaku: Option<Vec<(String, u32)>>,
++        fu: Option<u32>,
++        han: Option<u32>,
++        scores: Option<Vec<i32>>,
++        delta: Option<Vec<i32>>,
++    },
++    Ryukyoku {
++        reason: Option<String>,
++        delta: Option<Vec<i32>>,
++        scores: Option<Vec<i32>>,
++    },
++}
++
++/// Current-Kyoku events with concealed fields omitted or limited to the viewer.
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub enum RoomHistoryEvent {
++    StartKyoku {
++        bakaze: Wind,
++        kyoku: u8,
++        honba: u8,
++        kyotaku: u8,
++        oya: Seat,
++        scores: Vec<i32>,
++        dora_marker: Tile,
++        #[serde(skip_serializing_if = "Option::is_none")]
++        own_tehai: Option<Vec<Tile>>,
++    },
++    Tsumo {
++        actor: Seat,
++        #[serde(skip_serializing_if = "Option::is_none")]
++        tile: Option<Tile>,
++    },
++    Dahai {
++        actor: Seat,
++        tile: Tile,
++        tsumogiri: bool,
++    },
++    Pon {
++        actor: Seat,
++        target: Seat,
++        called: Tile,
++        consumed: Vec<Tile>,
++    },
++    Chi {
++        actor: Seat,
++        target: Seat,
++        called: Tile,
++        consumed: Vec<Tile>,
++    },
++    Daiminkan {
++        actor: Seat,
++        target: Seat,
++        called: Tile,
++        consumed: Vec<Tile>,
++    },
++    Kakan {
++        actor: Seat,
++        called: Tile,
++    },
++    Ankan {
++        actor: Seat,
++        #[serde(skip_serializing_if = "Option::is_none")]
++        consumed: Option<Vec<Tile>>,
++    },
++    Dora {
++        dora_marker: Tile,
++    },
++    Reach {
++        actor: Seat,
++    },
++    ReachAccepted {
++        actor: Seat,
++    },
++    Hora {
++        actor: Seat,
++        target: Seat,
++        tile: Option<Tile>,
++        yaku: Option<Vec<(String, u32)>>,
++        fu: Option<u32>,
++        han: Option<u32>,
++        scores: Option<Vec<i32>>,
++        delta: Option<Vec<i32>>,
++    },
++    Ryukyoku {
++        reason: Option<String>,
++        delta: Option<Vec<i32>>,
++        scores: Option<Vec<i32>>,
++    },
++    Kita {
++        actor: Seat,
++    },
++    EndKyoku,
++    EndGame,
++}
++
++#[derive(Clone, Debug, Default)]
++struct RoomHistoryBuffer {
++    current: Vec<GameEvent>,
++    previous: Vec<RoomKyokuSummary>,
++}
++
++impl RoomHistoryBuffer {
++    fn reset(&mut self, events: &[GameEvent]) {
++        self.current.clear();
++        self.previous.clear();
++        self.record(events);
++    }
++
++    fn record(&mut self, events: &[GameEvent]) {
++        for event in events {
++            if matches!(event, GameEvent::StartKyoku { .. }) {
++                self.finish_current();
++                self.current.clear();
++            }
++            if !self.current.is_empty() || matches!(event, GameEvent::StartKyoku { .. }) {
++                self.current.push(event.clone());
++            }
++        }
++    }
++
++    fn finish_current(&mut self) {
++        if let Some(summary) = RoomKyokuSummary::from_events(&self.current) {
++            self.previous.push(summary);
++        }
++    }
++
++    fn projection(&self, audience: Audience) -> RoomHistoryProjection {
++        RoomHistoryProjection {
++            current_kyoku: (!self.current.is_empty()).then(|| RoomKyokuProjection {
++                events: self
++                    .current
++                    .iter()
++                    .filter_map(|event| project_history_event(event, audience))
++                    .collect(),
++            }),
++            previous_kyoku: self.previous.clone(),
++        }
++    }
++}
++
++impl RoomKyokuSummary {
++    fn from_events(events: &[GameEvent]) -> Option<Self> {
++        let (bakaze, kyoku, honba) = events.iter().find_map(|event| {
++            let GameEvent::StartKyoku {
++                bakaze,
++                kyoku,
++                honba,
++                ..
++            } = event
++            else {
++                return None;
++            };
++            Some((*bakaze, *kyoku, *honba))
++        })?;
++        let results: Vec<RoomKyokuResult> = events
++            .iter()
++            .filter_map(|event| match event {
++                GameEvent::Hora {
++                    actor,
++                    target,
++                    tile,
++                    yaku,
++                    fu,
++                    han,
++                    scores,
++                    delta,
++                    ..
++                } => Some(RoomKyokuResult::Hora {
++                    actor: *actor,
++                    target: *target,
++                    tile: *tile,
++                    yaku: yaku.clone(),
++                    fu: *fu,
++                    han: *han,
++                    scores: scores.clone(),
++                    delta: delta.clone(),
++                }),
++                GameEvent::Ryukyoku {
++                    reason,
++                    delta,
++                    scores,
++                    ..
++                } => Some(RoomKyokuResult::Ryukyoku {
++                    reason: reason.clone(),
++                    delta: delta.clone(),
++                    scores: scores.clone(),
++                }),
++                _ => None,
++            })
++            .collect();
++        (!results.is_empty()).then_some(Self {
++            bakaze,
++            kyoku,
++            honba,
++            results,
++        })
++    }
++}
++
++fn project_history_event(event: &GameEvent, audience: Audience) -> Option<RoomHistoryEvent> {
++    let viewer = match audience {
++        Audience::Player(seat) => Some(seat),
++        Audience::Public | Audience::ReplayAdmin => None,
++    };
++    Some(match event {
++        GameEvent::StartGame { .. } => return None,
++        GameEvent::StartKyoku {
++            bakaze,
++            kyoku,
++            honba,
++            kyotaku,
++            oya,
++            scores,
++            dora_marker,
++            tehais,
++        } => RoomHistoryEvent::StartKyoku {
++            bakaze: *bakaze,
++            kyoku: *kyoku,
++            honba: *honba,
++            kyotaku: *kyotaku,
++            oya: *oya,
++            scores: scores.clone(),
++            dora_marker: *dora_marker,
++            own_tehai: viewer.and_then(|seat| tehais.get(seat.index() as usize).cloned()),
++        },
++        GameEvent::Tsumo { actor, tile } => RoomHistoryEvent::Tsumo {
++            actor: *actor,
++            tile: (viewer == Some(*actor)).then_some(*tile),
++        },
++        GameEvent::Dahai {
++            actor,
++            tile,
++            tsumogiri,
++        } => RoomHistoryEvent::Dahai {
++            actor: *actor,
++            tile: *tile,
++            tsumogiri: *tsumogiri,
++        },
++        GameEvent::Pon {
++            actor,
++            target,
++            called,
++            consumed,
++        } => RoomHistoryEvent::Pon {
++            actor: *actor,
++            target: *target,
++            called: *called,
++            consumed: consumed.clone(),
++        },
++        GameEvent::Chi {
++            actor,
++            target,
++            called,
++            consumed,
++        } => RoomHistoryEvent::Chi {
++            actor: *actor,
++            target: *target,
++            called: *called,
++            consumed: consumed.clone(),
++        },
++        GameEvent::Daiminkan {
++            actor,
++            target,
++            called,
++            consumed,
++        } => RoomHistoryEvent::Daiminkan {
++            actor: *actor,
++            target: *target,
++            called: *called,
++            consumed: consumed.clone(),
++        },
++        GameEvent::Kakan { actor, called } => RoomHistoryEvent::Kakan {
++            actor: *actor,
++            called: *called,
++        },
++        GameEvent::Ankan { actor, consumed } => RoomHistoryEvent::Ankan {
++            actor: *actor,
++            consumed: (viewer == Some(*actor)).then_some(consumed.clone()),
++        },
++        GameEvent::Dora { dora_marker } => RoomHistoryEvent::Dora {
++            dora_marker: *dora_marker,
++        },
++        GameEvent::Reach { actor } => RoomHistoryEvent::Reach { actor: *actor },
++        GameEvent::ReachAccepted { actor } => RoomHistoryEvent::ReachAccepted { actor: *actor },
++        GameEvent::Hora {
++            actor,
++            target,
++            tile,
++            yaku,
++            fu,
++            han,
++            scores,
++            delta,
++            ..
++        } => RoomHistoryEvent::Hora {
++            actor: *actor,
++            target: *target,
++            tile: *tile,
++            yaku: yaku.clone(),
++            fu: *fu,
++            han: *han,
++            scores: scores.clone(),
++            delta: delta.clone(),
++        },
++        GameEvent::Ryukyoku {
++            reason,
++            delta,
++            scores,
++            ..
++        } => RoomHistoryEvent::Ryukyoku {
++            reason: reason.clone(),
++            delta: delta.clone(),
++            scores: scores.clone(),
++        },
++        GameEvent::Kita { actor } => RoomHistoryEvent::Kita { actor: *actor },
++        GameEvent::EndKyoku => RoomHistoryEvent::EndKyoku,
++        GameEvent::EndGame => RoomHistoryEvent::EndGame,
++    })
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct RoomParticipantSnapshot {
+     pub id: ParticipantId,
+@@ -458,9 +804,14 @@ pub enum RoomCommand {
+     },
+     GetSnapshot,
+     GetMatchEvents,
++    GetHistoryProjection {
++        participant_id: ParticipantId,
++    },
++    GetPublicHistoryProjection,
      GetProjection {
          participant_id: ParticipantId,
      },
@@ -894,7 +1414,15 @@ index 43c1f60..195f0af 100644
  }
  
  impl RoomCommand {
-@@ -790,6 +791,13 @@ impl RoomHandle {
+@@ -634,6 +985,7 @@ pub enum RoomResponse {
+     Started(MatchId),
+     Action(DecisionResult),
+     MatchEvents(Vec<GameEvent>),
++    HistoryProjection(RoomHistoryProjection),
+     Deleted,
+     Shutdown,
+ }
+@@ -790,6 +1142,13 @@ impl RoomHandle {
          }
      }
  
@@ -908,7 +1436,52 @@ index 43c1f60..195f0af 100644
      pub async fn match_events(&self) -> Result<Vec<GameEvent>, RoomError> {
          match self.send(RoomCommand::GetMatchEvents).await? {
              RoomResponse::MatchEvents(events) => Ok(events),
-@@ -972,6 +980,16 @@ impl RoomState {
+@@ -797,6 +1156,28 @@ impl RoomHandle {
+         }
+     }
+ 
++    pub async fn history_projection(
++        &self,
++        participant_id: impl Into<ParticipantId>,
++    ) -> Result<RoomHistoryProjection, RoomError> {
++        match self
++            .send(RoomCommand::GetHistoryProjection {
++                participant_id: participant_id.into(),
++            })
++            .await?
++        {
++            RoomResponse::HistoryProjection(history) => Ok(history),
++            _ => Err(RoomError::Closed),
++        }
++    }
++
++    pub async fn public_history_projection(&self) -> Result<RoomHistoryProjection, RoomError> {
++        match self.send(RoomCommand::GetPublicHistoryProjection).await? {
++            RoomResponse::HistoryProjection(history) => Ok(history),
++            _ => Err(RoomError::Closed),
++        }
++    }
++
+     pub async fn subscribe(&self) -> Result<RoomConnection, RoomError> {
+         let (reply, receiver) = oneshot::channel();
+         self.sender
+@@ -848,6 +1229,7 @@ pub struct RoomState {
+     participants: HashMap<ParticipantId, ParticipantState>,
+     match_roster: Vec<MatchPlayerSnapshot>,
+     match_machine: Option<MatchMachine>,
++    history: RoomHistoryBuffer,
+     result: Option<MatchResult>,
+     revision: u64,
+     deleted: bool,
+@@ -891,6 +1273,7 @@ impl RoomState {
+             participants: HashMap::new(),
+             match_roster: Vec::new(),
+             match_machine: None,
++            history: RoomHistoryBuffer::default(),
+             result: None,
+             revision: 0,
+             deleted: false,
+@@ -972,6 +1355,46 @@ impl RoomState {
              .map_err(|error| RoomError::Match(error.to_string()))
      }
  
@@ -922,18 +1495,79 @@ index 43c1f60..195f0af 100644
 +            .map_err(|error| RoomError::Match(error.to_string()))
 +    }
 +
++    fn history_projection(
++        &self,
++        participant_id: &ParticipantId,
++    ) -> Result<RoomHistoryProjection, RoomError> {
++        let participant = self
++            .participants
++            .get(participant_id)
++            .ok_or_else(|| RoomError::ParticipantNotFound(participant_id.clone()))?;
++        if matches!(participant.controller, RoomController::PermanentAuto(_)) {
++            return Err(RoomError::ControllerNotInteractive);
++        }
++        let audience = match participant.role {
++            MatchRole::Player(seat) => Audience::Player(seat),
++            MatchRole::None | MatchRole::Spectator => Audience::Public,
++        };
++        Ok(self.history.projection(audience))
++    }
++
++    fn public_history_projection(&self) -> RoomHistoryProjection {
++        self.history.projection(Audience::Public)
++    }
++
++    fn record_history(&mut self, events: &[GameEvent]) {
++        self.history.record(events);
++    }
++
++    fn reset_history(&mut self, events: &[GameEvent]) {
++        self.history.reset(events);
++    }
++
      fn add_participant(
          &mut self,
          participant: Participant,
-@@ -1689,6 +1707,7 @@ impl RoomState {
+@@ -1422,6 +1845,7 @@ impl RoomState {
+         roster: Vec<MatchPlayerSnapshot>,
+     ) {
+         self.phase = RoomPhase::Playing(match_id);
++        self.reset_history(machine.events());
+         self.match_machine = Some(machine);
+         self.match_roster = roster.clone();
+         self.result = None;
+@@ -1496,6 +1920,7 @@ impl RoomState {
+         self.phase = RoomPhase::Lobby;
+         self.match_machine = None;
+         self.match_roster.clear();
++        self.history = RoomHistoryBuffer::default();
+         self.result = None;
+         for participant in self.participants.values_mut() {
+             participant.selected = false;
+@@ -1689,7 +2114,10 @@ impl RoomState {
              | RoomCommand::SubmitAction { .. }
              | RoomCommand::Rematch
              | RoomCommand::GetProjection { .. }
+-            | RoomCommand::GetMatchEvents => {
 +            | RoomCommand::GetPublicProjection
-             | RoomCommand::GetMatchEvents => {
++            | RoomCommand::GetMatchEvents
++            | RoomCommand::GetHistoryProjection { .. }
++            | RoomCommand::GetPublicHistoryProjection => {
                  return Err(RoomError::Match("actor-only command".into()));
              }
-@@ -1978,6 +1997,9 @@ impl Actor {
+             RoomCommand::GetSnapshot => RoomResponse::Accepted(self.snapshot()),
+@@ -1974,10 +2402,20 @@ impl Actor {
+                     .map(|machine| machine.events().to_vec())
+                     .unwrap_or_default(),
+             )),
++            RoomCommand::GetHistoryProjection { participant_id } => self
++                .state
++                .history_projection(&participant_id)
++                .map(RoomResponse::HistoryProjection),
++            RoomCommand::GetPublicHistoryProjection => Ok(RoomResponse::HistoryProjection(
++                self.state.public_history_projection(),
++            )),
+             RoomCommand::GetProjection { participant_id } => self
                  .state
                  .projection_for(&participant_id)
                  .map(RoomResponse::Projection),
@@ -943,7 +1577,7 @@ index 43c1f60..195f0af 100644
              RoomCommand::Start => self.start_match().await,
              RoomCommand::SubmitAction {
                  participant_id,
-@@ -2272,6 +2294,7 @@ impl Actor {
+@@ -2272,10 +2710,12 @@ impl Actor {
      }
  
      async fn handle_decision_result(&mut self, result: DecisionResult) -> Result<(), RoomError> {
@@ -951,7 +1585,12 @@ index 43c1f60..195f0af 100644
          let match_id = match self.state.phase {
              RoomPhase::Playing(ref id) => id.clone(),
              _ => return Ok(()),
-@@ -2326,6 +2349,7 @@ impl Actor {
+         };
++        self.state.record_history(result.events());
+         for event in result.events() {
+             self.send_append(match_id.clone(), vec![event.clone()])
+                 .await;
+@@ -2326,6 +2766,7 @@ impl Actor {
              .state
              .finish_match(result.clone())
              .ok_or(RoomError::Playing)?;
@@ -959,6 +1598,233 @@ index 43c1f60..195f0af 100644
          self.publish(RoomEvent::PhaseChanged(self.state.phase.clone()));
          self.publish(RoomEvent::MatchCompleted {
              match_id: match_id.clone(),
+@@ -2361,6 +2802,7 @@ impl Actor {
+         self.state.phase = RoomPhase::Lobby;
+         self.state.match_machine = None;
+         self.state.match_roster.clear();
++        self.state.history = RoomHistoryBuffer::default();
+         self.state.result = None;
+         for participant in self.state.participants.values_mut() {
+             participant.selected = false;
+diff --git a/crates/double_riichi_core/tests/task4_machine.rs b/crates/double_riichi_core/tests/task4_machine.rs
+index d9d152f..2f62790 100644
+--- a/crates/double_riichi_core/tests/task4_machine.rs
++++ b/crates/double_riichi_core/tests/task4_machine.rs
+@@ -81,6 +81,129 @@ fn unlimited_connected_human_has_no_deadline_but_built_in_bot_is_immediate() {
+     assert!(decision.is_expired_at(tokio::time::Instant::now()));
+ }
+ 
++#[tokio::test(start_paused = true)]
++async fn temporary_auto_turn_is_immediate_after_casual_or_riichi_dev_timeout() {
++    for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
++        let mut machine = MatchMachine::with_time_control(
++            GameMode::FourPlayerRedEast,
++            roster(GameMode::FourPlayerRedEast, ParticipantKind::Human),
++            time_control,
++        )
++        .unwrap();
++        let first = machine.current_decision().unwrap().unwrap();
++        let seat = first.eligible().next().expect("initial turn");
++        let initial_duration = first.duration_for(seat).expect("turn deadline");
++        machine.disconnect(seat).unwrap();
++        time::advance(initial_duration).await;
++        machine.resolve_expired().unwrap().expect("initial timeout");
++        assert_eq!(
++            machine.controller(seat).unwrap(),
++            ControllerState::TemporaryAuto
++        );
++
++        for _ in 0..2_000 {
++            let decision = machine.current_decision().unwrap().expect("decision");
++            if decision.kind() == DecisionKind::Turn && !decision.actions_for(seat).is_empty() {
++                assert_eq!(decision.duration_for(seat), Some(Duration::ZERO));
++                return;
++            }
++            let pending = decision.actions_for(seat).is_empty();
++            for eligible in decision.eligible().collect::<Vec<_>>() {
++                if eligible == seat {
++                    continue;
++                }
++                machine
++                    .submit_action(
++                        eligible,
++                        decision.id().clone(),
++                        decision.default_action_id(eligible).clone(),
++                    )
++                    .unwrap();
++            }
++            if !pending || !decision.actions_for(seat).is_empty() {
++                let current = machine.current_decision().unwrap().expect("decision");
++                if current.actions_for(seat).is_empty() {
++                    continue;
++                }
++                if let Some(duration) = current.duration_for(seat) {
++                    time::advance(duration).await;
++                }
++                machine.resolve_expired().unwrap();
++            }
++        }
++        panic!("temporary auto seat did not receive a subsequent turn");
++    }
++}
++
++#[tokio::test(start_paused = true)]
++async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout() {
++    for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
++        let mut machine = MatchMachine::with_time_control(
++            GameMode::FourPlayerRedEast,
++            roster(GameMode::FourPlayerRedEast, ParticipantKind::Human),
++            time_control,
++        )
++        .unwrap();
++        let first = machine.current_decision().unwrap().unwrap();
++        let seat = first.eligible().next().expect("initial turn");
++        let initial_duration = first.duration_for(seat).expect("turn deadline");
++        machine.disconnect(seat).unwrap();
++        time::advance(initial_duration).await;
++        machine.resolve_expired().unwrap().expect("initial timeout");
++        assert_eq!(
++            machine.controller(seat).unwrap(),
++            ControllerState::TemporaryAuto
++        );
++
++        for _ in 0..5_000 {
++            let decision = machine.current_decision().unwrap().expect("decision");
++            if decision.kind() == DecisionKind::Response && !decision.actions_for(seat).is_empty() {
++                assert_eq!(decision.duration_for(seat), Some(Duration::ZERO));
++                return;
++            }
++            for eligible in decision.eligible().collect::<Vec<_>>() {
++                if eligible == seat {
++                    continue;
++                }
++                machine
++                    .submit_action(
++                        eligible,
++                        decision.id().clone(),
++                        decision.default_action_id(eligible).clone(),
++                    )
++                    .unwrap();
++            }
++            let current = machine.current_decision().unwrap().expect("decision");
++            if !current.actions_for(seat).is_empty() {
++                if let Some(duration) = current.duration_for(seat) {
++                    time::advance(duration).await;
++                }
++                machine.resolve_expired().unwrap();
++            }
++        }
++        panic!("temporary auto seat did not receive a subsequent response");
++    }
++}
++
++#[test]
++fn permanent_auto_remains_immediate_in_casual_and_riichi_dev() {
++    let mode = GameMode::FourPlayerRedEast;
++    for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
++        let mut machine = MatchMachine::with_time_control(
++            mode,
++            roster(mode, ParticipantKind::BuiltInBot),
++            time_control,
++        )
++        .unwrap();
++        let decision = machine.current_decision().unwrap().unwrap();
++        assert!(
++            decision
++                .eligible()
++                .all(|seat| decision.duration_for(seat) == Some(Duration::ZERO))
++        );
++    }
++}
++
+ #[test]
+ fn seat_validation_remains_mode_specific() {
+     let mode = GameMode::ThreePlayerRedEast;
+diff --git a/crates/double_riichi_core/tests/task8_room.rs b/crates/double_riichi_core/tests/task8_room.rs
+index 5c8f72e..68caa7a 100644
+--- a/crates/double_riichi_core/tests/task8_room.rs
++++ b/crates/double_riichi_core/tests/task8_room.rs
+@@ -432,3 +432,80 @@ async fn built_in_match_reaches_post_match_and_can_rematch() {
+     };
+     assert_ne!(first, second);
+ }
++
++#[tokio::test]
++async fn room_history_bounds_current_events_and_prior_kyoku_summaries() {
++    let mut cfg = config();
++    cfg.mode = GameMode::FourPlayerRedHalf;
++    cfg.replay_save = false;
++    let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
++    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
++    handle.send(RoomCommand::start()).await.unwrap();
++
++    let snapshot = handle.snapshot().await.unwrap();
++    assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
++    let history = handle.public_history_projection().await.unwrap();
++    let current = history.current_kyoku.as_ref().expect("final kyoku details");
++    assert!(history.previous_kyoku.len() >= 1, "expected multiple kyoku");
++    assert!(!current.events.is_empty());
++    assert!(
++        current.events.len() < 1_000,
++        "current kyoku grew without a bound"
++    );
++    assert!(
++        history
++            .previous_kyoku
++            .iter()
++            .all(|summary| { !summary.results.is_empty() })
++    );
++    let value = serde_json::to_value(history).unwrap();
++    let encoded = value.to_string();
++    for concealed in ["tehais", "hands", "wall", "private_state", "raw_state"] {
++        assert!(
++            !encoded.contains(concealed),
++            "concealed field leaked: {concealed}"
++        );
++    }
++}
++
++#[tokio::test(start_paused = true)]
++async fn room_history_keeps_player_visibility_and_survives_match_machine_clear() {
++    let mut cfg = config();
++    cfg.replay_save = false;
++    let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
++    handle
++        .send(RoomCommand::join(human("h", "player-red")))
++        .await
++        .unwrap();
++    handle.send(RoomCommand::select("h")).await.unwrap();
++    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
++    handle
++        .send(RoomCommand::set_ready(
++            "h",
++            vec![
++                "player-red".to_owned(),
++                "player-blue".to_owned(),
++                "tsumogiri-bot".to_owned(),
++            ],
++        ))
++        .await
++        .unwrap();
++    handle.send(RoomCommand::start()).await.unwrap();
++
++    let private = serde_json::to_value(handle.history_projection("h").await.unwrap()).unwrap();
++    let public = serde_json::to_value(handle.public_history_projection().await.unwrap()).unwrap();
++    assert!(private.to_string().contains("own_tehai"));
++    assert!(!public.to_string().contains("own_tehai"));
++    for concealed in ["tehais", "hands", "wall", "private_state", "raw_state"] {
++        assert!(!private.to_string().contains(concealed));
++        assert!(!public.to_string().contains(concealed));
++    }
++
++    handle.send(RoomCommand::disconnect("h")).await.unwrap();
++    tokio::time::advance(std::time::Duration::from_secs(300)).await;
++    tokio::task::yield_now().await;
++    let snapshot = handle.snapshot().await.unwrap();
++    assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
++    let retained = handle.public_history_projection().await.unwrap();
++    assert!(retained.current_kyoku.is_some());
++}
 diff --git a/crates/double_riichi_mcp/Cargo.toml b/crates/double_riichi_mcp/Cargo.toml
 index edaae25..d99e211 100644
 --- a/crates/double_riichi_mcp/Cargo.toml
@@ -1733,12 +2599,13 @@ index 3ff0616..eda6e03 100644
  pub use auth::{
 diff --git a/crates/double_riichi_server/src/mcp.rs b/crates/double_riichi_server/src/mcp.rs
 new file mode 100644
-index 0000000..c059408
+index 0000000..7327a28
 --- /dev/null
 +++ b/crates/double_riichi_server/src/mcp.rs
-@@ -0,0 +1,2051 @@
+@@ -0,0 +1,2673 @@
 +use std::{
 +    collections::{HashMap, HashSet},
++    fmt,
 +    sync::{Arc, Mutex},
 +    time::{Duration, Instant},
 +};
@@ -1749,6 +2616,7 @@ index 0000000..c059408
 +    http::{HeaderMap, Method, StatusCode, header},
 +    response::Response,
 +};
++use futures_util::Stream;
 +use rmcp::{
 +    ErrorData, ServerHandler,
 +    handler::server::{
@@ -1757,16 +2625,18 @@ index 0000000..c059408
 +        wrapper::{Json, Parameters},
 +    },
 +    model::{
-+        CallToolResult, ErrorCode, ListResourceTemplatesResult, ListResourcesResult,
-+        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-+        ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
-+        SubscribeRequestParams,
++        CallToolResult, ClientJsonRpcMessage, ErrorCode, ListResourceTemplatesResult,
++        ListResourcesResult, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
++        Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
++        ServerJsonRpcMessage, SubscribeRequestParams, UnsubscribeRequestParams,
 +    },
 +    schemars::JsonSchema,
-+    service::{RequestContext, RoleServer, SubscriptionContext},
++    service::{Peer, RequestContext, RoleServer, SubscriptionContext, SubscriptionSink},
 +    tool, tool_handler, tool_router,
 +    transport::streamable_http_server::{
-+        StreamableHttpServerConfig, StreamableHttpService, session::SessionManager,
++        StreamableHttpServerConfig, StreamableHttpService,
++        session::local::{LocalSessionManager, LocalSessionManagerError},
++        session::{ServerSseMessage, SessionId, SessionManager},
 +    },
 +};
 +use serde::{Deserialize, Serialize};
@@ -1778,8 +2648,9 @@ index 0000000..c059408
 +use tokio_util::sync::CancellationToken;
 +
 +use double_riichi_core::{
-+    DecisionId, Participant, ParticipantId, ParticipantKind, RoomCommand, RoomError, RoomEvent,
-+    RoomHandle, RoomPhase, RoomResponse,
++    AudienceProjection, DecisionId, Participant, ParticipantId, ParticipantKind, RoomCommand,
++    RoomConnection, RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomPhase, RoomResponse,
++    RoomSnapshot,
 +};
 +
 +use crate::http::ServerState;
@@ -1787,7 +2658,7 @@ index 0000000..c059408
 +pub(crate) const MCP_MAX_BODY_BYTES: usize = 1024 * 1024;
 +pub(crate) const MCP_MAX_WAIT_SECONDS: u64 = 330;
 +const MCP_DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
-+const MCP_MAX_SESSIONS: usize = 1_024;
++pub(crate) const MCP_MAX_SESSIONS: usize = 1_024;
 +const MCP_MAX_WAIT_TASKS: usize = 1_024;
 +const MCP_MAX_SUBSCRIPTIONS: usize = 4_096;
 +
@@ -1818,6 +2689,22 @@ index 0000000..c059408
 +    last_seen: Instant,
 +}
 +
++struct LegacySubscription {
++    id: u64,
++    cancel: CancellationToken,
++    task: tokio::task::JoinHandle<()>,
++    peer: Peer<RoleServer>,
++    uri: String,
++    _permit: OwnedSemaphorePermit,
++}
++
++struct LiveSubscription {
++    cancel: CancellationToken,
++    sink: SubscriptionSink,
++    entry: SessionEntry,
++    _permit: OwnedSemaphorePermit,
++}
++
 +#[derive(Default)]
 +struct RegistryState {
 +    sessions: HashMap<String, SessionEntry>,
@@ -1825,6 +2712,9 @@ index 0000000..c059408
 +    participants: HashMap<(String, String), ParticipantId>,
 +    retired_participants: HashSet<(String, String)>,
 +    bound_rooms: HashMap<String, (String, String)>,
++    legacy_subscriptions: HashMap<(String, String), LegacySubscription>,
++    live_subscriptions: HashMap<(String, u64), LiveSubscription>,
++    next_subscription_id: u64,
 +}
 +
 +#[derive(Clone)]
@@ -1837,6 +2727,7 @@ index 0000000..c059408
 +struct WakeState {
 +    revision: u64,
 +    reason: String,
++    terminal: bool,
 +}
 +
 +impl Default for RevisionWake {
@@ -1845,6 +2736,7 @@ index 0000000..c059408
 +            state: Arc::new(Mutex::new(WakeState {
 +                revision: 0,
 +                reason: "timeout".to_owned(),
++                terminal: false,
 +            })),
 +            notify: Arc::new(Notify::new()),
 +        }
@@ -1859,6 +2751,19 @@ index 0000000..c059408
 +        }
 +        state.revision = revision;
 +        state.reason = reason.into();
++        drop(state);
++        self.notify.notify_waiters();
++        true
++    }
++
++    fn record_terminal(&self, revision: u64, reason: impl Into<String>) -> bool {
++        let mut state = self.state.lock().expect("MCP wake lock poisoned");
++        if state.terminal || revision < state.revision {
++            return false;
++        }
++        state.revision = revision;
++        state.reason = reason.into();
++        state.terminal = true;
 +        drop(state);
 +        self.notify.notify_waiters();
 +        true
@@ -1884,12 +2789,12 @@ index 0000000..c059408
 +        let deadline = Instant::now() + timeout;
 +        loop {
 +            let current = self.current();
-+            if current.revision > after_revision {
++            if current.revision > after_revision || current.terminal {
 +                return Some(current);
 +            }
 +            let notified = self.notify.notified();
 +            let current = self.current();
-+            if current.revision > after_revision {
++            if current.revision > after_revision || current.terminal {
 +                return Some(current);
 +            }
 +            let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1898,7 +2803,10 @@ index 0000000..c059408
 +            }
 +            tokio::pin!(notified);
 +            tokio::select! {
-+                _ = cancel.cancelled() => return None,
++                _ = cancel.cancelled() => {
++                    let current = self.current();
++                    return current.terminal.then_some(current);
++                }
 +                _ = &mut notified => {}
 +                _ = time::sleep(remaining) => return Some(self.current()),
 +            }
@@ -1906,14 +2814,138 @@ index 0000000..c059408
 +    }
 +}
 +
++#[derive(Debug)]
++struct BoundedSessionManagerError(String);
++
++impl fmt::Display for BoundedSessionManagerError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter.write_str(&self.0)
++    }
++}
++
++impl std::error::Error for BoundedSessionManagerError {}
++
++impl From<LocalSessionManagerError> for BoundedSessionManagerError {
++    fn from(error: LocalSessionManagerError) -> Self {
++        Self(error.to_string())
++    }
++}
++
++struct BoundedSessionManager {
++    inner: Arc<LocalSessionManager>,
++    registry: Arc<McpSessionRegistry>,
++    reservations: Arc<tokio::sync::Mutex<HashMap<SessionId, OwnedSemaphorePermit>>>,
++}
++
++impl BoundedSessionManager {
++    fn new(inner: Arc<LocalSessionManager>, registry: Arc<McpSessionRegistry>) -> Self {
++        Self {
++            inner,
++            registry,
++            reservations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
++        }
++    }
++
++    async fn release(&self, id: &SessionId) {
++        self.reservations.lock().await.remove(id);
++    }
++}
++
++impl SessionManager for BoundedSessionManager {
++    type Error = BoundedSessionManagerError;
++    type Transport = <LocalSessionManager as SessionManager>::Transport;
++
++    async fn create_session(&self) -> Result<(SessionId, Self::Transport), Self::Error> {
++        let permit =
++            self.registry.acquire_transport().await.ok_or_else(|| {
++                BoundedSessionManagerError("MCP session capacity is full".to_owned())
++            })?;
++        let result = self.inner.create_session().await.map_err(Into::into);
++        let (id, transport) = match result {
++            Ok(result) => result,
++            Err(error) => {
++                drop(permit);
++                return Err(error);
++            }
++        };
++        self.reservations.lock().await.insert(id.clone(), permit);
++        Ok((id, transport))
++    }
++
++    async fn initialize_session(
++        &self,
++        id: &SessionId,
++        message: ClientJsonRpcMessage,
++    ) -> Result<ServerJsonRpcMessage, Self::Error> {
++        match self.inner.initialize_session(id, message).await {
++            Ok(response) => Ok(response),
++            Err(error) => {
++                let _ = self.close_session(id).await;
++                Err(error.into())
++            }
++        }
++    }
++
++    async fn has_session(&self, id: &SessionId) -> Result<bool, Self::Error> {
++        self.inner.has_session(id).await.map_err(Into::into)
++    }
++
++    async fn close_session(&self, id: &SessionId) -> Result<(), Self::Error> {
++        let result = self.inner.close_session(id).await.map_err(Into::into);
++        self.release(id).await;
++        result
++    }
++
++    async fn create_stream(
++        &self,
++        id: &SessionId,
++        message: ClientJsonRpcMessage,
++    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + 'static, Self::Error> {
++        self.inner
++            .create_stream(id, message)
++            .await
++            .map_err(Into::into)
++    }
++
++    async fn accept_message(
++        &self,
++        id: &SessionId,
++        message: ClientJsonRpcMessage,
++    ) -> Result<(), Self::Error> {
++        self.inner
++            .accept_message(id, message)
++            .await
++            .map_err(Into::into)
++    }
++
++    async fn create_standalone_stream(
++        &self,
++        id: &SessionId,
++    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + 'static, Self::Error> {
++        self.inner
++            .create_standalone_stream(id)
++            .await
++            .map_err(Into::into)
++    }
++
++    async fn resume(
++        &self,
++        id: &SessionId,
++        last_event_id: String,
++    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + 'static, Self::Error> {
++        self.inner
++            .resume(id, last_event_id)
++            .await
++            .map_err(Into::into)
++    }
++}
++
 +#[derive(Clone)]
 +pub(crate) struct McpRuntime {
 +    registry: Arc<McpSessionRegistry>,
-+    manager: Arc<rmcp::transport::streamable_http_server::session::local::LocalSessionManager>,
-+    service: StreamableHttpService<
-+        McpHandler,
-+        rmcp::transport::streamable_http_server::session::local::LocalSessionManager,
-+    >,
++    manager: Arc<LocalSessionManager>,
++    service: StreamableHttpService<McpHandler, BoundedSessionManager>,
++    service_shutdown: CancellationToken,
 +}
 +
 +impl McpRuntime {
@@ -1930,18 +2962,23 @@ index 0000000..c059408
 +            .port()
 +            .map(|port| format!("{host}:{port}"))
 +            .unwrap_or_else(|| host.clone());
++        let service_shutdown = CancellationToken::new();
 +        let config = StreamableHttpServerConfig::default()
 +            .with_allowed_hosts([host, authority])
 +            .with_allowed_origins([state.public_origin().to_owned()])
 +            .with_max_request_body_bytes(MCP_MAX_BODY_BYTES)
 +            .with_json_response(true)
-+            .with_cancellation_token(state.shutdown_token());
++            .with_cancellation_token(service_shutdown.clone());
 +        let factory_state = state.clone();
 +        let factory_registry = registry.clone();
 +        let manager = Arc::new(
 +            rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
 +        );
 +        let factory_manager = manager.clone();
++        let bounded_manager = Arc::new(BoundedSessionManager::new(
++            manager.clone(),
++            registry.clone(),
++        ));
 +        let service = StreamableHttpService::new(
 +            move || {
 +                Ok(McpHandler::new(
@@ -1950,21 +2987,22 @@ index 0000000..c059408
 +                    factory_manager.clone(),
 +                ))
 +            },
-+            manager.clone(),
++            bounded_manager,
 +            config,
 +        );
 +        let runtime = Arc::new(Self {
 +            registry,
 +            manager,
 +            service,
++            service_shutdown,
 +        });
 +        if let Some(mut revocations) = state.subscribe_bot_revocations() {
 +            let runtime = runtime.clone();
 +            tokio::spawn(async move {
 +                while let Ok(revocation) = revocations.recv().await {
-+                    let entries = runtime.registry.revoke_token(revocation.token_id()).await;
-+                    disconnect_entries(entries.clone()).await;
-+                    runtime.close_sessions(&entries).await;
++                    let cleanup = runtime.registry.revoke_token(revocation.token_id()).await;
++                    disconnect_entries(cleanup.entries.clone()).await;
++                    runtime.close_sessions(&cleanup).await;
 +                }
 +            });
 +        }
@@ -1973,28 +3011,35 @@ index 0000000..c059408
 +            let interval = idle.min(Duration::from_secs(60));
 +            loop {
 +                time::sleep(interval).await;
-+                let entries = runtime_reaper.registry.expire_idle(Instant::now()).await;
-+                disconnect_entries(entries.clone()).await;
-+                runtime_reaper.close_sessions(&entries).await;
++                let cleanup = runtime_reaper.registry.expire_idle(Instant::now()).await;
++                disconnect_entries(cleanup.entries.clone()).await;
++                runtime_reaper.close_sessions(&cleanup).await;
 +            }
 +        });
 +        let runtime_shutdown = runtime.clone();
 +        let shutdown = state.shutdown_token();
 +        tokio::spawn(async move {
 +            shutdown.cancelled().await;
-+            let entries = runtime_shutdown.registry.terminate_all().await;
-+            disconnect_entries(entries.clone()).await;
-+            runtime_shutdown.close_sessions(&entries).await;
++            let shutdown = runtime_shutdown.registry.terminate_all().await;
++            for entry in &shutdown.cleanup.entries {
++                let revision = entry.wake.current().revision.saturating_add(1);
++                entry.wake.record_terminal(revision, "server_shutdown");
++            }
++            for notification in shutdown.notifications {
++                notification.send().await;
++            }
++            disconnect_entries(shutdown.cleanup.entries.clone()).await;
++            runtime_shutdown.close_sessions(&shutdown.cleanup).await;
++            runtime_shutdown.service_shutdown.cancel();
 +        });
 +        runtime
 +    }
 +
-+    async fn close_sessions(&self, entries: &[SessionEntry]) {
-+        for entry in entries {
-+            let _ = self
-+                .manager
-+                .close_session(&entry.session_id.clone().into())
-+                .await;
++    async fn close_sessions(&self, cleanup: &SessionCleanup) {
++        let mut ids: HashSet<String> = cleanup.session_ids.iter().cloned().collect();
++        ids.extend(cleanup.entries.iter().map(|entry| entry.session_id.clone()));
++        for id in ids {
++            let _ = self.manager.close_session(&id.into()).await;
 +        }
 +    }
 +
@@ -2020,7 +3065,7 @@ index 0000000..c059408
 +        }
 +        let session_id = header_session_id(&headers);
 +        let expired = self.registry.expire_idle(Instant::now()).await;
-+        disconnect_entries(expired.clone()).await;
++        disconnect_entries(expired.entries.clone()).await;
 +        self.close_sessions(&expired).await;
 +        if let Some(session_id) = session_id.as_deref()
 +            && self
@@ -2119,12 +3164,53 @@ index 0000000..c059408
 +        .await;
 +}
 +
++struct SessionCleanup {
++    entries: Vec<SessionEntry>,
++    session_ids: Vec<String>,
++}
++
++struct ShutdownCleanup {
++    cleanup: SessionCleanup,
++    notifications: Vec<ShutdownNotification>,
++}
++
++enum ShutdownNotification {
++    Legacy {
++        peer: Peer<RoleServer>,
++        uri: String,
++    },
++    Live {
++        sink: SubscriptionSink,
++        uris: Vec<String>,
++    },
++}
++
++impl ShutdownNotification {
++    async fn send(self) {
++        match self {
++            Self::Legacy { peer, uri } => {
++                let _ = peer
++                    .notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(
++                        uri,
++                    ))
++                    .await;
++            }
++            Self::Live { sink, uris } => {
++                for uri in uris {
++                    let _ = sink.notify_resource_updated(uri).await;
++                }
++            }
++        }
++    }
++}
++
 +pub(crate) struct McpSessionRegistry {
 +    state: tokio::sync::Mutex<RegistryState>,
 +    idle: Duration,
 +    join_lock: tokio::sync::Mutex<()>,
 +    waiters: Arc<Semaphore>,
 +    subscriptions: Arc<Semaphore>,
++    transports: Arc<Semaphore>,
 +}
 +
 +impl McpSessionRegistry {
@@ -2139,6 +3225,7 @@ index 0000000..c059408
 +            join_lock: tokio::sync::Mutex::new(()),
 +            waiters: Arc::new(Semaphore::new(MCP_MAX_WAIT_TASKS)),
 +            subscriptions: Arc::new(Semaphore::new(MCP_MAX_SUBSCRIPTIONS)),
++            transports: Arc::new(Semaphore::new(MCP_MAX_SESSIONS)),
 +        }
 +    }
 +
@@ -2195,51 +3282,85 @@ index 0000000..c059408
 +        }
 +    }
 +
-+    async fn expire_idle(&self, now: Instant) -> Vec<SessionEntry> {
++    async fn expire_idle(&self, now: Instant) -> SessionCleanup {
 +        let mut state = self.state.lock().await;
-+        let expired_ids: Vec<_> = state
++        let session_ids: Vec<_> = state
 +            .transport_sessions
 +            .iter()
 +            .filter_map(|(id, session)| {
 +                (now.duration_since(session.last_seen) >= self.idle).then_some(id.clone())
 +            })
 +            .collect();
-+        expired_ids
-+            .into_iter()
-+            .filter_map(|id| {
-+                state.transport_sessions.remove(&id);
-+                state.bound_rooms.remove(&id);
-+                state.sessions.remove(&id)
-+            })
-+            .collect()
++        let mut entries = Vec::new();
++        for id in &session_ids {
++            state.transport_sessions.remove(id);
++            state.bound_rooms.remove(id);
++            clear_subscriptions(&mut state, id);
++            if let Some(entry) = state.sessions.remove(id) {
++                entries.push(entry);
++            }
++        }
++        SessionCleanup {
++            entries,
++            session_ids,
++        }
 +    }
 +
-+    async fn terminate_all(&self) -> Vec<SessionEntry> {
++    async fn terminate_all(&self) -> ShutdownCleanup {
 +        let mut state = self.state.lock().await;
-+        state.transport_sessions.clear();
++        let session_ids = state.transport_sessions.drain().map(|(id, _)| id).collect();
++        let mut notifications = Vec::new();
++        for (_, subscription) in state.legacy_subscriptions.drain() {
++            subscription.cancel.cancel();
++            subscription.task.abort();
++            notifications.push(ShutdownNotification::Legacy {
++                peer: subscription.peer,
++                uri: subscription.uri,
++            });
++        }
++        for (_, subscription) in state.live_subscriptions.drain() {
++            subscription.cancel.cancel();
++            notifications.push(ShutdownNotification::Live {
++                sink: subscription.sink,
++                uris: notification_uris(&subscription.entry, "server_shutdown"),
++            });
++        }
 +        state.bound_rooms.clear();
 +        state.participants.clear();
 +        state.retired_participants.clear();
-+        state.sessions.drain().map(|(_, entry)| entry).collect()
++        let entries = state.sessions.drain().map(|(_, entry)| entry).collect();
++        ShutdownCleanup {
++            cleanup: SessionCleanup {
++                entries,
++                session_ids,
++            },
++            notifications,
++        }
 +    }
 +
 +    async fn remove(&self, session_id: &str) -> Option<SessionEntry> {
 +        let mut state = self.state.lock().await;
 +        state.transport_sessions.remove(session_id);
 +        state.bound_rooms.remove(session_id);
++        clear_subscriptions(&mut state, session_id);
 +        state.sessions.remove(session_id)
 +    }
 +
-+    async fn revoke_token(&self, token_id: &str) -> Vec<SessionEntry> {
++    async fn revoke_token(&self, token_id: &str) -> SessionCleanup {
 +        let mut state = self.state.lock().await;
-+        let ids: Vec<_> = state
++        let session_ids: Vec<_> = state
 +            .transport_sessions
 +            .iter()
 +            .filter_map(|(id, session)| (session.token_id == token_id).then_some(id.clone()))
 +            .collect();
-+        for id in &ids {
++        let mut entries = Vec::new();
++        for id in &session_ids {
 +            state.transport_sessions.remove(id);
 +            state.bound_rooms.remove(id);
++            clear_subscriptions(&mut state, id);
++            if let Some(entry) = state.sessions.remove(id) {
++                entries.push(entry);
++            }
 +        }
 +        state
 +            .participants
@@ -2247,9 +3368,10 @@ index 0000000..c059408
 +        state
 +            .retired_participants
 +            .retain(|(bound_token, _)| bound_token != token_id);
-+        ids.into_iter()
-+            .filter_map(|id| state.sessions.remove(&id))
-+            .collect()
++        SessionCleanup {
++            entries,
++            session_ids,
++        }
 +    }
 +
 +    async fn binding(&self, session_id: &str, token_id: &str) -> Result<SessionEntry, McpFailure> {
@@ -2287,9 +3409,6 @@ index 0000000..c059408
 +        character_id: String,
 +    ) -> Result<(SessionEntry, Option<SessionEntry>), McpFailure> {
 +        let mut state = self.state.lock().await;
-+        if state.sessions.len() >= MCP_MAX_SESSIONS && !state.sessions.contains_key(&session_id) {
-+            return Err(McpFailure::Busy);
-+        }
 +        if let Some(current) = state.transport_sessions.get(&session_id)
 +            && current.token_id != token_id
 +        {
@@ -2323,6 +3442,7 @@ index 0000000..c059408
 +        let old = old_id.and_then(|id| {
 +            state.transport_sessions.remove(&id);
 +            state.bound_rooms.remove(&id);
++            clear_subscriptions(&mut state, &id);
 +            state.sessions.remove(&id)
 +        });
 +        let entry = SessionEntry {
@@ -2355,6 +3475,10 @@ index 0000000..c059408
 +        self.subscriptions.clone().try_acquire_owned().ok()
 +    }
 +
++    async fn acquire_transport(&self) -> Option<OwnedSemaphorePermit> {
++        self.transports.clone().try_acquire_owned().ok()
++    }
++
 +    async fn participant_for(&self, token_id: &str, room_code: &str) -> Option<ParticipantId> {
 +        self.state
 +            .lock()
@@ -2372,13 +3496,188 @@ index 0000000..c059408
 +            .contains(&(token_id.to_owned(), room_code.to_owned()))
 +    }
 +
++    async fn start_legacy_subscription(
++        self: &Arc<Self>,
++        session_id: String,
++        entry: SessionEntry,
++        uri: String,
++        peer: Peer<RoleServer>,
++    ) -> Result<(), McpFailure> {
++        let Some(permit) = self.acquire_subscription().await else {
++            return Err(McpFailure::Busy);
++        };
++        let mut state = self.state.lock().await;
++        if state
++            .legacy_subscriptions
++            .contains_key(&(session_id.clone(), uri.clone()))
++        {
++            return Ok(());
++        }
++        if !state.sessions.contains_key(&session_id) {
++            return Err(McpFailure::SessionExpired);
++        }
++        let mut connection = entry
++            .room
++            .subscribe()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let id = next_subscription_id(&mut state);
++        let cancel = entry.cancel.child_token();
++        let registry = self.clone();
++        let task_session = session_id.clone();
++        let task_uri = uri.clone();
++        let task_cancel = cancel.clone();
++        let task_entry = entry.clone();
++        let task_uri_for_loop = uri.clone();
++        let task_peer = peer.clone();
++        let task = tokio::spawn(async move {
++            loop {
++                tokio::select! {
++                    _ = task_cancel.cancelled() => break,
++                    event = connection.recv() => {
++                        let Some(event) = event else { break; };
++                        let Some((_revision, reason)) = watcher_reason(&task_entry, event).await else { continue; };
++                        if notification_uris(&task_entry, reason).iter().any(|candidate| candidate == &task_uri_for_loop)
++                            && task_peer
++                                .notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(task_uri_for_loop.clone()))
++                                .await
++                                .is_err()
++                        {
++                            break;
++                        }
++                    }
++                }
++            }
++            registry
++                .finish_legacy_subscription(&task_session, &task_uri, id)
++                .await;
++        });
++        state.legacy_subscriptions.insert(
++            (session_id, uri.clone()),
++            LegacySubscription {
++                id,
++                cancel,
++                task,
++                peer: peer.clone(),
++                uri,
++                _permit: permit,
++            },
++        );
++        Ok(())
++    }
++
++    async fn remove_legacy_subscription(&self, session_id: &str, uri: &str) {
++        let subscription = self
++            .state
++            .lock()
++            .await
++            .legacy_subscriptions
++            .remove(&(session_id.to_owned(), uri.to_owned()));
++        if let Some(subscription) = subscription {
++            subscription.cancel.cancel();
++            subscription.task.abort();
++        }
++    }
++
++    async fn finish_legacy_subscription(&self, session_id: &str, uri: &str, id: u64) {
++        let mut state = self.state.lock().await;
++        if state
++            .legacy_subscriptions
++            .get(&(session_id.to_owned(), uri.to_owned()))
++            .is_some_and(|subscription| subscription.id == id)
++        {
++            state
++                .legacy_subscriptions
++                .remove(&(session_id.to_owned(), uri.to_owned()));
++        }
++    }
++
++    async fn start_live_subscription(
++        self: &Arc<Self>,
++        session_id: String,
++        entry: SessionEntry,
++        sink: SubscriptionSink,
++    ) -> Result<(u64, CancellationToken, RoomConnection), McpFailure> {
++        let Some(permit) = self.acquire_subscription().await else {
++            return Err(McpFailure::Busy);
++        };
++        let connection = entry
++            .room
++            .subscribe()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let mut state = self.state.lock().await;
++        if !state.sessions.contains_key(&session_id) {
++            return Err(McpFailure::SessionExpired);
++        }
++        let id = next_subscription_id(&mut state);
++        let cancel = entry.cancel.child_token();
++        state.live_subscriptions.insert(
++            (session_id, id),
++            LiveSubscription {
++                cancel: cancel.clone(),
++                sink,
++                entry,
++                _permit: permit,
++            },
++        );
++        drop(state);
++        Ok((id, cancel, connection))
++    }
++
++    async fn finish_live_subscription(&self, session_id: &str, id: u64) {
++        let mut state = self.state.lock().await;
++        state
++            .live_subscriptions
++            .remove(&(session_id.to_owned(), id));
++    }
++
 +    async fn remove_binding(&self, session_id: &str) -> Option<SessionEntry> {
 +        let mut state = self.state.lock().await;
 +        let entry = state.sessions.remove(session_id)?;
++        clear_subscriptions(&mut state, session_id);
 +        state
 +            .retired_participants
 +            .insert((entry.token_id.clone(), entry.room_code.clone()));
 +        Some(entry)
++    }
++
++    async fn rollback_binding(&self, session_id: &str) -> Option<SessionEntry> {
++        let mut state = self.state.lock().await;
++        clear_subscriptions(&mut state, session_id);
++        state.bound_rooms.remove(session_id);
++        state.sessions.remove(session_id)
++    }
++}
++
++fn next_subscription_id(state: &mut RegistryState) -> u64 {
++    state.next_subscription_id = state.next_subscription_id.saturating_add(1);
++    state.next_subscription_id
++}
++
++fn clear_subscriptions(state: &mut RegistryState, session_id: &str) {
++    let legacy: Vec<_> = state
++        .legacy_subscriptions
++        .keys()
++        .filter(|(id, _)| id == session_id)
++        .cloned()
++        .collect();
++    for key in legacy {
++        if let Some(subscription) = state.legacy_subscriptions.remove(&key) {
++            subscription.cancel.cancel();
++            subscription.task.abort();
++        }
++    }
++    let live: Vec<_> = state
++        .live_subscriptions
++        .keys()
++        .filter(|(id, _)| id == session_id)
++        .cloned()
++        .collect();
++    for key in live {
++        if let Some(subscription) = state.live_subscriptions.remove(&key) {
++            subscription.cancel.cancel();
++        }
 +    }
 +}
 +
@@ -2539,28 +3838,55 @@ index 0000000..c059408
 +        }
 +    }
 +
-+    async fn start_watcher(&self, session_id: String, entry: SessionEntry) {
++    async fn attach_watcher(
++        &self,
++        session_id: String,
++        entry: SessionEntry,
++    ) -> Result<(), McpFailure> {
++        let Some(subscription) = self.registry.acquire_subscription().await else {
++            return Err(McpFailure::Busy);
++        };
++        let mut connection = entry
++            .room
++            .subscribe()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let initial = tokio::select! {
++            _ = entry.cancel.cancelled() => return Err(McpFailure::SessionExpired),
++            event = connection.recv() => event.ok_or(McpFailure::Internal)?,
++        };
++        if let Some((revision, reason)) = watcher_reason(&entry, initial).await {
++            if is_terminal_reason(reason) {
++                entry.wake.record_terminal(revision, reason);
++            } else {
++                entry.wake.record(revision, reason);
++            }
++        }
++        if entry.cancel.is_cancelled() {
++            return Err(McpFailure::SessionExpired);
++        }
 +        let registry = self.registry.clone();
 +        tokio::spawn(async move {
-+            let Some(_subscription) = registry.acquire_subscription().await else {
-+                return;
-+            };
-+            let Ok(mut connection) = entry.room.subscribe().await else {
-+                return;
-+            };
++            let _subscription = subscription;
 +            loop {
 +                tokio::select! {
 +                    _ = entry.cancel.cancelled() => break,
 +                    event = connection.recv() => {
 +                        let Some(event) = event else { break; };
 +                        let Some((revision, reason)) = watcher_reason(&entry, event).await else { continue; };
-+                        if entry.wake.record(revision, reason) {
++                        let recorded = if is_terminal_reason(reason) {
++                            entry.wake.record_terminal(revision, reason)
++                        } else {
++                            entry.wake.record(revision, reason)
++                        };
++                        if recorded {
 +                            registry.touch(&session_id, &entry.token_id).await;
 +                        }
 +                    }
 +                }
 +            }
 +        });
++        Ok(())
 +    }
 +
 +    async fn read_state(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
@@ -2636,18 +3962,29 @@ index 0000000..c059408
 +            .snapshot()
 +            .await
 +            .map_err(|_| McpFailure::Internal)?;
-+        let events = entry
++        let history = entry
 +            .room
-+            .match_events()
++            .history_projection(entry.participant_id.clone())
 +            .await
 +            .map_err(|_| McpFailure::Internal)?;
-+        let mut events = serde_json::to_value(events).map_err(|_| McpFailure::Internal)?;
-+        redact_private_history(&mut events);
++        let mut history = serde_json::to_value(history).map_err(|_| McpFailure::Internal)?;
++        redact_private_history(&mut history);
++        let events = history
++            .get("current_kyoku")
++            .and_then(|current| current.get("events"))
++            .cloned()
++            .unwrap_or_else(|| json!([]));
++        let summaries = history
++            .get("previous_kyoku")
++            .cloned()
++            .unwrap_or_else(|| json!([]));
 +        Ok(json!({
 +            "revision": snapshot.revision,
 +            "phase": snapshot.phase,
 +            "result": snapshot.result,
++            "history": history,
 +            "events": events,
++            "summaries": summaries,
 +            "history_uri": uri,
 +        }))
 +    }
@@ -2773,7 +4110,7 @@ index 0000000..c059408
 +                };
 +                (joined.id, false, joined.character_id, joined.display_name)
 +            };
-+        let (entry, old) = self
++        let (entry, old) = match self
 +            .registry
 +            .bind(
 +                session_id.clone(),
@@ -2785,7 +4122,13 @@ index 0000000..c059408
 +                character_id.clone(),
 +            )
 +            .await
-+            .map_err(|e| e.result())?;
++        {
++            Ok(value) => value,
++            Err(error) => {
++                let _ = room.send(RoomCommand::disconnect(participant_id)).await;
++                return Err(error.result());
++            }
++        };
 +        if let Some(old) = old {
 +            old.cancel.cancel();
 +            let _ = self
@@ -2793,7 +4136,15 @@ index 0000000..c059408
 +                .close_session(&old.session_id.clone().into())
 +                .await;
 +        }
-+        self.start_watcher(session_id, entry.clone()).await;
++        if let Err(error) = self.attach_watcher(session_id.clone(), entry.clone()).await {
++            let _ = self.registry.rollback_binding(&session_id).await;
++            entry.cancel.cancel();
++            let _ = entry
++                .room
++                .send(RoomCommand::disconnect(entry.participant_id.clone()))
++                .await;
++            return Err(error.result());
++        }
 +        Ok(Json(Self::join_output(&entry, resumed)))
 +    }
 +
@@ -2898,7 +4249,7 @@ index 0000000..c059408
 +        else {
 +            return Err(McpFailure::SessionExpired.result());
 +        };
-+        let reason = if wake.revision > input.after_revision {
++        let reason = if wake.terminal || wake.revision > input.after_revision {
 +            wake.reason
 +        } else {
 +            "timeout".to_owned()
@@ -3023,42 +4374,48 @@ index 0000000..c059408
 +            if !valid_uri {
 +                return Err(ErrorData::resource_not_found(request.uri, None));
 +            }
-+            let Some(subscription) = self.registry.acquire_subscription().await else {
-+                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
-+            };
-+            let mut connection = entry
-+                .room
-+                .subscribe()
-+                .await
-+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
 +            let uri = request.uri;
-+            let peer = context.peer.clone();
-+            tokio::spawn(async move {
-+                let _subscription = subscription;
-+                loop {
-+                    tokio::select! {
-+                        _ = entry.cancel.cancelled() => break,
-+                        event = connection.recv() => {
-+                            let Some(event) = event else { break; };
-+                            let Some((_revision, reason)) = watcher_reason(&entry, event).await else {
-+                                continue;
-+                            };
-+                            if notification_uris(&entry, reason).iter().any(|candidate| candidate == &uri)
-+                                && peer
-+                                    .notify_resource_updated(
-+                                        rmcp::model::ResourceUpdatedNotificationParam::new(
-+                                            uri.clone(),
-+                                        ),
-+                                    )
-+                                    .await
-+                                    .is_err()
-+                            {
-+                                break;
-+                            }
-+                        }
-+                    }
-+                }
-+            });
++            self.registry
++                .start_legacy_subscription(
++                    Self::session_id(parts).map_err(|error| error.error_data())?,
++                    entry,
++                    uri,
++                    context.peer.clone(),
++                )
++                .await
++                .map_err(|error| error.error_data())?;
++            Ok(())
++        }
++    }
++
++    #[allow(deprecated)]
++    fn unsubscribe(
++        &self,
++        request: UnsubscribeRequestParams,
++        context: RequestContext<RoleServer>,
++    ) -> impl std::future::Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_
++    {
++        async move {
++            let parts = context
++                .extensions
++                .get::<axum::http::request::Parts>()
++                .ok_or_else(|| ErrorData::invalid_request("missing request context", None))?;
++            let session_id = Self::session_id(parts).map_err(|error| error.error_data())?;
++            let token_id = Self::auth(parts).map_err(|error| error.error_data())?;
++            let entry = self
++                .registry
++                .binding(&session_id, &token_id)
++                .await
++                .map_err(|error| error.error_data())?;
++            if !resources(&entry)
++                .iter()
++                .any(|resource| resource.uri == request.uri)
++            {
++                return Err(ErrorData::resource_not_found(request.uri, None));
++            }
++            self.registry
++                .remove_legacy_subscription(&session_id, &request.uri)
++                .await;
 +            Ok(())
 +        }
 +    }
@@ -3081,48 +4438,105 @@ index 0000000..c059408
 +                .binding(&session_id, &token_id)
 +                .await
 +                .map_err(|error| error.error_data())?;
-+            let Some(_subscription) = self.registry.acquire_subscription().await else {
-+                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
-+            };
-+            let mut connection = entry
-+                .room
-+                .subscribe()
-+                .await
-+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-+            let accepted = context
-+                .accepted()
-+                .resource_subscriptions
-+                .clone()
-+                .unwrap_or_default();
 +            let sink = context.sink().clone();
++            let (subscription_id, subscription_cancel, mut connection) = self
++                .registry
++                .start_live_subscription(session_id.clone(), entry.clone(), sink.clone())
++                .await
++                .map_err(|error| error.error_data())?;
 +            loop {
 +                tokio::select! {
 +                    _ = context.cancelled() => break,
++                    _ = subscription_cancel.cancelled() => break,
 +                    event = connection.recv() => {
 +                        let Some(event) = event else { break; };
 +                        let Some((revision, reason)) = watcher_reason(&entry, event).await else {
 +                            continue;
 +                        };
-+                        if !entry.wake.record(revision, reason) {
++                        let recorded = if is_terminal_reason(reason) {
++                            entry.wake.record_terminal(revision, reason)
++                        } else {
++                            entry.wake.record(revision, reason)
++                        };
++                        if !recorded {
 +                            continue;
 +                        }
 +                        self.registry.touch(&session_id, &entry.token_id).await;
 +                        for uri in notification_uris(&entry, reason) {
-+                            if accepted.iter().any(|candidate| candidate == &uri)
-+                                && sink.notify_resource_updated(uri).await.is_err()
-+                            {
-+                                return Ok(());
++                            if sink.notify_resource_updated(uri).await.is_err() {
++                                break;
 +                            }
 +                        }
 +                    }
 +                }
 +            }
++            self.registry
++                .finish_live_subscription(&session_id, subscription_id)
++                .await;
 +            Ok(())
 +        }
 +    }
 +}
 +
++async fn snapshot_reason(
++    entry: &SessionEntry,
++    snapshot: RoomSnapshot,
++) -> Option<(u64, &'static str)> {
++    let participant = snapshot
++        .participants
++        .iter()
++        .find(|value| value.id == entry.participant_id)?;
++    if matches!(
++        participant.controller,
++        double_riichi_core::RoomController::PermanentAuto(_)
++    ) {
++        return Some((snapshot.revision, "permanent_auto"));
++    }
++    match snapshot.phase {
++        RoomPhase::Lobby => Some((
++            snapshot.revision,
++            if participant.selected {
++                "selected"
++            } else {
++                "deselected"
++            },
++        )),
++        RoomPhase::PostMatch(_) => Some((snapshot.revision, "game_ended")),
++        RoomPhase::Playing(_) => {
++            if let Ok(Some(AudienceProjection::Player(projection))) =
++                entry.room.projection(entry.participant_id.clone()).await
++                && projection
++                    .decision
++                    .is_some_and(|decision| !decision.actions.is_empty())
++            {
++                return Some((snapshot.revision, "my_decision"));
++            }
++            if let Ok(history) = entry
++                .room
++                .history_projection(entry.participant_id.clone())
++                .await
++                && history.current_kyoku.as_ref().is_some_and(|kyoku| {
++                    kyoku
++                        .events
++                        .iter()
++                        .any(|event| matches!(event, RoomHistoryEvent::StartKyoku { .. }))
++                })
++            {
++                return Some((snapshot.revision, "round_started"));
++            }
++            Some((snapshot.revision, "match_started"))
++        }
++    }
++}
++
++fn is_terminal_reason(reason: &str) -> bool {
++    matches!(reason, "room_deleted" | "server_shutdown")
++}
++
 +async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, &'static str)> {
++    if let RoomEvent::Snapshot(snapshot) = event {
++        return snapshot_reason(entry, snapshot).await;
++    }
 +    if let RoomEvent::RoomDeleted | RoomEvent::ServerShutdown = event {
 +        return Some((
 +            entry.wake.current().revision.saturating_add(1),
@@ -3204,17 +4618,7 @@ index 0000000..c059408
 +                    .then_some((revision, "permanent_auto"))
 +                })
 +        }
-+        RoomEvent::Snapshot(_) => snapshot
-+            .participants
-+            .iter()
-+            .find(|value| value.id == entry.participant_id)
-+            .and_then(|participant| {
-+                matches!(
-+                    participant.controller,
-+                    double_riichi_core::RoomController::PermanentAuto(_)
-+                )
-+                .then_some((revision, "permanent_auto"))
-+            }),
++        RoomEvent::Snapshot(_) => unreachable!("snapshots are handled before the event match"),
 +        RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
 +        RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
 +        RoomEvent::StorageDegraded
@@ -3521,8 +4925,8 @@ index 0000000..c059408
 +        let expired = registry
 +            .expire_idle(Instant::now() + Duration::from_secs(2))
 +            .await;
-+        assert_eq!(expired.len(), 1);
-+        disconnect_entries(expired).await;
++        assert_eq!(expired.entries.len(), 1);
++        disconnect_entries(expired.entries).await;
 +        assert!(matches!(
 +            registry.binding("session", "token").await,
 +            Err(McpFailure::SessionExpired)
@@ -3752,6 +5156,90 @@ index 0000000..c059408
 +    }
 +
 +    #[tokio::test]
++    async fn server_shutdown_wake_is_terminal_for_equal_wait_and_notifies_history() {
++        let wake = RevisionWake::default();
++        assert!(wake.record(4, "round_ended"));
++        assert!(wake.record_terminal(5, "server_shutdown"));
++
++        let result = wake
++            .wait_until(5, Duration::from_millis(10), &CancellationToken::new())
++            .await
++            .expect("terminal wake is returned even at the same revision");
++        assert_eq!(result.revision, 5);
++        assert_eq!(result.reason, "server_shutdown");
++        assert!(result.terminal);
++
++        let watcher = entry(
++            room(GameMode::FourPlayerRedEast),
++            "s",
++            "t",
++            "123456",
++            "agent",
++        );
++        assert_eq!(
++            notification_uris(&watcher, "server_shutdown"),
++            vec![
++                "riichi://rooms/123456/participants/agent/state",
++                "riichi://rooms/123456/public-state",
++                "riichi://rooms/123456/history",
++            ]
++        );
++    }
++
++    #[tokio::test]
++    async fn unjoined_transport_sessions_are_bounded_and_recover_after_close() {
++        let registry = Arc::new(McpSessionRegistry::new(Duration::from_secs(60)));
++        let manager = Arc::new(LocalSessionManager::default());
++        let bounded = BoundedSessionManager::new(manager, registry);
++        let mut sessions = Vec::with_capacity(MCP_MAX_SESSIONS);
++        for _ in 0..MCP_MAX_SESSIONS {
++            sessions.push(
++                bounded
++                    .create_session()
++                    .await
++                    .expect("unjoined transport session within capacity"),
++            );
++        }
++        assert!(
++            bounded.create_session().await.is_err(),
++            "cap + 1 unjoined initialize must be rejected"
++        );
++
++        for (id, _transport) in sessions {
++            bounded
++                .close_session(&id)
++                .await
++                .expect("closed session releases its capacity permit");
++        }
++        assert!(bounded.create_session().await.is_ok());
++    }
++
++    #[tokio::test]
++    async fn subscription_permits_recover_for_repeated_subscribe_unsubscribe_cycles() {
++        let registry = McpSessionRegistry::new(Duration::from_secs(60));
++        for _ in 0..(MCP_MAX_SUBSCRIPTIONS + 8) {
++            let permit = registry
++                .acquire_subscription()
++                .await
++                .expect("subscription permit available");
++            drop(permit);
++        }
++
++        let mut permits = Vec::with_capacity(MCP_MAX_SUBSCRIPTIONS);
++        for _ in 0..MCP_MAX_SUBSCRIPTIONS {
++            permits.push(
++                registry
++                    .acquire_subscription()
++                    .await
++                    .expect("subscription capacity remains reusable"),
++            );
++        }
++        assert!(registry.acquire_subscription().await.is_none());
++        drop(permits.pop());
++        assert!(registry.acquire_subscription().await.is_some());
++    }
++
++    #[tokio::test]
 +    async fn room_delete_and_shutdown_publish_terminal_events() {
 +        let deleted = room(GameMode::FourPlayerRedEast);
 +        let mut deleted_events = deleted.subscribe().await.unwrap();
@@ -3790,10 +5278,10 @@ index 0000000..c059408
 +}
 diff --git a/crates/double_riichi_server/tests/task14_mcp.rs b/crates/double_riichi_server/tests/task14_mcp.rs
 new file mode 100644
-index 0000000..bdb2961
+index 0000000..a2a6efd
 --- /dev/null
 +++ b/crates/double_riichi_server/tests/task14_mcp.rs
-@@ -0,0 +1,1066 @@
+@@ -0,0 +1,1170 @@
 +use std::{
 +    future::Future,
 +    sync::Arc,
@@ -3817,7 +5305,7 @@ index 0000000..bdb2961
 +    ClientHandler,
 +    model::{
 +        CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation,
-+        ReadResourceRequestParams, SubscribeRequestParams,
++        ReadResourceRequestParams, SubscribeRequestParams, UnsubscribeRequestParams,
 +    },
 +};
 +use serde_json::{Value, json};
@@ -4090,16 +5578,24 @@ index 0000000..bdb2961
 +    .expect("MCP disconnect was not observed");
 +}
 +
-+async fn room_with_code(state: &ServerState, name: &str) -> double_riichi_core::RoomHandle {
++async fn room_with_mode(
++    state: &ServerState,
++    name: &str,
++    mode: GameMode,
++) -> double_riichi_core::RoomHandle {
 +    state
 +        .rooms()
 +        .create(RoomConfig::new(
 +            name,
-+            GameMode::FourPlayerRedEast,
++            mode,
 +            double_riichi_core::CharacterCatalog::starter(),
 +        ))
 +        .await
 +        .unwrap()
++}
++
++async fn room_with_code(state: &ServerState, name: &str) -> double_riichi_core::RoomHandle {
++    room_with_mode(state, name, GameMode::FourPlayerRedEast).await
 +}
 +
 +#[tokio::test]
@@ -4462,6 +5958,48 @@ index 0000000..bdb2961
 +    storage.close().await;
 +}
 +
++#[tokio::test]
++async fn live_mcp_join_wait_uses_snapshot_barrier() {
++    let (state, _service, storage, token) = fixture("join-barrier").await;
++    let room = room_with_code(&state, "MCP join barrier").await;
++    let app = server_router(state.clone());
++    let (session_id, _) = initialize(&app, &token, 50).await;
++    let joined = tool_call(
++        &app,
++        &token,
++        &session_id,
++        51,
++        "join_room",
++        json!({
++            "room_code": room.join_code(),
++            "provider": "runner",
++            "display_name": "MCP Barrier"
++        }),
++    )
++    .await;
++    assert!(!tool_value(&joined)["participant_id"].is_null());
++
++    let waited = tool_call(
++        &app,
++        &token,
++        &session_id,
++        52,
++        "wait_for_turn",
++        json!({"after_revision": 0, "timeout_seconds": 1}),
++    )
++    .await;
++    let value = tool_value(&waited);
++    assert_eq!(value["reason"], "deselected");
++    assert!(
++        value["revision"]
++            .as_u64()
++            .is_some_and(|revision| revision > 0)
++    );
++
++    state.shutdown().await;
++    storage.close().await;
++}
++
 +#[derive(Clone)]
 +struct ProtocolBot {
 +    updates: Arc<std::sync::Mutex<Vec<String>>>,
@@ -4585,7 +6123,7 @@ index 0000000..bdb2961
 +        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 +        let origin = format!("http://{}", listener.local_addr().unwrap());
 +        let (state, _service, storage, token) = fixture_with_origin("bridge-e2e", &origin).await;
-+        let room = room_with_code(&state, "MCP bridge E2E").await;
++        let room = room_with_mode(&state, "MCP bridge E2E", GameMode::FourPlayerRedHalf).await;
 +        let app = server_router(state.clone());
 +        let (server_stop, server_stop_rx) = oneshot::channel();
 +        let server_task = tokio::spawn(async move {
@@ -4682,6 +6220,24 @@ index 0000000..bdb2961
 +        let mut expected_uris = vec![state_uri.clone(), public_uri.clone(), history_uri.clone()];
 +        expected_uris.sort();
 +        assert_eq!(resource_uris, expected_uris);
++
++        #[allow(deprecated)]
++        for _ in 0..4 {
++            timeout(
++                REQUEST_TIMEOUT,
++                peer.subscribe(SubscribeRequestParams::new(state_uri.clone())),
++            )
++            .await
++            .expect("repeated subscribe timed out")
++            .unwrap();
++            timeout(
++                REQUEST_TIMEOUT,
++                peer.unsubscribe(UnsubscribeRequestParams::new(state_uri.clone())),
++            )
++            .await
++            .expect("repeated unsubscribe timed out")
++            .unwrap();
++        }
 +
 +        #[allow(deprecated)]
 +        let _subscriptions = vec![
@@ -4793,6 +6349,20 @@ index 0000000..bdb2961
 +            if is_post_match(&private) {
 +                assert_eq!(reason, "game_ended");
 +                assert!(!history["result"].is_null(), "Post-Match has no result");
++                let projection = &history["history"];
++                let current_events = projection["current_kyoku"]["events"]
++                    .as_array()
++                    .expect("Post-Match keeps current Kyoku events");
++                assert!(!current_events.is_empty());
++                assert!(current_events.len() < 1_000);
++                let summaries = projection["previous_kyoku"]
++                    .as_array()
++                    .expect("Post-Match keeps prior Kyoku summaries");
++                assert!(!summaries.is_empty(), "Match should retain a prior summary");
++                assert!(summaries.len() < 1_000);
++                assert_eq!(&history["events"], &projection["current_kyoku"]["events"]);
++                assert_eq!(&history["summaries"], &projection["previous_kyoku"]);
++                assert_no_private_data(&history, &participant_id);
 +                saw_game_ended = true;
 +                break;
 +            }
@@ -4832,6 +6402,28 @@ index 0000000..bdb2961
 +            !updates.lock().unwrap().is_empty(),
 +            "stdio protocol bot received no resource update notifications"
 +        );
++        let before_shutdown = updates.lock().unwrap().len();
++        state.begin_shutdown();
++        timeout(Duration::from_secs(2), async {
++            loop {
++                let updates = updates.lock().unwrap();
++                let shutdown_updates = &updates[before_shutdown..];
++                if [
++                    state_uri.as_str(),
++                    public_uri.as_str(),
++                    history_uri.as_str(),
++                ]
++                .iter()
++                .all(|uri| shutdown_updates.iter().any(|update| update == uri))
++                {
++                    break;
++                }
++                drop(updates);
++                tokio::time::sleep(Duration::from_millis(10)).await;
++            }
++        })
++        .await
++        .expect("server shutdown resource notifications were not delivered");
 +
 +        let final_snapshot = room.snapshot().await.unwrap();
 +        assert!(matches!(
