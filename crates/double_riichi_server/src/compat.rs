@@ -939,6 +939,28 @@ struct PlayerRuntime {
     active: bool,
 }
 
+#[derive(Clone, Copy)]
+struct PendingRequest {
+    opened_at: Instant,
+    deadline: Instant,
+}
+
+impl PendingRequest {
+    fn elapsed_ms_at(self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.opened_at).as_millis() as u64
+    }
+}
+
+fn due_requests(pending: &HashMap<Seat, PendingRequest>, now: Instant) -> Vec<(Seat, u64)> {
+    let mut due = pending
+        .iter()
+        .filter(|(_, request)| request.deadline <= now)
+        .map(|(seat, request)| (*seat, request.elapsed_ms_at(now)))
+        .collect::<Vec<_>>();
+    due.sort_by_key(|(seat, _)| *seat);
+    due
+}
+
 impl CompatReplay {
     async fn open(&mut self, mode: GameMode, players: &[Participant]) {
         let Some(storage) = self.storage.as_ref() else {
@@ -1276,7 +1298,7 @@ impl CompatMatch {
             if active.is_empty() {
                 continue;
             }
-            let mut deadlines = HashMap::new();
+            let mut pending = HashMap::new();
             for seat in active {
                 let request = {
                     let Some(player) = self.players.get_mut(&seat) else {
@@ -1299,19 +1321,23 @@ impl CompatMatch {
                     }
                     continue;
                 };
+                let opened_at = Instant::now();
                 if !self.send(seat, Message::text(text)) {
                     if let Some(player) = self.players.get_mut(&seat) {
                         player.active = false;
                     }
                     continue;
                 }
-                deadlines.insert(
+                pending.insert(
                     seat,
-                    Instant::now() + Duration::from_millis(request.time.deadline_ms),
+                    PendingRequest {
+                        opened_at,
+                        deadline: opened_at + Duration::from_millis(request.time.deadline_ms),
+                    },
                 );
             }
             recent.clear();
-            self.collect(&mut deadlines).await;
+            self.collect(&mut pending).await;
             let events = self.machine.events();
             let from = initial_len.min(events.len());
             recent = events[from..].to_vec();
@@ -1345,13 +1371,19 @@ impl CompatMatch {
         }
     }
 
-    async fn collect(&mut self, deadlines: &mut HashMap<Seat, Instant>) {
-        while !deadlines.is_empty() {
+    async fn collect(&mut self, pending: &mut HashMap<Seat, PendingRequest>) {
+        while !pending.is_empty() {
             let now = Instant::now();
-            let deadline = deadlines.values().copied().min().unwrap_or(now);
+            let deadline = pending
+                .values()
+                .map(|request| request.deadline)
+                .min()
+                .unwrap_or(now);
             if deadline <= now {
-                for seat in deadlines.keys().copied().collect::<Vec<_>>() {
-                    let elapsed = TURN_SECONDS * 1000;
+                for (seat, elapsed) in due_requests(pending, now) {
+                    if pending.remove(&seat).is_none() {
+                        continue;
+                    }
                     if let Some(player) = self.players.get_mut(&seat)
                         && let Ok(outcome) =
                             player
@@ -1366,7 +1398,6 @@ impl CompatMatch {
                     }
                     self.validation_failed = true;
                     self.validation_reason.get_or_insert("timeout");
-                    deadlines.remove(&seat);
                 }
                 continue;
             }
@@ -1375,24 +1406,24 @@ impl CompatMatch {
             tokio::select! {
                 _ = &mut sleep => {},
                 input = self.input_rx.recv() => match input {
-                    Some(MatchInput::Disconnected { seat }) => { self.disconnect(seat, deadlines).await; },
-                    Some(MatchInput::Frame { seat, bytes }) => { self.reply(seat, bytes, deadlines).await; },
-                    None => { for seat in deadlines.keys().copied().collect::<Vec<_>>() { self.disconnect(seat, deadlines).await; } }
+                    Some(MatchInput::Disconnected { seat }) => { self.disconnect(seat, pending).await; },
+                    Some(MatchInput::Frame { seat, bytes }) => { self.reply(seat, bytes, pending).await; },
+                    None => { for seat in pending.keys().copied().collect::<Vec<_>>() { self.disconnect(seat, pending).await; } }
                 }
             }
         }
     }
 
-    async fn reply(&mut self, seat: Seat, bytes: Vec<u8>, deadlines: &mut HashMap<Seat, Instant>) {
-        let elapsed = TURN_SECONDS * 1000
-            - deadlines
-                .get(&seat)
-                .map_or(0, |deadline| {
-                    deadline
-                        .saturating_duration_since(Instant::now())
-                        .as_millis() as u64
-                })
-                .min(TURN_SECONDS * 1000);
+    async fn reply(
+        &mut self,
+        seat: Seat,
+        bytes: Vec<u8>,
+        pending: &mut HashMap<Seat, PendingRequest>,
+    ) {
+        let elapsed = pending
+            .get(&seat)
+            .copied()
+            .map_or(0, |request| request.elapsed_ms_at(Instant::now()));
         let outcome = {
             let Some(player) = self.players.get_mut(&seat) else {
                 return;
@@ -1423,19 +1454,19 @@ impl CompatMatch {
             });
         }
         if let Some(result) = outcome.result {
-            deadlines.remove(&seat);
+            pending.remove(&seat);
             let events = result.events().to_vec();
             let _ = self.broadcast(&events).await;
         }
     }
 
-    async fn disconnect(&mut self, seat: Seat, deadlines: &mut HashMap<Seat, Instant>) {
+    async fn disconnect(&mut self, seat: Seat, pending: &mut HashMap<Seat, PendingRequest>) {
         if let Some(player) = self.players.get_mut(&seat) {
             player.active = false;
         }
         self.validation_failed = true;
         self.validation_reason.get_or_insert("disconnected");
-        deadlines.remove(&seat);
+        pending.remove(&seat);
         if let Ok(Some(decision)) = self.machine.current_decision() {
             let action = decision.default_action_id(seat).clone();
             if let Ok(result) = self
@@ -1622,17 +1653,14 @@ pub(crate) async fn room_mjai_upgrade(
                 drop(permit);
                 return;
             }
-            let (generation, control) =
-                connections.register(participant_id.clone(), token_id.clone());
             if room_for_upgrade
                 .send(RoomCommand::reconnect_agent(
                     participant_id.clone(),
-                    token_id,
+                    token_id.clone(),
                 ))
                 .await
                 .is_err()
             {
-                connections.remove(&participant_id, generation);
                 drop(transition);
                 let mut socket = socket;
                 let _ = socket
@@ -1641,6 +1669,7 @@ pub(crate) async fn room_mjai_upgrade(
                 drop(permit);
                 return;
             }
+            let (generation, control) = connections.register(participant_id.clone(), token_id);
             drop(transition);
             run_room_socket(
                 socket,
@@ -1699,6 +1728,7 @@ async fn run_room_socket(
     let mut timing = TimingBudget::new();
     let mut cursor = 0usize;
     let mut last_decision = None;
+    let mut last_request_id = None;
     let mut request_time = RequestTime {
         grace_ms: 0,
         bank_ms: 0,
@@ -1713,6 +1743,7 @@ async fn run_room_socket(
         &mut timing,
         &mut cursor,
         &mut last_decision,
+        &mut last_request_id,
         &mut request_time,
         &mut request_opened,
         &output,
@@ -1728,12 +1759,12 @@ async fn run_room_socket(
         tokio::select! {
             command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = queue_output(&output, close_message(code, reason)); close_queued = true; } break; }
             message = receiver.next() => match message {
-                Some(Ok(Message::Text(text))) => { if text.len() > MAX_FRAME_BYTES { let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large")); close_queued = true; break; } room_reply(&room, &participant_id, mode, &mut adapter, &mut timing, request_time, request_opened, &mut last_decision, &output, text.as_bytes()).await; }
+                Some(Ok(Message::Text(text))) => { if text.len() > MAX_FRAME_BYTES { let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large")); close_queued = true; break; } room_reply(&room, &participant_id, mode, &mut adapter, &mut timing, request_time, request_opened, &mut last_decision, &mut last_request_id, &output, text.as_bytes()).await; }
                 Some(Ok(Message::Ping(payload))) => { let _ = queue_output(&output, Message::Pong(payload)); }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             },
-            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_decision, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
+            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
         }
     }
     let transition = state
@@ -1775,6 +1806,7 @@ async fn sync_room(
     timing: &mut TimingBudget,
     cursor: &mut usize,
     last_decision: &mut Option<DecisionId>,
+    last_request_id: &mut Option<u64>,
     request_time: &mut RequestTime,
     request_opened: &mut Instant,
     output: &mpsc::Sender<Message>,
@@ -1802,11 +1834,24 @@ async fn sync_room(
     }
     *cursor = events.len();
     let Some(decision) = projection.decision.as_ref() else {
+        if let Some(request_id) = last_request_id.take() {
+            let _ = adapter.retire_request(request_id);
+        }
         *last_decision = None;
         return true;
     };
-    if decision.actions.is_empty() || last_decision.as_ref() == Some(&decision.decision_id) {
+    if decision.actions.is_empty() {
+        if let Some(request_id) = last_request_id.take() {
+            let _ = adapter.retire_request(request_id);
+        }
+        *last_decision = None;
         return true;
+    }
+    if last_decision.as_ref() == Some(&decision.decision_id) {
+        return true;
+    }
+    if let Some(request_id) = last_request_id.take() {
+        let _ = adapter.retire_request(request_id);
     }
     let Some(wire_time) = room_request_time(decision) else {
         return true;
@@ -1825,6 +1870,7 @@ async fn sync_room(
         return false;
     }
     *last_decision = Some(decision.decision_id.clone());
+    *last_request_id = Some(request.request_id);
     *request_time = request.time;
     *request_opened = Instant::now();
     true
@@ -1851,6 +1897,7 @@ async fn room_reply(
     request_time: RequestTime,
     request_opened: Instant,
     last_decision: &mut Option<DecisionId>,
+    last_request_id: &mut Option<u64>,
     output: &mpsc::Sender<Message>,
     bytes: &[u8],
 ) {
@@ -1933,6 +1980,22 @@ async fn room_reply(
     let Some(decision) = projection.decision.as_ref() else {
         return;
     };
+    if last_decision.as_ref() != Some(&decision.decision_id)
+        || last_request_id.is_none_or(|request_id| request_id != current_id)
+        || decision.actions.is_empty()
+    {
+        if let Some(request_id) = last_request_id.take() {
+            let _ = adapter.retire_request(request_id);
+        } else {
+            let _ = adapter.retire_request(current_id);
+        }
+        *last_decision = None;
+        let _ = send_ack(
+            output,
+            Some(ActionAck::stale(Some(current_id), timing.bank_ms())),
+        );
+        return;
+    }
     let synthetic = Decision::new_with_timings(
         decision.decision_id.clone(),
         decision.kind,
@@ -2029,6 +2092,7 @@ async fn room_reply(
     {
         Ok(RoomResponse::Action(result)) => {
             let _ = adapter.classify_reply(Some(current_id));
+            *last_request_id = None;
             let outcome = timing.account(request_time, elapsed);
             let _ = send_ack(output, Some(ActionAck::accepted(current_id, outcome)));
             if result.is_resolved() {
@@ -2104,6 +2168,32 @@ mod tests {
             room_request_time(&projected_decision(Some(1), Some(0))),
             None
         );
+    }
+
+    #[test]
+    fn unequal_per_seat_banks_only_due_the_earlier_request() {
+        let opened_at = Instant::now();
+        let pending = HashMap::from([
+            (
+                Seat::new(0).unwrap(),
+                PendingRequest {
+                    opened_at,
+                    deadline: opened_at + Duration::from_millis(2),
+                },
+            ),
+            (
+                Seat::new(1).unwrap(),
+                PendingRequest {
+                    opened_at,
+                    deadline: opened_at + Duration::from_millis(20),
+                },
+            ),
+        ]);
+        let due = due_requests(&pending, opened_at + Duration::from_millis(3));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, Seat::new(0).unwrap());
+        assert_eq!(due[0].1, 3);
+        assert!(pending.contains_key(&Seat::new(1).unwrap()));
     }
 
     #[test]

@@ -266,6 +266,19 @@ async fn live_room_mjai_enforces_token_ownership_replacement_and_three_player_li
         .unwrap();
     });
     let base = format!("ws://{address}");
+    let mut first = ws(&base, &path, Some(&raw), None).await.unwrap();
+    first
+        .send(WsMessage::Text(r#"{"type":"none"}"#.into()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), first.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        WsMessage::Text(_)
+    ));
     let mut wrong = ws(&base, &path, Some(&other_raw), None).await.unwrap();
     let close = tokio::time::timeout(Duration::from_secs(2), wrong.next())
         .await
@@ -273,7 +286,6 @@ async fn live_room_mjai_enforces_token_ownership_replacement_and_three_player_li
         .unwrap()
         .unwrap();
     assert!(matches!(close, WsMessage::Close(Some(frame)) if frame.reason == "session_expired"));
-    let mut first = ws(&base, &path, Some(&raw), None).await.unwrap();
     first
         .send(WsMessage::Text(r#"{"type":"none"}"#.into()))
         .await

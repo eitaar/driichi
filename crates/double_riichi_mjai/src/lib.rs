@@ -2383,6 +2383,20 @@ impl ReplyTracker {
         self.pending.front().map(|pending| pending.request_id)
     }
 
+    /// Retire a request whose Room decision is no longer authoritative.
+    /// Keeping `last_issued` makes any late reply classify as stale.
+    pub fn retire(&mut self, request_id: u64) -> bool {
+        let Some(index) = self
+            .pending
+            .iter()
+            .position(|pending| pending.request_id == request_id)
+        else {
+            return false;
+        };
+        self.pending.remove(index);
+        true
+    }
+
     fn owed_request_id(&self) -> Option<u64> {
         self.pending
             .iter()
@@ -2530,6 +2544,10 @@ impl MjaiAdapter {
 
     pub fn classify_reply(&mut self, request_id: Option<u64>) -> ReplyDisposition {
         self.replies.classify(request_id)
+    }
+
+    pub fn retire_request(&mut self, request_id: u64) -> bool {
+        self.replies.retire(request_id)
     }
 
     pub fn peek_reply(&self, request_id: Option<u64>) -> ReplyDisposition {
@@ -3147,7 +3165,44 @@ mod tests {
     }
 
     #[test]
-    fn reply_tracker_handles_current_stale_future_and_fifo_legacy_debt() {
+    fn retired_request_is_stale_after_the_next_request_opens() {
+        let mode = GameMode::FourPlayerRedEast;
+        let participants = (0..mode.seat_count())
+            .map(|index| {
+                Participant::new(
+                    format!("p{index}"),
+                    format!("Player {index}"),
+                    ParticipantKind::BuiltInBot,
+                )
+            })
+            .collect();
+        let mut machine = MatchMachine::with_seed(mode, participants, 0xD0).unwrap();
+        let seat = Seat::new(0).unwrap();
+        let mut adapter = MjaiAdapter::new(mode);
+        let old = adapter
+            .open_request_for_machine(&mut machine, seat, &[])
+            .unwrap();
+        assert!(adapter.retire_request(old.request_id));
+        let next = adapter
+            .open_request_for_machine(&mut machine, seat, &[])
+            .unwrap();
+
+        let events_before = machine.events().len();
+        let outcome = adapter
+            .submit_reply(
+                &mut machine,
+                seat,
+                format!(r#"{{"type":"none","request_id":{}}}"#, old.request_id).as_bytes(),
+                0,
+            )
+            .unwrap();
+        assert_eq!(outcome.ack.status, AckStatus::Stale);
+        assert_eq!(machine.events().len(), events_before);
+        assert_eq!(
+            adapter.replies().current_request_id(),
+            Some(next.request_id)
+        );
+
         let now = Instant::now();
         let mut tracker = ReplyTracker::new();
         tracker.issue_at(10, now).unwrap();
