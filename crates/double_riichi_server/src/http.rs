@@ -233,8 +233,11 @@ impl ServerState {
     }
 
     pub fn with_bot_token_service(mut self, service: Arc<BotTokenService>) -> Self {
-        self.compat
-            .watch_revocations(service.subscribe_revocations(), service.clone());
+        self.compat.watch_revocations(
+            service.subscribe_revocations(),
+            service.clone(),
+            self.rooms.clone(),
+        );
         self.bot_tokens = Some(service);
         self
     }
@@ -278,6 +281,12 @@ impl ServerState {
 
     pub(crate) fn public_origin_url(&self) -> &Url {
         &self.public_origin_url
+    }
+
+    pub(crate) fn bot_token_active(&self, token_id: &str) -> bool {
+        self.bot_tokens
+            .as_ref()
+            .is_some_and(|service| service.is_active_token_id(token_id))
     }
 
     pub(crate) fn authenticate_bot(
@@ -379,9 +388,11 @@ impl ServerState {
         state.limits = limits;
         state.shutdown_seconds = config.shutdown_seconds;
         state.storage = Some(storage);
-        state
-            .compat
-            .watch_revocations(token_service.subscribe_revocations(), token_service.clone());
+        state.compat.watch_revocations(
+            token_service.subscribe_revocations(),
+            token_service.clone(),
+            state.rooms.clone(),
+        );
         state.bot_tokens = Some(token_service);
         Ok(state)
     }
@@ -1913,7 +1924,7 @@ async fn run_human(
     permit: ConnectionPermit,
 ) {
     let (mut sender, mut receiver) = socket.split();
-    let (outbound, mut outbound_receiver) = mpsc::channel::<Message>(HUMAN_OUTBOUND_CAPACITY);
+    let (outbound, mut outbound_receiver) = mpsc::channel::<Message>(HUMAN_OUTBOUND_CAPACITY + 1);
     let mut writer = tokio::spawn(async move {
         while let Some(message) = outbound_receiver.recv().await {
             let close = matches!(message, Message::Close(_));
@@ -1928,7 +1939,7 @@ async fn run_human(
     let mut connection = match room.subscribe().await {
         Ok(connection) => connection,
         Err(_) => {
-            let _ = outbound.send(close_message(4002, "room_deleted")).await;
+            let _ = enqueue(&outbound, close_message(4002, "room_deleted"));
             drop(outbound);
             if time::timeout(Duration::from_secs(1), &mut writer)
                 .await
@@ -2061,6 +2072,10 @@ fn close_message(code: u16, reason: &'static str) -> Message {
 }
 
 fn enqueue(outbound: &mpsc::Sender<Message>, message: Message) -> bool {
+    if !matches!(message, Message::Close(_)) && outbound.capacity() <= 1 {
+        let _ = outbound.try_send(close_message(4005, "slow_consumer"));
+        return false;
+    }
     outbound.try_send(message).is_ok()
 }
 
@@ -3325,12 +3340,22 @@ mod tests {
     }
 
     #[test]
-    fn outbound_queue_has_a_hard_capacity() {
-        let (sender, _receiver) = mpsc::channel(HUMAN_OUTBOUND_CAPACITY);
+    fn outbound_queue_has_a_hard_capacity_and_slow_close() {
+        let (sender, mut receiver) = mpsc::channel(HUMAN_OUTBOUND_CAPACITY + 1);
         for _ in 0..HUMAN_OUTBOUND_CAPACITY {
             assert!(enqueue(&sender, Message::text("x")));
         }
         assert!(!enqueue(&sender, Message::text("overflow")));
+        for _ in 0..HUMAN_OUTBOUND_CAPACITY {
+            assert!(matches!(receiver.try_recv(), Ok(Message::Text(_))));
+        }
+        match receiver.try_recv().unwrap() {
+            Message::Close(Some(frame)) => {
+                assert_eq!(frame.code, 4005);
+                assert_eq!(frame.reason, "slow_consumer");
+            }
+            other => panic!("expected slow-consumer close, got {other:?}"),
+        }
     }
 
     #[test]
