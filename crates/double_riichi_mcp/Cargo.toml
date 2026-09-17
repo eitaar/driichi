@@ -6,10 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-double_riichi_core = { path = "../double_riichi_core" }
-rmcp = { version = "=3.4.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "transport-io"] }
-serde_json = "=1.0.151"
+rmcp = { version = "=3.4.0", default-features = false, features = ["client", "server", "transport-streamable-http-client-reqwest", "transport-io"] }
 tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "io-std"] }
+url = "=2.5.8"
 
 [[bin]]
 name = "driichi-mcp"

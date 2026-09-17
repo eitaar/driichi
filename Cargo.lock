@@ -451,10 +451,9 @@ dependencies = [
 name = "double_riichi_mcp"
 version = "0.1.0"
 dependencies = [
- "double_riichi_core",
  "rmcp",
- "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]
