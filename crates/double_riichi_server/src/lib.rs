@@ -2,6 +2,7 @@
 
 mod auth;
 mod characters;
+mod compat;
 mod config;
 mod http;
 mod storage;

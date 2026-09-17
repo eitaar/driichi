@@ -118,17 +118,12 @@ pub enum ControllerState {
     PermanentAuto,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TimeControl {
     RiichiDev,
+    #[default]
     Casual,
     Unlimited,
-}
-
-impl Default for TimeControl {
-    fn default() -> Self {
-        Self::Casual
-    }
 }
 
 impl TimeControl {

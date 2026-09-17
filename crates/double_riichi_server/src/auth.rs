@@ -569,6 +569,16 @@ impl BotTokenAuthority {
         self.revocations.subscribe()
     }
 
+    pub fn revoked_token_ids(&self) -> Vec<String> {
+        self.records
+            .read()
+            .expect("token authority lock poisoned")
+            .values()
+            .filter(|record| record.state == TokenState::Revoked)
+            .map(|record| record.token_id.clone())
+            .collect()
+    }
+
     pub(crate) fn insert_active(&self, record: BotTokenRecord) {
         self.records
             .write()
@@ -672,6 +682,18 @@ pub struct BotTokenService {
 impl BotTokenService {
     pub fn new(storage: Arc<Storage>, authority: Arc<BotTokenAuthority>) -> Self {
         Self { storage, authority }
+    }
+
+    pub fn authenticate(&self, raw_token: &str) -> Result<BotTokenRecord, CredentialError> {
+        self.authority.authenticate(raw_token)
+    }
+
+    pub fn subscribe_revocations(&self) -> broadcast::Receiver<TokenRevoked> {
+        self.authority.subscribe_revocations()
+    }
+
+    pub fn revoked_token_ids(&self) -> Vec<String> {
+        self.authority.revoked_token_ids()
     }
 
     pub async fn create(

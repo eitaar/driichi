@@ -41,6 +41,7 @@ use tokio::{
 };
 use url::Url;
 
+use crate::compat::CompatState;
 use crate::{
     AdminAuthenticator, AdminSecrets, BotTokenAuthority, BotTokenService, CharacterAsset,
     CharacterRegistry, CharacterRegistryError, CredentialError, RuntimeConfig, Storage,
@@ -66,6 +67,8 @@ pub struct ServerLimits {
     pub participant_creation_limit: usize,
     pub admin_login_failure_limit: usize,
     pub agent_auth_failure_limit: usize,
+    pub max_compat_matches: usize,
+    pub max_ranked_queue: usize,
     pub rate_window: Duration,
     pub admin_login_window: Duration,
     pub trusted_proxy_cidrs: Vec<IpCidr>,
@@ -82,6 +85,8 @@ impl Default for ServerLimits {
             participant_creation_limit: 10,
             admin_login_failure_limit: 5,
             agent_auth_failure_limit: 20,
+            max_compat_matches: 32,
+            max_ranked_queue: 128,
             rate_window: Duration::from_secs(60),
             admin_login_window: Duration::from_secs(15 * 60),
             trusted_proxy_cidrs: Vec::new(),
@@ -205,6 +210,7 @@ pub struct ServerState {
     started_at: Instant,
     storage: Option<Arc<Storage>>,
     bot_tokens: Option<Arc<BotTokenService>>,
+    pub(crate) compat: Arc<CompatState>,
 }
 
 impl ServerState {
@@ -227,6 +233,8 @@ impl ServerState {
     }
 
     pub fn with_bot_token_service(mut self, service: Arc<BotTokenService>) -> Self {
+        self.compat
+            .watch_revocations(service.subscribe_revocations(), service.clone());
         self.bot_tokens = Some(service);
         self
     }
@@ -250,6 +258,8 @@ impl ServerState {
 
     pub fn with_limits(mut self, limits: ServerLimits) -> Self {
         self.rate_limiter = Arc::new(RateLimiter::new());
+        self.compat
+            .set_limits(limits.max_compat_matches, limits.max_ranked_queue);
         self.limits = limits;
         self
     }
@@ -264,6 +274,56 @@ impl ServerState {
 
     pub fn limits(&self) -> &ServerLimits {
         &self.limits
+    }
+
+    pub(crate) fn public_origin_url(&self) -> &Url {
+        &self.public_origin_url
+    }
+
+    pub(crate) fn authenticate_bot(
+        &self,
+        headers: &HeaderMap,
+        direct_peer: Option<SocketAddr>,
+    ) -> Result<crate::BotTokenRecord, ()> {
+        let ip = request_ip(headers, direct_peer, &self.limits.trusted_proxy_cidrs);
+        if !self.rate_limiter.available(
+            RateKind::AgentAuthFailure,
+            ip,
+            self.limits.agent_auth_failure_limit,
+            self.limits.rate_window,
+        ) {
+            return Err(());
+        }
+        let token = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .filter(|value| !value.is_empty() && !value.contains(char::is_whitespace));
+        let Some(token) = token else {
+            self.rate_limiter
+                .record(RateKind::AgentAuthFailure, ip, self.limits.rate_window);
+            return Err(());
+        };
+        let Some(service) = &self.bot_tokens else {
+            self.rate_limiter
+                .record(RateKind::AgentAuthFailure, ip, self.limits.rate_window);
+            return Err(());
+        };
+        match service.authenticate(token) {
+            Ok(record) => Ok(record),
+            Err(_) => {
+                self.rate_limiter
+                    .record(RateKind::AgentAuthFailure, ip, self.limits.rate_window);
+                Err(())
+            }
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        self.compat.shutdown().await;
+        self.rooms
+            .shutdown(double_riichi_core::ShutdownMode::Graceful)
+            .await;
     }
 
     pub async fn from_config(config: RuntimeConfig) -> Result<Self, ServerInitError> {
@@ -298,6 +358,8 @@ impl ServerState {
             admin_login_failure_limit: config.network.admin_login_failures_per_15_minutes,
             agent_auth_failure_limit: config.network.agent_auth_failures_per_minute,
             trusted_proxy_cidrs,
+            max_compat_matches: config.network.max_compat_matches,
+            max_ranked_queue: config.network.max_ranked_queue,
             ..ServerLimits::default()
         };
         let registry = Arc::new(
@@ -311,9 +373,15 @@ impl ServerState {
             RoomRegistry::new(),
             registry,
         );
+        state
+            .compat
+            .set_limits(limits.max_compat_matches, limits.max_ranked_queue);
         state.limits = limits;
         state.shutdown_seconds = config.shutdown_seconds;
         state.storage = Some(storage);
+        state
+            .compat
+            .watch_revocations(token_service.subscribe_revocations(), token_service.clone());
         state.bot_tokens = Some(token_service);
         Ok(state)
     }
@@ -328,6 +396,10 @@ impl ServerState {
     ) -> Self {
         let (public_origin, public_origin_url) = canonical_origin(&public_origin);
         let secure_cookies = public_origin_url.scheme() == "https";
+        let compat = Arc::new(CompatState::new(
+            limits.max_compat_matches,
+            limits.max_ranked_queue,
+        ));
         let guest_sessions = Arc::new(GuestSessionStore::default());
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let cleanup_sessions = guest_sessions.clone();
@@ -356,6 +428,7 @@ impl ServerState {
             started_at: Instant::now(),
             storage: None,
             bot_tokens: None,
+            compat,
         }
     }
 
@@ -369,7 +442,27 @@ impl ServerState {
         config
     }
 
-    fn connection_permit(&self) -> Option<ConnectionPermit> {
+    pub(crate) fn participant_creation_allowed(
+        &self,
+        headers: &HeaderMap,
+        direct_peer: Option<SocketAddr>,
+    ) -> bool {
+        let ip = request_ip(headers, direct_peer, &self.limits.trusted_proxy_cidrs);
+        self.rate_limiter.allowed(
+            RateKind::ParticipantCreation,
+            ip,
+            self.limits.participant_creation_limit,
+            self.limits.rate_window,
+        )
+    }
+
+    pub(crate) fn replay_root(&self) -> Option<std::path::PathBuf> {
+        self.storage
+            .as_ref()
+            .map(|storage| storage.replay_root().to_path_buf())
+    }
+
+    pub(crate) fn connection_permit(&self) -> Option<ConnectionPermit> {
         let mut current = self.connection_count.load(Ordering::Relaxed);
         loop {
             if current >= self.limits.max_connections {
@@ -403,7 +496,7 @@ fn catalog_from_registry(registry: &CharacterRegistry) -> CharacterCatalog {
 }
 
 #[derive(Clone, Debug)]
-struct RequestId(String);
+pub(crate) struct RequestId(String);
 
 #[derive(Debug, Clone)]
 struct ApiError {
@@ -462,7 +555,7 @@ fn problem_response(
     response
 }
 
-fn json_response(status: StatusCode, body: Value) -> Response {
+pub(crate) fn json_response(status: StatusCode, body: Value) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
@@ -641,19 +734,30 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
         )
         .route("/api/v1/rooms/{join_code}", get(public_room_lookup))
         .route("/api/v1/rooms/{join_code}/join", post(public_join))
+        .route(
+            "/api/v1/rooms/{join_code}/agents/join",
+            post(crate::compat::agent_join),
+        )
         .route("/ws/v1/rooms/{join_code}/human", any(human_upgrade))
+        .route(
+            "/ws/v1/rooms/{join_code}/mjai",
+            any(crate::compat::room_mjai_upgrade),
+        )
+        .route("/ws/ranked", any(crate::compat::ranked_upgrade))
+        .route("/ws/validate", any(crate::compat::validate_upgrade))
+        .route("/status", get(crate::compat::status))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(state.limits.http_json_limit))
         .layer(middleware::from_fn(request_context))
         .with_state(state)
 }
 
-fn generate_ulid() -> String {
+pub(crate) fn generate_ulid() -> String {
     const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let millis = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u128;
+        .as_millis();
     let value = ((millis & ((1u128 << 48) - 1)) << 80) | (random::<u128>() & ((1u128 << 80) - 1));
     let mut result = String::with_capacity(26);
     for shift in (0..26).rev().map(|index| index * 5) {
@@ -869,10 +973,10 @@ async fn admin_logout(
         )
         .response(&request_id);
     }
-    if let Some(value) = cookie_value(&headers, ADMIN_SESSION_COOKIE) {
-        if let Ok(credential) = URL_SAFE_NO_PAD.decode(value.as_bytes()) {
-            state.admin.sessions().revoke(credential);
-        }
+    if let Some(value) = cookie_value(&headers, ADMIN_SESSION_COOKIE)
+        && let Ok(credential) = URL_SAFE_NO_PAD.decode(value.as_bytes())
+    {
+        state.admin.sessions().revoke(credential);
     }
     let cookie = format!(
         "{ADMIN_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/api/v1/admin; Max-Age=0{}",
@@ -1683,7 +1787,7 @@ enum Control {
     Close { code: u16, reason: &'static str },
 }
 
-struct ConnectionPermit(Arc<AtomicUsize>);
+pub(crate) struct ConnectionPermit(Arc<AtomicUsize>);
 
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
@@ -1876,7 +1980,7 @@ async fn run_human(
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if text.as_bytes().len() > state.limits.human_ws_message_limit {
+                        if text.len() > state.limits.human_ws_message_limit {
                             let _ = enqueue(&outbound, close_message(1009, "message_too_large"));
                             break;
                         }
@@ -1989,10 +2093,10 @@ async fn queue_room_event(
     let Ok(snapshot) = room.snapshot().await else {
         return false;
     };
-    if let RoomEvent::ParticipantLeft(left_id) = &event {
-        if left_id == participant_id {
-            return enqueue(outbound, close_message(4006, "session_expired"));
-        }
+    if let RoomEvent::ParticipantLeft(left_id) = &event
+        && left_id == participant_id
+    {
+        return enqueue(outbound, close_message(4006, "session_expired"));
     }
     let projection = match room.projection(participant_id.clone()).await {
         Ok(projection) => projection,
@@ -2193,19 +2297,19 @@ fn visible_game_event(event: &GameEvent, viewer_seat: Option<Seat>) -> Value {
     let mut value = serde_json::to_value(event).unwrap_or(Value::Null);
     normalize_protocol_value(&mut value);
     if let Value::Object(object) = &mut value {
-        if let Some(Value::Object(start)) = object.get_mut("start_kyoku") {
-            if let Some(tehais) = start.get_mut("tehais") {
-                if let Some(seat) = viewer_seat {
-                    if let Value::Array(all) = tehais {
-                        let own = all
-                            .get(seat.index() as usize)
-                            .cloned()
-                            .unwrap_or(Value::Null);
-                        *tehais = json!([own]);
-                    }
-                } else {
-                    start.remove("tehais");
+        if let Some(Value::Object(start)) = object.get_mut("start_kyoku")
+            && let Some(tehais) = start.get_mut("tehais")
+        {
+            if let Some(seat) = viewer_seat {
+                if let Value::Array(all) = tehais {
+                    let own = all
+                        .get(seat.index() as usize)
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    *tehais = json!([own]);
                 }
+            } else {
+                start.remove("tehais");
             }
         }
         if let Some(Value::Object(tsumo)) = object.get_mut("tsumo") {
@@ -2265,10 +2369,10 @@ fn normalize_protocol_value(value: &mut Value) {
                         }
                     }
                     "controller" | "presence" | "role" | "time_control" | "permanent_auto" => {
-                        if let Value::String(name) = &value {
-                            if let Some(name) = protocol_value_name(name) {
-                                value = Value::String(name.to_owned());
-                            }
+                        if let Value::String(name) = &value
+                            && let Some(name) = protocol_value_name(name)
+                        {
+                            value = Value::String(name.to_owned());
                         }
                     }
                     _ => {}
@@ -2562,7 +2666,7 @@ fn phase_name(phase: &RoomPhase) -> &'static str {
     }
 }
 
-fn invalid_request(request_id: &RequestId) -> Response {
+pub(crate) fn invalid_request(request_id: &RequestId) -> Response {
     ApiError::new(
         StatusCode::BAD_REQUEST,
         "Invalid request",
@@ -2572,7 +2676,7 @@ fn invalid_request(request_id: &RequestId) -> Response {
     .response(request_id)
 }
 
-fn internal_error(request_id: &RequestId) -> Response {
+pub(crate) fn internal_error(request_id: &RequestId) -> Response {
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
         "Internal server error",
@@ -2582,7 +2686,7 @@ fn internal_error(request_id: &RequestId) -> Response {
     .response(request_id)
 }
 
-fn room_not_found(request_id: &RequestId) -> Response {
+pub(crate) fn room_not_found(request_id: &RequestId) -> Response {
     ApiError::new(
         StatusCode::NOT_FOUND,
         "Room not found",
@@ -2592,7 +2696,7 @@ fn room_not_found(request_id: &RequestId) -> Response {
     .response(request_id)
 }
 
-fn invalid_credentials(request_id: &RequestId) -> Response {
+pub(crate) fn invalid_credentials(request_id: &RequestId) -> Response {
     ApiError::new(
         StatusCode::UNAUTHORIZED,
         "Unauthorized",
@@ -2602,7 +2706,27 @@ fn invalid_credentials(request_id: &RequestId) -> Response {
     .response(request_id)
 }
 
-fn rate_limited(request_id: &RequestId, window: Duration) -> Response {
+pub(crate) fn origin_not_allowed(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Origin not allowed",
+        "The request origin is not allowed.",
+        "origin_not_allowed",
+    )
+    .response(request_id)
+}
+
+pub(crate) fn server_busy(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Server busy",
+        "The server cannot accept another connection.",
+        "server_busy",
+    )
+    .response(request_id)
+}
+
+pub(crate) fn rate_limited(request_id: &RequestId, window: Duration) -> Response {
     let mut response = ApiError::new(
         StatusCode::TOO_MANY_REQUESTS,
         "Too many requests",
@@ -2638,7 +2762,7 @@ fn registry_error_response(error: RoomRegistryError, request_id: &RequestId) -> 
     }
 }
 
-fn room_error_response(error: RoomError, request_id: &RequestId) -> Response {
+pub(crate) fn room_error_response(error: RoomError, request_id: &RequestId) -> Response {
     let (status, title, detail, code) = match error {
         RoomError::Busy => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2738,6 +2862,7 @@ async fn health(
         }
     }
     let uptime = state.started_at.elapsed().as_secs();
+    let active_compat_matches = state.compat.active_count().await;
     json_response(
         StatusCode::OK,
         json!({
@@ -2748,7 +2873,7 @@ async fn health(
             "replay_storage": if state.storage.is_some() { "ok" } else { "not_configured" },
             "active_rooms": rooms,
             "active_room_matches": active_matches,
-            "active_compat_matches": 0,
+            "active_compat_matches": active_compat_matches,
         }),
     )
 }

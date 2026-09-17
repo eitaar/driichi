@@ -914,7 +914,7 @@ pub enum PossibleAction {
 }
 
 impl PossibleAction {
-    fn from_game_action(action: &GameAction) -> Result<Self, ProtocolError> {
+    pub fn from_game_action(action: &GameAction) -> Result<Self, ProtocolError> {
         let action = action.clone().canonicalize_for_adapter();
         match action {
             GameAction::Discard { tile, .. } => Ok(Self::Dahai {
@@ -1551,12 +1551,26 @@ impl Default for RequestTime {
 }
 
 impl RequestTime {
+    /// Wire representation for a decision with no deadline, such as a
+    /// connected Human under the Unlimited Room time control.
+    pub const fn unlimited() -> Self {
+        Self {
+            grace_ms: 0,
+            bank_ms: 0,
+            deadline_ms: 0,
+        }
+    }
+
     pub fn validate(self) -> Result<(), ProtocolError> {
-        if self.grace_ms > MAX_TIME_MS
-            || self.bank_ms > MAX_TIME_MS
-            || self.deadline_ms > MAX_TIME_MS
-            || self.deadline_ms == 0
-        {
+        if self.grace_ms > MAX_TIME_MS || self.bank_ms > MAX_TIME_MS {
+            return Err(ProtocolError::InvalidField);
+        }
+        if self.deadline_ms == 0 {
+            return (self.grace_ms == 0 && self.bank_ms == 0)
+                .then_some(())
+                .ok_or(ProtocolError::InvalidField);
+        }
+        if self.deadline_ms > MAX_TIME_MS {
             return Err(ProtocolError::InvalidField);
         }
         Ok(())
@@ -2257,6 +2271,14 @@ impl TimingBudget {
     }
 
     pub fn preview(&self, time: RequestTime, elapsed_ms: u64) -> TimingOutcome {
+        if time.deadline_ms == 0 {
+            return TimingOutcome {
+                elapsed_ms,
+                bank_consumed_ms: 0,
+                bank_ms: 0,
+                timed_out: false,
+            };
+        }
         let available_bank = self.bank_ms.min(time.bank_ms);
         let over_grace = elapsed_ms.saturating_sub(time.grace_ms);
         let bank_consumed_ms = over_grace.min(available_bank);
@@ -2400,6 +2422,11 @@ impl ReplyTracker {
         Ok(())
     }
 
+    pub fn peek(&self, request_id: Option<u64>) -> ReplyDisposition {
+        let mut tracker = self.clone();
+        tracker.classify_at(request_id, Instant::now())
+    }
+
     pub fn classify(&mut self, request_id: Option<u64>) -> ReplyDisposition {
         self.classify_at(request_id, Instant::now())
     }
@@ -2491,6 +2518,14 @@ impl MjaiAdapter {
         &self.replies
     }
 
+    pub fn classify_reply(&mut self, request_id: Option<u64>) -> ReplyDisposition {
+        self.replies.classify(request_id)
+    }
+
+    pub fn peek_reply(&self, request_id: Option<u64>) -> ReplyDisposition {
+        self.replies.peek(request_id)
+    }
+
     pub fn timing(&self) -> TimingBudget {
         self.timing
     }
@@ -2504,11 +2539,19 @@ impl MjaiAdapter {
         projection: &PlayerProjection,
         events: &[GameEvent],
     ) -> Result<RequestAction, ProtocolError> {
+        self.open_request_with_time(projection, self.timing.request_time(), events)
+    }
+
+    pub fn open_request_with_time(
+        &mut self,
+        projection: &PlayerProjection,
+        time: RequestTime,
+        events: &[GameEvent],
+    ) -> Result<RequestAction, ProtocolError> {
         if projection.mode != self.mode {
             return Err(ProtocolError::InvalidModeValue);
         }
         let request_id = self.next_request_id;
-        let time = self.timing.request_time();
         let request = build_request_action(request_id, time, projection, events)?;
         self.replies.issue(request_id)?;
         self.next_request_id = self.next_request_id.saturating_add(1);
@@ -2607,7 +2650,7 @@ impl MjaiAdapter {
                 _ => {}
             }
         }
-        let disposition = self.replies.classify(request_id);
+        let disposition = self.replies.peek(request_id);
         match disposition {
             ReplyDisposition::Stale { request_id } => Ok(ReplyOutcome {
                 ack: ActionAck::stale(request_id, self.timing.bank_ms()),
@@ -2643,7 +2686,7 @@ impl MjaiAdapter {
                 request_id,
                 legacy: _,
             } => {
-                let timing = self.timing.account(request_time, elapsed_ms);
+                let timing = self.timing.preview(request_time, elapsed_ms);
                 let action = match parse_client_action(bytes, self.mode) {
                     Ok(action) => action,
                     Err(_) => {
@@ -2701,6 +2744,8 @@ impl MjaiAdapter {
                         });
                     }
                 };
+                let timing = self.timing.account(request_time, elapsed_ms);
+                let _ = self.replies.classify(Some(request_id));
                 let result = machine
                     .submit_action(seat, decision.id().clone(), matched.action_id)
                     .map_err(|error| ProtocolError::Core(error.to_string()))?;
@@ -2799,6 +2844,17 @@ impl CanonicalizeForAdapter for GameAction {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn peek_does_not_consume_a_current_reply() {
+        let mut tracker = ReplyTracker::new();
+        tracker.issue(42).expect("test request should issue");
+        assert!(matches!(
+            tracker.peek(Some(42)),
+            ReplyDisposition::Current { request_id: 42, .. }
+        ));
+        assert_eq!(tracker.current_request_id(), Some(42));
+    }
+
     use super::*;
     use double_riichi_core::{
         Audience, DecisionId, DecisionKind, Participant, ParticipantKind, TablePlayerState,
@@ -3145,6 +3201,59 @@ mod tests {
         assert!(timeout.timed_out);
         assert_eq!(timeout.bank_ms, 0);
         assert_eq!(budget.bank_ms(), 0);
+    }
+
+    #[test]
+    fn unlimited_time_is_valid_and_never_times_out_in_the_adapter_budget() {
+        let time = RequestTime::unlimited();
+        assert!(time.validate().is_ok());
+        let budget = TimingBudget::new();
+        assert_eq!(
+            budget.preview(time, u64::MAX),
+            TimingOutcome {
+                elapsed_ms: u64::MAX,
+                bank_consumed_ms: 0,
+                bank_ms: 0,
+                timed_out: false,
+            }
+        );
+    }
+
+    #[test]
+    fn rejected_and_unparseable_current_replies_leave_request_owed() {
+        let mode = GameMode::FourPlayerRedEast;
+        let participants = (0..mode.seat_count())
+            .map(|index| {
+                Participant::new(
+                    format!("p{index}"),
+                    format!("Player {index}"),
+                    ParticipantKind::BuiltInBot,
+                )
+            })
+            .collect();
+        let mut machine = MatchMachine::with_seed(mode, participants, 0xD0).unwrap();
+        let seat = Seat::new(0).unwrap();
+        let mut adapter = MjaiAdapter::new(mode);
+        let request = adapter
+            .open_request_for_machine(&mut machine, seat, &[])
+            .unwrap();
+        let request_id = request.request_id;
+        let before_bank = adapter.timing().bank_ms();
+        let malformed = format!(r#"{{"type":"not_an_action","request_id":{request_id}}}"#);
+        let outcome = adapter
+            .submit_reply(&mut machine, seat, malformed.as_bytes(), 4_000)
+            .unwrap();
+        assert_eq!(outcome.ack.status, AckStatus::Unparseable);
+        assert_eq!(adapter.replies().current_request_id(), Some(request_id));
+        assert_eq!(adapter.timing().bank_ms(), before_bank);
+
+        let rejected = format!(r#"{{"type":"none","request_id":{request_id}}}"#);
+        let outcome = adapter
+            .submit_reply(&mut machine, seat, rejected.as_bytes(), 4_000)
+            .unwrap();
+        assert_eq!(outcome.ack.status, AckStatus::Rejected);
+        assert_eq!(adapter.replies().current_request_id(), Some(request_id));
+        assert_eq!(adapter.timing().bank_ms(), before_bank);
     }
 
     #[test]

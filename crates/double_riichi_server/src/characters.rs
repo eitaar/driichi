@@ -332,7 +332,7 @@ impl CharacterRegistry {
             .map_err(|_| CharacterRegistryError::Io)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| CharacterRegistryError::Io)?;
-        folders.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        folders.sort_by_key(|left| left.file_name());
 
         let mut packs = BTreeMap::new();
         let mut ids = HashSet::new();

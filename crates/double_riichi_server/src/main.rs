@@ -80,10 +80,9 @@ async fn run_server(path: PathBuf) -> Result<(), String> {
         _ = shutdown_signal() => {}
     }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(shutdown_seconds);
-    let rooms = state.rooms().clone();
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(shutdown_seconds),
-        rooms.shutdown(double_riichi_core::ShutdownMode::Graceful),
+        state.shutdown(),
     )
     .await;
     let _ = stop_tx.send(());

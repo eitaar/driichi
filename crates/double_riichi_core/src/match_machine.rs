@@ -892,6 +892,54 @@ mod tests {
     }
 
     #[test]
+    fn player_projection_suppresses_a_submitted_response_until_resolution() {
+        let mode = GameMode::FourPlayerRedEast;
+        let participants = (0..mode.seat_count())
+            .map(|index| {
+                Participant::new(
+                    format!("p{index}"),
+                    format!("Player {index}"),
+                    ParticipantKind::Human,
+                )
+            })
+            .collect();
+        let mut machine = MatchMachine::new_with_seed(mode, participants, 0xD0_u64).unwrap();
+        for _ in 0..2_000 {
+            let decision = machine.current_decision().unwrap().expect("decision");
+            let seats: Vec<_> = decision.eligible().collect();
+            if decision.kind() == DecisionKind::Response && seats.len() > 1 {
+                let submitted = seats[0];
+                let decision_id = decision.id().clone();
+                let action_id = decision.default_action_id(submitted).clone();
+                assert!(
+                    !machine
+                        .submit_action(submitted, decision_id, action_id)
+                        .unwrap()
+                        .is_resolved()
+                );
+                let projection = machine.project(Audience::Player(submitted)).unwrap();
+                let AudienceProjection::Player(projection) = projection else {
+                    panic!("expected player projection");
+                };
+                assert!(
+                    projection
+                        .decision
+                        .expect("submitted response remains open")
+                        .actions
+                        .is_empty()
+                );
+                return;
+            }
+            let seat = seats[0];
+            let action = decision.default_action_id(seat).clone();
+            machine
+                .submit_action(seat, decision.id().clone(), action)
+                .unwrap();
+        }
+        panic!("seed did not expose a simultaneous response window")
+    }
+
+    #[test]
     fn illegal_compatibility_action_preserves_open_decision() {
         let mode = GameMode::FourPlayerRedEast;
         let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0_u64).unwrap();
