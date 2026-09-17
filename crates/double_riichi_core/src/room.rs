@@ -167,7 +167,7 @@ impl CharacterCatalog {
         self.entries.contains_key(id)
     }
 
-    fn default_for(&self, kind: ParticipantKind) -> Option<String> {
+    pub fn default_for(&self, kind: ParticipantKind) -> Option<String> {
         let usage = match kind {
             ParticipantKind::Human => CharacterUsage::Human,
             ParticipantKind::MJAI => CharacterUsage::Mjai,
@@ -461,6 +461,7 @@ pub enum RoomCommand {
     GetProjection {
         participant_id: ParticipantId,
     },
+    GetPublicProjection,
 }
 
 impl RoomCommand {
@@ -790,6 +791,13 @@ impl RoomHandle {
         }
     }
 
+    pub async fn public_projection(&self) -> Result<Option<AudienceProjection>, RoomError> {
+        match self.send(RoomCommand::GetPublicProjection).await? {
+            RoomResponse::Projection(projection) => Ok(projection),
+            _ => Err(RoomError::Closed),
+        }
+    }
+
     pub async fn match_events(&self) -> Result<Vec<GameEvent>, RoomError> {
         match self.send(RoomCommand::GetMatchEvents).await? {
             RoomResponse::MatchEvents(events) => Ok(events),
@@ -968,6 +976,16 @@ impl RoomState {
         };
         machine
             .project(audience)
+            .map(Some)
+            .map_err(|error| RoomError::Match(error.to_string()))
+    }
+
+    fn public_projection(&mut self) -> Result<Option<AudienceProjection>, RoomError> {
+        let Some(machine) = self.match_machine.as_mut() else {
+            return Ok(None);
+        };
+        machine
+            .project(Audience::Public)
             .map(Some)
             .map_err(|error| RoomError::Match(error.to_string()))
     }
@@ -1689,6 +1707,7 @@ impl RoomState {
             | RoomCommand::SubmitAction { .. }
             | RoomCommand::Rematch
             | RoomCommand::GetProjection { .. }
+            | RoomCommand::GetPublicProjection
             | RoomCommand::GetMatchEvents => {
                 return Err(RoomError::Match("actor-only command".into()));
             }
@@ -1978,6 +1997,9 @@ impl Actor {
                 .state
                 .projection_for(&participant_id)
                 .map(RoomResponse::Projection),
+            RoomCommand::GetPublicProjection => {
+                self.state.public_projection().map(RoomResponse::Projection)
+            }
             RoomCommand::Start => self.start_match().await,
             RoomCommand::SubmitAction {
                 participant_id,

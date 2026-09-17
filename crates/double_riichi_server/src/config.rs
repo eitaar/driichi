@@ -13,6 +13,7 @@ const DEFAULT_BIND: &str = "127.0.0.1:3000";
 const DEFAULT_TURN_SECONDS: u64 = 30;
 const DEFAULT_RESPONSE_SECONDS: u64 = 10;
 const DEFAULT_UNLIMITED_WATCHDOG_SECONDS: u64 = 300;
+const DEFAULT_MCP_SESSION_IDLE_SECONDS: u64 = 30 * 60;
 const DEFAULT_EMPTY_ROOM_CLEANUP_SECONDS: u64 = 3_600;
 const DEFAULT_SHUTDOWN_SECONDS: u64 = 10;
 const DEFAULT_MJAI_CHARACTER: &str = "mjai-bot";
@@ -49,6 +50,8 @@ struct RawRuntimeConfig {
     time_controls: RawTimeControls,
     #[serde(default = "default_unlimited_watchdog_seconds")]
     unlimited_watchdog_seconds: u64,
+    #[serde(default = "default_mcp_session_idle_seconds")]
+    mcp_session_idle_seconds: u64,
     #[serde(default = "default_empty_room_cleanup_seconds")]
     empty_room_cleanup_seconds: u64,
     #[serde(default = "default_shutdown_seconds")]
@@ -162,6 +165,10 @@ fn default_unlimited_watchdog_seconds() -> u64 {
     DEFAULT_UNLIMITED_WATCHDOG_SECONDS
 }
 
+fn default_mcp_session_idle_seconds() -> u64 {
+    DEFAULT_MCP_SESSION_IDLE_SECONDS
+}
+
 fn default_empty_room_cleanup_seconds() -> u64 {
     DEFAULT_EMPTY_ROOM_CLEANUP_SECONDS
 }
@@ -253,6 +260,7 @@ pub struct RuntimeConfig {
     pub characters: CharacterConfig,
     pub time_controls: TimeControls,
     pub unlimited_watchdog_seconds: u64,
+    pub mcp_session_idle_seconds: u64,
     pub empty_room_cleanup_seconds: u64,
     pub shutdown_seconds: u64,
     pub network: NetworkConfig,
@@ -269,6 +277,7 @@ impl RuntimeConfig {
         validate_duration(raw.time_controls.casual.turn_seconds, 1, 3_600)?;
         validate_duration(raw.time_controls.casual.response_seconds, 1, 3_600)?;
         validate_duration(raw.unlimited_watchdog_seconds, 10, 3_600)?;
+        validate_duration(raw.mcp_session_idle_seconds, 1, 86_400)?;
         validate_duration(raw.empty_room_cleanup_seconds, 1, 86_400)?;
         validate_duration(raw.shutdown_seconds, 1, 86_400)?;
         validate_network(&raw.network)?;
@@ -295,6 +304,7 @@ impl RuntimeConfig {
                 },
             },
             unlimited_watchdog_seconds: raw.unlimited_watchdog_seconds,
+            mcp_session_idle_seconds: raw.mcp_session_idle_seconds,
             empty_room_cleanup_seconds: raw.empty_room_cleanup_seconds,
             shutdown_seconds: raw.shutdown_seconds,
             network: NetworkConfig {
