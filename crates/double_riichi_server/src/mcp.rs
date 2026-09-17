@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -75,6 +78,7 @@ struct SessionEntry {
     character_id: String,
     last_seen: Instant,
     wake: Arc<RevisionWake>,
+    active_waits: Arc<AtomicUsize>,
     cancel: CancellationToken,
 }
 
@@ -106,10 +110,21 @@ struct RegistryState {
     transport_sessions: HashMap<String, TransportSession>,
     participants: HashMap<(String, String), ParticipantId>,
     retired_participants: HashSet<(String, String)>,
+    revoked_tokens: HashSet<String>,
     bound_rooms: HashMap<String, (String, String)>,
     legacy_subscriptions: HashMap<(String, String), LegacySubscription>,
     live_subscriptions: HashMap<(String, u64), LiveSubscription>,
     next_subscription_id: u64,
+}
+
+struct WaitLease {
+    active_waits: Arc<AtomicUsize>,
+}
+
+impl Drop for WaitLease {
+    fn drop(&mut self) {
+        self.active_waits.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Clone)]
@@ -188,6 +203,8 @@ impl RevisionWake {
                 return Some(current);
             }
             let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             let current = self.current();
             if current.revision > after_revision || current.terminal {
                 return Some(current);
@@ -196,7 +213,6 @@ impl RevisionWake {
             if remaining.is_zero() {
                 return Some(self.current());
             }
-            tokio::pin!(notified);
             tokio::select! {
                 _ = cancel.cancelled() => {
                     let current = self.current();
@@ -639,6 +655,9 @@ impl McpSessionRegistry {
         token_id: String,
     ) -> Result<(), McpFailure> {
         let mut state = self.state.lock().await;
+        if state.revoked_tokens.contains(&token_id) {
+            return Err(McpFailure::InvalidCredentials);
+        }
         if let Some(session) = state.transport_sessions.get(&session_id)
             && session.token_id != token_id
         {
@@ -683,7 +702,12 @@ impl McpSessionRegistry {
             .transport_sessions
             .iter()
             .filter_map(|(id, session)| {
-                (now.duration_since(session.last_seen) >= self.idle).then_some(id.clone())
+                let active_wait = state
+                    .sessions
+                    .get(id)
+                    .is_some_and(|entry| entry.active_waits.load(Ordering::Acquire) > 0);
+                (!active_wait && now.duration_since(session.last_seen) >= self.idle)
+                    .then_some(id.clone())
             })
             .collect();
         let mut entries = Vec::new();
@@ -723,6 +747,7 @@ impl McpSessionRegistry {
         state.bound_rooms.clear();
         state.participants.clear();
         state.retired_participants.clear();
+        state.revoked_tokens.clear();
         let entries = state.sessions.drain().map(|(_, entry)| entry).collect();
         ShutdownCleanup {
             cleanup: SessionCleanup {
@@ -742,7 +767,9 @@ impl McpSessionRegistry {
     }
 
     async fn revoke_token(&self, token_id: &str) -> SessionCleanup {
+        let _join_guard = self.join_lock.lock().await;
         let mut state = self.state.lock().await;
+        state.revoked_tokens.insert(token_id.to_owned());
         let session_ids: Vec<_> = state
             .transport_sessions
             .iter()
@@ -782,6 +809,37 @@ impl McpSessionRegistry {
         Ok(entry.clone())
     }
 
+    async fn begin_wait(
+        &self,
+        session_id: &str,
+        token_id: &str,
+    ) -> Result<(SessionEntry, WaitLease), McpFailure> {
+        let mut state = self.state.lock().await;
+        let (entry, active_waits) = {
+            let entry = state
+                .sessions
+                .get_mut(session_id)
+                .ok_or(McpFailure::SessionExpired)?;
+            if entry.token_id != token_id {
+                return Err(McpFailure::InvalidCredentials);
+            }
+            entry.last_seen = Instant::now();
+            entry.active_waits.fetch_add(1, Ordering::AcqRel);
+            (entry.clone(), Arc::clone(&entry.active_waits))
+        };
+        if let Some(session) = state.transport_sessions.get_mut(session_id)
+            && session.token_id == token_id
+        {
+            session.last_seen = Instant::now();
+        }
+        let lease = WaitLease { active_waits };
+        Ok((entry, lease))
+    }
+
+    async fn token_revoked(&self, token_id: &str) -> bool {
+        self.state.lock().await.revoked_tokens.contains(token_id)
+    }
+
     async fn was_bound(&self, session_id: &str, token_id: &str) -> Result<bool, McpFailure> {
         let state = self.state.lock().await;
         let Some((bound_token, _)) = state.bound_rooms.get(session_id) else {
@@ -804,6 +862,9 @@ impl McpSessionRegistry {
         character_id: String,
     ) -> Result<(SessionEntry, Option<SessionEntry>), McpFailure> {
         let mut state = self.state.lock().await;
+        if state.revoked_tokens.contains(&token_id) {
+            return Err(McpFailure::InvalidCredentials);
+        }
         if let Some(current) = state.transport_sessions.get(&session_id)
             && current.token_id != token_id
         {
@@ -850,6 +911,7 @@ impl McpSessionRegistry {
             character_id,
             last_seen: Instant::now(),
             wake: Arc::new(RevisionWake::default()),
+            active_waits: Arc::new(AtomicUsize::new(0)),
             cancel: CancellationToken::new(),
         };
         state
@@ -1250,7 +1312,11 @@ impl McpHandler {
             _ = entry.cancel.cancelled() => return Err(McpFailure::SessionExpired),
             event = connection.recv() => event.ok_or(McpFailure::Internal)?,
         };
-        if let Some((revision, reason)) = watcher_reason(&entry, initial).await {
+        let initial_reason = match initial {
+            RoomEvent::Snapshot(snapshot) => snapshot_reason(&entry, snapshot).await,
+            event => watcher_reason(&entry, event).await,
+        };
+        if let Some((revision, reason)) = initial_reason {
             if is_terminal_reason(reason) {
                 entry.wake.record_terminal(revision, reason);
             } else {
@@ -1411,6 +1477,9 @@ impl McpHandler {
             return Err(McpFailure::InvalidInput.result());
         };
         let _join_guard = self.registry.join_lock.lock().await;
+        if self.registry.token_revoked(&token_id).await {
+            return Err(McpFailure::InvalidCredentials.result());
+        }
         let existing = self.registry.binding(&session_id, &token_id).await;
         if let Ok(entry) = &existing {
             if entry.room_code != room_code {
@@ -1628,20 +1697,27 @@ impl McpHandler {
         if input.timeout_seconds > MCP_MAX_WAIT_SECONDS {
             return Err(McpFailure::InvalidInput.result());
         }
-        let (_session_id, entry) = self.binding(&parts).await.map_err(|e| e.result())?;
+        let session_id = Self::session_id(&parts).map_err(|e| e.result())?;
+        let token_id = Self::auth(&parts).map_err(|e| e.result())?;
         let Some(_waiter) = self.registry.acquire_waiter().await else {
             return Err(McpFailure::Busy.result());
         };
+        let (entry, _wait_lease) = self
+            .registry
+            .begin_wait(&session_id, &token_id)
+            .await
+            .map_err(|e| e.result())?;
         let timeout = Duration::from_secs(if input.timeout_seconds == 0 {
             MCP_MAX_WAIT_SECONDS
         } else {
             input.timeout_seconds
         });
-        let Some(wake) = entry
+        let wake = entry
             .wake
             .wait_until(input.after_revision, timeout, &entry.cancel)
-            .await
-        else {
+            .await;
+        self.registry.touch(&session_id, &entry.token_id).await;
+        let Some(wake) = wake else {
             return Err(McpFailure::SessionExpired.result());
         };
         let reason = if wake.terminal || wake.revision > input.after_revision {
@@ -1929,8 +2005,8 @@ fn is_terminal_reason(reason: &str) -> bool {
 }
 
 async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, &'static str)> {
-    if let RoomEvent::Snapshot(snapshot) = event {
-        return snapshot_reason(entry, snapshot).await;
+    if matches!(event, RoomEvent::Snapshot(_)) {
+        return None;
     }
     if let RoomEvent::RoomDeleted | RoomEvent::ServerShutdown = event {
         return Some((
@@ -2013,7 +2089,7 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
                     .then_some((revision, "permanent_auto"))
                 })
         }
-        RoomEvent::Snapshot(_) => unreachable!("snapshots are handled before the event match"),
+        RoomEvent::Snapshot(_) => None,
         RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
         RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
         RoomEvent::StorageDegraded
@@ -2180,6 +2256,7 @@ mod tests {
             character_id: "mcp-bot".to_owned(),
             last_seen: Instant::now(),
             wake: Arc::new(RevisionWake::default()),
+            active_waits: Arc::new(AtomicUsize::new(0)),
             cancel: CancellationToken::new(),
         }
     }
@@ -2416,6 +2493,100 @@ mod tests {
         assert!(!old.record(0, "old"));
         let result = old.wait(0, Duration::from_millis(1)).await;
         assert_eq!(result.reason, "timeout");
+    }
+
+    #[tokio::test]
+    async fn generic_snapshots_do_not_wake_after_initial_snapshot() {
+        let room = room(GameMode::FourPlayerRedEast);
+        room.send(RoomCommand::join(Participant::new(
+            "agent",
+            "Agent",
+            ParticipantKind::MCP,
+        )))
+        .await
+        .unwrap();
+        let watcher = entry(room.clone(), "session", "token", "123456", "agent");
+        let snapshot = room.snapshot().await.unwrap();
+        assert!(snapshot_reason(&watcher, snapshot.clone()).await.is_some());
+        assert_eq!(
+            watcher_reason(&watcher, RoomEvent::Snapshot(snapshot)).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn revocation_tombstone_rejects_stale_transport_and_bind() {
+        let registry = McpSessionRegistry::new(Duration::from_secs(60));
+        let room = room(GameMode::FourPlayerRedEast);
+        registry
+            .bind(
+                "session".to_owned(),
+                "token".to_owned(),
+                "123456".to_owned(),
+                room.clone(),
+                ParticipantId::new("agent"),
+                "Agent".to_owned(),
+                "mcp-bot".to_owned(),
+            )
+            .await
+            .unwrap();
+        let cleanup = registry.revoke_token("token").await;
+        assert_eq!(cleanup.entries.len(), 1);
+        assert!(matches!(
+            registry
+                .register_transport("new-session".to_owned(), "token".to_owned())
+                .await,
+            Err(McpFailure::InvalidCredentials)
+        ));
+        assert!(matches!(
+            registry
+                .bind(
+                    "new-session".to_owned(),
+                    "token".to_owned(),
+                    "123456".to_owned(),
+                    room,
+                    ParticipantId::new("other"),
+                    "Other".to_owned(),
+                    "mcp-bot".to_owned(),
+                )
+                .await,
+            Err(McpFailure::InvalidCredentials)
+        ));
+    }
+
+    #[tokio::test]
+    async fn active_wait_lease_prevents_idle_expiry_until_released() {
+        let registry = McpSessionRegistry::new(Duration::from_secs(1));
+        let room = room(GameMode::FourPlayerRedEast);
+        registry
+            .bind(
+                "session".to_owned(),
+                "token".to_owned(),
+                "123456".to_owned(),
+                room,
+                ParticipantId::new("agent"),
+                "Agent".to_owned(),
+                "mcp-bot".to_owned(),
+            )
+            .await
+            .unwrap();
+        let (_entry, lease) = registry.begin_wait("session", "token").await.unwrap();
+        assert!(
+            registry
+                .expire_idle(Instant::now() + Duration::from_secs(2))
+                .await
+                .entries
+                .is_empty()
+        );
+        drop(lease);
+        assert_eq!(
+            registry
+                .expire_idle(Instant::now() + Duration::from_secs(2))
+                .await
+                .entries
+                .len(),
+            1
+        );
     }
 
     #[test]
