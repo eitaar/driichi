@@ -1,0 +1,4862 @@
+diff --git a/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-brief.md b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-brief.md
+new file mode 100644
+index 0000000..452b91b
+--- /dev/null
++++ b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-brief.md
+@@ -0,0 +1,7 @@
++# Task 14 foundation brief
++
++Base: `e2b1b79` (`docs: record Task 13 provisional acceptance`).
++
++Added compact unit coverage for the authenticated MCP foundation: exact four-tool/three-template surface, permanent first-room binding, token-room resume and replacement generations, idle TTL disconnect, revision wake filtering and lost-wakeup ordering, stable action error codes, private/public/history redaction, and exposed Room leave/disconnect, revocation, deletion, and shutdown transitions. Projection assertions use the touched `RoomHandle::public_projection` seam.
++
++Live HTTP/bridge coverage is intentionally deferred to the next phase. The existing foundation changes and this artifact are committed together as `feat(mcp): add authenticated session resources`.
+diff --git a/Cargo.lock b/Cargo.lock
+index f749a62..9464109 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -14,6 +14,15 @@ version = "0.2.21"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+ 
++[[package]]
++name = "android_system_properties"
++version = "0.1.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
++dependencies = [
++ "libc",
++]
++
+ [[package]]
+ name = "argon2"
+ version = "0.5.3"
+@@ -26,6 +35,17 @@ dependencies = [
+  "password-hash",
+ ]
+ 
++[[package]]
++name = "async-trait"
++version = "0.1.92"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.5",
++]
++
+ [[package]]
+ name = "atoi"
+ version = "2.0.0"
+@@ -54,7 +74,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
+ dependencies = [
+  "axum-core",
+- "base64",
++ "base64 0.22.1",
+  "bytes",
+  "futures-util",
+  "http",
+@@ -104,6 +124,12 @@ version = "0.22.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+ 
++[[package]]
++name = "base64"
++version = "0.23.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
++
+ [[package]]
+ name = "base64ct"
+ version = "1.8.3"
+@@ -146,6 +172,12 @@ dependencies = [
+  "hybrid-array",
+ ]
+ 
++[[package]]
++name = "bumpalo"
++version = "3.20.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
++
+ [[package]]
+ name = "byteorder"
+ version = "1.5.0"
+@@ -185,6 +217,18 @@ dependencies = [
+  "rand_core 0.10.1",
+ ]
+ 
++[[package]]
++name = "chrono"
++version = "0.4.45"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
++dependencies = [
++ "iana-time-zone",
++ "num-traits",
++ "serde",
++ "windows-link",
++]
++
+ [[package]]
+ name = "const-oid"
+ version = "0.9.6"
+@@ -197,6 +241,12 @@ version = "0.10.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+ 
++[[package]]
++name = "core-foundation-sys"
++version = "0.8.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
++
+ [[package]]
+ name = "cpufeatures"
+ version = "0.2.17"
+@@ -273,6 +323,40 @@ dependencies = [
+  "hybrid-array",
+ ]
+ 
++[[package]]
++name = "darling"
++version = "0.24.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
++dependencies = [
++ "darling_core",
++ "darling_macro",
++]
++
++[[package]]
++name = "darling_core"
++version = "0.24.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
++dependencies = [
++ "ident_case",
++ "proc-macro2",
++ "quote",
++ "strsim",
++ "syn 3.0.5",
++]
++
++[[package]]
++name = "darling_macro"
++version = "0.24.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
++dependencies = [
++ "darling_core",
++ "quote",
++ "syn 3.0.5",
++]
++
+ [[package]]
+ name = "data-encoding"
+ version = "2.11.1"
+@@ -367,14 +451,16 @@ dependencies = [
+ name = "double_riichi_mcp"
+ version = "0.1.0"
+ dependencies = [
+- "double_riichi_core",
++ "rmcp",
++ "tokio",
++ "url",
+ ]
+ 
+ [[package]]
+ name = "double_riichi_mjai"
+ version = "0.1.0"
+ dependencies = [
+- "base64",
++ "base64 0.22.1",
+  "double_riichi_core",
+  "riichienv-core",
+  "serde",
+@@ -398,16 +484,18 @@ version = "0.1.0"
+ dependencies = [
+  "argon2",
+  "axum",
+- "base64",
++ "base64 0.22.1",
+  "double_riichi_core",
+  "double_riichi_mcp",
+  "double_riichi_mjai",
+  "double_riichi_replay",
+  "futures-util",
+  "rand 0.10.2",
++ "rmcp",
+  "rpassword",
+  "rust-embed",
+  "same-file",
++ "schemars",
+  "serde",
+  "serde_json",
+  "sha2 0.10.9",
+@@ -415,6 +503,7 @@ dependencies = [
+  "thiserror",
+  "tokio",
+  "tokio-tungstenite",
++ "tokio-util",
+  "toml",
+  "tower",
+  "tracing",
+@@ -422,6 +511,12 @@ dependencies = [
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "dyn-clone"
++version = "1.0.20"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
++
+ [[package]]
+ name = "either"
+ version = "1.18.0"
+@@ -511,6 +606,21 @@ dependencies = [
+  "percent-encoding",
+ ]
+ 
++[[package]]
++name = "futures"
++version = "0.3.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
++dependencies = [
++ "futures-channel",
++ "futures-core",
++ "futures-executor",
++ "futures-io",
++ "futures-sink",
++ "futures-task",
++ "futures-util",
++]
++
+ [[package]]
+ name = "futures-channel"
+ version = "0.3.34"
+@@ -584,6 +694,7 @@ version = "0.3.34"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
+ dependencies = [
++ "futures-channel",
+  "futures-core",
+  "futures-io",
+  "futures-macro",
+@@ -776,6 +887,7 @@ dependencies = [
+  "pin-project-lite",
+  "smallvec",
+  "tokio",
++ "want",
+ ]
+ 
+ [[package]]
+@@ -784,13 +896,45 @@ version = "0.1.20"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+ dependencies = [
++ "base64 0.22.1",
+  "bytes",
++ "futures-channel",
++ "futures-util",
+  "http",
+  "http-body",
+  "hyper",
++ "ipnet",
++ "libc",
++ "percent-encoding",
+  "pin-project-lite",
++ "socket2",
+  "tokio",
+  "tower-service",
++ "tracing",
++]
++
++[[package]]
++name = "iana-time-zone"
++version = "0.1.65"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
++dependencies = [
++ "android_system_properties",
++ "core-foundation-sys",
++ "iana-time-zone-haiku",
++ "js-sys",
++ "log",
++ "wasm-bindgen",
++ "windows-core",
++]
++
++[[package]]
++name = "iana-time-zone-haiku"
++version = "0.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
++dependencies = [
++ "cc",
+ ]
+ 
+ [[package]]
+@@ -876,6 +1020,12 @@ dependencies = [
+  "zerovec",
+ ]
+ 
++[[package]]
++name = "ident_case"
++version = "1.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
++
+ [[package]]
+ name = "idna"
+ version = "1.1.0"
+@@ -905,14 +1055,33 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
+ dependencies = [
+  "equivalent",
+  "hashbrown 0.17.1",
++ "serde",
++ "serde_core",
+ ]
+ 
++[[package]]
++name = "ipnet"
++version = "2.12.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
++
+ [[package]]
+ name = "itoa"
+ version = "1.0.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ 
++[[package]]
++name = "js-sys"
++version = "0.3.105"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e"
++dependencies = [
++ "cfg-if",
++ "futures-util",
++ "wasm-bindgen",
++]
++
+ [[package]]
+ name = "lazy_static"
+ version = "1.5.0"
+@@ -1162,6 +1331,12 @@ dependencies = [
+  "subtle",
+ ]
+ 
++[[package]]
++name = "pastey"
++version = "0.2.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
++
+ [[package]]
+ name = "pem-rfc7468"
+ version = "0.7.0"
+@@ -1379,13 +1554,67 @@ dependencies = [
+  "bitflags",
+ ]
+ 
++[[package]]
++name = "ref-cast"
++version = "1.0.27"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
++dependencies = [
++ "ref-cast-impl",
++]
++
++[[package]]
++name = "ref-cast-impl"
++version = "1.0.27"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.5",
++]
++
++[[package]]
++name = "reqwest"
++version = "0.13.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
++dependencies = [
++ "base64 0.23.1",
++ "bytes",
++ "futures-core",
++ "futures-util",
++ "http",
++ "http-body",
++ "http-body-util",
++ "hyper",
++ "hyper-util",
++ "js-sys",
++ "log",
++ "percent-encoding",
++ "pin-project-lite",
++ "serde",
++ "serde_json",
++ "sync_wrapper",
++ "tokio",
++ "tokio-util",
++ "tower",
++ "tower-http",
++ "tower-service",
++ "url",
++ "wasm-bindgen",
++ "wasm-bindgen-futures",
++ "wasm-streams",
++ "web-sys",
++]
++
+ [[package]]
+ name = "riichienv-core"
+ version = "0.4.10"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "02e75331a82f9ee0a3c1401f5fe75f210e905063b095d0748fd13e41ce3cd56d"
+ dependencies = [
+- "base64",
++ "base64 0.22.1",
+  "derive_more",
+  "flate2",
+  "hex",
+@@ -1397,6 +1626,52 @@ dependencies = [
+  "thiserror",
+ ]
+ 
++[[package]]
++name = "rmcp"
++version = "3.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b23c62fe489ac1d401ab32688cfacac3737a8978dc3343e5361464c7724fd3cb"
++dependencies = [
++ "async-trait",
++ "base64 0.23.1",
++ "bytes",
++ "chrono",
++ "futures",
++ "http",
++ "http-body",
++ "http-body-util",
++ "indexmap",
++ "pastey",
++ "pin-project-lite",
++ "rand 0.10.2",
++ "reqwest",
++ "rmcp-macros",
++ "schemars",
++ "serde",
++ "serde_json",
++ "sse-stream",
++ "thiserror",
++ "tokio",
++ "tokio-stream",
++ "tokio-util",
++ "tower-service",
++ "tracing",
++ "uuid",
++]
++
++[[package]]
++name = "rmcp-macros"
++version = "3.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cd740c45d66ceb87e5579082abc27bd771665e464e9660a17a048c721b2a6025"
++dependencies = [
++ "darling",
++ "proc-macro2",
++ "quote",
++ "serde_json",
++ "syn 3.0.5",
++]
++
+ [[package]]
+ name = "rpassword"
+ version = "7.3.1"
+@@ -1482,6 +1757,12 @@ dependencies = [
+  "semver",
+ ]
+ 
++[[package]]
++name = "rustversion"
++version = "1.0.23"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
++
+ [[package]]
+ name = "ryu"
+ version = "1.0.23"
+@@ -1497,6 +1778,32 @@ dependencies = [
+  "winapi-util",
+ ]
+ 
++[[package]]
++name = "schemars"
++version = "1.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
++dependencies = [
++ "chrono",
++ "dyn-clone",
++ "ref-cast",
++ "schemars_derive",
++ "serde",
++ "serde_json",
++]
++
++[[package]]
++name = "schemars_derive"
++version = "1.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "serde_derive_internals",
++ "syn 3.0.5",
++]
++
+ [[package]]
+ name = "scopeguard"
+ version = "1.2.0"
+@@ -1539,6 +1846,17 @@ dependencies = [
+  "syn 3.0.5",
+ ]
+ 
++[[package]]
++name = "serde_derive_internals"
++version = "0.30.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.5",
++]
++
+ [[package]]
+ name = "serde_json"
+ version = "1.0.151"
+@@ -1713,7 +2031,7 @@ version = "0.8.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ee6798b1838b6a0f69c007c133b8df5866302197e404e8b6ee8ed3e3a5e68dc6"
+ dependencies = [
+- "base64",
++ "base64 0.22.1",
+  "bytes",
+  "crc",
+  "crossbeam-queue",
+@@ -1784,7 +2102,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "aa003f0038df784eb8fecbbac13affe3da23b45194bd57dba231c8f48199c526"
+ dependencies = [
+  "atoi",
+- "base64",
++ "base64 0.22.1",
+  "bitflags",
+  "byteorder",
+  "bytes",
+@@ -1825,7 +2143,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "db58fcd5a53cf07c184b154801ff91347e4c30d17a3562a635ff028ad5deda46"
+ dependencies = [
+  "atoi",
+- "base64",
++ "base64 0.22.1",
+  "bitflags",
+  "byteorder",
+  "crc",
+@@ -1879,6 +2197,19 @@ dependencies = [
+  "url",
+ ]
+ 
++[[package]]
++name = "sse-stream"
++version = "0.2.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c25ac7aff0abd1dbc474536e40416e1102c7dd9bfba0b9861c6d357f835dcfb4"
++dependencies = [
++ "bytes",
++ "futures-util",
++ "http-body",
++ "http-body-util",
++ "pin-project-lite",
++]
++
+ [[package]]
+ name = "stable_deref_trait"
+ version = "1.2.1"
+@@ -1896,6 +2227,12 @@ dependencies = [
+  "unicode-properties",
+ ]
+ 
++[[package]]
++name = "strsim"
++version = "0.11.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
++
+ [[package]]
+ name = "subtle"
+ version = "2.6.1"
+@@ -1929,6 +2266,9 @@ name = "sync_wrapper"
+ version = "1.0.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
++dependencies = [
++ "futures-core",
++]
+ 
+ [[package]]
+ name = "synstructure"
+@@ -2027,6 +2367,20 @@ dependencies = [
+  "tungstenite",
+ ]
+ 
++[[package]]
++name = "tokio-util"
++version = "0.7.19"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "494815d09bf52b5548659851081238f0ca39ff638363907596da739561c62c52"
++dependencies = [
++ "bytes",
++ "futures-core",
++ "futures-sink",
++ "libc",
++ "pin-project-lite",
++ "tokio",
++]
++
+ [[package]]
+ name = "toml"
+ version = "0.8.23"
+@@ -2083,6 +2437,24 @@ dependencies = [
+  "tower-service",
+ ]
+ 
++[[package]]
++name = "tower-http"
++version = "0.6.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
++dependencies = [
++ "bitflags",
++ "bytes",
++ "futures-util",
++ "http",
++ "http-body",
++ "pin-project-lite",
++ "tower",
++ "tower-layer",
++ "tower-service",
++ "url",
++]
++
+ [[package]]
+ name = "tower-layer"
+ version = "0.3.3"
+@@ -2127,6 +2499,12 @@ dependencies = [
+  "once_cell",
+ ]
+ 
++[[package]]
++name = "try-lock"
++version = "0.2.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
++
+ [[package]]
+ name = "tungstenite"
+ version = "0.29.0"
+@@ -2200,6 +2578,17 @@ version = "1.0.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+ 
++[[package]]
++name = "uuid"
++version = "1.26.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
++dependencies = [
++ "getrandom 0.4.3",
++ "js-sys",
++ "wasm-bindgen",
++]
++
+ [[package]]
+ name = "vcpkg"
+ version = "0.2.15"
+@@ -2222,6 +2611,15 @@ dependencies = [
+  "winapi-util",
+ ]
+ 
++[[package]]
++name = "want"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
++dependencies = [
++ "try-lock",
++]
++
+ [[package]]
+ name = "wasi"
+ version = "0.11.1+wasi-snapshot-preview1"
+@@ -2243,6 +2641,84 @@ version = "0.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
+ 
++[[package]]
++name = "wasm-bindgen"
++version = "0.2.128"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf"
++dependencies = [
++ "cfg-if",
++ "once_cell",
++ "rustversion",
++ "wasm-bindgen-macro",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-futures"
++version = "0.4.78"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6ef4c5d3d2cdf5c54f4231181768f5510842e350db025faf1f7163b1030ed928"
++dependencies = [
++ "js-sys",
++ "wasm-bindgen",
++]
++
++[[package]]
++name = "wasm-bindgen-macro"
++version = "0.2.128"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a690d511e3c1a8b3a55e33511e3c2c00c78415cd23650f32b808627f5696b9ed"
++dependencies = [
++ "quote",
++ "wasm-bindgen-macro-support",
++]
++
++[[package]]
++name = "wasm-bindgen-macro-support"
++version = "0.2.128"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "411e4887f0071ef2d2164a9d5fdf2d20efbef78fccd3a78b0c10a1dc5295e48a"
++dependencies = [
++ "bumpalo",
++ "proc-macro2",
++ "quote",
++ "syn 3.0.5",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-shared"
++version = "0.2.128"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
++dependencies = [
++ "unicode-ident",
++]
++
++[[package]]
++name = "wasm-streams"
++version = "0.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
++dependencies = [
++ "futures-util",
++ "js-sys",
++ "wasm-bindgen",
++ "wasm-bindgen-futures",
++ "web-sys",
++]
++
++[[package]]
++name = "web-sys"
++version = "0.3.105"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9fbddc4a036f00ec4f18c83445bd3115cb306a91da554919a099d9222fe4a7f8"
++dependencies = [
++ "js-sys",
++ "wasm-bindgen",
++]
++
+ [[package]]
+ name = "whoami"
+ version = "1.6.1"
+@@ -2262,12 +2738,65 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "windows-core"
++version = "0.62.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
++dependencies = [
++ "windows-implement",
++ "windows-interface",
++ "windows-link",
++ "windows-result",
++ "windows-strings",
++]
++
++[[package]]
++name = "windows-implement"
++version = "0.60.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
++[[package]]
++name = "windows-interface"
++version = "0.59.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
+ [[package]]
+ name = "windows-link"
+ version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+ 
++[[package]]
++name = "windows-result"
++version = "0.4.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
++dependencies = [
++ "windows-link",
++]
++
++[[package]]
++name = "windows-strings"
++version = "0.5.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
++dependencies = [
++ "windows-link",
++]
++
+ [[package]]
+ name = "windows-sys"
+ version = "0.48.0"
+diff --git a/config.toml.example b/config.toml.example
+index 6be752a..ba8dd16 100644
+--- a/config.toml.example
++++ b/config.toml.example
+@@ -3,6 +3,7 @@
+ bind = "127.0.0.1:3000"
+ public_origin = "http://127.0.0.1:3000"
+ unlimited_watchdog_seconds = 300
++mcp_session_idle_seconds = 1800
+ empty_room_cleanup_seconds = 3600
+ shutdown_seconds = 10
+ 
+diff --git a/crates/double_riichi_core/src/room.rs b/crates/double_riichi_core/src/room.rs
+index 43c1f60..195f0af 100644
+--- a/crates/double_riichi_core/src/room.rs
++++ b/crates/double_riichi_core/src/room.rs
+@@ -167,7 +167,7 @@ impl CharacterCatalog {
+         self.entries.contains_key(id)
+     }
+ 
+-    fn default_for(&self, kind: ParticipantKind) -> Option<String> {
++    pub fn default_for(&self, kind: ParticipantKind) -> Option<String> {
+         let usage = match kind {
+             ParticipantKind::Human => CharacterUsage::Human,
+             ParticipantKind::MJAI => CharacterUsage::Mjai,
+@@ -461,6 +461,7 @@ pub enum RoomCommand {
+     GetProjection {
+         participant_id: ParticipantId,
+     },
++    GetPublicProjection,
+ }
+ 
+ impl RoomCommand {
+@@ -790,6 +791,13 @@ impl RoomHandle {
+         }
+     }
+ 
++    pub async fn public_projection(&self) -> Result<Option<AudienceProjection>, RoomError> {
++        match self.send(RoomCommand::GetPublicProjection).await? {
++            RoomResponse::Projection(projection) => Ok(projection),
++            _ => Err(RoomError::Closed),
++        }
++    }
++
+     pub async fn match_events(&self) -> Result<Vec<GameEvent>, RoomError> {
+         match self.send(RoomCommand::GetMatchEvents).await? {
+             RoomResponse::MatchEvents(events) => Ok(events),
+@@ -972,6 +980,16 @@ impl RoomState {
+             .map_err(|error| RoomError::Match(error.to_string()))
+     }
+ 
++    fn public_projection(&mut self) -> Result<Option<AudienceProjection>, RoomError> {
++        let Some(machine) = self.match_machine.as_mut() else {
++            return Ok(None);
++        };
++        machine
++            .project(Audience::Public)
++            .map(Some)
++            .map_err(|error| RoomError::Match(error.to_string()))
++    }
++
+     fn add_participant(
+         &mut self,
+         participant: Participant,
+@@ -1689,6 +1707,7 @@ impl RoomState {
+             | RoomCommand::SubmitAction { .. }
+             | RoomCommand::Rematch
+             | RoomCommand::GetProjection { .. }
++            | RoomCommand::GetPublicProjection
+             | RoomCommand::GetMatchEvents => {
+                 return Err(RoomError::Match("actor-only command".into()));
+             }
+@@ -1978,6 +1997,9 @@ impl Actor {
+                 .state
+                 .projection_for(&participant_id)
+                 .map(RoomResponse::Projection),
++            RoomCommand::GetPublicProjection => {
++                self.state.public_projection().map(RoomResponse::Projection)
++            }
+             RoomCommand::Start => self.start_match().await,
+             RoomCommand::SubmitAction {
+                 participant_id,
+@@ -2272,6 +2294,7 @@ impl Actor {
+     }
+ 
+     async fn handle_decision_result(&mut self, result: DecisionResult) -> Result<(), RoomError> {
++        self.state.bump_revision();
+         let match_id = match self.state.phase {
+             RoomPhase::Playing(ref id) => id.clone(),
+             _ => return Ok(()),
+@@ -2326,6 +2349,7 @@ impl Actor {
+             .state
+             .finish_match(result.clone())
+             .ok_or(RoomError::Playing)?;
++        self.state.bump_revision();
+         self.publish(RoomEvent::PhaseChanged(self.state.phase.clone()));
+         self.publish(RoomEvent::MatchCompleted {
+             match_id: match_id.clone(),
+diff --git a/crates/double_riichi_mcp/Cargo.toml b/crates/double_riichi_mcp/Cargo.toml
+index edaae25..d99e211 100644
+--- a/crates/double_riichi_mcp/Cargo.toml
++++ b/crates/double_riichi_mcp/Cargo.toml
+@@ -5,8 +5,13 @@ edition.workspace = true
+ rust-version.workspace = true
+ license.workspace = true
+ 
++[features]
++test-support = []
++
+ [dependencies]
+-double_riichi_core = { path = "../double_riichi_core" }
++rmcp = { version = "=3.4.0", default-features = false, features = ["client", "server", "transport-streamable-http-client-reqwest", "transport-io"] }
++tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "io-std"] }
++url = "=2.5.8"
+ 
+ [[bin]]
+ name = "driichi-mcp"
+diff --git a/crates/double_riichi_mcp/src/lib.rs b/crates/double_riichi_mcp/src/lib.rs
+index 79de31e..b376f12 100644
+--- a/crates/double_riichi_mcp/src/lib.rs
++++ b/crates/double_riichi_mcp/src/lib.rs
+@@ -1 +1,479 @@
+-//! MCP adapter crate for double-riichi.
++use std::{
++    env,
++    ffi::OsStr,
++    fmt,
++    future::Future,
++    process::ExitCode,
++    sync::{Arc, OnceLock},
++};
++
++use rmcp::{
++    ClientHandler, ErrorData, ServerHandler, ServiceError,
++    model::{
++        CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, Implementation,
++        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
++        ReadResourceRequestParams, ReadResourceResponse, ServerConfig, SubscribeRequestParams,
++        UnsubscribeRequestParams,
++    },
++    service::{NotificationContext, RequestContext, RoleClient, RoleServer, ServiceExt},
++    transport::{
++        StreamableHttpClientTransport, stdio,
++        streamable_http_client::StreamableHttpClientTransportConfig,
++    },
++};
++use url::Url;
++
++const MAX_HTTP_CONCURRENT_REQUESTS: usize = 8;
++const MAX_SSE_EVENT_SIZE: usize = 1024 * 1024;
++
++/// The validated command-line configuration for one bridge process.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct BridgeConfig {
++    pub server: Url,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum ConfigError {
++    Usage,
++    InvalidServerUrl,
++    MissingToken,
++}
++
++impl fmt::Display for ConfigError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Usage => f.write_str("usage: driichi-mcp --server URL"),
++            Self::InvalidServerUrl => f.write_str("invalid MCP server URL"),
++            Self::MissingToken => f.write_str("DRIICHI_MCP_TOKEN is required"),
++        }
++    }
++}
++
++impl std::error::Error for ConfigError {}
++
++/// Parse and validate the bridge's intentionally small CLI surface.
++pub fn parse_args<I, S>(args: I) -> Result<BridgeConfig, ConfigError>
++where
++    I: IntoIterator<Item = S>,
++    S: AsRef<OsStr>,
++{
++    let args: Vec<_> = args.into_iter().collect();
++    if args.len() != 3 || args[1].as_ref() != OsStr::new("--server") {
++        return Err(ConfigError::Usage);
++    }
++    let raw_url = args[2]
++        .as_ref()
++        .to_str()
++        .ok_or(ConfigError::InvalidServerUrl)?;
++    let server = Url::parse(raw_url).map_err(|_| ConfigError::InvalidServerUrl)?;
++    if !matches!(server.scheme(), "http" | "https")
++        || server.host_str().is_none()
++        || raw_url.contains('@')
++        || !server.username().is_empty()
++        || server.password().is_some()
++        || server.query().is_some()
++        || server.fragment().is_some()
++        || server.path() != "/mcp"
++    {
++        return Err(ConfigError::InvalidServerUrl);
++    }
++    Ok(BridgeConfig { server })
++}
++
++fn token_from_environment() -> Result<String, ConfigError> {
++    match env::var("DRIICHI_MCP_TOKEN") {
++        Ok(token) if !token.is_empty() => Ok(token),
++        _ => Err(ConfigError::MissingToken),
++    }
++}
++
++#[derive(Debug)]
++pub enum BridgeError {
++    Config(ConfigError),
++    Upstream,
++    Downstream,
++}
++
++impl fmt::Display for BridgeError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Config(error) => error.fmt(f),
++            Self::Upstream => f.write_str("MCP upstream connection failed"),
++            Self::Downstream => f.write_str("MCP stdio connection failed"),
++        }
++    }
++}
++
++impl std::error::Error for BridgeError {}
++
++#[derive(Clone)]
++struct UpstreamClient {
++    downstream: Arc<OnceLock<rmcp::Peer<RoleServer>>>,
++}
++
++impl UpstreamClient {
++    fn new(downstream: Arc<OnceLock<rmcp::Peer<RoleServer>>>) -> Self {
++        Self { downstream }
++    }
++}
++
++#[allow(clippy::manual_async_fn)]
++impl ClientHandler for UpstreamClient {
++    fn on_resource_updated(
++        &self,
++        params: rmcp::model::ResourceUpdatedNotificationParam,
++        _context: NotificationContext<RoleClient>,
++    ) -> impl Future<Output = ()> + rmcp::service::MaybeSendFuture + '_ {
++        async move {
++            if let Some(peer) = self.downstream.get() {
++                let _ = peer.notify_resource_updated(params).await;
++            }
++        }
++    }
++
++    fn on_resource_list_changed(
++        &self,
++        _context: NotificationContext<RoleClient>,
++    ) -> impl Future<Output = ()> + rmcp::service::MaybeSendFuture + '_ {
++        async move {
++            if let Some(peer) = self.downstream.get() {
++                let _ = peer.notify_resource_list_changed().await;
++            }
++        }
++    }
++
++    fn on_tool_list_changed(
++        &self,
++        _context: NotificationContext<RoleClient>,
++    ) -> impl Future<Output = ()> + rmcp::service::MaybeSendFuture + '_ {
++        async move {
++            if let Some(peer) = self.downstream.get() {
++                let _ = peer.notify_tool_list_changed().await;
++            }
++        }
++    }
++
++    fn get_info(&self) -> ClientConfig {
++        ClientConfig::new(
++            ClientCapabilities::default(),
++            Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
++        )
++    }
++}
++
++struct ProxyServer {
++    upstream: rmcp::Peer<RoleClient>,
++    downstream: Arc<OnceLock<rmcp::Peer<RoleServer>>>,
++    info: ServerConfig,
++}
++
++impl ProxyServer {
++    fn new(
++        upstream: rmcp::Peer<RoleClient>,
++        downstream: Arc<OnceLock<rmcp::Peer<RoleServer>>>,
++        info: ServerConfig,
++    ) -> Self {
++        Self {
++            upstream,
++            downstream,
++            info,
++        }
++    }
++
++    fn upstream_error(_error: ServiceError) -> ErrorData {
++        ErrorData::internal_error("MCP upstream request failed", None)
++    }
++}
++
++#[allow(clippy::manual_async_fn)]
++impl ServerHandler for ProxyServer {
++    fn ping(
++        &self,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_ {
++        async move {
++            let result = self
++                .upstream
++                .send_request(
++                    rmcp::model::PingRequest {
++                        method: Default::default(),
++                        extensions: Default::default(),
++                    }
++                    .into(),
++                )
++                .await
++                .map_err(Self::upstream_error)?;
++            match result {
++                rmcp::model::ServerResult::EmptyResult(_) => Ok(()),
++                _ => Err(ErrorData::internal_error(
++                    "MCP upstream request failed",
++                    None,
++                )),
++            }
++        }
++    }
++
++    fn list_tools(
++        &self,
++        request: Option<rmcp::model::PaginatedRequestParams>,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + rmcp::service::MaybeSendFuture + '_
++    {
++        async move {
++            self.upstream
++                .list_tools(request)
++                .await
++                .map_err(Self::upstream_error)
++        }
++    }
++
++    fn call_tool(
++        &self,
++        request: CallToolRequestParams,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + rmcp::service::MaybeSendFuture + '_
++    {
++        async move {
++            self.upstream
++                .call_tool(request)
++                .await
++                .map(CallToolResponse::Complete)
++                .map_err(Self::upstream_error)
++        }
++    }
++
++    fn list_resources(
++        &self,
++        request: Option<rmcp::model::PaginatedRequestParams>,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + rmcp::service::MaybeSendFuture + '_
++    {
++        async move {
++            self.upstream
++                .list_resources(request)
++                .await
++                .map_err(Self::upstream_error)
++        }
++    }
++
++    fn list_resource_templates(
++        &self,
++        request: Option<rmcp::model::PaginatedRequestParams>,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>>
++    + rmcp::service::MaybeSendFuture
++    + '_ {
++        async move {
++            self.upstream
++                .list_resource_templates(request)
++                .await
++                .map_err(Self::upstream_error)
++        }
++    }
++
++    fn read_resource(
++        &self,
++        request: ReadResourceRequestParams,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>>
++    + rmcp::service::MaybeSendFuture
++    + '_ {
++        async move {
++            self.upstream
++                .read_resource(request)
++                .await
++                .map(ReadResourceResponse::Complete)
++                .map_err(Self::upstream_error)
++        }
++    }
++
++    #[allow(deprecated)]
++    fn subscribe(
++        &self,
++        request: SubscribeRequestParams,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_ {
++        async move {
++            self.upstream
++                .subscribe(request)
++                .await
++                .map_err(Self::upstream_error)
++        }
++    }
++
++    #[allow(deprecated)]
++    fn unsubscribe(
++        &self,
++        request: UnsubscribeRequestParams,
++        _context: RequestContext<RoleServer>,
++    ) -> impl Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_ {
++        async move {
++            self.upstream
++                .unsubscribe(request)
++                .await
++                .map_err(Self::upstream_error)
++        }
++    }
++
++    fn on_initialized(
++        &self,
++        context: NotificationContext<RoleServer>,
++    ) -> impl Future<Output = ()> + rmcp::service::MaybeSendFuture + '_ {
++        let _ = self.downstream.set(context.peer.clone());
++        std::future::ready(())
++    }
++
++    fn get_info(&self) -> ServerConfig {
++        self.info.clone()
++    }
++}
++
++fn server_config(info: &rmcp::model::ServerPeerInfo) -> ServerConfig {
++    let mut config = ServerConfig::new(info.capabilities.clone())
++        .with_protocol_version(info.protocol_version.clone());
++    if let Some(server_info) = info.server_info.clone() {
++        config = config.with_server_info(server_info);
++    }
++    if let Some(instructions) = info.instructions.clone() {
++        config = config.with_instructions(instructions);
++    }
++    config
++}
++
++/// Run one authenticated HTTP-to-stdio bridge using the process token.
++///
++/// The downstream transport is injectable so an in-process caller can exercise
++/// the same stdio protocol without starting another process. Authentication is
++/// still read exclusively from `DRIICHI_MCP_TOKEN`.
++pub async fn run_with_transport<T, E, A>(
++    config: BridgeConfig,
++    downstream_transport: T,
++) -> Result<(), BridgeError>
++where
++    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
++    E: std::error::Error + Send + Sync + 'static,
++{
++    let token = token_from_environment().map_err(BridgeError::Config)?;
++    run_with_token_and_transport_inner(config, token, downstream_transport).await
++}
++
++#[cfg(feature = "test-support")]
++pub async fn run_with_token_and_transport<T, E, A>(
++    config: BridgeConfig,
++    token: String,
++    downstream_transport: T,
++) -> Result<(), BridgeError>
++where
++    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
++    E: std::error::Error + Send + Sync + 'static,
++{
++    run_with_token_and_transport_inner(config, token, downstream_transport).await
++}
++
++async fn run_with_token_and_transport_inner<T, E, A>(
++    config: BridgeConfig,
++    token: String,
++    downstream_transport: T,
++) -> Result<(), BridgeError>
++where
++    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
++    E: std::error::Error + Send + Sync + 'static,
++{
++    let downstream = Arc::new(OnceLock::new());
++    let transport_config = StreamableHttpClientTransportConfig::with_uri(config.server.to_string())
++        .auth_header(token)
++        .max_concurrent_requests(MAX_HTTP_CONCURRENT_REQUESTS)
++        .max_sse_event_size(MAX_SSE_EVENT_SIZE);
++    let upstream_transport = StreamableHttpClientTransport::from_config(transport_config);
++    let upstream = rmcp::serve_client(UpstreamClient::new(downstream.clone()), upstream_transport)
++        .await
++        .map_err(|_| BridgeError::Upstream)?;
++    let upstream_info = upstream.peer_info().ok_or(BridgeError::Upstream)?;
++    let proxy = ProxyServer::new(
++        upstream.peer().clone(),
++        downstream,
++        server_config(&upstream_info),
++    );
++    let local = proxy
++        .serve(downstream_transport)
++        .await
++        .map_err(|_| BridgeError::Downstream)?;
++    let upstream_cancel = upstream.cancellation_token();
++    let local_cancel = local.cancellation_token();
++    tokio::select! {
++        result = local.waiting() => {
++            upstream_cancel.cancel();
++            result.map(|_| ()).map_err(|_| BridgeError::Downstream)
++        }
++        result = upstream.waiting() => {
++            local_cancel.cancel();
++            result.map(|_| ()).map_err(|_| BridgeError::Upstream)
++        }
++    }
++}
++
++/// Run one authenticated HTTP-to-stdio bridge.
++pub async fn run() -> Result<(), BridgeError> {
++    let config = parse_args(env::args_os()).map_err(BridgeError::Config)?;
++    run_with_transport(config, stdio()).await
++}
++
++/// Entry-point helper that keeps process errors free of credentials.
++pub async fn process_entrypoint() -> ExitCode {
++    match run().await {
++        Ok(()) => ExitCode::SUCCESS,
++        Err(error) => {
++            eprintln!("{error}");
++            ExitCode::FAILURE
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn args(url: &str) -> [&str; 3] {
++        ["driichi-mcp", "--server", url]
++    }
++
++    #[test]
++    fn accepts_only_mcp_http_urls() {
++        let config = parse_args(args("https://example.test/mcp")).unwrap();
++        assert_eq!(config.server.as_str(), "https://example.test/mcp");
++        assert!(parse_args(args("http://127.0.0.1:3000/mcp")).is_ok());
++    }
++
++    #[test]
++    fn rejects_bad_arguments_and_url_components() {
++        for input in [
++            vec!["driichi-mcp"],
++            vec!["driichi-mcp", "--server"],
++            vec!["driichi-mcp", "--other", "https://example.test/mcp"],
++            vec![
++                "driichi-mcp",
++                "--server",
++                "https://example.test/mcp",
++                "extra",
++            ],
++        ] {
++            assert_eq!(parse_args(input), Err(ConfigError::Usage));
++        }
++        for url in [
++            "ftp://example.test/mcp",
++            "https://@example.test/mcp",
++            "https://user@example.test/mcp",
++            "https://user:pass@example.test/mcp",
++            "https://example.test/mcp?token=secret",
++            "https://example.test/mcp#fragment",
++            "https://example.test/other",
++            "https://example.test/",
++        ] {
++            assert_eq!(
++                parse_args(args(url)),
++                Err(ConfigError::InvalidServerUrl),
++                "{url}"
++            );
++        }
++    }
++}
+diff --git a/crates/double_riichi_mcp/src/main.rs b/crates/double_riichi_mcp/src/main.rs
+index f328e4d..1e48bb9 100644
+--- a/crates/double_riichi_mcp/src/main.rs
++++ b/crates/double_riichi_mcp/src/main.rs
+@@ -1 +1,4 @@
+-fn main() {}
++#[tokio::main]
++async fn main() -> std::process::ExitCode {
++    double_riichi_mcp::process_entrypoint().await
++}
+diff --git a/crates/double_riichi_mcp/tests/bridge_cli.rs b/crates/double_riichi_mcp/tests/bridge_cli.rs
+new file mode 100644
+index 0000000..2d06b4b
+--- /dev/null
++++ b/crates/double_riichi_mcp/tests/bridge_cli.rs
+@@ -0,0 +1,16 @@
++use std::process::Command;
++
++#[test]
++fn rejects_missing_environment_token() {
++    let output = Command::new(env!("CARGO_BIN_EXE_driichi-mcp"))
++        .args(["--server", "http://127.0.0.1:1/mcp"])
++        .env_remove("DRIICHI_MCP_TOKEN")
++        .output()
++        .expect("driichi-mcp process starts");
++
++    assert_eq!(output.status.code(), Some(1));
++    assert_eq!(
++        String::from_utf8_lossy(&output.stderr).trim(),
++        "DRIICHI_MCP_TOKEN is required"
++    );
++}
+diff --git a/crates/double_riichi_server/Cargo.toml b/crates/double_riichi_server/Cargo.toml
+index d178fe6..ed24b59 100644
+--- a/crates/double_riichi_server/Cargo.toml
++++ b/crates/double_riichi_server/Cargo.toml
+@@ -27,6 +27,9 @@ tokio = { version = "=1.53.1", features = ["macros", "net", "rt-multi-thread", "
+ toml = "=0.8.23"
+ url = "=2.5.8"
+ futures-util = "=0.3.34"
++rmcp = { version = "=3.4.0", default-features = false, features = ["macros", "server", "transport-streamable-http-server", "tower"] }
++schemars = "=1.2.2"
++tokio-util = "=0.7.19"
+ zeroize = "=1.9.0"
+ rust-embed = "=8.12.0"
+ 
+@@ -35,6 +38,7 @@ name = "driichi"
+ path = "src/main.rs"
+ 
+ [dev-dependencies]
++double_riichi_mcp = { path = "../double_riichi_mcp", features = ["test-support"] }
+ tower = { version = "=0.5.3", features = ["util"] }
+ tokio-tungstenite = "=0.29.0"
+ 
+diff --git a/crates/double_riichi_server/src/config.rs b/crates/double_riichi_server/src/config.rs
+index dc82773..da40204 100644
+--- a/crates/double_riichi_server/src/config.rs
++++ b/crates/double_riichi_server/src/config.rs
+@@ -13,6 +13,7 @@ const DEFAULT_BIND: &str = "127.0.0.1:3000";
+ const DEFAULT_TURN_SECONDS: u64 = 30;
+ const DEFAULT_RESPONSE_SECONDS: u64 = 10;
+ const DEFAULT_UNLIMITED_WATCHDOG_SECONDS: u64 = 300;
++const DEFAULT_MCP_SESSION_IDLE_SECONDS: u64 = 30 * 60;
+ const DEFAULT_EMPTY_ROOM_CLEANUP_SECONDS: u64 = 3_600;
+ const DEFAULT_SHUTDOWN_SECONDS: u64 = 10;
+ const DEFAULT_MJAI_CHARACTER: &str = "mjai-bot";
+@@ -49,6 +50,8 @@ struct RawRuntimeConfig {
+     time_controls: RawTimeControls,
+     #[serde(default = "default_unlimited_watchdog_seconds")]
+     unlimited_watchdog_seconds: u64,
++    #[serde(default = "default_mcp_session_idle_seconds")]
++    mcp_session_idle_seconds: u64,
+     #[serde(default = "default_empty_room_cleanup_seconds")]
+     empty_room_cleanup_seconds: u64,
+     #[serde(default = "default_shutdown_seconds")]
+@@ -162,6 +165,10 @@ fn default_unlimited_watchdog_seconds() -> u64 {
+     DEFAULT_UNLIMITED_WATCHDOG_SECONDS
+ }
+ 
++fn default_mcp_session_idle_seconds() -> u64 {
++    DEFAULT_MCP_SESSION_IDLE_SECONDS
++}
++
+ fn default_empty_room_cleanup_seconds() -> u64 {
+     DEFAULT_EMPTY_ROOM_CLEANUP_SECONDS
+ }
+@@ -253,6 +260,7 @@ pub struct RuntimeConfig {
+     pub characters: CharacterConfig,
+     pub time_controls: TimeControls,
+     pub unlimited_watchdog_seconds: u64,
++    pub mcp_session_idle_seconds: u64,
+     pub empty_room_cleanup_seconds: u64,
+     pub shutdown_seconds: u64,
+     pub network: NetworkConfig,
+@@ -269,6 +277,7 @@ impl RuntimeConfig {
+         validate_duration(raw.time_controls.casual.turn_seconds, 1, 3_600)?;
+         validate_duration(raw.time_controls.casual.response_seconds, 1, 3_600)?;
+         validate_duration(raw.unlimited_watchdog_seconds, 10, 3_600)?;
++        validate_duration(raw.mcp_session_idle_seconds, 1, 86_400)?;
+         validate_duration(raw.empty_room_cleanup_seconds, 1, 86_400)?;
+         validate_duration(raw.shutdown_seconds, 1, 86_400)?;
+         validate_network(&raw.network)?;
+@@ -295,6 +304,7 @@ impl RuntimeConfig {
+                 },
+             },
+             unlimited_watchdog_seconds: raw.unlimited_watchdog_seconds,
++            mcp_session_idle_seconds: raw.mcp_session_idle_seconds,
+             empty_room_cleanup_seconds: raw.empty_room_cleanup_seconds,
+             shutdown_seconds: raw.shutdown_seconds,
+             network: NetworkConfig {
+diff --git a/crates/double_riichi_server/src/http.rs b/crates/double_riichi_server/src/http.rs
+index 8693e91..c59215a 100644
+--- a/crates/double_riichi_server/src/http.rs
++++ b/crates/double_riichi_server/src/http.rs
+@@ -39,6 +39,7 @@ use tokio::{
+     sync::{Mutex as AsyncMutex, OwnedMutexGuard, mpsc},
+     time::{self, MissedTickBehavior},
+ };
++use tokio_util::sync::CancellationToken;
+ use url::Url;
+ 
+ use crate::compat::CompatState;
+@@ -209,9 +210,13 @@ pub struct ServerState {
+     shutdown_seconds: u64,
+     started_at: Instant,
+     admission_open: Arc<AtomicBool>,
++    shutdown_token: CancellationToken,
+     storage: Option<Arc<Storage>>,
+     bot_tokens: Option<Arc<BotTokenService>>,
+     pub(crate) compat: Arc<CompatState>,
++    mcp_session_idle_seconds: u64,
++    mcp_character: String,
++    mcp_provider_characters: std::collections::BTreeMap<String, String>,
+ }
+ 
+ impl ServerState {
+@@ -293,6 +298,25 @@ impl ServerState {
+             .is_some_and(|service| service.is_active_token_id(token_id))
+     }
+ 
++    pub(crate) fn mcp_session_idle_seconds(&self) -> u64 {
++        self.mcp_session_idle_seconds
++    }
++
++    pub(crate) fn mcp_character_for_provider(&self, provider: &str) -> String {
++        self.mcp_provider_characters
++            .get(provider)
++            .cloned()
++            .unwrap_or_else(|| self.mcp_character.clone())
++    }
++
++    pub(crate) fn subscribe_bot_revocations(
++        &self,
++    ) -> Option<tokio::sync::broadcast::Receiver<crate::TokenRevoked>> {
++        self.bot_tokens
++            .as_ref()
++            .map(|service| service.subscribe_revocations())
++    }
++
+     pub(crate) fn authenticate_bot(
+         &self,
+         headers: &HeaderMap,
+@@ -334,6 +358,7 @@ impl ServerState {
+ 
+     pub fn begin_shutdown(&self) {
+         self.admission_open.store(false, Ordering::Release);
++        self.shutdown_token.cancel();
+         self.compat.begin_shutdown();
+     }
+ 
+@@ -341,6 +366,10 @@ impl ServerState {
+         self.admission_open.load(Ordering::Acquire)
+     }
+ 
++    pub(crate) fn shutdown_token(&self) -> CancellationToken {
++        self.shutdown_token.clone()
++    }
++
+     pub async fn shutdown(&self) {
+         self.begin_shutdown();
+         self.compat.shutdown().await;
+@@ -401,6 +430,9 @@ impl ServerState {
+             .set_limits(limits.max_compat_matches, limits.max_ranked_queue);
+         state.limits = limits;
+         state.shutdown_seconds = config.shutdown_seconds;
++        state.mcp_session_idle_seconds = config.mcp_session_idle_seconds;
++        state.mcp_character = config.characters.mcp.clone();
++        state.mcp_provider_characters = config.characters.mcp_providers.clone();
+         state.storage = Some(storage);
+         state.compat.watch_revocations(
+             token_service.subscribe_revocations(),
+@@ -421,6 +453,9 @@ impl ServerState {
+     ) -> Self {
+         let (public_origin, public_origin_url) = canonical_origin(&public_origin);
+         let secure_cookies = public_origin_url.scheme() == "https";
++        let mcp_character = character_catalog
++            .default_for(ParticipantKind::MCP)
++            .unwrap_or_else(|| "mcp-agent".to_owned());
+         let compat = Arc::new(CompatState::new(
+             limits.max_compat_matches,
+             limits.max_ranked_queue,
+@@ -449,12 +484,16 @@ impl ServerState {
+             rate_limiter: Arc::new(RateLimiter::new()),
+             connection_count: Arc::new(AtomicUsize::new(0)),
+             limits,
++            shutdown_token: CancellationToken::new(),
+             shutdown_seconds: 10,
+             started_at: Instant::now(),
+             admission_open: Arc::new(AtomicBool::new(true)),
+             storage: None,
+             bot_tokens: None,
+             compat,
++            mcp_session_idle_seconds: 30 * 60,
++            mcp_character,
++            mcp_provider_characters: std::collections::BTreeMap::new(),
+         }
+     }
+ 
+@@ -719,6 +758,7 @@ async fn not_found(Extension(request_id): Extension<RequestId>) -> Response {
+ }
+ 
+ pub fn server_router(state: Arc<ServerState>) -> Router {
++    let mcp_runtime = crate::mcp::McpRuntime::new(state.clone());
+     Router::new()
+         .route("/api/v1/health", get(health))
+         .route("/api/v1/characters/human", get(human_characters))
+@@ -790,9 +830,11 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
+         .route("/ws/ranked", any(crate::compat::ranked_upgrade))
+         .route("/ws/validate", any(crate::compat::validate_upgrade))
+         .route("/status", get(crate::compat::status))
++        .route("/mcp", any(crate::mcp::mcp_endpoint))
+         .fallback(not_found)
+         .layer(DefaultBodyLimit::max(state.limits.http_json_limit))
+         .layer(middleware::from_fn(request_context))
++        .layer(Extension(mcp_runtime))
+         .layer(Extension(state.clone()))
+         .with_state(state)
+ }
+@@ -834,7 +876,7 @@ fn unsafe_admin_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool
+         .is_some_and(|referer| same_origin(&referer, &state.public_origin_url))
+ }
+ 
+-fn same_origin(left: &Url, right: &Url) -> bool {
++pub(crate) fn same_origin(left: &Url, right: &Url) -> bool {
+     left.scheme() == right.scheme()
+         && left.host_str() == right.host_str()
+         && effective_port(left) == effective_port(right)
+@@ -3030,7 +3072,7 @@ fn character_asset(
+         .unwrap()
+ }
+ 
+-fn normalize_display_text(value: &str) -> Option<String> {
++pub(crate) fn normalize_display_text(value: &str) -> Option<String> {
+     let value = value.trim_matches(char::is_whitespace);
+     if !(1..=64).contains(&value.chars().count()) || value.chars().any(char::is_control) {
+         return None;
+diff --git a/crates/double_riichi_server/src/lib.rs b/crates/double_riichi_server/src/lib.rs
+index 3ff0616..eda6e03 100644
+--- a/crates/double_riichi_server/src/lib.rs
++++ b/crates/double_riichi_server/src/lib.rs
+@@ -5,6 +5,7 @@ mod characters;
+ mod compat;
+ mod config;
+ mod http;
++mod mcp;
+ mod storage;
+ 
+ pub use auth::{
+diff --git a/crates/double_riichi_server/src/mcp.rs b/crates/double_riichi_server/src/mcp.rs
+new file mode 100644
+index 0000000..c059408
+--- /dev/null
++++ b/crates/double_riichi_server/src/mcp.rs
+@@ -0,0 +1,2051 @@
++use std::{
++    collections::{HashMap, HashSet},
++    sync::{Arc, Mutex},
++    time::{Duration, Instant},
++};
++
++use axum::{
++    body::Body,
++    extract::{Request, State},
++    http::{HeaderMap, Method, StatusCode, header},
++    response::Response,
++};
++use rmcp::{
++    ErrorData, ServerHandler,
++    handler::server::{
++        router::tool::ToolRouter,
++        tool::Extension,
++        wrapper::{Json, Parameters},
++    },
++    model::{
++        CallToolResult, ErrorCode, ListResourceTemplatesResult, ListResourcesResult,
++        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
++        ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
++        SubscribeRequestParams,
++    },
++    schemars::JsonSchema,
++    service::{RequestContext, RoleServer, SubscriptionContext},
++    tool, tool_handler, tool_router,
++    transport::streamable_http_server::{
++        StreamableHttpServerConfig, StreamableHttpService, session::SessionManager,
++    },
++};
++use serde::{Deserialize, Serialize};
++use serde_json::{Value, json};
++use tokio::{
++    sync::{Notify, OwnedSemaphorePermit, Semaphore},
++    time,
++};
++use tokio_util::sync::CancellationToken;
++
++use double_riichi_core::{
++    DecisionId, Participant, ParticipantId, ParticipantKind, RoomCommand, RoomError, RoomEvent,
++    RoomHandle, RoomPhase, RoomResponse,
++};
++
++use crate::http::ServerState;
++
++pub(crate) const MCP_MAX_BODY_BYTES: usize = 1024 * 1024;
++pub(crate) const MCP_MAX_WAIT_SECONDS: u64 = 330;
++const MCP_DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
++const MCP_MAX_SESSIONS: usize = 1_024;
++const MCP_MAX_WAIT_TASKS: usize = 1_024;
++const MCP_MAX_SUBSCRIPTIONS: usize = 4_096;
++
++const STATE_TEMPLATE: &str = "riichi://rooms/{code}/participants/{participant_id}/state";
++const PUBLIC_STATE_TEMPLATE: &str = "riichi://rooms/{code}/public-state";
++const HISTORY_TEMPLATE: &str = "riichi://rooms/{code}/history";
++
++#[derive(Clone, Debug)]
++pub(crate) struct McpAuth(pub(crate) String);
++
++#[derive(Clone)]
++struct SessionEntry {
++    session_id: String,
++    token_id: String,
++    room_code: String,
++    room: RoomHandle,
++    participant_id: ParticipantId,
++    display_name: String,
++    character_id: String,
++    last_seen: Instant,
++    wake: Arc<RevisionWake>,
++    cancel: CancellationToken,
++}
++
++#[derive(Clone)]
++struct TransportSession {
++    token_id: String,
++    last_seen: Instant,
++}
++
++#[derive(Default)]
++struct RegistryState {
++    sessions: HashMap<String, SessionEntry>,
++    transport_sessions: HashMap<String, TransportSession>,
++    participants: HashMap<(String, String), ParticipantId>,
++    retired_participants: HashSet<(String, String)>,
++    bound_rooms: HashMap<String, (String, String)>,
++}
++
++#[derive(Clone)]
++struct RevisionWake {
++    state: Arc<Mutex<WakeState>>,
++    notify: Arc<Notify>,
++}
++
++#[derive(Clone, Debug)]
++struct WakeState {
++    revision: u64,
++    reason: String,
++}
++
++impl Default for RevisionWake {
++    fn default() -> Self {
++        Self {
++            state: Arc::new(Mutex::new(WakeState {
++                revision: 0,
++                reason: "timeout".to_owned(),
++            })),
++            notify: Arc::new(Notify::new()),
++        }
++    }
++}
++
++impl RevisionWake {
++    fn record(&self, revision: u64, reason: impl Into<String>) -> bool {
++        let mut state = self.state.lock().expect("MCP wake lock poisoned");
++        if revision <= state.revision {
++            return false;
++        }
++        state.revision = revision;
++        state.reason = reason.into();
++        drop(state);
++        self.notify.notify_waiters();
++        true
++    }
++
++    fn current(&self) -> WakeState {
++        self.state.lock().expect("MCP wake lock poisoned").clone()
++    }
++
++    #[cfg(test)]
++    async fn wait(&self, after_revision: u64, timeout: Duration) -> WakeState {
++        self.wait_until(after_revision, timeout, &CancellationToken::new())
++            .await
++            .unwrap_or_else(|| self.current())
++    }
++
++    async fn wait_until(
++        &self,
++        after_revision: u64,
++        timeout: Duration,
++        cancel: &CancellationToken,
++    ) -> Option<WakeState> {
++        let deadline = Instant::now() + timeout;
++        loop {
++            let current = self.current();
++            if current.revision > after_revision {
++                return Some(current);
++            }
++            let notified = self.notify.notified();
++            let current = self.current();
++            if current.revision > after_revision {
++                return Some(current);
++            }
++            let remaining = deadline.saturating_duration_since(Instant::now());
++            if remaining.is_zero() {
++                return Some(self.current());
++            }
++            tokio::pin!(notified);
++            tokio::select! {
++                _ = cancel.cancelled() => return None,
++                _ = &mut notified => {}
++                _ = time::sleep(remaining) => return Some(self.current()),
++            }
++        }
++    }
++}
++
++#[derive(Clone)]
++pub(crate) struct McpRuntime {
++    registry: Arc<McpSessionRegistry>,
++    manager: Arc<rmcp::transport::streamable_http_server::session::local::LocalSessionManager>,
++    service: StreamableHttpService<
++        McpHandler,
++        rmcp::transport::streamable_http_server::session::local::LocalSessionManager,
++    >,
++}
++
++impl McpRuntime {
++    pub(crate) fn new(state: Arc<ServerState>) -> Arc<Self> {
++        let idle = Duration::from_secs(state.mcp_session_idle_seconds());
++        let registry = Arc::new(McpSessionRegistry::new(idle));
++        let host = state
++            .public_origin_url()
++            .host_str()
++            .map(str::to_owned)
++            .unwrap_or_else(|| "127.0.0.1".to_owned());
++        let authority = state
++            .public_origin_url()
++            .port()
++            .map(|port| format!("{host}:{port}"))
++            .unwrap_or_else(|| host.clone());
++        let config = StreamableHttpServerConfig::default()
++            .with_allowed_hosts([host, authority])
++            .with_allowed_origins([state.public_origin().to_owned()])
++            .with_max_request_body_bytes(MCP_MAX_BODY_BYTES)
++            .with_json_response(true)
++            .with_cancellation_token(state.shutdown_token());
++        let factory_state = state.clone();
++        let factory_registry = registry.clone();
++        let manager = Arc::new(
++            rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
++        );
++        let factory_manager = manager.clone();
++        let service = StreamableHttpService::new(
++            move || {
++                Ok(McpHandler::new(
++                    factory_state.clone(),
++                    factory_registry.clone(),
++                    factory_manager.clone(),
++                ))
++            },
++            manager.clone(),
++            config,
++        );
++        let runtime = Arc::new(Self {
++            registry,
++            manager,
++            service,
++        });
++        if let Some(mut revocations) = state.subscribe_bot_revocations() {
++            let runtime = runtime.clone();
++            tokio::spawn(async move {
++                while let Ok(revocation) = revocations.recv().await {
++                    let entries = runtime.registry.revoke_token(revocation.token_id()).await;
++                    disconnect_entries(entries.clone()).await;
++                    runtime.close_sessions(&entries).await;
++                }
++            });
++        }
++        let runtime_reaper = runtime.clone();
++        tokio::spawn(async move {
++            let interval = idle.min(Duration::from_secs(60));
++            loop {
++                time::sleep(interval).await;
++                let entries = runtime_reaper.registry.expire_idle(Instant::now()).await;
++                disconnect_entries(entries.clone()).await;
++                runtime_reaper.close_sessions(&entries).await;
++            }
++        });
++        let runtime_shutdown = runtime.clone();
++        let shutdown = state.shutdown_token();
++        tokio::spawn(async move {
++            shutdown.cancelled().await;
++            let entries = runtime_shutdown.registry.terminate_all().await;
++            disconnect_entries(entries.clone()).await;
++            runtime_shutdown.close_sessions(&entries).await;
++        });
++        runtime
++    }
++
++    async fn close_sessions(&self, entries: &[SessionEntry]) {
++        for entry in entries {
++            let _ = self
++                .manager
++                .close_session(&entry.session_id.clone().into())
++                .await;
++        }
++    }
++
++    pub(crate) async fn handle(
++        &self,
++        state: Arc<ServerState>,
++        mut request: Request<Body>,
++    ) -> Response {
++        let headers = request.headers().clone();
++        let Some(record) = state.authenticate_bot(&headers, None).ok() else {
++            return Response::builder()
++                .status(StatusCode::UNAUTHORIZED)
++                .header(header::CONTENT_TYPE, "application/json")
++                .body(Body::from(r#"{"code":"invalid_credentials"}"#))
++                .expect("MCP auth response is valid");
++        };
++        if !mcp_origin_allowed(&headers, &state) {
++            return Response::builder()
++                .status(StatusCode::FORBIDDEN)
++                .header(header::CONTENT_TYPE, "application/json")
++                .body(Body::from(r#"{"code":"origin_not_allowed"}"#))
++                .expect("MCP origin response is valid");
++        }
++        let session_id = header_session_id(&headers);
++        let expired = self.registry.expire_idle(Instant::now()).await;
++        disconnect_entries(expired.clone()).await;
++        self.close_sessions(&expired).await;
++        if let Some(session_id) = session_id.as_deref()
++            && self
++                .registry
++                .token_for(session_id)
++                .await
++                .is_some_and(|token| token != record.token_id())
++        {
++            return Response::builder()
++                .status(StatusCode::UNAUTHORIZED)
++                .header(header::CONTENT_TYPE, "application/json")
++                .body(Body::from(r#"{"code":"invalid_credentials"}"#))
++                .expect("MCP auth response is valid");
++        }
++        if let Some(session_id) = session_id.as_deref() {
++            self.registry
++                .touch_transport(session_id, record.token_id())
++                .await;
++        }
++        request
++            .extensions_mut()
++            .insert(McpAuth(record.token_id().to_owned()));
++        let is_delete = request.method() == Method::DELETE;
++        let response = self.service.clone().handle(request).await;
++        let response_session = response
++            .headers()
++            .get("mcp-session-id")
++            .and_then(|value| value.to_str().ok())
++            .map(str::to_owned)
++            .or(session_id);
++        if let Some(session_id) = response_session {
++            if is_delete {
++                if let Some(entry) = self.registry.remove(&session_id).await {
++                    disconnect_entry(entry).await;
++                }
++            } else if response.status().is_success() {
++                let _ = self
++                    .registry
++                    .register_transport(session_id.clone(), record.token_id().to_owned())
++                    .await;
++                self.registry.touch(&session_id, record.token_id()).await;
++            }
++        }
++        let (parts, body) = response.into_parts();
++        Response::from_parts(parts, Body::new(body))
++    }
++}
++
++fn mcp_origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool {
++    let Some(value) = headers.get(header::ORIGIN) else {
++        return true;
++    };
++    value
++        .to_str()
++        .ok()
++        .and_then(|origin| url::Url::parse(origin).ok())
++        .is_some_and(|origin| crate::http::same_origin(&origin, state.public_origin_url()))
++}
++
++fn header_session_id(headers: &HeaderMap) -> Option<String> {
++    headers
++        .get("mcp-session-id")
++        .and_then(|value| value.to_str().ok())
++        .map(str::to_owned)
++}
++
++fn normalize_room_code(value: &str) -> Option<String> {
++    (value.len() == 6 && value != "000000" && value.bytes().all(|byte| byte.is_ascii_digit()))
++        .then(|| value.to_owned())
++}
++
++fn normalize_provider(value: &str) -> Option<String> {
++    let value = value.trim_matches(char::is_whitespace);
++    if !(1..=64).contains(&value.chars().count()) || value.chars().any(char::is_control) {
++        return None;
++    }
++    value
++        .bytes()
++        .all(|byte| {
++            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
++        })
++        .then(|| value.to_owned())
++}
++
++async fn disconnect_entries(entries: Vec<SessionEntry>) {
++    for entry in entries {
++        disconnect_entry(entry).await;
++    }
++}
++
++async fn disconnect_entry(entry: SessionEntry) {
++    entry.cancel.cancel();
++    let _ = entry
++        .room
++        .send(RoomCommand::disconnect(entry.participant_id.clone()))
++        .await;
++}
++
++pub(crate) struct McpSessionRegistry {
++    state: tokio::sync::Mutex<RegistryState>,
++    idle: Duration,
++    join_lock: tokio::sync::Mutex<()>,
++    waiters: Arc<Semaphore>,
++    subscriptions: Arc<Semaphore>,
++}
++
++impl McpSessionRegistry {
++    pub(crate) fn new(idle: Duration) -> Self {
++        Self {
++            state: tokio::sync::Mutex::new(RegistryState::default()),
++            idle: if idle.is_zero() {
++                MCP_DEFAULT_IDLE
++            } else {
++                idle
++            },
++            join_lock: tokio::sync::Mutex::new(()),
++            waiters: Arc::new(Semaphore::new(MCP_MAX_WAIT_TASKS)),
++            subscriptions: Arc::new(Semaphore::new(MCP_MAX_SUBSCRIPTIONS)),
++        }
++    }
++
++    async fn token_for(&self, session_id: &str) -> Option<String> {
++        self.state
++            .lock()
++            .await
++            .transport_sessions
++            .get(session_id)
++            .map(|session| session.token_id.clone())
++    }
++
++    async fn register_transport(
++        &self,
++        session_id: String,
++        token_id: String,
++    ) -> Result<(), McpFailure> {
++        let mut state = self.state.lock().await;
++        if let Some(session) = state.transport_sessions.get(&session_id)
++            && session.token_id != token_id
++        {
++            return Err(McpFailure::InvalidCredentials);
++        }
++        state
++            .transport_sessions
++            .entry(session_id)
++            .or_insert(TransportSession {
++                token_id,
++                last_seen: Instant::now(),
++            });
++        Ok(())
++    }
++
++    async fn touch_transport(&self, session_id: &str, token_id: &str) {
++        let mut state = self.state.lock().await;
++        if let Some(session) = state.transport_sessions.get_mut(session_id)
++            && session.token_id == token_id
++        {
++            session.last_seen = Instant::now();
++        }
++    }
++
++    async fn touch(&self, session_id: &str, token_id: &str) {
++        let mut state = self.state.lock().await;
++        if let Some(session) = state.transport_sessions.get_mut(session_id)
++            && session.token_id == token_id
++        {
++            session.last_seen = Instant::now();
++        }
++        if let Some(entry) = state.sessions.get_mut(session_id)
++            && entry.token_id == token_id
++        {
++            entry.last_seen = Instant::now();
++        }
++    }
++
++    async fn expire_idle(&self, now: Instant) -> Vec<SessionEntry> {
++        let mut state = self.state.lock().await;
++        let expired_ids: Vec<_> = state
++            .transport_sessions
++            .iter()
++            .filter_map(|(id, session)| {
++                (now.duration_since(session.last_seen) >= self.idle).then_some(id.clone())
++            })
++            .collect();
++        expired_ids
++            .into_iter()
++            .filter_map(|id| {
++                state.transport_sessions.remove(&id);
++                state.bound_rooms.remove(&id);
++                state.sessions.remove(&id)
++            })
++            .collect()
++    }
++
++    async fn terminate_all(&self) -> Vec<SessionEntry> {
++        let mut state = self.state.lock().await;
++        state.transport_sessions.clear();
++        state.bound_rooms.clear();
++        state.participants.clear();
++        state.retired_participants.clear();
++        state.sessions.drain().map(|(_, entry)| entry).collect()
++    }
++
++    async fn remove(&self, session_id: &str) -> Option<SessionEntry> {
++        let mut state = self.state.lock().await;
++        state.transport_sessions.remove(session_id);
++        state.bound_rooms.remove(session_id);
++        state.sessions.remove(session_id)
++    }
++
++    async fn revoke_token(&self, token_id: &str) -> Vec<SessionEntry> {
++        let mut state = self.state.lock().await;
++        let ids: Vec<_> = state
++            .transport_sessions
++            .iter()
++            .filter_map(|(id, session)| (session.token_id == token_id).then_some(id.clone()))
++            .collect();
++        for id in &ids {
++            state.transport_sessions.remove(id);
++            state.bound_rooms.remove(id);
++        }
++        state
++            .participants
++            .retain(|(bound_token, _), _| bound_token != token_id);
++        state
++            .retired_participants
++            .retain(|(bound_token, _)| bound_token != token_id);
++        ids.into_iter()
++            .filter_map(|id| state.sessions.remove(&id))
++            .collect()
++    }
++
++    async fn binding(&self, session_id: &str, token_id: &str) -> Result<SessionEntry, McpFailure> {
++        let mut state = self.state.lock().await;
++        let entry = state
++            .sessions
++            .get_mut(session_id)
++            .ok_or(McpFailure::SessionExpired)?;
++        if entry.token_id != token_id {
++            return Err(McpFailure::InvalidCredentials);
++        }
++        entry.last_seen = Instant::now();
++        Ok(entry.clone())
++    }
++
++    async fn was_bound(&self, session_id: &str, token_id: &str) -> Result<bool, McpFailure> {
++        let state = self.state.lock().await;
++        let Some((bound_token, _)) = state.bound_rooms.get(session_id) else {
++            return Ok(false);
++        };
++        if bound_token != token_id {
++            return Err(McpFailure::InvalidCredentials);
++        }
++        Ok(true)
++    }
++
++    async fn bind(
++        &self,
++        session_id: String,
++        token_id: String,
++        room_code: String,
++        room: RoomHandle,
++        participant_id: ParticipantId,
++        display_name: String,
++        character_id: String,
++    ) -> Result<(SessionEntry, Option<SessionEntry>), McpFailure> {
++        let mut state = self.state.lock().await;
++        if state.sessions.len() >= MCP_MAX_SESSIONS && !state.sessions.contains_key(&session_id) {
++            return Err(McpFailure::Busy);
++        }
++        if let Some(current) = state.transport_sessions.get(&session_id)
++            && current.token_id != token_id
++        {
++            return Err(McpFailure::InvalidCredentials);
++        }
++        state
++            .transport_sessions
++            .entry(session_id.clone())
++            .or_insert(TransportSession {
++                token_id: token_id.clone(),
++                last_seen: Instant::now(),
++            });
++        if let Some(current) = state.sessions.get(&session_id)
++            && current.token_id != token_id
++        {
++            return Err(McpFailure::InvalidCredentials);
++        }
++        if let Some((bound_token, _)) = state.bound_rooms.get(&session_id) {
++            if bound_token != &token_id {
++                return Err(McpFailure::InvalidCredentials);
++            }
++            return Err(McpFailure::SessionBound);
++        }
++        let old_id = state.sessions.iter().find_map(|(id, entry)| {
++            (id != &session_id
++                && entry.token_id == token_id
++                && entry.room_code == room_code
++                && entry.participant_id == participant_id)
++                .then_some(id.clone())
++        });
++        let old = old_id.and_then(|id| {
++            state.transport_sessions.remove(&id);
++            state.bound_rooms.remove(&id);
++            state.sessions.remove(&id)
++        });
++        let entry = SessionEntry {
++            session_id: session_id.clone(),
++            token_id: token_id.clone(),
++            room_code: room_code.clone(),
++            room,
++            participant_id: participant_id.clone(),
++            display_name,
++            character_id,
++            last_seen: Instant::now(),
++            wake: Arc::new(RevisionWake::default()),
++            cancel: CancellationToken::new(),
++        };
++        state
++            .participants
++            .insert((token_id.clone(), room_code.clone()), participant_id);
++        state
++            .bound_rooms
++            .insert(session_id.clone(), (token_id, room_code));
++        state.sessions.insert(session_id, entry.clone());
++        Ok((entry, old))
++    }
++
++    async fn acquire_waiter(&self) -> Option<OwnedSemaphorePermit> {
++        self.waiters.clone().try_acquire_owned().ok()
++    }
++
++    async fn acquire_subscription(&self) -> Option<OwnedSemaphorePermit> {
++        self.subscriptions.clone().try_acquire_owned().ok()
++    }
++
++    async fn participant_for(&self, token_id: &str, room_code: &str) -> Option<ParticipantId> {
++        self.state
++            .lock()
++            .await
++            .participants
++            .get(&(token_id.to_owned(), room_code.to_owned()))
++            .cloned()
++    }
++
++    async fn retired(&self, token_id: &str, room_code: &str) -> bool {
++        self.state
++            .lock()
++            .await
++            .retired_participants
++            .contains(&(token_id.to_owned(), room_code.to_owned()))
++    }
++
++    async fn remove_binding(&self, session_id: &str) -> Option<SessionEntry> {
++        let mut state = self.state.lock().await;
++        let entry = state.sessions.remove(session_id)?;
++        state
++            .retired_participants
++            .insert((entry.token_id.clone(), entry.room_code.clone()));
++        Some(entry)
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++enum McpFailure {
++    InvalidCredentials,
++    SessionExpired,
++    SessionBound,
++    RoomNotFound,
++    WrongParticipant,
++    StaleAction,
++    IllegalAction,
++    RoomFull,
++    Busy,
++    LeaveUnavailable,
++    InvalidInput,
++    Internal,
++}
++
++impl McpFailure {
++    fn code(&self) -> &'static str {
++        match self {
++            Self::InvalidCredentials => "invalid_credentials",
++            Self::SessionExpired => "session_expired",
++            Self::SessionBound => "session_already_bound",
++            Self::RoomNotFound => "room_not_found",
++            Self::WrongParticipant => "wrong_participant",
++            Self::StaleAction => "stale_action",
++            Self::IllegalAction => "illegal_action",
++            Self::RoomFull => "room_full",
++            Self::Busy => "busy",
++            Self::LeaveUnavailable => "leave_unavailable",
++            Self::InvalidInput => "invalid_input",
++            Self::Internal => "internal_error",
++        }
++    }
++
++    fn result(&self) -> CallToolResult {
++        CallToolResult::structured_error(json!({"code": self.code()}))
++    }
++
++    fn error_data(&self) -> ErrorData {
++        ErrorData::new(ErrorCode::INVALID_PARAMS, self.code(), None)
++    }
++}
++
++#[derive(Debug, Deserialize, JsonSchema)]
++#[serde(deny_unknown_fields)]
++pub struct JoinRoomInput {
++    pub room_code: String,
++    pub provider: String,
++    pub display_name: String,
++}
++
++#[derive(Debug, Serialize, JsonSchema)]
++pub struct JoinRoomOutput {
++    pub participant_id: String,
++    pub resumed: bool,
++    pub display_name: String,
++    pub character_id: String,
++    pub state_uri: String,
++    pub public_state_uri: String,
++    pub history_uri: String,
++}
++
++#[derive(Debug, Deserialize, JsonSchema)]
++#[serde(deny_unknown_fields)]
++pub struct SubmitActionInput {
++    pub action_id: String,
++}
++
++#[derive(Debug, Serialize, JsonSchema)]
++pub struct SubmitActionOutput {
++    pub accepted: bool,
++    pub revision: u64,
++}
++
++#[derive(Debug, Deserialize, JsonSchema)]
++#[serde(deny_unknown_fields)]
++pub struct WaitForTurnInput {
++    pub after_revision: u64,
++    #[serde(default = "default_wait_seconds")]
++    pub timeout_seconds: u64,
++}
++
++#[derive(Debug, Serialize, JsonSchema)]
++pub struct WaitForTurnOutput {
++    pub reason: String,
++    pub revision: u64,
++    pub state_uri: String,
++}
++
++fn default_wait_seconds() -> u64 {
++    MCP_MAX_WAIT_SECONDS
++}
++
++#[derive(Clone)]
++pub struct McpHandler {
++    state: Arc<ServerState>,
++    registry: Arc<McpSessionRegistry>,
++    manager: Arc<rmcp::transport::streamable_http_server::session::local::LocalSessionManager>,
++    tool_router: ToolRouter<Self>,
++}
++
++impl McpHandler {
++    fn new(
++        state: Arc<ServerState>,
++        registry: Arc<McpSessionRegistry>,
++        manager: Arc<rmcp::transport::streamable_http_server::session::local::LocalSessionManager>,
++    ) -> Self {
++        Self {
++            state,
++            registry,
++            manager,
++            tool_router: Self::tool_router(),
++        }
++    }
++
++    fn session_id(parts: &axum::http::request::Parts) -> Result<String, McpFailure> {
++        header_session_id(&parts.headers).ok_or(McpFailure::SessionExpired)
++    }
++
++    fn auth(parts: &axum::http::request::Parts) -> Result<String, McpFailure> {
++        parts
++            .extensions
++            .get::<McpAuth>()
++            .map(|auth| auth.0.clone())
++            .ok_or(McpFailure::InvalidCredentials)
++    }
++
++    async fn binding(
++        &self,
++        parts: &axum::http::request::Parts,
++    ) -> Result<(String, SessionEntry), McpFailure> {
++        let session_id = Self::session_id(parts)?;
++        let token_id = Self::auth(parts)?;
++        let entry = self.registry.binding(&session_id, &token_id).await?;
++        Ok((session_id, entry))
++    }
++
++    fn uri(code: &str, participant_id: &str, kind: &str) -> String {
++        match kind {
++            "state" => format!("riichi://rooms/{code}/participants/{participant_id}/state"),
++            "public" => format!("riichi://rooms/{code}/public-state"),
++            _ => format!("riichi://rooms/{code}/history"),
++        }
++    }
++
++    fn join_output(entry: &SessionEntry, resumed: bool) -> JoinRoomOutput {
++        JoinRoomOutput {
++            participant_id: entry.participant_id.to_string(),
++            resumed,
++            display_name: entry.display_name.clone(),
++            character_id: entry.character_id.clone(),
++            state_uri: Self::uri(&entry.room_code, entry.participant_id.as_str(), "state"),
++            public_state_uri: Self::uri(&entry.room_code, "", "public"),
++            history_uri: Self::uri(&entry.room_code, "", "history"),
++        }
++    }
++
++    async fn start_watcher(&self, session_id: String, entry: SessionEntry) {
++        let registry = self.registry.clone();
++        tokio::spawn(async move {
++            let Some(_subscription) = registry.acquire_subscription().await else {
++                return;
++            };
++            let Ok(mut connection) = entry.room.subscribe().await else {
++                return;
++            };
++            loop {
++                tokio::select! {
++                    _ = entry.cancel.cancelled() => break,
++                    event = connection.recv() => {
++                        let Some(event) = event else { break; };
++                        let Some((revision, reason)) = watcher_reason(&entry, event).await else { continue; };
++                        if entry.wake.record(revision, reason) {
++                            registry.touch(&session_id, &entry.token_id).await;
++                        }
++                    }
++                }
++            }
++        });
++    }
++
++    async fn read_state(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
++        let snapshot = entry
++            .room
++            .snapshot()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let projection = entry
++            .room
++            .projection(entry.participant_id.clone())
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let mut value = json!({
++            "revision": snapshot.revision,
++            "phase": snapshot.phase,
++            "room_code": entry.room_code,
++            "participant_id": entry.participant_id,
++        });
++        if let Some(projection) = projection {
++            let projection = serde_json::to_value(projection).map_err(|_| McpFailure::Internal)?;
++            if let (Some(target), Some(object)) = (value.as_object_mut(), projection.as_object()) {
++                for (key, value) in object {
++                    target.insert(key.clone(), value.clone());
++                }
++            }
++        }
++        add_decision_timing(&mut value);
++        let actions = value
++            .get("decision")
++            .and_then(|decision| decision.get("actions"))
++            .and_then(Value::as_array)
++            .cloned()
++            .unwrap_or_default();
++        value["is_my_turn"] = Value::Bool(!actions.is_empty());
++        value["legal_actions"] = Value::Array(actions);
++        value["state_uri"] = Value::String(uri.to_owned());
++        Ok(value)
++    }
++
++    async fn read_public(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
++        let snapshot = entry
++            .room
++            .snapshot()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let projection = entry
++            .room
++            .public_projection()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let mut value = json!({"revision": snapshot.revision, "phase": snapshot.phase, "room_code": entry.room_code});
++        if let Some(projection) = projection
++            && let (Some(target), Some(object)) = (
++                value.as_object_mut(),
++                serde_json::to_value(projection)
++                    .map_err(|_| McpFailure::Internal)?
++                    .as_object(),
++            )
++        {
++            for (key, value) in object {
++                target.insert(key.clone(), value.clone());
++            }
++        }
++        add_decision_timing(&mut value);
++        value["state_uri"] = Value::String(uri.to_owned());
++        Ok(value)
++    }
++
++    async fn read_history(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
++        let snapshot = entry
++            .room
++            .snapshot()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let events = entry
++            .room
++            .match_events()
++            .await
++            .map_err(|_| McpFailure::Internal)?;
++        let mut events = serde_json::to_value(events).map_err(|_| McpFailure::Internal)?;
++        redact_private_history(&mut events);
++        Ok(json!({
++            "revision": snapshot.revision,
++            "phase": snapshot.phase,
++            "result": snapshot.result,
++            "events": events,
++            "history_uri": uri,
++        }))
++    }
++}
++
++#[tool_router]
++impl McpHandler {
++    #[tool(description = "Join or resume one MCP Participant in a Room.")]
++    async fn join_room(
++        &self,
++        Extension(parts): Extension<axum::http::request::Parts>,
++        Parameters(input): Parameters<JoinRoomInput>,
++    ) -> Result<Json<JoinRoomOutput>, CallToolResult> {
++        let session_id = match Self::session_id(&parts) {
++            Ok(value) => value,
++            Err(error) => return Err(error.result()),
++        };
++        let token_id = match Self::auth(&parts) {
++            Ok(value) => value,
++            Err(error) => return Err(error.result()),
++        };
++        let Some(room_code) = normalize_room_code(&input.room_code) else {
++            return Err(McpFailure::InvalidInput.result());
++        };
++        let Some(provider) = normalize_provider(&input.provider) else {
++            return Err(McpFailure::InvalidInput.result());
++        };
++        let Some(display_name) = crate::http::normalize_display_text(&input.display_name) else {
++            return Err(McpFailure::InvalidInput.result());
++        };
++        let _join_guard = self.registry.join_lock.lock().await;
++        let existing = self.registry.binding(&session_id, &token_id).await;
++        if let Ok(entry) = &existing {
++            if entry.room_code != room_code {
++                return Err(McpFailure::SessionBound.result());
++            }
++            return Ok(Json(Self::join_output(entry, true)));
++        }
++        if !matches!(existing, Err(McpFailure::SessionExpired)) {
++            return Err(McpFailure::InvalidCredentials.result());
++        }
++        if self
++            .registry
++            .was_bound(&session_id, &token_id)
++            .await
++            .map_err(|error| error.result())?
++        {
++            return Err(McpFailure::SessionBound.result());
++        }
++        let room = self
++            .state
++            .rooms()
++            .get(&room_code)
++            .await
++            .ok_or(McpFailure::RoomNotFound)
++            .map_err(|e| e.result())?;
++        let pair = self.registry.participant_for(&token_id, &room_code).await;
++        let default_character = self.state.mcp_character_for_provider(&provider);
++        let (participant_id, resumed, character_id, joined_display_name) =
++            if let Some(participant_id) = pair {
++                let snapshot = room
++                    .snapshot()
++                    .await
++                    .map_err(|_| McpFailure::Internal)
++                    .map_err(|e| e.result())?;
++                if let Some(participant) = snapshot
++                    .participants
++                    .iter()
++                    .find(|value| value.id == participant_id)
++                {
++                    room.send(RoomCommand::reconnect(participant_id.clone()))
++                        .await
++                        .map_err(room_failure)
++                        .map_err(|e| e.result())?;
++                    (
++                        participant_id,
++                        true,
++                        participant.character_id.clone(),
++                        participant.display_name.clone(),
++                    )
++                } else {
++                    if self.registry.retired(&token_id, &room_code).await {
++                        return Err(McpFailure::LeaveUnavailable.result());
++                    }
++                    let participant_id = ParticipantId::new(crate::http::generate_ulid());
++                    let participant = Participant::new(
++                        participant_id.clone(),
++                        display_name.clone(),
++                        ParticipantKind::MCP,
++                    );
++                    let joined = room
++                        .send(RoomCommand::Join {
++                            participant,
++                            character_id: Some(default_character.clone()),
++                            token_id: Some(token_id.clone()),
++                        })
++                        .await
++                        .map_err(room_failure)
++                        .map_err(|e| e.result())?;
++                    let RoomResponse::Joined(joined) = joined else {
++                        return Err(McpFailure::Internal.result());
++                    };
++                    (joined.id, false, joined.character_id, joined.display_name)
++                }
++            } else {
++                let participant_id = ParticipantId::new(crate::http::generate_ulid());
++                let participant = Participant::new(
++                    participant_id.clone(),
++                    display_name.clone(),
++                    ParticipantKind::MCP,
++                );
++                let joined = room
++                    .send(RoomCommand::Join {
++                        participant,
++                        character_id: Some(default_character),
++                        token_id: Some(token_id.clone()),
++                    })
++                    .await
++                    .map_err(room_failure)
++                    .map_err(|e| e.result())?;
++                let RoomResponse::Joined(joined) = joined else {
++                    return Err(McpFailure::Internal.result());
++                };
++                (joined.id, false, joined.character_id, joined.display_name)
++            };
++        let (entry, old) = self
++            .registry
++            .bind(
++                session_id.clone(),
++                token_id,
++                input.room_code.clone(),
++                room.clone(),
++                participant_id.clone(),
++                joined_display_name,
++                character_id.clone(),
++            )
++            .await
++            .map_err(|e| e.result())?;
++        if let Some(old) = old {
++            old.cancel.cancel();
++            let _ = self
++                .manager
++                .close_session(&old.session_id.clone().into())
++                .await;
++        }
++        self.start_watcher(session_id, entry.clone()).await;
++        Ok(Json(Self::join_output(&entry, resumed)))
++    }
++
++    #[tool(description = "Leave the bound Room and permanently end this MCP Participant.")]
++    async fn leave_room(
++        &self,
++        Extension(parts): Extension<axum::http::request::Parts>,
++    ) -> Result<Json<Value>, CallToolResult> {
++        let (session_id, entry) = self.binding(&parts).await.map_err(|e| e.result())?;
++        entry
++            .room
++            .send(RoomCommand::leave(entry.participant_id.clone()))
++            .await
++            .map_err(room_failure)
++            .map_err(|e| e.result())?;
++        let _ = self.registry.remove_binding(&session_id).await;
++        entry.cancel.cancel();
++        Ok(Json(json!({"left": true})))
++    }
++
++    #[tool(description = "Submit the current legal action identifier for this MCP Participant.")]
++    async fn submit_action(
++        &self,
++        Extension(parts): Extension<axum::http::request::Parts>,
++        Parameters(input): Parameters<SubmitActionInput>,
++    ) -> Result<Json<SubmitActionOutput>, CallToolResult> {
++        if input.action_id.is_empty() || input.action_id.len() > 128 {
++            return Err(McpFailure::InvalidInput.result());
++        }
++        let (_session_id, entry) = self.binding(&parts).await.map_err(|e| e.result())?;
++        let projection = entry
++            .room
++            .projection(entry.participant_id.clone())
++            .await
++            .map_err(|_| McpFailure::Internal)
++            .map_err(|e| e.result())?;
++        let Some(projection) = projection else {
++            return Err(McpFailure::StaleAction.result());
++        };
++        let value = serde_json::to_value(projection)
++            .map_err(|_| McpFailure::Internal)
++            .map_err(|e| e.result())?;
++        if !contains_action_id(&value, &input.action_id) {
++            return Err(McpFailure::IllegalAction.result());
++        }
++        let Some(decision_id) =
++            find_string(&value, "decision_id").or_else(|| find_string(&value, "decisionId"))
++        else {
++            return Err(McpFailure::StaleAction.result());
++        };
++        let result = entry
++            .room
++            .send(RoomCommand::submit_action(
++                entry.participant_id.clone(),
++                DecisionId::new(decision_id),
++                input.action_id,
++            ))
++            .await
++            .map_err(room_failure)
++            .map_err(|e| e.result())?;
++        let RoomResponse::Action(action) = result else {
++            return Err(McpFailure::Internal.result());
++        };
++        let snapshot = entry
++            .room
++            .snapshot()
++            .await
++            .map_err(|_| McpFailure::Internal)
++            .map_err(|e| e.result())?;
++        Ok(Json(SubmitActionOutput {
++            accepted: matches!(
++                action,
++                double_riichi_core::DecisionResult::Waiting { .. }
++                    | double_riichi_core::DecisionResult::Resolved { .. }
++            ),
++            revision: snapshot.revision,
++        }))
++    }
++
++    #[tool(description = "Wait for a relevant Room revision without returning state.")]
++    async fn wait_for_turn(
++        &self,
++        Extension(parts): Extension<axum::http::request::Parts>,
++        Parameters(input): Parameters<WaitForTurnInput>,
++    ) -> Result<Json<WaitForTurnOutput>, CallToolResult> {
++        if input.timeout_seconds > MCP_MAX_WAIT_SECONDS {
++            return Err(McpFailure::InvalidInput.result());
++        }
++        let (_session_id, entry) = self.binding(&parts).await.map_err(|e| e.result())?;
++        let Some(_waiter) = self.registry.acquire_waiter().await else {
++            return Err(McpFailure::Busy.result());
++        };
++        let timeout = Duration::from_secs(if input.timeout_seconds == 0 {
++            MCP_MAX_WAIT_SECONDS
++        } else {
++            input.timeout_seconds
++        });
++        let Some(wake) = entry
++            .wake
++            .wait_until(input.after_revision, timeout, &entry.cancel)
++            .await
++        else {
++            return Err(McpFailure::SessionExpired.result());
++        };
++        let reason = if wake.revision > input.after_revision {
++            wake.reason
++        } else {
++            "timeout".to_owned()
++        };
++        Ok(Json(WaitForTurnOutput {
++            reason,
++            revision: wake.revision,
++            state_uri: Self::uri(&entry.room_code, entry.participant_id.as_str(), "state"),
++        }))
++    }
++}
++
++#[tool_handler(router = self.tool_router)]
++impl ServerHandler for McpHandler {
++    fn get_info(&self) -> ServerConfig {
++        ServerConfig::new(
++            ServerCapabilities::builder()
++                .enable_tools()
++                .enable_resources()
++                .enable_resources_subscribe()
++                .build(),
++        )
++        .with_instructions("Double Riichi MCP; authenticate with a private Bot Token.")
++    }
++
++    fn list_resources(
++        &self,
++        _request: Option<rmcp::model::PaginatedRequestParams>,
++        context: RequestContext<RoleServer>,
++    ) -> impl std::future::Future<Output = Result<ListResourcesResult, ErrorData>>
++    + rmcp::service::MaybeSendFuture
++    + '_ {
++        async move {
++            let Some(parts) = context.extensions.get::<axum::http::request::Parts>() else {
++                return Ok(ListResourcesResult::with_all_items(Vec::new()));
++            };
++            let Ok((_session_id, entry)) = self.binding(parts).await else {
++                return Ok(ListResourcesResult::with_all_items(Vec::new()));
++            };
++            Ok(ListResourcesResult::with_all_items(resources(&entry)))
++        }
++    }
++
++    fn list_resource_templates(
++        &self,
++        _request: Option<rmcp::model::PaginatedRequestParams>,
++        _context: RequestContext<RoleServer>,
++    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, ErrorData>>
++    + rmcp::service::MaybeSendFuture
++    + '_ {
++        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(
++            resource_templates(),
++        )))
++    }
++
++    fn read_resource(
++        &self,
++        request: ReadResourceRequestParams,
++        context: RequestContext<RoleServer>,
++    ) -> impl std::future::Future<Output = Result<ReadResourceResponse, ErrorData>>
++    + rmcp::service::MaybeSendFuture
++    + '_ {
++        async move {
++            let parts = context
++                .extensions
++                .get::<axum::http::request::Parts>()
++                .ok_or_else(|| ErrorData::invalid_request("missing request context", None))?;
++            let (_session_id, entry) = self
++                .binding(parts)
++                .await
++                .map_err(|error| error.error_data())?;
++            let uri = request.uri;
++            let value =
++                if uri == Self::uri(&entry.room_code, entry.participant_id.as_str(), "state") {
++                    self.read_state(&entry, &uri)
++                        .await
++                        .map_err(|error| error.error_data())?
++                } else if uri == Self::uri(&entry.room_code, "", "public") {
++                    self.read_public(&entry, &uri)
++                        .await
++                        .map_err(|error| error.error_data())?
++                } else if uri == Self::uri(&entry.room_code, "", "history") {
++                    self.read_history(&entry, &uri)
++                        .await
++                        .map_err(|error| error.error_data())?
++                } else {
++                    return Err(ErrorData::resource_not_found(uri, None));
++                };
++            Ok(
++                ReadResourceResult::new(vec![ResourceContents::text(value.to_string(), uri)])
++                    .into(),
++            )
++        }
++    }
++
++    fn accepted_subscription_filter(
++        &self,
++        requested: &rmcp::model::SubscriptionFilter,
++    ) -> Option<rmcp::model::SubscriptionFilter> {
++        Some(requested.clone())
++    }
++
++    #[allow(deprecated)]
++    fn subscribe(
++        &self,
++        request: SubscribeRequestParams,
++        context: RequestContext<RoleServer>,
++    ) -> impl std::future::Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_
++    {
++        async move {
++            let parts = context
++                .extensions
++                .get::<axum::http::request::Parts>()
++                .ok_or_else(|| ErrorData::invalid_request("missing request context", None))?;
++            let (_session_id, entry) = self
++                .binding(parts)
++                .await
++                .map_err(|error| error.error_data())?;
++            let valid_uri = resources(&entry)
++                .iter()
++                .any(|resource| resource.uri == request.uri);
++            if !valid_uri {
++                return Err(ErrorData::resource_not_found(request.uri, None));
++            }
++            let Some(subscription) = self.registry.acquire_subscription().await else {
++                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
++            };
++            let mut connection = entry
++                .room
++                .subscribe()
++                .await
++                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
++            let uri = request.uri;
++            let peer = context.peer.clone();
++            tokio::spawn(async move {
++                let _subscription = subscription;
++                loop {
++                    tokio::select! {
++                        _ = entry.cancel.cancelled() => break,
++                        event = connection.recv() => {
++                            let Some(event) = event else { break; };
++                            let Some((_revision, reason)) = watcher_reason(&entry, event).await else {
++                                continue;
++                            };
++                            if notification_uris(&entry, reason).iter().any(|candidate| candidate == &uri)
++                                && peer
++                                    .notify_resource_updated(
++                                        rmcp::model::ResourceUpdatedNotificationParam::new(
++                                            uri.clone(),
++                                        ),
++                                    )
++                                    .await
++                                    .is_err()
++                            {
++                                break;
++                            }
++                        }
++                    }
++                }
++            });
++            Ok(())
++        }
++    }
++
++    fn listen(
++        &self,
++        context: SubscriptionContext,
++    ) -> impl std::future::Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_
++    {
++        async move {
++            let parts = context
++                .request_context()
++                .extensions
++                .get::<axum::http::request::Parts>()
++                .ok_or_else(|| ErrorData::invalid_request("missing request context", None))?;
++            let session_id = Self::session_id(parts).map_err(|error| error.error_data())?;
++            let token_id = Self::auth(parts).map_err(|error| error.error_data())?;
++            let entry = self
++                .registry
++                .binding(&session_id, &token_id)
++                .await
++                .map_err(|error| error.error_data())?;
++            let Some(_subscription) = self.registry.acquire_subscription().await else {
++                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
++            };
++            let mut connection = entry
++                .room
++                .subscribe()
++                .await
++                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
++            let accepted = context
++                .accepted()
++                .resource_subscriptions
++                .clone()
++                .unwrap_or_default();
++            let sink = context.sink().clone();
++            loop {
++                tokio::select! {
++                    _ = context.cancelled() => break,
++                    event = connection.recv() => {
++                        let Some(event) = event else { break; };
++                        let Some((revision, reason)) = watcher_reason(&entry, event).await else {
++                            continue;
++                        };
++                        if !entry.wake.record(revision, reason) {
++                            continue;
++                        }
++                        self.registry.touch(&session_id, &entry.token_id).await;
++                        for uri in notification_uris(&entry, reason) {
++                            if accepted.iter().any(|candidate| candidate == &uri)
++                                && sink.notify_resource_updated(uri).await.is_err()
++                            {
++                                return Ok(());
++                            }
++                        }
++                    }
++                }
++            }
++            Ok(())
++        }
++    }
++}
++
++async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, &'static str)> {
++    if let RoomEvent::RoomDeleted | RoomEvent::ServerShutdown = event {
++        return Some((
++            entry.wake.current().revision.saturating_add(1),
++            match event {
++                RoomEvent::RoomDeleted => "room_deleted",
++                RoomEvent::ServerShutdown => "server_shutdown",
++                _ => unreachable!(),
++            },
++        ));
++    }
++    let snapshot = entry.room.snapshot().await.ok()?;
++    let revision = snapshot.revision;
++    match event {
++        RoomEvent::DecisionOpened { decision, .. } => {
++            let participant = snapshot
++                .participants
++                .iter()
++                .find(|value| value.id == entry.participant_id)?;
++            let double_riichi_core::MatchRole::Player(seat) = participant.role else {
++                return None;
++            };
++            decision
++                .eligible()
++                .any(|candidate| candidate == seat)
++                .then_some((revision, "my_decision"))
++        }
++        RoomEvent::SelectionChanged => snapshot
++            .participants
++            .iter()
++            .find(|value| value.id == entry.participant_id)
++            .map(|participant| {
++                (
++                    revision,
++                    if participant.selected {
++                        "selected"
++                    } else {
++                        "deselected"
++                    },
++                )
++            }),
++        RoomEvent::PhaseChanged(RoomPhase::Playing(_)) | RoomEvent::MatchStarted(_) => {
++            Some((revision, "match_started"))
++        }
++        RoomEvent::MatchCompleted { .. } | RoomEvent::PhaseChanged(RoomPhase::PostMatch(_)) => {
++            Some((revision, "game_ended"))
++        }
++        RoomEvent::MatchAborted { .. } | RoomEvent::PhaseChanged(RoomPhase::Lobby) => {
++            Some((revision, "round_ended"))
++        }
++        RoomEvent::ActionResolved { result, .. } => {
++            if matches!(snapshot.phase, RoomPhase::PostMatch(_)) {
++                Some((revision, "game_ended"))
++            } else if result
++                .events()
++                .iter()
++                .any(|event| matches!(event, double_riichi_core::GameEvent::StartKyoku { .. }))
++            {
++                Some((revision, "round_started"))
++            } else if result
++                .events()
++                .iter()
++                .any(|event| matches!(event, double_riichi_core::GameEvent::EndKyoku))
++            {
++                Some((revision, "round_ended"))
++            } else {
++                None
++            }
++        }
++        RoomEvent::ParticipantLeft(participant_id) if participant_id == entry.participant_id => {
++            snapshot
++                .participants
++                .iter()
++                .find(|value| value.id == entry.participant_id)
++                .and_then(|participant| {
++                    matches!(
++                        participant.controller,
++                        double_riichi_core::RoomController::PermanentAuto(_)
++                    )
++                    .then_some((revision, "permanent_auto"))
++                })
++        }
++        RoomEvent::Snapshot(_) => snapshot
++            .participants
++            .iter()
++            .find(|value| value.id == entry.participant_id)
++            .and_then(|participant| {
++                matches!(
++                    participant.controller,
++                    double_riichi_core::RoomController::PermanentAuto(_)
++                )
++                .then_some((revision, "permanent_auto"))
++            }),
++        RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
++        RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
++        RoomEvent::StorageDegraded
++        | RoomEvent::ParticipantJoined(_)
++        | RoomEvent::ParticipantLeft(_) => None,
++    }
++}
++
++fn resources(entry: &SessionEntry) -> Vec<Resource> {
++    vec![
++        Resource::new(
++            McpHandler::uri(&entry.room_code, entry.participant_id.as_str(), "state"),
++            "private-state",
++        )
++        .with_mime_type("application/json"),
++        Resource::new(
++            McpHandler::uri(&entry.room_code, "", "public"),
++            "public-state",
++        )
++        .with_mime_type("application/json"),
++        Resource::new(McpHandler::uri(&entry.room_code, "", "history"), "history")
++            .with_mime_type("application/json"),
++    ]
++}
++
++fn resource_templates() -> Vec<ResourceTemplate> {
++    vec![
++        ResourceTemplate::new(STATE_TEMPLATE, "private-state").with_mime_type("application/json"),
++        ResourceTemplate::new(PUBLIC_STATE_TEMPLATE, "public-state")
++            .with_mime_type("application/json"),
++        ResourceTemplate::new(HISTORY_TEMPLATE, "history").with_mime_type("application/json"),
++    ]
++}
++
++fn add_decision_timing(value: &mut Value) {
++    let remaining = value
++        .get("decision")
++        .and_then(|decision| decision.get("remaining_ms"))
++        .and_then(Value::as_u64);
++    value["remaining_ms_at_read"] = remaining.map_or(Value::Null, Value::from);
++    value["decision_expires_at"] = remaining.map_or(Value::Null, |value| {
++        let now = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap_or_default()
++            .as_millis();
++        Value::from(now.saturating_add(u128::from(value)) as u64)
++    });
++}
++
++fn notification_uris(entry: &SessionEntry, reason: &str) -> Vec<String> {
++    let mut uris = vec![
++        McpHandler::uri(&entry.room_code, entry.participant_id.as_str(), "state"),
++        McpHandler::uri(&entry.room_code, "", "public"),
++    ];
++    if matches!(
++        reason,
++        "round_started" | "round_ended" | "game_ended" | "room_deleted" | "server_shutdown"
++    ) {
++        uris.push(McpHandler::uri(&entry.room_code, "", "history"));
++    }
++    uris
++}
++
++fn room_failure(error: RoomError) -> McpFailure {
++    match error {
++        RoomError::RoomFull => McpFailure::RoomFull,
++        RoomError::ParticipantNotFound(_) => McpFailure::WrongParticipant,
++        RoomError::Disconnected | RoomError::ControllerNotInteractive => McpFailure::SessionExpired,
++        RoomError::NotPlaying | RoomError::Playing | RoomError::Match(_) => McpFailure::StaleAction,
++        RoomError::Busy => McpFailure::Busy,
++        RoomError::Deleted | RoomError::Closed => McpFailure::RoomNotFound,
++        RoomError::NotLobby | RoomError::RematchUnavailable => McpFailure::LeaveUnavailable,
++        _ => McpFailure::Internal,
++    }
++}
++
++fn find_string(value: &Value, key: &str) -> Option<String> {
++    match value {
++        Value::Object(object) => object.iter().find_map(|(candidate, value)| {
++            if candidate == key {
++                value.as_str().map(str::to_owned)
++            } else {
++                find_string(value, key)
++            }
++        }),
++        Value::Array(values) => values.iter().find_map(|value| find_string(value, key)),
++        _ => None,
++    }
++}
++
++fn contains_action_id(value: &Value, action_id: &str) -> bool {
++    match value {
++        Value::Object(object) => object.iter().any(|(key, value)| {
++            (key == "action_id" || key == "actionId") && value.as_str() == Some(action_id)
++                || contains_action_id(value, action_id)
++        }),
++        Value::Array(values) => values
++            .iter()
++            .any(|value| contains_action_id(value, action_id)),
++        _ => false,
++    }
++}
++
++fn redact_private_history(value: &mut Value) {
++    match value {
++        Value::Object(object) => {
++            object.retain(|key, _| {
++                !matches!(
++                    key.as_str(),
++                    "tehais" | "hands" | "wall" | "private_state" | "raw_state"
++                )
++            });
++            for value in object.values_mut() {
++                redact_private_history(value);
++            }
++        }
++        Value::Array(values) => {
++            for value in values {
++                redact_private_history(value);
++            }
++        }
++        _ => {}
++    }
++}
++
++pub(crate) async fn mcp_endpoint(
++    State(state): State<Arc<ServerState>>,
++    axum::extract::Extension(runtime): axum::extract::Extension<Arc<McpRuntime>>,
++    request: Request<Body>,
++) -> Response {
++    runtime.handle(state, request).await
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use double_riichi_core::{
++        CharacterCatalog, GameMode, ParticipantKind, PermanentAutoReason, Presence, RoomActor,
++        RoomCommand, RoomConfig, RoomController, RoomResponse, ShutdownMode,
++    };
++
++    fn room(mode: GameMode) -> RoomHandle {
++        RoomActor::spawn(RoomConfig::new(
++            "MCP tests",
++            mode,
++            CharacterCatalog::starter(),
++        ))
++    }
++
++    fn entry(
++        room: RoomHandle,
++        session_id: &str,
++        token_id: &str,
++        room_code: &str,
++        participant_id: &str,
++    ) -> SessionEntry {
++        SessionEntry {
++            session_id: session_id.to_owned(),
++            token_id: token_id.to_owned(),
++            room_code: room_code.to_owned(),
++            room,
++            participant_id: ParticipantId::new(participant_id),
++            display_name: "Agent".to_owned(),
++            character_id: "mcp-bot".to_owned(),
++            last_seen: Instant::now(),
++            wake: Arc::new(RevisionWake::default()),
++            cancel: CancellationToken::new(),
++        }
++    }
++
++    #[test]
++    fn tool_and_resource_surfaces_are_exact() {
++        let mut names: Vec<_> = McpHandler::tool_router()
++            .list_all()
++            .into_iter()
++            .map(|tool| tool.name.to_string())
++            .collect();
++        names.sort();
++        assert_eq!(
++            names,
++            ["join_room", "leave_room", "submit_action", "wait_for_turn"]
++        );
++
++        let templates = resource_templates();
++        assert_eq!(templates.len(), 3);
++        let encoded = serde_json::to_string(&templates).expect("resource templates serialize");
++        for uri in [STATE_TEMPLATE, PUBLIC_STATE_TEMPLATE, HISTORY_TEMPLATE] {
++            assert!(encoded.contains(uri), "missing resource template {uri}");
++        }
++    }
++
++    #[tokio::test]
++    async fn session_binding_survives_leave_and_cannot_change_rooms() {
++        let registry = McpSessionRegistry::new(Duration::from_secs(60));
++        let first_room = room(GameMode::FourPlayerRedEast);
++        registry
++            .bind(
++                "session".to_owned(),
++                "token".to_owned(),
++                "123456".to_owned(),
++                first_room,
++                ParticipantId::new("agent"),
++                "Agent".to_owned(),
++                "mcp-bot".to_owned(),
++            )
++            .await
++            .expect("first bind");
++
++        let removed = registry.remove_binding("session").await;
++        assert!(removed.is_some());
++        assert!(matches!(
++            registry.binding("session", "token").await,
++            Err(McpFailure::SessionExpired)
++        ));
++        assert!(registry.was_bound("session", "token").await.unwrap());
++        let result = registry
++            .bind(
++                "session".to_owned(),
++                "token".to_owned(),
++                "654321".to_owned(),
++                room(GameMode::FourPlayerRedEast),
++                ParticipantId::new("other"),
++                "Other".to_owned(),
++                "mcp-bot".to_owned(),
++            )
++            .await;
++        assert!(matches!(result, Err(McpFailure::SessionBound)));
++    }
++
++    #[tokio::test]
++    async fn same_token_room_resumes_and_new_session_wins_generation() {
++        let registry = McpSessionRegistry::new(Duration::from_secs(60));
++        let room = room(GameMode::FourPlayerRedEast);
++        let participant_id = ParticipantId::new("agent");
++        registry
++            .bind(
++                "old".to_owned(),
++                "token".to_owned(),
++                "123456".to_owned(),
++                room.clone(),
++                participant_id.clone(),
++                "Agent".to_owned(),
++                "mcp-bot".to_owned(),
++            )
++            .await
++            .expect("old generation");
++        assert_eq!(
++            registry.participant_for("token", "123456").await,
++            Some(participant_id.clone())
++        );
++
++        let (current, replaced) = registry
++            .bind(
++                "new".to_owned(),
++                "token".to_owned(),
++                "123456".to_owned(),
++                room,
++                participant_id.clone(),
++                "Changed name is ignored by join resume".to_owned(),
++                "other-character".to_owned(),
++            )
++            .await
++            .expect("replacement generation");
++        assert_eq!(replaced.expect("old generation returned").session_id, "old");
++        assert_eq!(current.session_id, "new");
++        assert!(matches!(
++            registry.binding("old", "token").await,
++            Err(McpFailure::SessionExpired)
++        ));
++        assert_eq!(
++            registry
++                .binding("new", "token")
++                .await
++                .unwrap()
++                .participant_id,
++            participant_id
++        );
++    }
++
++    #[tokio::test]
++    async fn idle_ttl_expires_session_and_disconnects_participant() {
++        let registry = McpSessionRegistry::new(Duration::from_secs(1));
++        let room = room(GameMode::FourPlayerRedEast);
++        room.send(RoomCommand::join(Participant::new(
++            "agent",
++            "Agent",
++            ParticipantKind::MCP,
++        )))
++        .await
++        .expect("join participant");
++        registry
++            .bind(
++                "session".to_owned(),
++                "token".to_owned(),
++                "123456".to_owned(),
++                room.clone(),
++                ParticipantId::new("agent"),
++                "Agent".to_owned(),
++                "mcp-bot".to_owned(),
++            )
++            .await
++            .expect("bind session");
++
++        let expired = registry
++            .expire_idle(Instant::now() + Duration::from_secs(2))
++            .await;
++        assert_eq!(expired.len(), 1);
++        disconnect_entries(expired).await;
++        assert!(matches!(
++            registry.binding("session", "token").await,
++            Err(McpFailure::SessionExpired)
++        ));
++        assert_eq!(
++            room.snapshot()
++                .await
++                .unwrap()
++                .participants
++                .first()
++                .unwrap()
++                .presence,
++            Presence::Disconnected
++        );
++        assert_eq!(
++            registry.participant_for("token", "123456").await,
++            Some(ParticipantId::new("agent"))
++        );
++    }
++
++    #[tokio::test]
++    async fn relevant_wake_filtering_and_notification_uris_are_revision_safe() {
++        let room = room(GameMode::FourPlayerRedEast);
++        let joined = match room
++            .send(RoomCommand::join(Participant::new(
++                "agent",
++                "Agent",
++                ParticipantKind::MCP,
++            )))
++            .await
++            .unwrap()
++        {
++            RoomResponse::Joined(value) => value,
++            other => panic!("unexpected join response: {other:?}"),
++        };
++        let watcher = entry(room.clone(), "session", "token", "123456", "agent");
++        assert_eq!(
++            watcher_reason(&watcher, RoomEvent::ParticipantJoined(joined)).await,
++            None
++        );
++        assert_eq!(
++            watcher_reason(&watcher, RoomEvent::StorageDegraded).await,
++            None
++        );
++        assert_eq!(
++            watcher_reason(
++                &watcher,
++                RoomEvent::ParticipantLeft(ParticipantId::new("other")),
++            )
++            .await,
++            None
++        );
++
++        room.send(RoomCommand::select("agent")).await.unwrap();
++        let revision = room.snapshot().await.unwrap().revision;
++        assert_eq!(
++            watcher_reason(&watcher, RoomEvent::SelectionChanged).await,
++            Some((revision, "selected"))
++        );
++        for (reason, includes_history) in [
++            ("selected", false),
++            ("deselected", false),
++            ("my_decision", false),
++            ("round_started", true),
++            ("round_ended", true),
++            ("game_ended", true),
++            ("permanent_auto", false),
++            ("room_deleted", true),
++            ("server_shutdown", true),
++        ] {
++            let uris = notification_uris(&watcher, reason);
++            assert_eq!(uris.len(), if includes_history { 3 } else { 2 }, "{reason}");
++            assert!(uris.iter().any(|uri| uri.contains("/public-state")));
++            assert_eq!(
++                uris.iter().filter(|uri| uri.contains("/history")).count(),
++                usize::from(includes_history)
++            );
++        }
++    }
++
++    #[tokio::test]
++    async fn notification_before_wait_and_old_revisions_do_not_race() {
++        let wake = RevisionWake::default();
++        assert!(wake.record(4, "my_decision"));
++        let result = wake.wait(3, Duration::from_millis(1)).await;
++        assert_eq!(
++            (result.revision, result.reason.as_str()),
++            (4, "my_decision")
++        );
++
++        let old = RevisionWake::default();
++        assert!(!old.record(0, "old"));
++        let result = old.wait(0, Duration::from_millis(1)).await;
++        assert_eq!(result.reason, "timeout");
++    }
++
++    #[test]
++    fn submit_action_errors_and_nested_action_ids_are_stable() {
++        for (failure, code) in [
++            (McpFailure::StaleAction, "stale_action"),
++            (McpFailure::IllegalAction, "illegal_action"),
++            (McpFailure::WrongParticipant, "wrong_participant"),
++        ] {
++            assert_eq!(failure.code(), code);
++        }
++        for (error, code) in [
++            (
++                RoomError::ParticipantNotFound(ParticipantId::new("other")),
++                "wrong_participant",
++            ),
++            (RoomError::NotPlaying, "stale_action"),
++            (RoomError::Playing, "stale_action"),
++            (RoomError::Match("expired".to_owned()), "stale_action"),
++        ] {
++            assert_eq!(room_failure(error).code(), code);
++        }
++        let projection = json!({"decision": {"actions": [{"actionId": "a1"}]} });
++        assert!(contains_action_id(&projection, "a1"));
++        assert!(!contains_action_id(&projection, "a2"));
++    }
++
++    #[tokio::test]
++    async fn private_and_public_room_projections_keep_concealed_tiles_private() {
++        let room = room(GameMode::FourPlayerRedEast);
++        room.send(RoomCommand::join(Participant::new(
++            "agent",
++            "Agent",
++            ParticipantKind::MCP,
++        )))
++        .await
++        .unwrap();
++        room.send(RoomCommand::select("agent")).await.unwrap();
++        room.send(RoomCommand::fill_with_bots()).await.unwrap();
++        assert!(matches!(
++            room.send(RoomCommand::start()).await.unwrap(),
++            RoomResponse::Started(_)
++        ));
++
++        let private = serde_json::to_value(
++            room.projection(ParticipantId::new("agent"))
++                .await
++                .unwrap()
++                .expect("private projection"),
++        )
++        .unwrap();
++        let public =
++            serde_json::to_value(room.public_projection().await.unwrap().unwrap()).unwrap();
++        assert_eq!(private["audience"], "player");
++        assert_eq!(public["audience"], "public");
++        assert!(private.to_string().contains("\"hand\""));
++        assert!(!public.to_string().contains("\"hand\""));
++
++        let mut history = json!({"tehais": [1], "nested": {"hands": [2], "visible": true}});
++        redact_private_history(&mut history);
++        assert_eq!(history, json!({"nested": {"visible": true}}));
++    }
++
++    #[tokio::test]
++    async fn leave_disconnect_and_revocation_update_room_state() {
++        let active = room(GameMode::ThreePlayerRedEast);
++        active
++            .send(RoomCommand::join(Participant::new(
++                "agent",
++                "Agent",
++                ParticipantKind::MCP,
++            )))
++            .await
++            .unwrap();
++        active.send(RoomCommand::select("agent")).await.unwrap();
++        active.send(RoomCommand::fill_with_bots()).await.unwrap();
++        active.send(RoomCommand::start()).await.unwrap();
++        active.send(RoomCommand::leave("agent")).await.unwrap();
++        let participant = active
++            .snapshot()
++            .await
++            .unwrap()
++            .participants
++            .into_iter()
++            .find(|value| value.id.as_str() == "agent")
++            .expect("active player retained until match end");
++        assert_eq!(
++            participant.controller,
++            RoomController::PermanentAuto(PermanentAutoReason::LeftDuringMatch)
++        );
++
++        let watchdog = room(GameMode::ThreePlayerRedEast);
++        watchdog
++            .send(RoomCommand::join(Participant::new(
++                "agent",
++                "Agent",
++                ParticipantKind::MCP,
++            )))
++            .await
++            .unwrap();
++        watchdog.send(RoomCommand::select("agent")).await.unwrap();
++        watchdog.send(RoomCommand::fill_with_bots()).await.unwrap();
++        watchdog.send(RoomCommand::start()).await.unwrap();
++        let disconnected = entry(watchdog.clone(), "session", "token", "123456", "agent");
++        disconnect_entry(disconnected.clone()).await;
++        assert!(disconnected.cancel.is_cancelled());
++        assert_eq!(
++            watchdog
++                .snapshot()
++                .await
++                .unwrap()
++                .participants
++                .into_iter()
++                .find(|value| value.id.as_str() == "agent")
++                .unwrap()
++                .presence,
++            Presence::Disconnected
++        );
++
++        let revoked = room(GameMode::FourPlayerRedEast);
++        revoked
++            .send(RoomCommand::join_with_token(
++                Participant::new("agent", "Agent", ParticipantKind::MCP),
++                "token",
++            ))
++            .await
++            .unwrap();
++        revoked
++            .send(RoomCommand::revoke_token("token"))
++            .await
++            .unwrap();
++        assert!(revoked.snapshot().await.unwrap().participants.is_empty());
++    }
++
++    #[tokio::test]
++    async fn room_delete_and_shutdown_publish_terminal_events() {
++        let deleted = room(GameMode::FourPlayerRedEast);
++        let mut deleted_events = deleted.subscribe().await.unwrap();
++        assert!(matches!(
++            deleted_events.recv().await,
++            Some(RoomEvent::Snapshot(_))
++        ));
++        assert!(matches!(
++            deleted.send(RoomCommand::Delete).await,
++            Ok(RoomResponse::Deleted)
++        ));
++        assert!(matches!(
++            deleted_events.recv().await,
++            Some(RoomEvent::RoomDeleted)
++        ));
++        assert!(deleted.snapshot().await.is_err());
++
++        let shutting_down = room(GameMode::FourPlayerRedEast);
++        let mut shutdown_events = shutting_down.subscribe().await.unwrap();
++        assert!(matches!(
++            shutdown_events.recv().await,
++            Some(RoomEvent::Snapshot(_))
++        ));
++        assert!(matches!(
++            shutting_down
++                .send(RoomCommand::shutdown(ShutdownMode::Forced))
++                .await,
++            Ok(RoomResponse::Shutdown)
++        ));
++        assert!(matches!(
++            shutdown_events.recv().await,
++            Some(RoomEvent::ServerShutdown)
++        ));
++        assert!(shutting_down.snapshot().await.is_err());
++    }
++}
+diff --git a/crates/double_riichi_server/tests/task14_mcp.rs b/crates/double_riichi_server/tests/task14_mcp.rs
+new file mode 100644
+index 0000000..bdb2961
+--- /dev/null
++++ b/crates/double_riichi_server/tests/task14_mcp.rs
+@@ -0,0 +1,1066 @@
++use std::{
++    future::Future,
++    sync::Arc,
++    time::{Duration, SystemTime, UNIX_EPOCH},
++};
++
++use axum::{
++    Router,
++    body::Body,
++    http::{Request, StatusCode},
++    response::Response,
++};
++use double_riichi_core::{
++    GameMode, ParticipantId, Presence, RoomCommand, RoomConfig, RoomRegistry, TimeControl,
++};
++use double_riichi_server::{
++    AdminAuthenticator, BotTokenAuthority, BotTokenService, ServerState, Storage, hash_password,
++    server_router,
++};
++use rmcp::{
++    ClientHandler,
++    model::{
++        CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation,
++        ReadResourceRequestParams, SubscribeRequestParams,
++    },
++};
++use serde_json::{Value, json};
++use tokio::{
++    net::TcpListener,
++    sync::oneshot,
++    time::{Instant, timeout},
++};
++use tower::ServiceExt;
++use url::Url;
++
++const ORIGIN: &str = "http://127.0.0.1:3000";
++const PROTOCOL_VERSION: &str = "2025-06-18";
++const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
++
++fn root(label: &str) -> std::path::PathBuf {
++    std::env::temp_dir().join(format!(
++        "double-riichi-task14-{label}-{}",
++        SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap()
++            .as_nanos()
++    ))
++}
++
++async fn fixture(label: &str) -> (Arc<ServerState>, Arc<BotTokenService>, Arc<Storage>, String) {
++    fixture_with_origin(label, ORIGIN).await
++}
++
++async fn fixture_with_origin(
++    label: &str,
++    origin: &str,
++) -> (Arc<ServerState>, Arc<BotTokenService>, Arc<Storage>, String) {
++    let storage = Arc::new(Storage::connect(&root(label)).await.unwrap());
++    let service = Arc::new(BotTokenService::new(
++        storage.clone(),
++        Arc::new(BotTokenAuthority::empty()),
++    ));
++    let token = service.create("runner", 1, "task14").await.unwrap();
++    let raw = token.secret().expose().to_owned();
++    let state = Arc::new(
++        ServerState::for_tests(
++            origin,
++            Arc::new(
++                AdminAuthenticator::new(
++                    "admin",
++                    hash_password("correct horse battery staple").unwrap(),
++                )
++                .unwrap(),
++            ),
++            RoomRegistry::with_max_rooms(8),
++        )
++        .with_bot_token_service(service.clone()),
++    );
++    (state, service, storage, raw)
++}
++
++fn initialize_params() -> Value {
++    json!({
++        "protocolVersion": PROTOCOL_VERSION,
++        "capabilities": {},
++        "clientInfo": {"name": "task14", "version": "1"}
++    })
++}
++
++async fn mcp(
++    app: &Router,
++    token: Option<&str>,
++    origin: Option<&str>,
++    session_id: Option<&str>,
++    id: Option<u64>,
++    method: &str,
++    params: Value,
++) -> Response {
++    let mut message = json!({
++        "jsonrpc": "2.0",
++        "method": method,
++        "params": params,
++    });
++    if let Some(id) = id {
++        message["id"] = json!(id);
++    }
++    let mut builder = Request::builder()
++        .method("POST")
++        .uri("/mcp")
++        .header("host", "127.0.0.1:3000")
++        .header("accept", "application/json, text/event-stream")
++        .header("content-type", "application/json");
++    if let Some(token) = token {
++        builder = builder.header("authorization", format!("Bearer {token}"));
++    }
++    if let Some(origin) = origin {
++        builder = builder.header("origin", origin);
++    }
++    if let Some(session_id) = session_id {
++        builder = builder.header("mcp-session-id", session_id);
++        builder = builder.header("mcp-protocol-version", PROTOCOL_VERSION);
++    }
++    let request = builder.body(Body::from(message.to_string())).unwrap();
++    timeout(REQUEST_TIMEOUT, app.clone().oneshot(request))
++        .await
++        .expect("MCP request timed out")
++        .unwrap()
++}
++
++async fn mcp_delete(app: &Router, token: &str, session_id: &str) -> Response {
++    let request = Request::builder()
++        .method("DELETE")
++        .uri("/mcp")
++        .header("host", "127.0.0.1:3000")
++        .header("accept", "application/json, text/event-stream")
++        .header("authorization", format!("Bearer {token}"))
++        .header("mcp-session-id", session_id)
++        .header("mcp-protocol-version", PROTOCOL_VERSION)
++        .body(Body::empty())
++        .unwrap();
++    timeout(REQUEST_TIMEOUT, app.clone().oneshot(request))
++        .await
++        .expect("MCP DELETE timed out")
++        .unwrap()
++}
++
++async fn body_json(response: Response) -> Value {
++    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
++        .await
++        .unwrap();
++    if body.is_empty() {
++        return Value::Null;
++    }
++    if let Ok(value) = serde_json::from_slice(&body) {
++        return value;
++    }
++    let text = String::from_utf8_lossy(&body);
++    text.lines()
++        .filter_map(|line| line.strip_prefix("data: "))
++        .filter(|line| !line.is_empty())
++        .last()
++        .and_then(|line| serde_json::from_str(line).ok())
++        .unwrap_or_else(|| panic!("MCP response was not JSON or SSE: body={body:?}"))
++}
++
++fn assert_rpc_success(body: &Value) {
++    assert_eq!(
++        body["jsonrpc"], "2.0",
++        "unexpected JSON-RPC response: {body}"
++    );
++    assert!(body["error"].is_null(), "JSON-RPC error: {body}");
++    assert!(!body["result"].is_null(), "missing JSON-RPC result: {body}");
++}
++
++fn tool_value(body: &Value) -> Value {
++    assert_rpc_success(body);
++    let result = &body["result"];
++    if let Some(value) = result
++        .get("structuredContent")
++        .filter(|value| !value.is_null())
++    {
++        return value.clone();
++    }
++    let text = result["content"]
++        .as_array()
++        .and_then(|content| content.first())
++        .and_then(|content| content["text"].as_str())
++        .unwrap_or_else(|| panic!("tool result has no structured content: {body}"));
++    serde_json::from_str(text)
++        .unwrap_or_else(|error| panic!("tool result text was not JSON: {error}; body={body}"))
++}
++
++async fn initialize(app: &Router, token: &str, id: u64) -> (String, Value) {
++    let response = mcp(
++        app,
++        Some(token),
++        None,
++        None,
++        Some(id),
++        "initialize",
++        initialize_params(),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::OK);
++    let session_id = response
++        .headers()
++        .get("mcp-session-id")
++        .expect("initialize response has MCP session ID")
++        .to_str()
++        .unwrap()
++        .to_owned();
++    let body = body_json(response).await;
++    assert_rpc_success(&body);
++
++    let response = mcp(
++        app,
++        Some(token),
++        None,
++        Some(&session_id),
++        None,
++        "notifications/initialized",
++        json!({}),
++    )
++    .await;
++    assert!(
++        response.status().is_success(),
++        "initialized notification failed: {}",
++        response.status()
++    );
++    (session_id, body)
++}
++
++async fn tool_call(
++    app: &Router,
++    token: &str,
++    session_id: &str,
++    id: u64,
++    name: &str,
++    arguments: Value,
++) -> Value {
++    let response = mcp(
++        app,
++        Some(token),
++        None,
++        Some(session_id),
++        Some(id),
++        "tools/call",
++        json!({"name": name, "arguments": arguments}),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::OK);
++    body_json(response).await
++}
++
++async fn read_resource(app: &Router, token: &str, session_id: &str, id: u64, uri: &str) -> Value {
++    let response = mcp(
++        app,
++        Some(token),
++        None,
++        Some(session_id),
++        Some(id),
++        "resources/read",
++        json!({"uri": uri}),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::OK);
++    let body = body_json(response).await;
++    assert_rpc_success(&body);
++    let text = body["result"]["contents"]
++        .as_array()
++        .and_then(|contents| contents.first())
++        .and_then(|content| content["text"].as_str())
++        .unwrap_or_else(|| panic!("resource result has no text: {body}"));
++    serde_json::from_str(text)
++        .unwrap_or_else(|error| panic!("resource text was not JSON: {error}; body={body}"))
++}
++
++async fn wait_for_presence(room: &double_riichi_core::RoomHandle, participant_id: &str) {
++    timeout(Duration::from_secs(2), async {
++        loop {
++            let snapshot = room.snapshot().await.unwrap();
++            if snapshot
++                .participants
++                .iter()
++                .find(|participant| participant.id.as_str() == participant_id)
++                .is_some_and(|participant| participant.presence == Presence::Disconnected)
++            {
++                return;
++            }
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++    })
++    .await
++    .expect("MCP disconnect was not observed");
++}
++
++async fn room_with_code(state: &ServerState, name: &str) -> double_riichi_core::RoomHandle {
++    state
++        .rooms()
++        .create(RoomConfig::new(
++            name,
++            GameMode::FourPlayerRedEast,
++            double_riichi_core::CharacterCatalog::starter(),
++        ))
++        .await
++        .unwrap()
++}
++
++#[tokio::test]
++async fn live_mcp_auth_origin_and_session_ownership() {
++    let (state, service, storage, token) = fixture("auth").await;
++    let other = service.create("other", 1, "task14-other").await.unwrap();
++    let other_token = other.secret().expose().to_owned();
++    let app = server_router(state.clone());
++
++    for (presented, origin, expected_status) in [
++        (None, None, StatusCode::UNAUTHORIZED),
++        (Some("driichi_invalid"), None, StatusCode::UNAUTHORIZED),
++        (
++            Some(token.as_str()),
++            Some("http://evil.invalid"),
++            StatusCode::FORBIDDEN,
++        ),
++    ] {
++        let response = mcp(
++            &app,
++            presented,
++            origin,
++            None,
++            Some(1),
++            "initialize",
++            initialize_params(),
++        )
++        .await;
++        assert_eq!(response.status(), expected_status);
++    }
++
++    let (session_id, _) = initialize(&app, &token, 2).await;
++    let response = mcp(
++        &app,
++        Some(&other_token),
++        None,
++        Some(&session_id),
++        Some(3),
++        "tools/list",
++        json!({}),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
++
++    service
++        .revoke(
++            service.authenticate(&token).unwrap().token_id(),
++            2,
++            "task14-revoke",
++        )
++        .await
++        .unwrap();
++    let response = mcp(
++        &app,
++        Some(&token),
++        None,
++        Some(&session_id),
++        Some(4),
++        "tools/list",
++        json!({}),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
++
++    state.shutdown().await;
++    storage.close().await;
++}
++
++#[tokio::test]
++async fn live_mcp_discovers_joins_reads_and_keeps_room_binding_permanent() {
++    let (state, _service, storage, token) = fixture("surface").await;
++    let first_room = room_with_code(&state, "MCP surface").await;
++    let second_room = room_with_code(&state, "MCP other").await;
++    let first_code = first_room.join_code().to_string();
++    let second_code = second_room.join_code().to_string();
++    let app = server_router(state.clone());
++    let (session_id, _) = initialize(&app, &token, 10).await;
++
++    let response = mcp(
++        &app,
++        Some(&token),
++        None,
++        Some(&session_id),
++        Some(11),
++        "tools/list",
++        json!({}),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::OK);
++    let body = body_json(response).await;
++    assert_rpc_success(&body);
++    let mut tools: Vec<_> = body["result"]["tools"]
++        .as_array()
++        .unwrap()
++        .iter()
++        .map(|tool| tool["name"].as_str().unwrap().to_owned())
++        .collect();
++    tools.sort();
++    assert_eq!(
++        tools,
++        ["join_room", "leave_room", "submit_action", "wait_for_turn"]
++    );
++
++    let join = tool_call(
++        &app,
++        &token,
++        &session_id,
++        12,
++        "join_room",
++        json!({
++            "room_code": first_code,
++            "provider": "runner",
++            "display_name": "MCP Runner"
++        }),
++    )
++    .await;
++    let join_value = tool_value(&join);
++    let participant_id = join_value["participant_id"].as_str().unwrap().to_owned();
++    let state_uri = join_value["state_uri"].as_str().unwrap().to_owned();
++    let public_uri = join_value["public_state_uri"].as_str().unwrap().to_owned();
++    let history_uri = join_value["history_uri"].as_str().unwrap().to_owned();
++    assert_eq!(join_value["resumed"], false);
++
++    let response = mcp(
++        &app,
++        Some(&token),
++        None,
++        Some(&session_id),
++        Some(13),
++        "resources/list",
++        json!({}),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::OK);
++    let body = body_json(response).await;
++    assert_rpc_success(&body);
++    let resources = body["result"]["resources"].as_array().unwrap();
++    assert_eq!(resources.len(), 3);
++    let mut resource_uris: Vec<_> = resources
++        .iter()
++        .map(|resource| resource["uri"].as_str().unwrap().to_owned())
++        .collect();
++    resource_uris.sort();
++    let mut expected_uris = vec![state_uri.clone(), public_uri.clone(), history_uri.clone()];
++    expected_uris.sort();
++    assert_eq!(resource_uris, expected_uris);
++
++    let response = mcp(
++        &app,
++        Some(&token),
++        None,
++        Some(&session_id),
++        Some(14),
++        "resources/templates/list",
++        json!({}),
++    )
++    .await;
++    assert_eq!(response.status(), StatusCode::OK);
++    let body = body_json(response).await;
++    assert_rpc_success(&body);
++    assert_eq!(
++        body["result"]["resourceTemplates"]
++            .as_array()
++            .unwrap()
++            .len(),
++        3
++    );
++
++    let private = read_resource(&app, &token, &session_id, 15, &state_uri).await;
++    assert_eq!(private["room_code"], first_code);
++    assert_eq!(private["participant_id"], participant_id);
++    assert_eq!(private["state_uri"], state_uri);
++    let public = read_resource(&app, &token, &session_id, 16, &public_uri).await;
++    assert_eq!(public["room_code"], first_code);
++    assert_eq!(public["state_uri"], public_uri);
++    let history = read_resource(&app, &token, &session_id, 17, &history_uri).await;
++    assert_eq!(history["history_uri"], history_uri);
++    assert_eq!(history["phase"], "Lobby");
++
++    let wrong_room = tool_call(
++        &app,
++        &token,
++        &session_id,
++        18,
++        "join_room",
++        json!({
++            "room_code": second_code,
++            "provider": "runner",
++            "display_name": "MCP Runner"
++        }),
++    )
++    .await;
++    assert_eq!(tool_value(&wrong_room)["code"], "session_already_bound");
++
++    let left = tool_call(&app, &token, &session_id, 19, "leave_room", json!({})).await;
++    assert_eq!(tool_value(&left)["left"], true);
++    let after_leave = tool_call(
++        &app,
++        &token,
++        &session_id,
++        20,
++        "join_room",
++        json!({
++            "room_code": second_code,
++            "provider": "runner",
++            "display_name": "MCP Runner"
++        }),
++    )
++    .await;
++    assert_eq!(tool_value(&after_leave)["code"], "session_already_bound");
++
++    state.shutdown().await;
++    storage.close().await;
++}
++
++#[tokio::test]
++async fn live_mcp_delete_and_shutdown_close_sessions_and_disconnect_participants() {
++    let (state, _service, storage, token) = fixture("close").await;
++    let room = room_with_code(&state, "MCP delete").await;
++    let app = server_router(state.clone());
++    let (session_id, _) = initialize(&app, &token, 30).await;
++    let join = tool_call(
++        &app,
++        &token,
++        &session_id,
++        31,
++        "join_room",
++        json!({
++            "room_code": room.join_code(),
++            "provider": "runner",
++            "display_name": "MCP Delete"
++        }),
++    )
++    .await;
++    let participant_id = tool_value(&join)["participant_id"]
++        .as_str()
++        .unwrap()
++        .to_owned();
++
++    let response = mcp_delete(&app, &token, &session_id).await;
++    assert!(
++        response.status().is_success() || response.status() == StatusCode::NOT_FOUND,
++        "unexpected MCP DELETE status: {}",
++        response.status()
++    );
++    wait_for_presence(&room, &participant_id).await;
++
++    let shutdown_room = room_with_code(&state, "MCP shutdown").await;
++    let (shutdown_session, _) = initialize(&app, &token, 32).await;
++    let join = tool_call(
++        &app,
++        &token,
++        &shutdown_session,
++        33,
++        "join_room",
++        json!({
++            "room_code": shutdown_room.join_code(),
++            "provider": "runner",
++            "display_name": "MCP Shutdown"
++        }),
++    )
++    .await;
++    let shutdown_participant = tool_value(&join)["participant_id"]
++        .as_str()
++        .unwrap()
++        .to_owned();
++
++    let waiting_app = app.clone();
++    let waiting_token = token.clone();
++    let waiting_session = shutdown_session.clone();
++    let waiting = tokio::spawn(async move {
++        mcp(
++            &waiting_app,
++            Some(&waiting_token),
++            None,
++            Some(&waiting_session),
++            Some(34),
++            "tools/call",
++            json!({
++                "name": "wait_for_turn",
++                "arguments": {"after_revision": 0, "timeout_seconds": 30}
++            }),
++        )
++        .await
++    });
++    tokio::time::sleep(Duration::from_millis(50)).await;
++    state.begin_shutdown();
++    let response = timeout(Duration::from_secs(2), waiting)
++        .await
++        .expect("MCP wait did not close on shutdown")
++        .unwrap();
++    assert!(
++        response.status().is_success() || response.status() == StatusCode::SERVICE_UNAVAILABLE,
++        "unexpected shutdown response: {}",
++        response.status()
++    );
++    wait_for_presence(&shutdown_room, &shutdown_participant).await;
++    state.shutdown().await;
++    storage.close().await;
++}
++
++#[tokio::test]
++async fn live_mcp_wait_observes_selection_when_event_wins_the_wait_race() {
++    let (state, _service, storage, token) = fixture("wait-race").await;
++    let room = room_with_code(&state, "MCP wait").await;
++    let app = server_router(state.clone());
++    let (session_id, _) = initialize(&app, &token, 40).await;
++    let join = tool_call(
++        &app,
++        &token,
++        &session_id,
++        41,
++        "join_room",
++        json!({
++            "room_code": room.join_code(),
++            "provider": "runner",
++            "display_name": "MCP Wait"
++        }),
++    )
++    .await;
++    let participant_id = tool_value(&join)["participant_id"]
++        .as_str()
++        .unwrap()
++        .to_owned();
++    let before = room.snapshot().await.unwrap().revision;
++
++    let waiting_app = app.clone();
++    let waiting_token = token.clone();
++    let waiting_session = session_id.clone();
++    let waiting = tokio::spawn(async move {
++        mcp(
++            &waiting_app,
++            Some(&waiting_token),
++            None,
++            Some(&waiting_session),
++            Some(42),
++            "tools/call",
++            json!({
++                "name": "wait_for_turn",
++                "arguments": {"after_revision": before, "timeout_seconds": 2}
++            }),
++        )
++        .await
++    });
++    tokio::time::sleep(Duration::from_millis(50)).await;
++    room.send(RoomCommand::select(ParticipantId::new(participant_id)))
++        .await
++        .unwrap();
++    let response = timeout(Duration::from_secs(2), waiting)
++        .await
++        .expect("MCP wait race timed out")
++        .unwrap();
++    assert_eq!(response.status(), StatusCode::OK);
++    let body = body_json(response).await;
++    let value = tool_value(&body);
++    assert_eq!(value["reason"], "selected");
++    assert!(value["revision"].as_u64().unwrap() > before);
++
++    state.shutdown().await;
++    storage.close().await;
++}
++
++#[derive(Clone)]
++struct ProtocolBot {
++    updates: Arc<std::sync::Mutex<Vec<String>>>,
++}
++
++#[allow(clippy::manual_async_fn)]
++impl ClientHandler for ProtocolBot {
++    fn on_resource_updated(
++        &self,
++        params: rmcp::model::ResourceUpdatedNotificationParam,
++        _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
++    ) -> impl Future<Output = ()> + rmcp::service::MaybeSendFuture + '_ {
++        let updates = self.updates.clone();
++        async move {
++            updates
++                .lock()
++                .expect("protocol bot update lock poisoned")
++                .push(params.uri);
++        }
++    }
++
++    fn get_info(&self) -> ClientConfig {
++        ClientConfig::new(
++            ClientCapabilities::default(),
++            Implementation::new("task14-protocol-bot", "1"),
++        )
++    }
++}
++
++async fn protocol_tool(
++    peer: &rmcp::Peer<rmcp::RoleClient>,
++    name: &'static str,
++    arguments: Value,
++) -> Value {
++    let arguments = arguments
++        .as_object()
++        .cloned()
++        .expect("MCP tool arguments are an object");
++    let result = timeout(
++        REQUEST_TIMEOUT,
++        peer.call_tool(CallToolRequestParams::new(name).with_arguments(arguments)),
++    )
++    .await
++    .expect("protocol MCP tool timed out")
++    .expect("protocol MCP tool failed");
++    assert_ne!(result.is_error, Some(true), "MCP tool returned an error");
++    if let Some(value) = result.structured_content {
++        return value;
++    }
++    let encoded = serde_json::to_value(result).expect("tool result serializes");
++    let text = encoded["content"]
++        .as_array()
++        .and_then(|content| content.first())
++        .and_then(|content| content["text"].as_str())
++        .expect("tool result has JSON content");
++    serde_json::from_str(text).expect("tool content is JSON")
++}
++
++async fn protocol_resource(peer: &rmcp::Peer<rmcp::RoleClient>, uri: &str) -> Value {
++    let result = timeout(
++        REQUEST_TIMEOUT,
++        peer.read_resource(ReadResourceRequestParams::new(uri)),
++    )
++    .await
++    .expect("protocol MCP resource read timed out")
++    .expect("protocol MCP resource read failed");
++    let encoded = serde_json::to_value(result).expect("resource result serializes");
++    let text = encoded["contents"]
++        .as_array()
++        .and_then(|contents| contents.first())
++        .and_then(|content| content["text"].as_str())
++        .expect("resource result has JSON text");
++    serde_json::from_str(text).expect("resource text is JSON")
++}
++
++fn assert_no_private_data(value: &Value, participant_id: &str) {
++    fn assert_no_redacted_keys(value: &Value) {
++        match value {
++            Value::Object(object) => {
++                for (key, value) in object {
++                    assert!(
++                        !matches!(
++                            key.as_str(),
++                            "tehais" | "hands" | "wall" | "private_state" | "raw_state"
++                        ),
++                        "private history field leaked through MCP: {key}"
++                    );
++                    assert_no_redacted_keys(value);
++                }
++            }
++            Value::Array(values) => values.iter().for_each(assert_no_redacted_keys),
++            _ => {}
++        }
++    }
++
++    if let Some(players) = value["players"].as_array() {
++        for player in players {
++            if player["participant_id"] == participant_id {
++                continue;
++            }
++            assert!(
++                player.get("hand").is_none_or(Value::is_null),
++                "opponent concealed hand leaked through MCP: {player}"
++            );
++        }
++    }
++    assert_no_redacted_keys(value);
++}
++
++fn is_post_match(value: &Value) -> bool {
++    value["phase"].as_str() == Some("PostMatch") || value["phase"].get("PostMatch").is_some()
++}
++
++#[tokio::test]
++async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
++    const WAIT_SECONDS: u64 = 1;
++    const MAX_AGENT_STEPS: usize = 512;
++    const MATCH_TIMEOUT: Duration = Duration::from_secs(60);
++
++    timeout(MATCH_TIMEOUT, async {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let origin = format!("http://{}", listener.local_addr().unwrap());
++        let (state, _service, storage, token) = fixture_with_origin("bridge-e2e", &origin).await;
++        let room = room_with_code(&state, "MCP bridge E2E").await;
++        let app = server_router(state.clone());
++        let (server_stop, server_stop_rx) = oneshot::channel();
++        let server_task = tokio::spawn(async move {
++            axum::serve(listener, app.into_make_service())
++                .with_graceful_shutdown(async {
++                    let _ = server_stop_rx.await;
++                })
++                .await
++                .unwrap();
++        });
++
++        let (bridge_io, bot_io) = tokio::io::duplex(64 * 1024);
++        let bridge = tokio::spawn(double_riichi_mcp::run_with_token_and_transport(
++            double_riichi_mcp::BridgeConfig {
++                server: Url::parse(&format!("{origin}/mcp")).unwrap(),
++            },
++            token,
++            bridge_io,
++        ));
++        let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let bot = timeout(
++            REQUEST_TIMEOUT,
++            rmcp::serve_client(
++                ProtocolBot {
++                    updates: updates.clone(),
++                },
++                bot_io,
++            ),
++        )
++        .await
++        .expect("stdio protocol bot initialization timed out")
++        .expect("stdio protocol bot initialization failed");
++        let peer = bot.peer().clone();
++
++        let tools = timeout(REQUEST_TIMEOUT, peer.list_tools(None))
++            .await
++            .expect("tools/list timed out")
++            .unwrap();
++        let mut tool_names: Vec<_> = tools
++            .tools
++            .iter()
++            .map(|tool| tool.name.to_string())
++            .collect();
++        tool_names.sort();
++        assert_eq!(
++            tool_names,
++            ["join_room", "leave_room", "submit_action", "wait_for_turn"]
++        );
++
++        let templates = timeout(REQUEST_TIMEOUT, peer.list_resource_templates(None))
++            .await
++            .expect("resources/templates/list timed out")
++            .unwrap();
++        let mut template_uris: Vec<_> = templates
++            .resource_templates
++            .iter()
++            .map(|template| template.uri_template.clone())
++            .collect();
++        template_uris.sort();
++        assert_eq!(
++            template_uris,
++            [
++                "riichi://rooms/{code}/history",
++                "riichi://rooms/{code}/participants/{participant_id}/state",
++                "riichi://rooms/{code}/public-state",
++            ]
++        );
++
++        let joined = protocol_tool(
++            &peer,
++            "join_room",
++            json!({
++                "room_code": room.join_code(),
++                "provider": "runner",
++                "display_name": "MCP Bridge Runner"
++            }),
++        )
++        .await;
++        let participant_id = joined["participant_id"].as_str().unwrap().to_owned();
++        let state_uri = joined["state_uri"].as_str().unwrap().to_owned();
++        let public_uri = joined["public_state_uri"].as_str().unwrap().to_owned();
++        let history_uri = joined["history_uri"].as_str().unwrap().to_owned();
++
++        let resources = timeout(REQUEST_TIMEOUT, peer.list_resources(None))
++            .await
++            .expect("resources/list timed out")
++            .unwrap();
++        let mut resource_uris: Vec<_> = resources
++            .resources
++            .iter()
++            .map(|resource| resource.uri.clone())
++            .collect();
++        resource_uris.sort();
++        let mut expected_uris = vec![state_uri.clone(), public_uri.clone(), history_uri.clone()];
++        expected_uris.sort();
++        assert_eq!(resource_uris, expected_uris);
++
++        #[allow(deprecated)]
++        let _subscriptions = vec![
++            timeout(
++                REQUEST_TIMEOUT,
++                peer.subscribe(SubscribeRequestParams::new(state_uri.clone())),
++            )
++            .await
++            .expect("private resource subscription timed out")
++            .unwrap(),
++            timeout(
++                REQUEST_TIMEOUT,
++                peer.subscribe(SubscribeRequestParams::new(public_uri.clone())),
++            )
++            .await
++            .expect("public resource subscription timed out")
++            .unwrap(),
++            timeout(
++                REQUEST_TIMEOUT,
++                peer.subscribe(SubscribeRequestParams::new(history_uri.clone())),
++            )
++            .await
++            .expect("history resource subscription timed out")
++            .unwrap(),
++        ];
++
++        let initial_private = protocol_resource(&peer, &state_uri).await;
++        let initial_public = protocol_resource(&peer, &public_uri).await;
++        let initial_history = protocol_resource(&peer, &history_uri).await;
++        assert_eq!(initial_private["room_code"], room.join_code().to_string());
++        assert_eq!(initial_public["room_code"], room.join_code().to_string());
++        assert_eq!(initial_history["history_uri"], history_uri);
++        assert_no_private_data(&initial_private, &participant_id);
++        assert_no_private_data(&initial_public, &participant_id);
++        assert_no_private_data(&initial_history, &participant_id);
++        let mut last_revision = initial_private["revision"].as_u64().unwrap();
++        let mut wait_after_revision = last_revision;
++        assert_eq!(initial_public["revision"].as_u64(), Some(last_revision));
++        assert_eq!(initial_history["revision"].as_u64(), Some(last_revision));
++
++        // Setup is the only direct Room control in this test; all play below is MCP.
++        room.send(RoomCommand::set_time_control(TimeControl::Unlimited))
++            .await
++            .unwrap();
++        room.send(RoomCommand::select(ParticipantId::new(
++            participant_id.clone(),
++        )))
++        .await
++        .unwrap();
++        room.send(RoomCommand::fill_with_bots()).await.unwrap();
++        room.send(RoomCommand::start()).await.unwrap();
++
++        let mut saw_playing = false;
++        let mut saw_game_ended = false;
++        for step in 0..MAX_AGENT_STEPS {
++            let after_revision = wait_after_revision;
++            let wait_started = Instant::now();
++            let waited = protocol_tool(
++                &peer,
++                "wait_for_turn",
++                json!({
++                    "after_revision": after_revision,
++                    "timeout_seconds": WAIT_SECONDS
++                }),
++            )
++            .await;
++            assert!(
++                wait_started.elapsed() <= REQUEST_TIMEOUT,
++                "wait_for_turn exceeded bounded request timeout at step {step}"
++            );
++            let wait_revision = waited["revision"].as_u64().unwrap();
++            let reason = waited["reason"].as_str().unwrap();
++            assert!(
++                wait_revision >= after_revision,
++                "wait_for_turn revision regressed from {after_revision} to {wait_revision}"
++            );
++            if reason != "timeout" {
++                assert!(
++                    wait_revision > after_revision,
++                    "non-timeout wait did not advance revision: {waited}"
++                );
++            }
++            assert_eq!(waited["state_uri"], state_uri);
++
++            tokio::task::yield_now().await;
++            let private = protocol_resource(&peer, &state_uri).await;
++            let public = protocol_resource(&peer, &public_uri).await;
++            let history = protocol_resource(&peer, &history_uri).await;
++            let private_revision = private["revision"].as_u64().unwrap();
++            let public_revision = public["revision"].as_u64().unwrap();
++            let history_revision = history["revision"].as_u64().unwrap();
++            assert!(
++                private_revision >= last_revision,
++                "private revision regressed at step {step}"
++            );
++            assert!(
++                public_revision >= private_revision,
++                "public revision regressed at step {step}"
++            );
++            assert!(
++                history_revision >= public_revision,
++                "history revision regressed at step {step}"
++            );
++            last_revision = history_revision;
++            assert_no_private_data(&private, &participant_id);
++            assert_no_private_data(&public, &participant_id);
++            assert_no_private_data(&history, &participant_id);
++
++            if is_post_match(&private) {
++                assert_eq!(reason, "game_ended");
++                assert!(!history["result"].is_null(), "Post-Match has no result");
++                saw_game_ended = true;
++                break;
++            }
++            if private["phase"].get("Playing").is_some() {
++                saw_playing = true;
++            }
++            let actions = private["legal_actions"]
++                .as_array()
++                .expect("private state has legal_actions");
++            if actions.is_empty() {
++                wait_after_revision = history_revision;
++                continue;
++            }
++            assert_eq!(private["is_my_turn"], true);
++            let action_id = actions[0]["action_id"]
++                .as_str()
++                .expect("legal action has action_id")
++                .to_owned();
++            let submit_arguments = json!({"action_id": action_id});
++            assert_eq!(submit_arguments.as_object().unwrap().len(), 1);
++            let submitted = protocol_tool(&peer, "submit_action", submit_arguments).await;
++            assert_eq!(submitted["accepted"], true);
++            let submitted_revision = submitted["revision"].as_u64().unwrap();
++            assert!(
++                submitted_revision >= last_revision,
++                "submit_action revision regressed at step {step}"
++            );
++            last_revision = submitted_revision;
++            wait_after_revision = submitted_revision.saturating_sub(1);
++        }
++        assert!(saw_playing, "protocol bot never observed a Playing state");
++        assert!(
++            saw_game_ended,
++            "protocol bot did not reach game_ended/PostMatch within bound"
++        );
++        assert!(
++            !updates.lock().unwrap().is_empty(),
++            "stdio protocol bot received no resource update notifications"
++        );
++
++        let final_snapshot = room.snapshot().await.unwrap();
++        assert!(matches!(
++            final_snapshot.phase,
++            double_riichi_core::RoomPhase::PostMatch(_)
++        ));
++        assert!(final_snapshot.result.is_some());
++
++        timeout(REQUEST_TIMEOUT, bot.cancel())
++            .await
++            .expect("stdio protocol bot shutdown timed out")
++            .unwrap();
++        let bridge_result = timeout(REQUEST_TIMEOUT, bridge)
++            .await
++            .expect("bridge shutdown timed out")
++            .unwrap();
++        assert!(bridge_result.is_ok(), "bridge failed: {bridge_result:?}");
++        state.shutdown().await;
++        server_stop.send(()).unwrap();
++        timeout(REQUEST_TIMEOUT, server_task)
++            .await
++            .expect("Axum test server shutdown timed out")
++            .unwrap();
++        storage.close().await;
++    })
++    .await
++    .expect("bounded MCP bridge match timed out");
++}
