@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 rmcp = { version = "=3.4.0", default-features = false, features = ["client", "server", "transport-streamable-http-client-reqwest", "transport-io"] }
 tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "io-std"] }

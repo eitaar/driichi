@@ -21,6 +21,7 @@ use rmcp::{
         CallToolResult, ErrorCode, ListResourceTemplatesResult, ListResourcesResult,
         ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
         ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
+        SubscribeRequestParams,
     },
     schemars::JsonSchema,
     service::{RequestContext, RoleServer, SubscriptionContext},
@@ -1261,6 +1262,68 @@ impl ServerHandler for McpHandler {
         Some(requested.clone())
     }
 
+    #[allow(deprecated)]
+    fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_
+    {
+        async move {
+            let parts = context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .ok_or_else(|| ErrorData::invalid_request("missing request context", None))?;
+            let (_session_id, entry) = self
+                .binding(parts)
+                .await
+                .map_err(|error| error.error_data())?;
+            let valid_uri = resources(&entry)
+                .iter()
+                .any(|resource| resource.uri == request.uri);
+            if !valid_uri {
+                return Err(ErrorData::resource_not_found(request.uri, None));
+            }
+            let Some(subscription) = self.registry.acquire_subscription().await else {
+                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
+            };
+            let mut connection = entry
+                .room
+                .subscribe()
+                .await
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+            let uri = request.uri;
+            let peer = context.peer.clone();
+            tokio::spawn(async move {
+                let _subscription = subscription;
+                loop {
+                    tokio::select! {
+                        _ = entry.cancel.cancelled() => break,
+                        event = connection.recv() => {
+                            let Some(event) = event else { break; };
+                            let Some((_revision, reason)) = watcher_reason(&entry, event).await else {
+                                continue;
+                            };
+                            if notification_uris(&entry, reason).iter().any(|candidate| candidate == &uri)
+                                && peer
+                                    .notify_resource_updated(
+                                        rmcp::model::ResourceUpdatedNotificationParam::new(
+                                            uri.clone(),
+                                        ),
+                                    )
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            Ok(())
+        }
+    }
+
     fn listen(
         &self,
         context: SubscriptionContext,
@@ -1371,7 +1434,9 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
             Some((revision, "round_ended"))
         }
         RoomEvent::ActionResolved { result, .. } => {
-            if result
+            if matches!(snapshot.phase, RoomPhase::PostMatch(_)) {
+                Some((revision, "game_ended"))
+            } else if result
                 .events()
                 .iter()
                 .any(|event| matches!(event, double_riichi_core::GameEvent::StartKyoku { .. }))

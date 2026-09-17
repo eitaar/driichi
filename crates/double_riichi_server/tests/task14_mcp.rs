@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -10,15 +11,27 @@ use axum::{
     response::Response,
 };
 use double_riichi_core::{
-    GameMode, ParticipantId, Presence, RoomCommand, RoomConfig, RoomRegistry,
+    GameMode, ParticipantId, Presence, RoomCommand, RoomConfig, RoomRegistry, TimeControl,
 };
 use double_riichi_server::{
     AdminAuthenticator, BotTokenAuthority, BotTokenService, ServerState, Storage, hash_password,
     server_router,
 };
+use rmcp::{
+    ClientHandler,
+    model::{
+        CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation,
+        ReadResourceRequestParams, SubscribeRequestParams,
+    },
+};
 use serde_json::{Value, json};
-use tokio::time::timeout;
+use tokio::{
+    net::TcpListener,
+    sync::oneshot,
+    time::{Instant, timeout},
+};
 use tower::ServiceExt;
+use url::Url;
 
 const ORIGIN: &str = "http://127.0.0.1:3000";
 const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -35,6 +48,13 @@ fn root(label: &str) -> std::path::PathBuf {
 }
 
 async fn fixture(label: &str) -> (Arc<ServerState>, Arc<BotTokenService>, Arc<Storage>, String) {
+    fixture_with_origin(label, ORIGIN).await
+}
+
+async fn fixture_with_origin(
+    label: &str,
+    origin: &str,
+) -> (Arc<ServerState>, Arc<BotTokenService>, Arc<Storage>, String) {
     let storage = Arc::new(Storage::connect(&root(label)).await.unwrap());
     let service = Arc::new(BotTokenService::new(
         storage.clone(),
@@ -44,7 +64,7 @@ async fn fixture(label: &str) -> (Arc<ServerState>, Arc<BotTokenService>, Arc<St
     let raw = token.secret().expose().to_owned();
     let state = Arc::new(
         ServerState::for_tests(
-            ORIGIN,
+            origin,
             Arc::new(
                 AdminAuthenticator::new(
                     "admin",
@@ -644,4 +664,403 @@ async fn live_mcp_wait_observes_selection_when_event_wins_the_wait_race() {
 
     state.shutdown().await;
     storage.close().await;
+}
+
+#[derive(Clone)]
+struct ProtocolBot {
+    updates: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[allow(clippy::manual_async_fn)]
+impl ClientHandler for ProtocolBot {
+    fn on_resource_updated(
+        &self,
+        params: rmcp::model::ResourceUpdatedNotificationParam,
+        _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
+    ) -> impl Future<Output = ()> + rmcp::service::MaybeSendFuture + '_ {
+        let updates = self.updates.clone();
+        async move {
+            updates
+                .lock()
+                .expect("protocol bot update lock poisoned")
+                .push(params.uri);
+        }
+    }
+
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("task14-protocol-bot", "1"),
+        )
+    }
+}
+
+async fn protocol_tool(
+    peer: &rmcp::Peer<rmcp::RoleClient>,
+    name: &'static str,
+    arguments: Value,
+) -> Value {
+    let arguments = arguments
+        .as_object()
+        .cloned()
+        .expect("MCP tool arguments are an object");
+    let result = timeout(
+        REQUEST_TIMEOUT,
+        peer.call_tool(CallToolRequestParams::new(name).with_arguments(arguments)),
+    )
+    .await
+    .expect("protocol MCP tool timed out")
+    .expect("protocol MCP tool failed");
+    assert_ne!(result.is_error, Some(true), "MCP tool returned an error");
+    if let Some(value) = result.structured_content {
+        return value;
+    }
+    let encoded = serde_json::to_value(result).expect("tool result serializes");
+    let text = encoded["content"]
+        .as_array()
+        .and_then(|content| content.first())
+        .and_then(|content| content["text"].as_str())
+        .expect("tool result has JSON content");
+    serde_json::from_str(text).expect("tool content is JSON")
+}
+
+async fn protocol_resource(peer: &rmcp::Peer<rmcp::RoleClient>, uri: &str) -> Value {
+    let result = timeout(
+        REQUEST_TIMEOUT,
+        peer.read_resource(ReadResourceRequestParams::new(uri)),
+    )
+    .await
+    .expect("protocol MCP resource read timed out")
+    .expect("protocol MCP resource read failed");
+    let encoded = serde_json::to_value(result).expect("resource result serializes");
+    let text = encoded["contents"]
+        .as_array()
+        .and_then(|contents| contents.first())
+        .and_then(|content| content["text"].as_str())
+        .expect("resource result has JSON text");
+    serde_json::from_str(text).expect("resource text is JSON")
+}
+
+fn assert_no_private_data(value: &Value, participant_id: &str) {
+    fn assert_no_redacted_keys(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    assert!(
+                        !matches!(
+                            key.as_str(),
+                            "tehais" | "hands" | "wall" | "private_state" | "raw_state"
+                        ),
+                        "private history field leaked through MCP: {key}"
+                    );
+                    assert_no_redacted_keys(value);
+                }
+            }
+            Value::Array(values) => values.iter().for_each(assert_no_redacted_keys),
+            _ => {}
+        }
+    }
+
+    if let Some(players) = value["players"].as_array() {
+        for player in players {
+            if player["participant_id"] == participant_id {
+                continue;
+            }
+            assert!(
+                player.get("hand").is_none_or(Value::is_null),
+                "opponent concealed hand leaked through MCP: {player}"
+            );
+        }
+    }
+    assert_no_redacted_keys(value);
+}
+
+fn is_post_match(value: &Value) -> bool {
+    value["phase"].as_str() == Some("PostMatch") || value["phase"].get("PostMatch").is_some()
+}
+
+#[tokio::test]
+async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
+    const WAIT_SECONDS: u64 = 1;
+    const MAX_AGENT_STEPS: usize = 512;
+    const MATCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+    timeout(MATCH_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (state, _service, storage, token) = fixture_with_origin("bridge-e2e", &origin).await;
+        let room = room_with_code(&state, "MCP bridge E2E").await;
+        let app = server_router(state.clone());
+        let (server_stop, server_stop_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .with_graceful_shutdown(async {
+                    let _ = server_stop_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let (bridge_io, bot_io) = tokio::io::duplex(64 * 1024);
+        let bridge = tokio::spawn(double_riichi_mcp::run_with_token_and_transport(
+            double_riichi_mcp::BridgeConfig {
+                server: Url::parse(&format!("{origin}/mcp")).unwrap(),
+            },
+            token,
+            bridge_io,
+        ));
+        let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let bot = timeout(
+            REQUEST_TIMEOUT,
+            rmcp::serve_client(
+                ProtocolBot {
+                    updates: updates.clone(),
+                },
+                bot_io,
+            ),
+        )
+        .await
+        .expect("stdio protocol bot initialization timed out")
+        .expect("stdio protocol bot initialization failed");
+        let peer = bot.peer().clone();
+
+        let tools = timeout(REQUEST_TIMEOUT, peer.list_tools(None))
+            .await
+            .expect("tools/list timed out")
+            .unwrap();
+        let mut tool_names: Vec<_> = tools
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        tool_names.sort();
+        assert_eq!(
+            tool_names,
+            ["join_room", "leave_room", "submit_action", "wait_for_turn"]
+        );
+
+        let templates = timeout(REQUEST_TIMEOUT, peer.list_resource_templates(None))
+            .await
+            .expect("resources/templates/list timed out")
+            .unwrap();
+        let mut template_uris: Vec<_> = templates
+            .resource_templates
+            .iter()
+            .map(|template| template.uri_template.clone())
+            .collect();
+        template_uris.sort();
+        assert_eq!(
+            template_uris,
+            [
+                "riichi://rooms/{code}/history",
+                "riichi://rooms/{code}/participants/{participant_id}/state",
+                "riichi://rooms/{code}/public-state",
+            ]
+        );
+
+        let joined = protocol_tool(
+            &peer,
+            "join_room",
+            json!({
+                "room_code": room.join_code(),
+                "provider": "runner",
+                "display_name": "MCP Bridge Runner"
+            }),
+        )
+        .await;
+        let participant_id = joined["participant_id"].as_str().unwrap().to_owned();
+        let state_uri = joined["state_uri"].as_str().unwrap().to_owned();
+        let public_uri = joined["public_state_uri"].as_str().unwrap().to_owned();
+        let history_uri = joined["history_uri"].as_str().unwrap().to_owned();
+
+        let resources = timeout(REQUEST_TIMEOUT, peer.list_resources(None))
+            .await
+            .expect("resources/list timed out")
+            .unwrap();
+        let mut resource_uris: Vec<_> = resources
+            .resources
+            .iter()
+            .map(|resource| resource.uri.clone())
+            .collect();
+        resource_uris.sort();
+        let mut expected_uris = vec![state_uri.clone(), public_uri.clone(), history_uri.clone()];
+        expected_uris.sort();
+        assert_eq!(resource_uris, expected_uris);
+
+        #[allow(deprecated)]
+        let _subscriptions = vec![
+            timeout(
+                REQUEST_TIMEOUT,
+                peer.subscribe(SubscribeRequestParams::new(state_uri.clone())),
+            )
+            .await
+            .expect("private resource subscription timed out")
+            .unwrap(),
+            timeout(
+                REQUEST_TIMEOUT,
+                peer.subscribe(SubscribeRequestParams::new(public_uri.clone())),
+            )
+            .await
+            .expect("public resource subscription timed out")
+            .unwrap(),
+            timeout(
+                REQUEST_TIMEOUT,
+                peer.subscribe(SubscribeRequestParams::new(history_uri.clone())),
+            )
+            .await
+            .expect("history resource subscription timed out")
+            .unwrap(),
+        ];
+
+        let initial_private = protocol_resource(&peer, &state_uri).await;
+        let initial_public = protocol_resource(&peer, &public_uri).await;
+        let initial_history = protocol_resource(&peer, &history_uri).await;
+        assert_eq!(initial_private["room_code"], room.join_code().to_string());
+        assert_eq!(initial_public["room_code"], room.join_code().to_string());
+        assert_eq!(initial_history["history_uri"], history_uri);
+        assert_no_private_data(&initial_private, &participant_id);
+        assert_no_private_data(&initial_public, &participant_id);
+        assert_no_private_data(&initial_history, &participant_id);
+        let mut last_revision = initial_private["revision"].as_u64().unwrap();
+        let mut wait_after_revision = last_revision;
+        assert_eq!(initial_public["revision"].as_u64(), Some(last_revision));
+        assert_eq!(initial_history["revision"].as_u64(), Some(last_revision));
+
+        // Setup is the only direct Room control in this test; all play below is MCP.
+        room.send(RoomCommand::set_time_control(TimeControl::Unlimited))
+            .await
+            .unwrap();
+        room.send(RoomCommand::select(ParticipantId::new(
+            participant_id.clone(),
+        )))
+        .await
+        .unwrap();
+        room.send(RoomCommand::fill_with_bots()).await.unwrap();
+        room.send(RoomCommand::start()).await.unwrap();
+
+        let mut saw_playing = false;
+        let mut saw_game_ended = false;
+        for step in 0..MAX_AGENT_STEPS {
+            let after_revision = wait_after_revision;
+            let wait_started = Instant::now();
+            let waited = protocol_tool(
+                &peer,
+                "wait_for_turn",
+                json!({
+                    "after_revision": after_revision,
+                    "timeout_seconds": WAIT_SECONDS
+                }),
+            )
+            .await;
+            assert!(
+                wait_started.elapsed() <= REQUEST_TIMEOUT,
+                "wait_for_turn exceeded bounded request timeout at step {step}"
+            );
+            let wait_revision = waited["revision"].as_u64().unwrap();
+            let reason = waited["reason"].as_str().unwrap();
+            assert!(
+                wait_revision >= after_revision,
+                "wait_for_turn revision regressed from {after_revision} to {wait_revision}"
+            );
+            if reason != "timeout" {
+                assert!(
+                    wait_revision > after_revision,
+                    "non-timeout wait did not advance revision: {waited}"
+                );
+            }
+            assert_eq!(waited["state_uri"], state_uri);
+
+            tokio::task::yield_now().await;
+            let private = protocol_resource(&peer, &state_uri).await;
+            let public = protocol_resource(&peer, &public_uri).await;
+            let history = protocol_resource(&peer, &history_uri).await;
+            let private_revision = private["revision"].as_u64().unwrap();
+            let public_revision = public["revision"].as_u64().unwrap();
+            let history_revision = history["revision"].as_u64().unwrap();
+            assert!(
+                private_revision >= last_revision,
+                "private revision regressed at step {step}"
+            );
+            assert!(
+                public_revision >= private_revision,
+                "public revision regressed at step {step}"
+            );
+            assert!(
+                history_revision >= public_revision,
+                "history revision regressed at step {step}"
+            );
+            last_revision = history_revision;
+            assert_no_private_data(&private, &participant_id);
+            assert_no_private_data(&public, &participant_id);
+            assert_no_private_data(&history, &participant_id);
+
+            if is_post_match(&private) {
+                assert_eq!(reason, "game_ended");
+                assert!(!history["result"].is_null(), "Post-Match has no result");
+                saw_game_ended = true;
+                break;
+            }
+            if private["phase"].get("Playing").is_some() {
+                saw_playing = true;
+            }
+            let actions = private["legal_actions"]
+                .as_array()
+                .expect("private state has legal_actions");
+            if actions.is_empty() {
+                wait_after_revision = history_revision;
+                continue;
+            }
+            assert_eq!(private["is_my_turn"], true);
+            let action_id = actions[0]["action_id"]
+                .as_str()
+                .expect("legal action has action_id")
+                .to_owned();
+            let submit_arguments = json!({"action_id": action_id});
+            assert_eq!(submit_arguments.as_object().unwrap().len(), 1);
+            let submitted = protocol_tool(&peer, "submit_action", submit_arguments).await;
+            assert_eq!(submitted["accepted"], true);
+            let submitted_revision = submitted["revision"].as_u64().unwrap();
+            assert!(
+                submitted_revision >= last_revision,
+                "submit_action revision regressed at step {step}"
+            );
+            last_revision = submitted_revision;
+            wait_after_revision = submitted_revision.saturating_sub(1);
+        }
+        assert!(saw_playing, "protocol bot never observed a Playing state");
+        assert!(
+            saw_game_ended,
+            "protocol bot did not reach game_ended/PostMatch within bound"
+        );
+        assert!(
+            !updates.lock().unwrap().is_empty(),
+            "stdio protocol bot received no resource update notifications"
+        );
+
+        let final_snapshot = room.snapshot().await.unwrap();
+        assert!(matches!(
+            final_snapshot.phase,
+            double_riichi_core::RoomPhase::PostMatch(_)
+        ));
+        assert!(final_snapshot.result.is_some());
+
+        timeout(REQUEST_TIMEOUT, bot.cancel())
+            .await
+            .expect("stdio protocol bot shutdown timed out")
+            .unwrap();
+        let bridge_result = timeout(REQUEST_TIMEOUT, bridge)
+            .await
+            .expect("bridge shutdown timed out")
+            .unwrap();
+        assert!(bridge_result.is_ok(), "bridge failed: {bridge_result:?}");
+        state.shutdown().await;
+        server_stop.send(()).unwrap();
+        timeout(REQUEST_TIMEOUT, server_task)
+            .await
+            .expect("Axum test server shutdown timed out")
+            .unwrap();
+        storage.close().await;
+    })
+    .await
+    .expect("bounded MCP bridge match timed out");
 }
