@@ -21,24 +21,27 @@ remain blocked.
   fails. Replay failure latches health degraded, and forced shutdown awaits
   tracked metadata cleanup tasks.
 - Room MJAI setup failures run the same generation-guarded disconnect/removal
-  teardown as normal close; replacement input is serialized against generation
-  registration, and token joins serialize with revocation.
+  teardown as normal close; teardown retries transient full Room command queues
+  with bounded backpressure before removing the generation, replacement input is
+  serialized against generation registration, and token joins serialize with
+  revocation.
 - Added live acceptance coverage for strict Room join payloads and unknown
   Rooms, participant-creation rate limiting, wrong-token reconnect protection
   while an existing socket remains connected, ranked MJSON and metadata
   persistence, validation illegal-action completion, active compatibility
   health counts, degraded replay health, and shutdown admission/close behavior.
 - Added actor-level coverage for ranked timer/capacity release, deterministic
-  slow-consumer close behavior, and both injected replay failure and explicit
-  abort cleanup. No extra logging was added.
+  slow-consumer close behavior, Room setup teardown under a full command queue,
+  and both injected replay failure and explicit abort cleanup. No extra logging
+  was added.
 
 ## Exact verification
 
-Commands were run from clean-base HEAD `b236621` plus the focused Task 13
-changes:
+Commands were run from current Task 13 HEAD plus the focused rereview
+round 2 changes:
 
 - `cargo test -p double_riichi_server --test task13_compat -- --nocapture` — 8 passed.
-- `cargo test -p double_riichi_server --lib compat::tests -- --nocapture` — 11 passed.
+- `cargo test -p double_riichi_server --lib compat::tests -- --nocapture` — 12 passed, including the RED/GREEN Room teardown backpressure regression.
 - `cargo fmt --all -- --check` — passed.
 - `cargo test -p double_riichi_mjai` — 13 passed; doc tests passed.
 - `cargo test -p double_riichi_replay` — 15 integration tests passed; doc tests passed.
@@ -48,9 +51,9 @@ changes:
 - `cargo clippy --workspace --all-targets -- -D warnings` — failed on five pre-existing Clippy errors in `double_riichi_core` (`type_complexity`, two `needless_range_loop`, `too_many_arguments`, and `len_without_is_empty`); no Task 13 warning was reported. These unrelated baseline findings were not widened into this lifecycle fix.
 - `git diff --check` — passed.
 
-Focused tests use bounded WebSocket timeouts; timer/capacity, replay-health
-latching, generation teardown, and persistence cleanup checks are actor-level
-and do not depend on full-network sleeps.
+Focused tests use bounded WebSocket timeouts; timer/capacity, replay-health,
+Room command backpressure, generation teardown, and persistence cleanup checks
+are actor-level and do not depend on full-network sleeps.
 
 ## Explicit blockers
 
