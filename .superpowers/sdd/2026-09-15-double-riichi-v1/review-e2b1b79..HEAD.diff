@@ -1,12 +1,13 @@
 diff --git a/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md b/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md
-index 922eac2..9f23192 100644
+index 922eac2..c1b2615 100644
 --- a/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md
 +++ b/.superpowers/sdd/2026-09-15-double-riichi-v1/progress.md
-@@ -152,3 +152,4 @@ Task 13: parent captured a provisional first-party public-doc evidence report af
+@@ -152,3 +152,5 @@ Task 13: parent captured a provisional first-party public-doc evidence report af
  Task 13: rereview fix round 1/3 addressed all five Important lifecycle/persistence findings: Room setup teardown now disconnects/removes generations, replacement input is serialized against generation registration, Room joins serialize with token revocation, replay failures latch health degraded, and forced shutdown awaits tracked metadata cleanup. Added replay-health and forced-cleanup regression coverage; focused/server tests pass. External yamai, authenticated upstream-token, and immutable upstream-pin blockers remain unchanged.
  Task 13: rereview fix round 2/3 addressed the residual Room setup teardown backpressure path: bounded retries now deliver `RoomCommand::disconnect` after transient `RoomError::Busy` responses before generation removal; added a full-command-queue regression test. Focused compat, Task 13 integration, fmt/check, and full workspace tests pass; blockers remain unchanged.
  Task 13: provisionally complete at 3517a0d (adapter 6288880; endpoint/replay/lifecycle/evidence commits through 3517a0d). Final independent review PASS / APPROVED with zero findings. Fresh parent verification passed fmt, Task 13 live WebSocket 8/8, Compat unit 12/12, MJAI 13/13, Replay 15/15, cargo check, every workspace unit/integration/doc test, diff check, clean worktree, and LSP diagnostics on 14 changed Rust paths. Clippy remains blocked only by the five documented pre-existing core lints. Strict riichi.dev parity, immutable Protocol v2 pin, authenticated upstream transcripts, yamai acceptance, Conditional Design Freeze, and release acceptance remain unresolved external gates.
 +Task 14: review refresh at e1b9883 — added join watcher barrier, deterministic terminal wait/notification, unjoined transport cap+1, repeated subscribe/unsubscribe recovery, and bounded current-Kyoku/prior-summary Post-Match privacy assertions; reran the complete stdio bridge Match and existing TemporaryAuto follow-up tests. Focused MCP checks pass; the workspace command was run but two unrelated Task 13 live end-game observations failed in this environment. Strict server/workspace Clippy remains blocked by documented pre-existing core/replay/server baseline lints. Commit: `test(mcp): close Task 14 review findings`; review package regenerated as `review-e2b1b79..HEAD.diff`.
++Task 14: rereview fix round 1/4 — closed the RevisionWake registration race, ignored post-initial generic snapshots, serialized revocation with joins plus tombstones, and leased active waits across idle reaping; added 3 focused regressions. Focused MCP tests (16 unit, 6 live bridge) passed; cargo fmt/check and diff check passed. `cargo test --workspace` passed all local targets; the two documented pre-existing Task 13 live end-game observation tests remain environment failures. Final review package regenerated as `review-e2b1b79..HEAD.diff`.
 diff --git a/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-brief.md b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-brief.md
 new file mode 100644
 index 0000000..452b91b
@@ -22,10 +23,10 @@ index 0000000..452b91b
 +Live HTTP/bridge coverage is intentionally deferred to the next phase. The existing foundation changes and this artifact are committed together as `feat(mcp): add authenticated session resources`.
 diff --git a/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-report.md b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-report.md
 new file mode 100644
-index 0000000..e4260f3
+index 0000000..0c4b854
 --- /dev/null
 +++ b/.superpowers/sdd/2026-09-15-double-riichi-v1/task-14-report.md
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,85 @@
 +# Task 14 report — MCP resource-driven agent play
 +
 +## Status
@@ -54,6 +55,20 @@ index 0000000..e4260f3
 +- Existing core `TemporaryAuto` turn/response tests were rerun; both prove
 +  immediate follow-up decisions after timeout for Casual and Riichi.dev timing.
 +
++## Rereview 1/4 fixes
++
++- Closed the `RevisionWake` lost-wakeup window by enabling the notification
++  future before the final revision check.
++- Classify only the subscription's initial snapshot; later snapshots are
++  ignored so unrelated Room commands and normal opponent discards do not wake
++  waits or resource subscriptions.
++- Serialize MCP token revocation with the join transition and retain a
++  revocation tombstone so stale in-flight transports and joins cannot bind.
++- Lease active `wait_for_turn` calls across idle reaping and refresh the
++  session when the wait completes.
++- Added focused regressions for all three state/ownership lifecycle fixes and
++  post-initial snapshot filtering.
++
 +## Implemented
 +
 +- Added injectable downstream transport wiring while preserving the normal
@@ -78,7 +93,7 @@ index 0000000..e4260f3
 +## Verification
 +
 +- `cargo fmt --all -- --check` — passed.
-+- `cargo test -p double_riichi_server mcp::tests -- --nocapture` — 13 passed.
++- `cargo test -p double_riichi_server mcp::tests -- --nocapture` — 16 passed.
 +- `cargo test -p double_riichi_server --test task14_mcp -- --nocapture` — 6 passed.
 +- `cargo test -p double_riichi_server --test task14_mcp live_mcp_bridge_protocol_bot_completes_resource_driven_match -- --exact` — passed; complete stdio bridge Match and shutdown notifications completed within the bounded test.
 +- `cargo test -p double_riichi_core --test task4_machine temporary_auto -- --nocapture` — 3 passed.
@@ -96,7 +111,7 @@ index 0000000..e4260f3
 +
 +## Commit
 +
-+`test(mcp): close Task 14 review findings`
++`fix(mcp): close Task 14 rereview findings`
 diff --git a/Cargo.lock b/Cargo.lock
 index f749a62..9464109 100644
 --- a/Cargo.lock
@@ -2599,14 +2614,17 @@ index 3ff0616..eda6e03 100644
  pub use auth::{
 diff --git a/crates/double_riichi_server/src/mcp.rs b/crates/double_riichi_server/src/mcp.rs
 new file mode 100644
-index 0000000..7327a28
+index 0000000..8bc6a4d
 --- /dev/null
 +++ b/crates/double_riichi_server/src/mcp.rs
-@@ -0,0 +1,2673 @@
+@@ -0,0 +1,2837 @@
 +use std::{
 +    collections::{HashMap, HashSet},
 +    fmt,
-+    sync::{Arc, Mutex},
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicUsize, Ordering},
++    },
 +    time::{Duration, Instant},
 +};
 +
@@ -2680,6 +2698,7 @@ index 0000000..7327a28
 +    character_id: String,
 +    last_seen: Instant,
 +    wake: Arc<RevisionWake>,
++    active_waits: Arc<AtomicUsize>,
 +    cancel: CancellationToken,
 +}
 +
@@ -2711,10 +2730,21 @@ index 0000000..7327a28
 +    transport_sessions: HashMap<String, TransportSession>,
 +    participants: HashMap<(String, String), ParticipantId>,
 +    retired_participants: HashSet<(String, String)>,
++    revoked_tokens: HashSet<String>,
 +    bound_rooms: HashMap<String, (String, String)>,
 +    legacy_subscriptions: HashMap<(String, String), LegacySubscription>,
 +    live_subscriptions: HashMap<(String, u64), LiveSubscription>,
 +    next_subscription_id: u64,
++}
++
++struct WaitLease {
++    active_waits: Arc<AtomicUsize>,
++}
++
++impl Drop for WaitLease {
++    fn drop(&mut self) {
++        self.active_waits.fetch_sub(1, Ordering::AcqRel);
++    }
 +}
 +
 +#[derive(Clone)]
@@ -2793,6 +2823,8 @@ index 0000000..7327a28
 +                return Some(current);
 +            }
 +            let notified = self.notify.notified();
++            tokio::pin!(notified);
++            notified.as_mut().enable();
 +            let current = self.current();
 +            if current.revision > after_revision || current.terminal {
 +                return Some(current);
@@ -2801,7 +2833,6 @@ index 0000000..7327a28
 +            if remaining.is_zero() {
 +                return Some(self.current());
 +            }
-+            tokio::pin!(notified);
 +            tokio::select! {
 +                _ = cancel.cancelled() => {
 +                    let current = self.current();
@@ -3244,6 +3275,9 @@ index 0000000..7327a28
 +        token_id: String,
 +    ) -> Result<(), McpFailure> {
 +        let mut state = self.state.lock().await;
++        if state.revoked_tokens.contains(&token_id) {
++            return Err(McpFailure::InvalidCredentials);
++        }
 +        if let Some(session) = state.transport_sessions.get(&session_id)
 +            && session.token_id != token_id
 +        {
@@ -3288,7 +3322,12 @@ index 0000000..7327a28
 +            .transport_sessions
 +            .iter()
 +            .filter_map(|(id, session)| {
-+                (now.duration_since(session.last_seen) >= self.idle).then_some(id.clone())
++                let active_wait = state
++                    .sessions
++                    .get(id)
++                    .is_some_and(|entry| entry.active_waits.load(Ordering::Acquire) > 0);
++                (!active_wait && now.duration_since(session.last_seen) >= self.idle)
++                    .then_some(id.clone())
 +            })
 +            .collect();
 +        let mut entries = Vec::new();
@@ -3328,6 +3367,7 @@ index 0000000..7327a28
 +        state.bound_rooms.clear();
 +        state.participants.clear();
 +        state.retired_participants.clear();
++        state.revoked_tokens.clear();
 +        let entries = state.sessions.drain().map(|(_, entry)| entry).collect();
 +        ShutdownCleanup {
 +            cleanup: SessionCleanup {
@@ -3347,7 +3387,9 @@ index 0000000..7327a28
 +    }
 +
 +    async fn revoke_token(&self, token_id: &str) -> SessionCleanup {
++        let _join_guard = self.join_lock.lock().await;
 +        let mut state = self.state.lock().await;
++        state.revoked_tokens.insert(token_id.to_owned());
 +        let session_ids: Vec<_> = state
 +            .transport_sessions
 +            .iter()
@@ -3387,6 +3429,33 @@ index 0000000..7327a28
 +        Ok(entry.clone())
 +    }
 +
++    async fn begin_wait(
++        &self,
++        session_id: &str,
++        token_id: &str,
++    ) -> Result<(SessionEntry, WaitLease), McpFailure> {
++        let mut state = self.state.lock().await;
++        let (entry, active_waits) = {
++            let entry = state
++                .sessions
++                .get_mut(session_id)
++                .ok_or(McpFailure::SessionExpired)?;
++            if entry.token_id != token_id {
++                return Err(McpFailure::InvalidCredentials);
++            }
++            entry.last_seen = Instant::now();
++            entry.active_waits.fetch_add(1, Ordering::AcqRel);
++            (entry.clone(), Arc::clone(&entry.active_waits))
++        };
++        if let Some(session) = state.transport_sessions.get_mut(session_id)
++            && session.token_id == token_id
++        {
++            session.last_seen = Instant::now();
++        }
++        let lease = WaitLease { active_waits };
++        Ok((entry, lease))
++    }
++
 +    async fn was_bound(&self, session_id: &str, token_id: &str) -> Result<bool, McpFailure> {
 +        let state = self.state.lock().await;
 +        let Some((bound_token, _)) = state.bound_rooms.get(session_id) else {
@@ -3409,6 +3478,9 @@ index 0000000..7327a28
 +        character_id: String,
 +    ) -> Result<(SessionEntry, Option<SessionEntry>), McpFailure> {
 +        let mut state = self.state.lock().await;
++        if state.revoked_tokens.contains(&token_id) {
++            return Err(McpFailure::InvalidCredentials);
++        }
 +        if let Some(current) = state.transport_sessions.get(&session_id)
 +            && current.token_id != token_id
 +        {
@@ -3455,6 +3527,7 @@ index 0000000..7327a28
 +            character_id,
 +            last_seen: Instant::now(),
 +            wake: Arc::new(RevisionWake::default()),
++            active_waits: Arc::new(AtomicUsize::new(0)),
 +            cancel: CancellationToken::new(),
 +        };
 +        state
@@ -3855,7 +3928,11 @@ index 0000000..7327a28
 +            _ = entry.cancel.cancelled() => return Err(McpFailure::SessionExpired),
 +            event = connection.recv() => event.ok_or(McpFailure::Internal)?,
 +        };
-+        if let Some((revision, reason)) = watcher_reason(&entry, initial).await {
++        let initial_reason = match initial {
++            RoomEvent::Snapshot(snapshot) => snapshot_reason(&entry, snapshot).await,
++            event => watcher_reason(&entry, event).await,
++        };
++        if let Some((revision, reason)) = initial_reason {
 +            if is_terminal_reason(reason) {
 +                entry.wake.record_terminal(revision, reason);
 +            } else {
@@ -4233,20 +4310,27 @@ index 0000000..7327a28
 +        if input.timeout_seconds > MCP_MAX_WAIT_SECONDS {
 +            return Err(McpFailure::InvalidInput.result());
 +        }
-+        let (_session_id, entry) = self.binding(&parts).await.map_err(|e| e.result())?;
++        let session_id = Self::session_id(&parts).map_err(|e| e.result())?;
++        let token_id = Self::auth(&parts).map_err(|e| e.result())?;
 +        let Some(_waiter) = self.registry.acquire_waiter().await else {
 +            return Err(McpFailure::Busy.result());
 +        };
++        let (entry, _wait_lease) = self
++            .registry
++            .begin_wait(&session_id, &token_id)
++            .await
++            .map_err(|e| e.result())?;
 +        let timeout = Duration::from_secs(if input.timeout_seconds == 0 {
 +            MCP_MAX_WAIT_SECONDS
 +        } else {
 +            input.timeout_seconds
 +        });
-+        let Some(wake) = entry
++        let wake = entry
 +            .wake
 +            .wait_until(input.after_revision, timeout, &entry.cancel)
-+            .await
-+        else {
++            .await;
++        self.registry.touch(&session_id, &entry.token_id).await;
++        let Some(wake) = wake else {
 +            return Err(McpFailure::SessionExpired.result());
 +        };
 +        let reason = if wake.terminal || wake.revision > input.after_revision {
@@ -4534,8 +4618,8 @@ index 0000000..7327a28
 +}
 +
 +async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, &'static str)> {
-+    if let RoomEvent::Snapshot(snapshot) = event {
-+        return snapshot_reason(entry, snapshot).await;
++    if matches!(event, RoomEvent::Snapshot(_)) {
++        return None;
 +    }
 +    if let RoomEvent::RoomDeleted | RoomEvent::ServerShutdown = event {
 +        return Some((
@@ -4618,7 +4702,7 @@ index 0000000..7327a28
 +                    .then_some((revision, "permanent_auto"))
 +                })
 +        }
-+        RoomEvent::Snapshot(_) => unreachable!("snapshots are handled before the event match"),
++        RoomEvent::Snapshot(_) => None,
 +        RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
 +        RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
 +        RoomEvent::StorageDegraded
@@ -4785,6 +4869,7 @@ index 0000000..7327a28
 +            character_id: "mcp-bot".to_owned(),
 +            last_seen: Instant::now(),
 +            wake: Arc::new(RevisionWake::default()),
++            active_waits: Arc::new(AtomicUsize::new(0)),
 +            cancel: CancellationToken::new(),
 +        }
 +    }
@@ -5021,6 +5106,100 @@ index 0000000..7327a28
 +        assert!(!old.record(0, "old"));
 +        let result = old.wait(0, Duration::from_millis(1)).await;
 +        assert_eq!(result.reason, "timeout");
++    }
++
++    #[tokio::test]
++    async fn generic_snapshots_do_not_wake_after_initial_snapshot() {
++        let room = room(GameMode::FourPlayerRedEast);
++        room.send(RoomCommand::join(Participant::new(
++            "agent",
++            "Agent",
++            ParticipantKind::MCP,
++        )))
++        .await
++        .unwrap();
++        let watcher = entry(room.clone(), "session", "token", "123456", "agent");
++        let snapshot = room.snapshot().await.unwrap();
++        assert!(snapshot_reason(&watcher, snapshot.clone()).await.is_some());
++        assert_eq!(
++            watcher_reason(&watcher, RoomEvent::Snapshot(snapshot)).await,
++            None
++        );
++    }
++
++    #[tokio::test]
++    async fn revocation_tombstone_rejects_stale_transport_and_bind() {
++        let registry = McpSessionRegistry::new(Duration::from_secs(60));
++        let room = room(GameMode::FourPlayerRedEast);
++        registry
++            .bind(
++                "session".to_owned(),
++                "token".to_owned(),
++                "123456".to_owned(),
++                room.clone(),
++                ParticipantId::new("agent"),
++                "Agent".to_owned(),
++                "mcp-bot".to_owned(),
++            )
++            .await
++            .unwrap();
++        let cleanup = registry.revoke_token("token").await;
++        assert_eq!(cleanup.entries.len(), 1);
++        assert!(matches!(
++            registry
++                .register_transport("new-session".to_owned(), "token".to_owned())
++                .await,
++            Err(McpFailure::InvalidCredentials)
++        ));
++        assert!(matches!(
++            registry
++                .bind(
++                    "new-session".to_owned(),
++                    "token".to_owned(),
++                    "123456".to_owned(),
++                    room,
++                    ParticipantId::new("other"),
++                    "Other".to_owned(),
++                    "mcp-bot".to_owned(),
++                )
++                .await,
++            Err(McpFailure::InvalidCredentials)
++        ));
++    }
++
++    #[tokio::test]
++    async fn active_wait_lease_prevents_idle_expiry_until_released() {
++        let registry = McpSessionRegistry::new(Duration::from_secs(1));
++        let room = room(GameMode::FourPlayerRedEast);
++        registry
++            .bind(
++                "session".to_owned(),
++                "token".to_owned(),
++                "123456".to_owned(),
++                room,
++                ParticipantId::new("agent"),
++                "Agent".to_owned(),
++                "mcp-bot".to_owned(),
++            )
++            .await
++            .unwrap();
++        let (_entry, lease) = registry.begin_wait("session", "token").await.unwrap();
++        assert!(
++            registry
++                .expire_idle(Instant::now() + Duration::from_secs(2))
++                .await
++                .entries
++                .is_empty()
++        );
++        drop(lease);
++        assert_eq!(
++            registry
++                .expire_idle(Instant::now() + Duration::from_secs(2))
++                .await
++                .entries
++                .len(),
++            1
++        );
 +    }
 +
 +    #[test]
@@ -6452,3 +6631,28 @@ index 0000000..a2a6efd
 +    .await
 +    .expect("bounded MCP bridge match timed out");
 +}
+diff --git a/crates/double_riichi_server/src/mcp.rs b/crates/double_riichi_server/src/mcp.rs
+index 8bc6a4d..5d07d56 100644
+--- a/crates/double_riichi_server/src/mcp.rs
++++ b/crates/double_riichi_server/src/mcp.rs
+@@ -836,6 +836,10 @@ impl McpSessionRegistry {
+         Ok((entry, lease))
+     }
+ 
++    async fn token_revoked(&self, token_id: &str) -> bool {
++        self.state.lock().await.revoked_tokens.contains(token_id)
++    }
++
+     async fn was_bound(&self, session_id: &str, token_id: &str) -> Result<bool, McpFailure> {
+         let state = self.state.lock().await;
+         let Some((bound_token, _)) = state.bound_rooms.get(session_id) else {
+@@ -1473,6 +1477,9 @@ impl McpHandler {
+             return Err(McpFailure::InvalidInput.result());
+         };
+         let _join_guard = self.registry.join_lock.lock().await;
++        if self.registry.token_revoked(&token_id).await {
++            return Err(McpFailure::InvalidCredentials.result());
++        }
+         let existing = self.registry.binding(&session_id, &token_id).await;
+         if let Ok(entry) = &existing {
+             if entry.room_code != room_code {

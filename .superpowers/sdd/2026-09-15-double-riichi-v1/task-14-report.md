@@ -26,6 +26,20 @@ only by the in-process transport test and is not serialized or logged.
 - Existing core `TemporaryAuto` turn/response tests were rerun; both prove
   immediate follow-up decisions after timeout for Casual and Riichi.dev timing.
 
+## Rereview 1/4 fixes
+
+- Closed the `RevisionWake` lost-wakeup window by enabling the notification
+  future before the final revision check.
+- Classify only the subscription's initial snapshot; later snapshots are
+  ignored so unrelated Room commands and normal opponent discards do not wake
+  waits or resource subscriptions.
+- Serialize MCP token revocation with the join transition and retain a
+  revocation tombstone so stale in-flight transports and joins cannot bind.
+- Lease active `wait_for_turn` calls across idle reaping and refresh the
+  session when the wait completes.
+- Added focused regressions for all three state/ownership lifecycle fixes and
+  post-initial snapshot filtering.
+
 ## Implemented
 
 - Added injectable downstream transport wiring while preserving the normal
@@ -50,7 +64,7 @@ only by the in-process transport test and is not serialized or logged.
 ## Verification
 
 - `cargo fmt --all -- --check` — passed.
-- `cargo test -p double_riichi_server mcp::tests -- --nocapture` — 13 passed.
+- `cargo test -p double_riichi_server mcp::tests -- --nocapture` — 16 passed.
 - `cargo test -p double_riichi_server --test task14_mcp -- --nocapture` — 6 passed.
 - `cargo test -p double_riichi_server --test task14_mcp live_mcp_bridge_protocol_bot_completes_resource_driven_match -- --exact` — passed; complete stdio bridge Match and shutdown notifications completed within the bounded test.
 - `cargo test -p double_riichi_core --test task4_machine temporary_auto -- --nocapture` — 3 passed.
@@ -68,4 +82,4 @@ external OAuth or upstream compatibility claim is made.
 
 ## Commit
 
-`test(mcp): close Task 14 review findings`
+`fix(mcp): close Task 14 rereview findings`
