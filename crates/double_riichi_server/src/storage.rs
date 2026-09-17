@@ -935,3 +935,162 @@ fn now_unix_seconds() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use double_riichi_core::{
+        GameEvent, MatchPlayerResult, Participant, ParticipantKind, Seat, Tile, Wind,
+    };
+    use double_riichi_replay::{AuxiliaryEvent, AuxiliaryPhase, ReplayWriter};
+
+    fn test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "double-riichi-storage-task15-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn events() -> Vec<GameEvent> {
+        vec![
+            GameEvent::StartGame {
+                names: Some(vec![
+                    "East".into(),
+                    "South".into(),
+                    "West".into(),
+                    "North".into(),
+                ]),
+                id: Some("ranked-aux15".into()),
+            },
+            GameEvent::StartKyoku {
+                bakaze: Wind::East,
+                kyoku: 1,
+                honba: 0,
+                kyotaku: 0,
+                oya: Seat::new(0).unwrap(),
+                scores: vec![25_000; 4],
+                dora_marker: Tile::from_id(0).unwrap(),
+                tehais: vec![vec![Tile::from_id(0).unwrap(); 13]; 4],
+            },
+            GameEvent::EndKyoku,
+            GameEvent::EndGame,
+        ]
+    }
+
+    fn players() -> Vec<Participant> {
+        (0..4)
+            .map(|seat| {
+                Participant::new(
+                    format!("ranked{seat}"),
+                    format!("Ranked {seat}"),
+                    ParticipantKind::BuiltInBot,
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn ranked_completion_persists_auxiliary_events_in_frame_order() {
+        let root = test_root("auxiliary");
+        let storage = Storage::connect(&root).await.unwrap();
+        let players = players();
+        let mut writer = ReplayWriter::new(
+            storage.replay_root(),
+            "ranked-aux15",
+            GameMode::FourPlayerRedEast,
+        )
+        .unwrap();
+        writer
+            .record_auxiliary(
+                AuxiliaryEvent::Disconnected {
+                    seat: Seat::new(1).unwrap(),
+                },
+                AuxiliaryPhase::Before,
+            )
+            .unwrap();
+        writer.append(events()[0].clone()).unwrap();
+        writer
+            .record_auxiliary(
+                AuxiliaryEvent::Reconnected {
+                    seat: Seat::new(1).unwrap(),
+                },
+                AuxiliaryPhase::After,
+            )
+            .unwrap();
+        writer.append(events()[1].clone()).unwrap();
+        writer
+            .record_auxiliary(
+                AuxiliaryEvent::AutoStarted {
+                    seat: Seat::new(2).unwrap(),
+                },
+                AuxiliaryPhase::Before,
+            )
+            .unwrap();
+        writer.append(GameEvent::EndKyoku).unwrap();
+        writer
+            .record_auxiliary(
+                AuxiliaryEvent::Left {
+                    seat: Seat::new(2).unwrap(),
+                },
+                AuxiliaryPhase::After,
+            )
+            .unwrap();
+        writer.append(GameEvent::EndGame).unwrap();
+        let artifact = writer.finalize().unwrap();
+        storage
+            .open_ranked_match(
+                "ranked-aux15",
+                GameMode::FourPlayerRedEast,
+                1,
+                &artifact.relative_path_string(),
+                &players,
+            )
+            .await
+            .unwrap();
+        let result = double_riichi_core::MatchResult {
+            mode: GameMode::FourPlayerRedEast,
+            players: players
+                .iter()
+                .enumerate()
+                .map(|(seat, player)| MatchPlayerResult {
+                    participant_id: player.id.clone(),
+                    display_name: player.display_name.clone(),
+                    kind: player.kind,
+                    seat: Seat::new(seat as u8).unwrap(),
+                    final_score: 25_000,
+                    rank: (seat + 1) as u8,
+                })
+                .collect(),
+            final_scores: vec![25_000; 4],
+        };
+        storage
+            .complete_ranked_match("ranked-aux15", &artifact, &result, 2)
+            .await
+            .unwrap();
+        let view = storage.load_replay("ranked-aux15").await.unwrap();
+        assert_eq!(
+            view.frames[0].auxiliary_events[0].phase,
+            AuxiliaryPhase::Before
+        );
+        assert_eq!(
+            view.frames[0].auxiliary_events[1].phase,
+            AuxiliaryPhase::After
+        );
+        assert!(view.frames[1].auxiliary_events.is_empty());
+        assert_eq!(
+            view.frames[2].auxiliary_events[0].phase,
+            AuxiliaryPhase::Before
+        );
+        assert_eq!(
+            view.frames[2].auxiliary_events[1].phase,
+            AuxiliaryPhase::After
+        );
+        assert_eq!(view.frames[0].auxiliary_events[0].sequence, 0);
+        assert_eq!(view.frames[0].auxiliary_events[1].sequence, 1);
+        storage.close().await;
+        let _ = fs::remove_dir_all(root);
+    }
+}

@@ -2,9 +2,20 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./app";
 
+const mockPlayVoices = vi.hoisted(() => vi.fn());
+const mockDecodeCharacterAsset = vi.hoisted(() => vi.fn());
+vi.mock("./game/audio", () => ({
+  AudioManager: class {
+    settings = { master: 1, sfx: 1, voice: 1, voiceEnabled: true };
+    playVoices = mockPlayVoices;
+    unlock = vi.fn(() => Promise.resolve());
+    destroy = vi.fn();
+  },
+}));
+vi.mock("./game/assets", () => ({ decodeCharacterAsset: mockDecodeCharacterAsset }));
 vi.mock("./game/pixi-table", () => ({
-  PixiTable: ({ projection }: { projection: { players?: unknown[] } }) => (
-    <div data-testid="replay-pixi-table">{projection.players?.length ?? 0} players</div>
+  PixiTable: ({ projection, portraitEffect }: { projection: { players?: unknown[] }; portraitEffect?: { characterId: string } | null }) => (
+    <div data-testid="replay-pixi-table" data-portrait={portraitEffect?.characterId ?? "none"}>{projection.players?.length ?? 0} players</div>
   ),
 }));
 
@@ -44,7 +55,7 @@ const frame = (index: number, event: string, auxiliary_events: Array<Record<stri
 
 const replay = {
   ...summary,
-  players: [0, 1, 2, 3].map((seat) => ({ participant_id: `P${seat}`, display_name: `Seat ${seat}`, participant_kind: "built_in_bot", seat, character_id: "missing-pack", final_points: 25000 })),
+  players: [0, 1, 2, 3].map((seat) => ({ participant_id: `P${seat}`, display_name: `Seat ${seat}`, participant_kind: "built_in_bot", seat, character_id: "ordinary-pack", final_points: 25000 })),
   frames: [
     frame(0, "start_game", [{ event: { Disconnected: { seat: 1 } }, line_index: 0, phase: "before", sequence: 1 }]),
     frame(1, "start_kyoku", [{ event: { Reconnected: { seat: 1 } }, line_index: 1, phase: "after", sequence: 2 }]),
@@ -54,6 +65,8 @@ const replay = {
 
 describe("Replay Admin workspace", () => {
   beforeEach(() => {
+    mockPlayVoices.mockReset();
+    mockDecodeCharacterAsset.mockReset().mockResolvedValue(undefined);
     window.history.replaceState({}, "", "/admin/replays");
     vi.stubGlobal("fetch", vi.fn().mockImplementation((input, init) => {
       const path = String(input);
@@ -68,9 +81,123 @@ describe("Replay Admin workspace", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: /replay library/i })).toBeVisible();
     expect(await screen.findByText("Night Market")).toBeVisible();
-    expect(screen.getByRole("button", { name: /view replay match15/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: /view replay match15/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /delete replay match15/i })).toBeVisible();
     expect(screen.queryByText(/download mjson/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps pagination in the URL and follows browser-sized pages", async () => {
+    const fetchMock = vi.mocked(fetch);
+    window.history.replaceState({}, "", "/admin/replays?offset=50");
+    fetchMock.mockImplementation((input, init) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === "/api/v1/admin/replays" && (!init || !init.method)) {
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        return Promise.resolve(response({
+          replays: offset === 50 ? [{ ...summary, match_id: "MATCH51" }] : [summary],
+          offset,
+          limit: 50,
+          total: 51,
+          has_more: offset === 0,
+        }));
+      }
+      if (url.pathname.endsWith("/admin/tokens") || url.pathname.endsWith("/admin/rooms")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    render(<App />);
+    expect(await screen.findByText("MATCH51")).toBeVisible();
+    expect(fetchMock.mock.calls.some(([input]) => input === "/api/v1/admin/replays?offset=50&limit=50")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /previous/i }));
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(await screen.findByText("Night Market")).toBeVisible();
+  });
+
+  it("offers a working retry when the replay list request fails", async () => {
+    const fetchMock = vi.mocked(fetch);
+    let attempts = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === "/api/v1/admin/replays" && (!init || !init.method)) {
+        attempts += 1;
+        return attempts === 1
+          ? Promise.reject(new Error("temporary failure"))
+          : Promise.resolve(response({ replays: [summary], offset: 0, limit: 50, total: 1, has_more: false }));
+      }
+      if (url.pathname.endsWith("/admin/tokens") || url.pathname.endsWith("/admin/rooms")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: /replay library unavailable/i })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(await screen.findByText("Night Market")).toBeVisible();
+    expect(attempts).toBe(2);
+  });
+
+  it("clamps a deleted later page to the previous replay page", async () => {
+    const fetchMock = vi.mocked(fetch);
+    let deleted = false;
+    window.history.replaceState({}, "", "/admin/replays?offset=50");
+    fetchMock.mockImplementation((input, init) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === "/api/v1/admin/replays" && (!init || !init.method)) {
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        if (offset === 50 && !deleted) return Promise.resolve(response({ replays: [{ ...summary, match_id: "MATCH51" }], offset, limit: 50, total: 51, has_more: false }));
+        return Promise.resolve(response({ replays: offset === 0 ? [summary] : [], offset, limit: 50, total: deleted ? 50 : 51, has_more: false }));
+      }
+      if (url.pathname.endsWith("/admin/replays/MATCH51") && init?.method === "DELETE") {
+        deleted = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.pathname.endsWith("/admin/tokens") || url.pathname.endsWith("/admin/rooms")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /delete replay match51/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /confirm delete/i }));
+    expect(await screen.findByText("Night Market")).toBeVisible();
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(screen.queryByText("No Replays yet.")).not.toBeInTheDocument();
+  });
+
+  it("uses loaded Room assets for voice and portrait effects", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const horaReplay = {
+      ...replay,
+      frames: [
+        replay.frames[0],
+        { ...replay.frames[1], visible_event: { type: "hora", actor: 0, target: 0, han: 5, fu: 30 } },
+      ],
+    };
+    fetchMock.mockImplementation((input, init) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === "/api/v1/admin/replays" && (!init || !init.method)) return Promise.resolve(response({ replays: [summary], offset: 0, limit: 50, total: 1, has_more: false }));
+      if (url.pathname.endsWith("/admin/replays/MATCH15")) return Promise.resolve(response(horaReplay));
+      if (url.pathname.endsWith("/admin/tokens") || url.pathname.endsWith("/admin/rooms")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("link", { name: /view replay match15/i }));
+    expect(await screen.findByText("ROOM ASSETS")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /next event/i }));
+    await waitFor(() => expect(mockPlayVoices).toHaveBeenCalledWith([{ characterId: "ordinary-pack", kind: "tsumo" }]));
+    expect(screen.getByTestId("replay-pixi-table")).toHaveAttribute("data-portrait", "ordinary-pack");
+  });
+
+  it("switches to generic silent playback when a Room pack cannot load", async () => {
+    mockDecodeCharacterAsset.mockRejectedValue(new Error("asset_unavailable"));
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === "/api/v1/admin/replays" && (!init || !init.method)) return Promise.resolve(response({ replays: [summary], offset: 0, limit: 50, total: 1, has_more: false }));
+      if (url.pathname.endsWith("/admin/replays/MATCH15")) return Promise.resolve(response(replay));
+      if (url.pathname.endsWith("/admin/tokens") || url.pathname.endsWith("/admin/rooms")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("link", { name: /view replay match15/i }));
+    expect(await screen.findByText("GENERIC / SILENT")).toBeVisible();
+    expect(screen.getByTestId("replay-pixi-table")).toHaveAttribute("data-portrait", "none");
+    expect(mockPlayVoices).not.toHaveBeenCalled();
   });
 
   it("uses server frames, pauses on navigation, and exposes auxiliary ordering", async () => {
@@ -84,7 +211,7 @@ describe("Replay Admin workspace", () => {
       return Promise.resolve(response([]));
     });
     render(<App />);
-    fireEvent.click((await screen.findByRole("button", { name: /view replay match15/i })));
+    fireEvent.click((await screen.findByRole("link", { name: /view replay match15/i })));
     expect(await screen.findByRole("heading", { name: /night market replay/i })).toBeVisible();
     expect(screen.getByTestId("replay-pixi-table")).toHaveTextContent("4 players");
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
@@ -132,6 +259,6 @@ describe("Replay Admin workspace", () => {
     }));
     render(<App />);
     expect(await screen.findByRole("heading", { name: /replay unavailable/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /back to replay library/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: /back to replay library/i })).toBeVisible();
   });
 });
