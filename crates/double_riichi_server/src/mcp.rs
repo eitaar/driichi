@@ -897,18 +897,29 @@ impl McpHandler {
             .snapshot()
             .await
             .map_err(|_| McpFailure::Internal)?;
-        let events = entry
+        let history = entry
             .room
-            .match_events()
+            .history_projection(entry.participant_id.clone())
             .await
             .map_err(|_| McpFailure::Internal)?;
-        let mut events = serde_json::to_value(events).map_err(|_| McpFailure::Internal)?;
-        redact_private_history(&mut events);
+        let mut history = serde_json::to_value(history).map_err(|_| McpFailure::Internal)?;
+        redact_private_history(&mut history);
+        let events = history
+            .get("current_kyoku")
+            .and_then(|current| current.get("events"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        let summaries = history
+            .get("previous_kyoku")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
         Ok(json!({
             "revision": snapshot.revision,
             "phase": snapshot.phase,
             "result": snapshot.result,
+            "history": history,
             "events": events,
+            "summaries": summaries,
             "history_uri": uri,
         }))
     }

@@ -472,6 +472,13 @@ impl MatchMachine {
     }
 
     fn decision_timing_for(&self, kind: DecisionKind, seat: Seat) -> (Option<Duration>, bool) {
+        let index = seat.index() as usize;
+        if matches!(
+            self.controllers[index],
+            ControllerState::TemporaryAuto | ControllerState::PermanentAuto
+        ) {
+            return (Some(Duration::ZERO), false);
+        }
         match self.time_control {
             TimeControl::Casual => (
                 Some(match kind {
@@ -487,23 +494,15 @@ impl MatchMachine {
                 }),
                 false,
             ),
-            TimeControl::Unlimited => {
-                let index = seat.index() as usize;
-                match self.controllers[index] {
-                    ControllerState::PermanentAuto | ControllerState::TemporaryAuto => {
-                        (Some(Duration::ZERO), false)
-                    }
-                    ControllerState::Interactive => match self.players[index].kind {
-                        ParticipantKind::BuiltInBot => (Some(Duration::ZERO), false),
-                        ParticipantKind::Human if self.presence[index] == Presence::Connected => {
-                            (None, false)
-                        }
-                        ParticipantKind::Human | ParticipantKind::MJAI | ParticipantKind::MCP => {
-                            (Some(self.timing.watchdog), true)
-                        }
-                    },
+            TimeControl::Unlimited => match self.players[index].kind {
+                ParticipantKind::BuiltInBot => (Some(Duration::ZERO), false),
+                ParticipantKind::Human if self.presence[index] == Presence::Connected => {
+                    (None, false)
                 }
-            }
+                ParticipantKind::Human | ParticipantKind::MJAI | ParticipantKind::MCP => {
+                    (Some(self.timing.watchdog), true)
+                }
+            },
         }
     }
 

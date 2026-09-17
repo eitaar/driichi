@@ -28,6 +28,8 @@ pub use room::{
     CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, MatchId, MatchPlayerSnapshot,
     MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY, ROOM_EFFECT_CAPACITY, RoomActor,
     RoomCommand, RoomConfig, RoomConnection, RoomController, RoomEffect, RoomEffectError,
-    RoomError, RoomEvent, RoomHandle, RoomId, RoomJoinCode, RoomParticipantSnapshot, RoomPhase,
-    RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot, RoomState, ShutdownMode,
+    RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomHistoryProjection, RoomId,
+    RoomJoinCode, RoomKyokuProjection, RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot,
+    RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot, RoomState,
+    ShutdownMode,
 };

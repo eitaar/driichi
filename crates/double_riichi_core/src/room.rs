@@ -18,7 +18,7 @@ use crate::{
     decision::{ActionId, ControllerState, Decision, DecisionId, Presence, TimeControl},
     domain::{
         GameEvent, GameMode, MatchPlayerResult, MatchResult, Participant, ParticipantId,
-        ParticipantKind, Seat,
+        ParticipantKind, Seat, Tile, Wind,
     },
     match_machine::DecisionResult,
     projection::{Audience, AudienceProjection},
@@ -256,6 +256,352 @@ pub enum RoomPhase {
     PostMatch(MatchId),
 }
 
+/// A bounded, protocol-neutral view of the events retained by a Room.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomHistoryProjection {
+    pub current_kyoku: Option<RoomKyokuProjection>,
+    pub previous_kyoku: Vec<RoomKyokuSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomKyokuProjection {
+    pub events: Vec<RoomHistoryEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomKyokuSummary {
+    pub bakaze: Wind,
+    pub kyoku: u8,
+    pub honba: u8,
+    pub results: Vec<RoomKyokuResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoomKyokuResult {
+    Hora {
+        actor: Seat,
+        target: Seat,
+        tile: Option<Tile>,
+        yaku: Option<Vec<(String, u32)>>,
+        fu: Option<u32>,
+        han: Option<u32>,
+        scores: Option<Vec<i32>>,
+        delta: Option<Vec<i32>>,
+    },
+    Ryukyoku {
+        reason: Option<String>,
+        delta: Option<Vec<i32>>,
+        scores: Option<Vec<i32>>,
+    },
+}
+
+/// Current-Kyoku events with concealed fields omitted or limited to the viewer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoomHistoryEvent {
+    StartKyoku {
+        bakaze: Wind,
+        kyoku: u8,
+        honba: u8,
+        kyotaku: u8,
+        oya: Seat,
+        scores: Vec<i32>,
+        dora_marker: Tile,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        own_tehai: Option<Vec<Tile>>,
+    },
+    Tsumo {
+        actor: Seat,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tile: Option<Tile>,
+    },
+    Dahai {
+        actor: Seat,
+        tile: Tile,
+        tsumogiri: bool,
+    },
+    Pon {
+        actor: Seat,
+        target: Seat,
+        called: Tile,
+        consumed: Vec<Tile>,
+    },
+    Chi {
+        actor: Seat,
+        target: Seat,
+        called: Tile,
+        consumed: Vec<Tile>,
+    },
+    Daiminkan {
+        actor: Seat,
+        target: Seat,
+        called: Tile,
+        consumed: Vec<Tile>,
+    },
+    Kakan {
+        actor: Seat,
+        called: Tile,
+    },
+    Ankan {
+        actor: Seat,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        consumed: Option<Vec<Tile>>,
+    },
+    Dora {
+        dora_marker: Tile,
+    },
+    Reach {
+        actor: Seat,
+    },
+    ReachAccepted {
+        actor: Seat,
+    },
+    Hora {
+        actor: Seat,
+        target: Seat,
+        tile: Option<Tile>,
+        yaku: Option<Vec<(String, u32)>>,
+        fu: Option<u32>,
+        han: Option<u32>,
+        scores: Option<Vec<i32>>,
+        delta: Option<Vec<i32>>,
+    },
+    Ryukyoku {
+        reason: Option<String>,
+        delta: Option<Vec<i32>>,
+        scores: Option<Vec<i32>>,
+    },
+    Kita {
+        actor: Seat,
+    },
+    EndKyoku,
+    EndGame,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RoomHistoryBuffer {
+    current: Vec<GameEvent>,
+    previous: Vec<RoomKyokuSummary>,
+}
+
+impl RoomHistoryBuffer {
+    fn reset(&mut self, events: &[GameEvent]) {
+        self.current.clear();
+        self.previous.clear();
+        self.record(events);
+    }
+
+    fn record(&mut self, events: &[GameEvent]) {
+        for event in events {
+            if matches!(event, GameEvent::StartKyoku { .. }) {
+                self.finish_current();
+                self.current.clear();
+            }
+            if !self.current.is_empty() || matches!(event, GameEvent::StartKyoku { .. }) {
+                self.current.push(event.clone());
+            }
+        }
+    }
+
+    fn finish_current(&mut self) {
+        if let Some(summary) = RoomKyokuSummary::from_events(&self.current) {
+            self.previous.push(summary);
+        }
+    }
+
+    fn projection(&self, audience: Audience) -> RoomHistoryProjection {
+        RoomHistoryProjection {
+            current_kyoku: (!self.current.is_empty()).then(|| RoomKyokuProjection {
+                events: self
+                    .current
+                    .iter()
+                    .filter_map(|event| project_history_event(event, audience))
+                    .collect(),
+            }),
+            previous_kyoku: self.previous.clone(),
+        }
+    }
+}
+
+impl RoomKyokuSummary {
+    fn from_events(events: &[GameEvent]) -> Option<Self> {
+        let (bakaze, kyoku, honba) = events.iter().find_map(|event| {
+            let GameEvent::StartKyoku {
+                bakaze,
+                kyoku,
+                honba,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            Some((*bakaze, *kyoku, *honba))
+        })?;
+        let results: Vec<RoomKyokuResult> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::Hora {
+                    actor,
+                    target,
+                    tile,
+                    yaku,
+                    fu,
+                    han,
+                    scores,
+                    delta,
+                    ..
+                } => Some(RoomKyokuResult::Hora {
+                    actor: *actor,
+                    target: *target,
+                    tile: *tile,
+                    yaku: yaku.clone(),
+                    fu: *fu,
+                    han: *han,
+                    scores: scores.clone(),
+                    delta: delta.clone(),
+                }),
+                GameEvent::Ryukyoku {
+                    reason,
+                    delta,
+                    scores,
+                    ..
+                } => Some(RoomKyokuResult::Ryukyoku {
+                    reason: reason.clone(),
+                    delta: delta.clone(),
+                    scores: scores.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        (!results.is_empty()).then_some(Self {
+            bakaze,
+            kyoku,
+            honba,
+            results,
+        })
+    }
+}
+
+fn project_history_event(event: &GameEvent, audience: Audience) -> Option<RoomHistoryEvent> {
+    let viewer = match audience {
+        Audience::Player(seat) => Some(seat),
+        Audience::Public | Audience::ReplayAdmin => None,
+    };
+    Some(match event {
+        GameEvent::StartGame { .. } => return None,
+        GameEvent::StartKyoku {
+            bakaze,
+            kyoku,
+            honba,
+            kyotaku,
+            oya,
+            scores,
+            dora_marker,
+            tehais,
+        } => RoomHistoryEvent::StartKyoku {
+            bakaze: *bakaze,
+            kyoku: *kyoku,
+            honba: *honba,
+            kyotaku: *kyotaku,
+            oya: *oya,
+            scores: scores.clone(),
+            dora_marker: *dora_marker,
+            own_tehai: viewer.and_then(|seat| tehais.get(seat.index() as usize).cloned()),
+        },
+        GameEvent::Tsumo { actor, tile } => RoomHistoryEvent::Tsumo {
+            actor: *actor,
+            tile: (viewer == Some(*actor)).then_some(*tile),
+        },
+        GameEvent::Dahai {
+            actor,
+            tile,
+            tsumogiri,
+        } => RoomHistoryEvent::Dahai {
+            actor: *actor,
+            tile: *tile,
+            tsumogiri: *tsumogiri,
+        },
+        GameEvent::Pon {
+            actor,
+            target,
+            called,
+            consumed,
+        } => RoomHistoryEvent::Pon {
+            actor: *actor,
+            target: *target,
+            called: *called,
+            consumed: consumed.clone(),
+        },
+        GameEvent::Chi {
+            actor,
+            target,
+            called,
+            consumed,
+        } => RoomHistoryEvent::Chi {
+            actor: *actor,
+            target: *target,
+            called: *called,
+            consumed: consumed.clone(),
+        },
+        GameEvent::Daiminkan {
+            actor,
+            target,
+            called,
+            consumed,
+        } => RoomHistoryEvent::Daiminkan {
+            actor: *actor,
+            target: *target,
+            called: *called,
+            consumed: consumed.clone(),
+        },
+        GameEvent::Kakan { actor, called } => RoomHistoryEvent::Kakan {
+            actor: *actor,
+            called: *called,
+        },
+        GameEvent::Ankan { actor, consumed } => RoomHistoryEvent::Ankan {
+            actor: *actor,
+            consumed: (viewer == Some(*actor)).then_some(consumed.clone()),
+        },
+        GameEvent::Dora { dora_marker } => RoomHistoryEvent::Dora {
+            dora_marker: *dora_marker,
+        },
+        GameEvent::Reach { actor } => RoomHistoryEvent::Reach { actor: *actor },
+        GameEvent::ReachAccepted { actor } => RoomHistoryEvent::ReachAccepted { actor: *actor },
+        GameEvent::Hora {
+            actor,
+            target,
+            tile,
+            yaku,
+            fu,
+            han,
+            scores,
+            delta,
+            ..
+        } => RoomHistoryEvent::Hora {
+            actor: *actor,
+            target: *target,
+            tile: *tile,
+            yaku: yaku.clone(),
+            fu: *fu,
+            han: *han,
+            scores: scores.clone(),
+            delta: delta.clone(),
+        },
+        GameEvent::Ryukyoku {
+            reason,
+            delta,
+            scores,
+            ..
+        } => RoomHistoryEvent::Ryukyoku {
+            reason: reason.clone(),
+            delta: delta.clone(),
+            scores: scores.clone(),
+        },
+        GameEvent::Kita { actor } => RoomHistoryEvent::Kita { actor: *actor },
+        GameEvent::EndKyoku => RoomHistoryEvent::EndKyoku,
+        GameEvent::EndGame => RoomHistoryEvent::EndGame,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomParticipantSnapshot {
     pub id: ParticipantId,
@@ -458,6 +804,10 @@ pub enum RoomCommand {
     },
     GetSnapshot,
     GetMatchEvents,
+    GetHistoryProjection {
+        participant_id: ParticipantId,
+    },
+    GetPublicHistoryProjection,
     GetProjection {
         participant_id: ParticipantId,
     },
@@ -635,6 +985,7 @@ pub enum RoomResponse {
     Started(MatchId),
     Action(DecisionResult),
     MatchEvents(Vec<GameEvent>),
+    HistoryProjection(RoomHistoryProjection),
     Deleted,
     Shutdown,
 }
@@ -805,6 +1156,28 @@ impl RoomHandle {
         }
     }
 
+    pub async fn history_projection(
+        &self,
+        participant_id: impl Into<ParticipantId>,
+    ) -> Result<RoomHistoryProjection, RoomError> {
+        match self
+            .send(RoomCommand::GetHistoryProjection {
+                participant_id: participant_id.into(),
+            })
+            .await?
+        {
+            RoomResponse::HistoryProjection(history) => Ok(history),
+            _ => Err(RoomError::Closed),
+        }
+    }
+
+    pub async fn public_history_projection(&self) -> Result<RoomHistoryProjection, RoomError> {
+        match self.send(RoomCommand::GetPublicHistoryProjection).await? {
+            RoomResponse::HistoryProjection(history) => Ok(history),
+            _ => Err(RoomError::Closed),
+        }
+    }
+
     pub async fn subscribe(&self) -> Result<RoomConnection, RoomError> {
         let (reply, receiver) = oneshot::channel();
         self.sender
@@ -856,6 +1229,7 @@ pub struct RoomState {
     participants: HashMap<ParticipantId, ParticipantState>,
     match_roster: Vec<MatchPlayerSnapshot>,
     match_machine: Option<MatchMachine>,
+    history: RoomHistoryBuffer,
     result: Option<MatchResult>,
     revision: u64,
     deleted: bool,
@@ -899,6 +1273,7 @@ impl RoomState {
             participants: HashMap::new(),
             match_roster: Vec::new(),
             match_machine: None,
+            history: RoomHistoryBuffer::default(),
             result: None,
             revision: 0,
             deleted: false,
@@ -988,6 +1363,36 @@ impl RoomState {
             .project(Audience::Public)
             .map(Some)
             .map_err(|error| RoomError::Match(error.to_string()))
+    }
+
+    fn history_projection(
+        &self,
+        participant_id: &ParticipantId,
+    ) -> Result<RoomHistoryProjection, RoomError> {
+        let participant = self
+            .participants
+            .get(participant_id)
+            .ok_or_else(|| RoomError::ParticipantNotFound(participant_id.clone()))?;
+        if matches!(participant.controller, RoomController::PermanentAuto(_)) {
+            return Err(RoomError::ControllerNotInteractive);
+        }
+        let audience = match participant.role {
+            MatchRole::Player(seat) => Audience::Player(seat),
+            MatchRole::None | MatchRole::Spectator => Audience::Public,
+        };
+        Ok(self.history.projection(audience))
+    }
+
+    fn public_history_projection(&self) -> RoomHistoryProjection {
+        self.history.projection(Audience::Public)
+    }
+
+    fn record_history(&mut self, events: &[GameEvent]) {
+        self.history.record(events);
+    }
+
+    fn reset_history(&mut self, events: &[GameEvent]) {
+        self.history.reset(events);
     }
 
     fn add_participant(
@@ -1440,6 +1845,7 @@ impl RoomState {
         roster: Vec<MatchPlayerSnapshot>,
     ) {
         self.phase = RoomPhase::Playing(match_id);
+        self.reset_history(machine.events());
         self.match_machine = Some(machine);
         self.match_roster = roster.clone();
         self.result = None;
@@ -1514,6 +1920,7 @@ impl RoomState {
         self.phase = RoomPhase::Lobby;
         self.match_machine = None;
         self.match_roster.clear();
+        self.history = RoomHistoryBuffer::default();
         self.result = None;
         for participant in self.participants.values_mut() {
             participant.selected = false;
@@ -1708,7 +2115,9 @@ impl RoomState {
             | RoomCommand::Rematch
             | RoomCommand::GetProjection { .. }
             | RoomCommand::GetPublicProjection
-            | RoomCommand::GetMatchEvents => {
+            | RoomCommand::GetMatchEvents
+            | RoomCommand::GetHistoryProjection { .. }
+            | RoomCommand::GetPublicHistoryProjection => {
                 return Err(RoomError::Match("actor-only command".into()));
             }
             RoomCommand::GetSnapshot => RoomResponse::Accepted(self.snapshot()),
@@ -1992,6 +2401,13 @@ impl Actor {
                     .as_ref()
                     .map(|machine| machine.events().to_vec())
                     .unwrap_or_default(),
+            )),
+            RoomCommand::GetHistoryProjection { participant_id } => self
+                .state
+                .history_projection(&participant_id)
+                .map(RoomResponse::HistoryProjection),
+            RoomCommand::GetPublicHistoryProjection => Ok(RoomResponse::HistoryProjection(
+                self.state.public_history_projection(),
             )),
             RoomCommand::GetProjection { participant_id } => self
                 .state
@@ -2299,6 +2715,7 @@ impl Actor {
             RoomPhase::Playing(ref id) => id.clone(),
             _ => return Ok(()),
         };
+        self.state.record_history(result.events());
         for event in result.events() {
             self.send_append(match_id.clone(), vec![event.clone()])
                 .await;
@@ -2385,6 +2802,7 @@ impl Actor {
         self.state.phase = RoomPhase::Lobby;
         self.state.match_machine = None;
         self.state.match_roster.clear();
+        self.state.history = RoomHistoryBuffer::default();
         self.state.result = None;
         for participant in self.state.participants.values_mut() {
             participant.selected = false;
