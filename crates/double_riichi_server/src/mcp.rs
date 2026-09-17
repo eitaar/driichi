@@ -2662,6 +2662,18 @@ mod tests {
             .await
             .unwrap();
         active.send(RoomCommand::select("agent")).await.unwrap();
+        active
+            .send(RoomCommand::join(Participant::new(
+                "other-agent",
+                "Other Agent",
+                ParticipantKind::MCP,
+            )))
+            .await
+            .unwrap();
+        active
+            .send(RoomCommand::select("other-agent"))
+            .await
+            .unwrap();
         active.send(RoomCommand::fill_with_bots()).await.unwrap();
         active.send(RoomCommand::start()).await.unwrap();
         active.send(RoomCommand::leave("agent")).await.unwrap();

@@ -24,9 +24,12 @@ unclaimed.
   Match/Player/auxiliary rows and writes the allowlisted Admin audit record in
   one transaction, leaving metadata retryable when the database step fails.
 - Persisted ranked auxiliary Replay events during completion.
-- Added TanStack Query Replay list/view/delete data flow, accessible playback
-  controls (Play, Pause, Previous Event, Next Event, 0.5x/1x/2x/4x, Kyoku
-  jump), ordered auxiliary status/event-log entries, generic silent fallback,
+- Added TanStack Query Replay list/view/delete data flow, URL-backed
+  pagination with Back/Forward support and later-page delete clamping,
+  working list retry, accessible playback controls (Play, Pause, Previous
+  Event, Next Event, 0.5x/1x/2x/4x, Kyoku jump), ordered auxiliary
+  status/event-log entries, generic silent fallback based on actual Character
+  asset loading, Room audio/portrait presentation through the live helpers,
   delete confirmation, loading/error/empty states, and responsive dark
   broadcast-noir styling using the existing Pixi renderer.
 
@@ -35,16 +38,33 @@ unclaimed.
 - `cargo fmt --all -- --check` — passed.
 - `cargo check --workspace` — passed before final focused reruns; changed server
   tests also pass `cargo check -p double_riichi_server --tests`.
-- `cargo test -p double_riichi_server --test task15_replay` — 2 passed.
-- `cargo test --workspace` — all workspace unit, integration, and doc tests
-  passed, including Task 15 (2 tests).
+- `cargo test -p double_riichi_server --test task15_replay` — 4 passed,
+  including authenticated route coverage, path containment, oversize/corrupt
+  handling, auxiliary persistence, and file-first delete retryability.
+- `cargo test --workspace` — parent verification passed all workspace unit,
+  integration, and doc tests, including Task 15.
 - `cd frontend && npm run typecheck` — passed.
-- `cd frontend && npm test -- --run` — 36 tests passed in 3 files.
+- `cd frontend && npm test -- --run src/replay.test.tsx` — 9 passed, including
+  URL pagination, later-page deletion, Retry, real asset-policy mocks, Room
+  audio/portrait helpers, and playback controls.
+- `cd frontend && npm test -- --run` — parent verification passed the full
+  frontend suite.
 - `cd frontend && npm run build` — passed.
-- `cd frontend && npx playwright test tests/task15.spec.ts` — 2 passed at
-  1024x600 and 1440x900; screenshots were written under
-  `frontend/test-results/task-15/`.
+- `cd frontend && npx playwright test tests/task15.spec.ts` — focused library /
+  viewer and review-fix flows passed at 1024x600 and 1440x900; screenshots
+  were written under `frontend/test-results/task-15/`.
 - `git diff --check` — passed.
+
+## Review-fix recovery evidence
+
+Two runner attempts crashed with EPERM during the Task 15 review-fix pass.
+The preserved dirty patch was audited in place rather than restarted. The
+finisher retained the production fixes for modifier-safe links, skip/main
+semantics, localized time and announced loading, URL/back-forward pagination,
+later-page delete clamping, list Retry, actual Character asset availability,
+and Room audio/portrait presentation; it added the missing browser assertions
+and completed replay-route security/failure evidence without changing the
+renderer or API design.
 - Focused `cargo clippy -p double_riichi_server --all-targets -- -D warnings`
   remains blocked by five documented pre-existing Clippy lints in
   `double_riichi_core`; no changed-file lint was reported before that baseline
