@@ -13,6 +13,8 @@ code_lookup_per_minute = 20
 participant_creation_per_minute = 10
 admin_login_failures_per_15_minutes = 5
 agent_auth_failures_per_minute = 20
+max_compat_matches = 32
+max_ranked_queue = 128
 trusted_proxy_cidrs = []
 
 [characters]

@@ -24,6 +24,8 @@ const DEFAULT_CODE_LOOKUP_PER_MINUTE: usize = 20;
 const DEFAULT_PARTICIPANT_CREATION_PER_MINUTE: usize = 10;
 const DEFAULT_ADMIN_LOGIN_FAILURES: usize = 5;
 const DEFAULT_AGENT_AUTH_FAILURES: usize = 20;
+const DEFAULT_MAX_COMPAT_MATCHES: usize = 32;
+const DEFAULT_MAX_RANKED_QUEUE: usize = 128;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -81,6 +83,7 @@ impl Default for RawCharacterConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 struct RawTimeControls {
     #[serde(default)]
     casual: RawCasualTimeControl,
@@ -112,6 +115,10 @@ struct RawNetworkConfig {
     agent_auth_failures_per_minute: usize,
     #[serde(default)]
     trusted_proxy_cidrs: Vec<String>,
+    #[serde(default = "default_max_compat_matches")]
+    max_compat_matches: usize,
+    #[serde(default = "default_max_ranked_queue")]
+    max_ranked_queue: usize,
 }
 
 impl Default for RawNetworkConfig {
@@ -124,14 +131,8 @@ impl Default for RawNetworkConfig {
             admin_login_failures_per_15_minutes: default_admin_login_failures(),
             agent_auth_failures_per_minute: default_agent_auth_failures(),
             trusted_proxy_cidrs: Vec::new(),
-        }
-    }
-}
-
-impl Default for RawTimeControls {
-    fn default() -> Self {
-        Self {
-            casual: RawCasualTimeControl::default(),
+            max_compat_matches: default_max_compat_matches(),
+            max_ranked_queue: default_max_ranked_queue(),
         }
     }
 }
@@ -193,6 +194,14 @@ fn default_agent_auth_failures() -> usize {
     DEFAULT_AGENT_AUTH_FAILURES
 }
 
+fn default_max_compat_matches() -> usize {
+    DEFAULT_MAX_COMPAT_MATCHES
+}
+
+fn default_max_ranked_queue() -> usize {
+    DEFAULT_MAX_RANKED_QUEUE
+}
+
 fn default_mjai_character() -> String {
     DEFAULT_MJAI_CHARACTER.to_owned()
 }
@@ -233,6 +242,8 @@ pub struct NetworkConfig {
     pub admin_login_failures_per_15_minutes: usize,
     pub agent_auth_failures_per_minute: usize,
     pub trusted_proxy_cidrs: Vec<String>,
+    pub max_compat_matches: usize,
+    pub max_ranked_queue: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,6 +307,8 @@ impl RuntimeConfig {
                     .admin_login_failures_per_15_minutes,
                 agent_auth_failures_per_minute: raw.network.agent_auth_failures_per_minute,
                 trusted_proxy_cidrs: raw.network.trusted_proxy_cidrs,
+                max_compat_matches: raw.network.max_compat_matches,
+                max_ranked_queue: raw.network.max_ranked_queue,
             },
             data_root,
         })
@@ -378,6 +391,8 @@ fn validate_network(network: &RawNetworkConfig) -> Result<(), ConfigError> {
         || network.participant_creation_per_minute == 0
         || network.admin_login_failures_per_15_minutes == 0
         || network.agent_auth_failures_per_minute == 0
+        || !(1..=256).contains(&network.max_compat_matches)
+        || !(1..=4_096).contains(&network.max_ranked_queue)
     {
         return Err(ConfigError::Invalid(
             "network limit is outside its allowed range",

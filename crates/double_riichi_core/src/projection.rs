@@ -438,11 +438,15 @@ fn player_decision(decision: &Decision, seat: Seat) -> Option<PlayerDecisionProj
     Some(PlayerDecisionProjection {
         decision_id: decision.id().clone(),
         kind: decision.kind(),
-        actions: decision
-            .actions_for(seat)
-            .iter()
-            .map(visible_action)
-            .collect(),
+        actions: if decision.submitted_action_id(seat).is_some() {
+            Vec::new()
+        } else {
+            decision
+                .actions_for(seat)
+                .iter()
+                .map(visible_action)
+                .collect()
+        },
         default_action_id: decision.default_action_id(seat).clone(),
         duration_ms: duration_ms(decision.duration_for(seat)),
         remaining_ms: duration_ms(decision.remaining_for(seat, Instant::now())),

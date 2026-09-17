@@ -42,7 +42,7 @@ fn generate_ulid() -> String {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u128;
+        .as_millis();
     let value = ((millis & ((1u128 << 48) - 1)) << 80) | (random::<u128>() & ((1u128 << 80) - 1));
     let mut result = String::with_capacity(26);
     for shift in (0..26).rev().map(|index| index * 5) {
@@ -429,6 +429,10 @@ pub enum RoomCommand {
     Reconnect {
         participant_id: ParticipantId,
     },
+    ReconnectAgent {
+        participant_id: ParticipantId,
+        token_id: String,
+    },
     PersistenceFailed,
     PersistenceCompleted {
         success: bool,
@@ -453,6 +457,7 @@ pub enum RoomCommand {
         mode: ShutdownMode,
     },
     GetSnapshot,
+    GetMatchEvents,
     GetProjection {
         participant_id: ParticipantId,
     },
@@ -570,6 +575,16 @@ impl RoomCommand {
         }
     }
 
+    pub fn reconnect_agent(
+        participant_id: impl Into<ParticipantId>,
+        token_id: impl Into<String>,
+    ) -> Self {
+        Self::ReconnectAgent {
+            participant_id: participant_id.into(),
+            token_id: token_id.into(),
+        }
+    }
+
     pub fn leave(participant_id: impl Into<ParticipantId>) -> Self {
         Self::Leave {
             participant_id: participant_id.into(),
@@ -618,6 +633,7 @@ pub enum RoomResponse {
     Projection(Option<AudienceProjection>),
     Started(MatchId),
     Action(DecisionResult),
+    MatchEvents(Vec<GameEvent>),
     Deleted,
     Shutdown,
 }
@@ -770,6 +786,13 @@ impl RoomHandle {
             .await?
         {
             RoomResponse::Projection(projection) => Ok(projection),
+            _ => Err(RoomError::Closed),
+        }
+    }
+
+    pub async fn match_events(&self) -> Result<Vec<GameEvent>, RoomError> {
+        match self.send(RoomCommand::GetMatchEvents).await? {
+            RoomResponse::MatchEvents(events) => Ok(events),
             _ => Err(RoomError::Closed),
         }
     }
@@ -1423,7 +1446,8 @@ impl RoomState {
         let remove: Vec<_> = self
             .participants
             .iter()
-            .filter_map(|(id, participant)| participant.remove_after_match.then(|| id.clone()))
+            .filter(|(_, participant)| participant.remove_after_match)
+            .map(|(id, _)| id.clone())
             .collect();
         for id in remove {
             self.participants.remove(&id);
@@ -1613,30 +1637,14 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::Reconnect { participant_id } => {
-                let seat = self.seat_for(&participant_id).ok();
-                let participant = self
-                    .participants
-                    .get_mut(&participant_id)
-                    .ok_or_else(|| RoomError::ParticipantNotFound(participant_id.clone()))?;
-                if matches!(participant.controller, RoomController::PermanentAuto(_)) {
-                    return Err(RoomError::ControllerNotInteractive);
-                }
-                participant.presence = Presence::Connected;
-                participant.disconnected_at = None;
-                if matches!(self.phase, RoomPhase::Lobby) {
-                    participant.ready = false;
-                }
-                if let (Some(machine), Some(seat)) = (self.match_machine.as_mut(), seat) {
-                    machine
-                        .reconnect(seat)
-                        .map_err(|error| RoomError::Match(error.to_string()))?;
-                    participant.controller = RoomController::Interactive;
-                } else {
-                    participant.controller = RoomController::Interactive;
-                }
-                self.update_roster_controller(&participant_id, RoomController::Interactive);
-                self.empty_since = None;
-                self.bump_revision();
+                self.reconnect_participant(&participant_id, None, now)?;
+                RoomResponse::Accepted(self.snapshot())
+            }
+            RoomCommand::ReconnectAgent {
+                participant_id,
+                token_id,
+            } => {
+                self.reconnect_participant(&participant_id, Some(&token_id), now)?;
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::PersistenceFailed
@@ -1677,12 +1685,52 @@ impl RoomState {
             | RoomCommand::Start
             | RoomCommand::SubmitAction { .. }
             | RoomCommand::Rematch
-            | RoomCommand::GetProjection { .. } => {
+            | RoomCommand::GetProjection { .. }
+            | RoomCommand::GetMatchEvents => {
                 return Err(RoomError::Match("actor-only command".into()));
             }
             RoomCommand::GetSnapshot => RoomResponse::Accepted(self.snapshot()),
         };
         Ok(response)
+    }
+
+    fn reconnect_participant(
+        &mut self,
+        participant_id: &ParticipantId,
+        token_id: Option<&str>,
+        _now: Instant,
+    ) -> Result<(), RoomError> {
+        let seat = self.seat_for(participant_id).ok();
+        let participant = self
+            .participants
+            .get_mut(participant_id)
+            .ok_or_else(|| RoomError::ParticipantNotFound(participant_id.clone()))?;
+        if let Some(token_id) = token_id
+            && (participant.participant.kind != ParticipantKind::MJAI
+                || participant.token_id.as_deref() != Some(token_id))
+        {
+            return Err(RoomError::ParticipantNotFound(participant_id.clone()));
+        }
+        if matches!(participant.controller, RoomController::PermanentAuto(_)) {
+            return Err(RoomError::ControllerNotInteractive);
+        }
+        participant.presence = Presence::Connected;
+        participant.disconnected_at = None;
+        if matches!(self.phase, RoomPhase::Lobby) {
+            participant.ready = false;
+        }
+        if let (Some(machine), Some(seat)) = (self.match_machine.as_mut(), seat) {
+            machine
+                .reconnect(seat)
+                .map_err(|error| RoomError::Match(error.to_string()))?;
+            participant.controller = RoomController::Interactive;
+        } else {
+            participant.controller = RoomController::Interactive;
+        }
+        self.update_roster_controller(participant_id, RoomController::Interactive);
+        self.empty_since = None;
+        self.bump_revision();
+        Ok(())
     }
 
     fn leave(&mut self, participant_id: &ParticipantId) -> Result<(), RoomError> {
@@ -1892,12 +1940,12 @@ impl Actor {
     fn next_wake(&mut self) -> Instant {
         let now = Instant::now();
         let mut wake = now + Duration::from_secs(1);
-        if let Some(machine) = self.state.match_machine.as_mut() {
-            if let Ok(Some(decision)) = machine.current_decision() {
-                for seat in decision.eligible() {
-                    if let Some(deadline) = decision.deadline_for(seat) {
-                        wake = wake.min(deadline);
-                    }
+        if let Some(machine) = self.state.match_machine.as_mut()
+            && let Ok(Some(decision)) = machine.current_decision()
+        {
+            for seat in decision.eligible() {
+                if let Some(deadline) = decision.deadline_for(seat) {
+                    wake = wake.min(deadline);
                 }
             }
         }
@@ -1916,6 +1964,13 @@ impl Actor {
         let now = Instant::now();
         match command {
             RoomCommand::GetSnapshot => Ok(RoomResponse::Accepted(self.state.snapshot())),
+            RoomCommand::GetMatchEvents => Ok(RoomResponse::MatchEvents(
+                self.state
+                    .match_machine
+                    .as_ref()
+                    .map(|machine| machine.events().to_vec())
+                    .unwrap_or_default(),
+            )),
             RoomCommand::GetProjection { participant_id } => self
                 .state
                 .projection_for(&participant_id)
@@ -2035,9 +2090,7 @@ impl Actor {
                 })
                 .await
                 .is_err()
-            {
-                return;
-            }
+            {}
         });
         Ok(())
     }
@@ -2350,16 +2403,16 @@ impl Actor {
         }
         self.state.shutting_down = true;
         self.publish(RoomEvent::ServerShutdown);
-        if matches!(mode, ShutdownMode::Graceful | ShutdownMode::Forced) {
-            if let RoomPhase::Playing(match_id) = self.state.phase.clone() {
-                let _ = self.effects.try_send(RoomEffect::DeleteIncomplete {
-                    match_id: match_id.clone(),
-                });
-                self.publish(RoomEvent::MatchAborted {
-                    match_id,
-                    reason: "server shutdown".to_owned(),
-                });
-            }
+        if matches!(mode, ShutdownMode::Graceful | ShutdownMode::Forced)
+            && let RoomPhase::Playing(match_id) = self.state.phase.clone()
+        {
+            let _ = self.effects.try_send(RoomEffect::DeleteIncomplete {
+                match_id: match_id.clone(),
+            });
+            self.publish(RoomEvent::MatchAborted {
+                match_id,
+                reason: "server shutdown".to_owned(),
+            });
         }
         Ok(RoomResponse::Shutdown)
     }
