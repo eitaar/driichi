@@ -21,7 +21,7 @@ use rmcp::{
     ClientHandler,
     model::{
         CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation,
-        ReadResourceRequestParams, SubscribeRequestParams,
+        ReadResourceRequestParams, SubscribeRequestParams, UnsubscribeRequestParams,
     },
 };
 use serde_json::{Value, json};
@@ -294,16 +294,24 @@ async fn wait_for_presence(room: &double_riichi_core::RoomHandle, participant_id
     .expect("MCP disconnect was not observed");
 }
 
-async fn room_with_code(state: &ServerState, name: &str) -> double_riichi_core::RoomHandle {
+async fn room_with_mode(
+    state: &ServerState,
+    name: &str,
+    mode: GameMode,
+) -> double_riichi_core::RoomHandle {
     state
         .rooms()
         .create(RoomConfig::new(
             name,
-            GameMode::FourPlayerRedEast,
+            mode,
             double_riichi_core::CharacterCatalog::starter(),
         ))
         .await
         .unwrap()
+}
+
+async fn room_with_code(state: &ServerState, name: &str) -> double_riichi_core::RoomHandle {
+    room_with_mode(state, name, GameMode::FourPlayerRedEast).await
 }
 
 #[tokio::test]
@@ -666,6 +674,48 @@ async fn live_mcp_wait_observes_selection_when_event_wins_the_wait_race() {
     storage.close().await;
 }
 
+#[tokio::test]
+async fn live_mcp_join_wait_uses_snapshot_barrier() {
+    let (state, _service, storage, token) = fixture("join-barrier").await;
+    let room = room_with_code(&state, "MCP join barrier").await;
+    let app = server_router(state.clone());
+    let (session_id, _) = initialize(&app, &token, 50).await;
+    let joined = tool_call(
+        &app,
+        &token,
+        &session_id,
+        51,
+        "join_room",
+        json!({
+            "room_code": room.join_code(),
+            "provider": "runner",
+            "display_name": "MCP Barrier"
+        }),
+    )
+    .await;
+    assert!(!tool_value(&joined)["participant_id"].is_null());
+
+    let waited = tool_call(
+        &app,
+        &token,
+        &session_id,
+        52,
+        "wait_for_turn",
+        json!({"after_revision": 0, "timeout_seconds": 1}),
+    )
+    .await;
+    let value = tool_value(&waited);
+    assert_eq!(value["reason"], "deselected");
+    assert!(
+        value["revision"]
+            .as_u64()
+            .is_some_and(|revision| revision > 0)
+    );
+
+    state.shutdown().await;
+    storage.close().await;
+}
+
 #[derive(Clone)]
 struct ProtocolBot {
     updates: Arc<std::sync::Mutex<Vec<String>>>,
@@ -789,7 +839,7 @@ async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let (state, _service, storage, token) = fixture_with_origin("bridge-e2e", &origin).await;
-        let room = room_with_code(&state, "MCP bridge E2E").await;
+        let room = room_with_mode(&state, "MCP bridge E2E", GameMode::FourPlayerRedHalf).await;
         let app = server_router(state.clone());
         let (server_stop, server_stop_rx) = oneshot::channel();
         let server_task = tokio::spawn(async move {
@@ -886,6 +936,24 @@ async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
         let mut expected_uris = vec![state_uri.clone(), public_uri.clone(), history_uri.clone()];
         expected_uris.sort();
         assert_eq!(resource_uris, expected_uris);
+
+        #[allow(deprecated)]
+        for _ in 0..4 {
+            timeout(
+                REQUEST_TIMEOUT,
+                peer.subscribe(SubscribeRequestParams::new(state_uri.clone())),
+            )
+            .await
+            .expect("repeated subscribe timed out")
+            .unwrap();
+            timeout(
+                REQUEST_TIMEOUT,
+                peer.unsubscribe(UnsubscribeRequestParams::new(state_uri.clone())),
+            )
+            .await
+            .expect("repeated unsubscribe timed out")
+            .unwrap();
+        }
 
         #[allow(deprecated)]
         let _subscriptions = vec![
@@ -997,6 +1065,20 @@ async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
             if is_post_match(&private) {
                 assert_eq!(reason, "game_ended");
                 assert!(!history["result"].is_null(), "Post-Match has no result");
+                let projection = &history["history"];
+                let current_events = projection["current_kyoku"]["events"]
+                    .as_array()
+                    .expect("Post-Match keeps current Kyoku events");
+                assert!(!current_events.is_empty());
+                assert!(current_events.len() < 1_000);
+                let summaries = projection["previous_kyoku"]
+                    .as_array()
+                    .expect("Post-Match keeps prior Kyoku summaries");
+                assert!(!summaries.is_empty(), "Match should retain a prior summary");
+                assert!(summaries.len() < 1_000);
+                assert_eq!(&history["events"], &projection["current_kyoku"]["events"]);
+                assert_eq!(&history["summaries"], &projection["previous_kyoku"]);
+                assert_no_private_data(&history, &participant_id);
                 saw_game_ended = true;
                 break;
             }
@@ -1036,6 +1118,28 @@ async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
             !updates.lock().unwrap().is_empty(),
             "stdio protocol bot received no resource update notifications"
         );
+        let before_shutdown = updates.lock().unwrap().len();
+        state.begin_shutdown();
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let updates = updates.lock().unwrap();
+                let shutdown_updates = &updates[before_shutdown..];
+                if [
+                    state_uri.as_str(),
+                    public_uri.as_str(),
+                    history_uri.as_str(),
+                ]
+                .iter()
+                .all(|uri| shutdown_updates.iter().any(|update| update == uri))
+                {
+                    break;
+                }
+                drop(updates);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("server shutdown resource notifications were not delivered");
 
         let final_snapshot = room.snapshot().await.unwrap();
         assert!(matches!(

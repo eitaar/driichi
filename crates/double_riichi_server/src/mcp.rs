@@ -2551,6 +2551,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_shutdown_wake_is_terminal_for_equal_wait_and_notifies_history() {
+        let wake = RevisionWake::default();
+        assert!(wake.record(4, "round_ended"));
+        assert!(wake.record_terminal(5, "server_shutdown"));
+
+        let result = wake
+            .wait_until(5, Duration::from_millis(10), &CancellationToken::new())
+            .await
+            .expect("terminal wake is returned even at the same revision");
+        assert_eq!(result.revision, 5);
+        assert_eq!(result.reason, "server_shutdown");
+        assert!(result.terminal);
+
+        let watcher = entry(
+            room(GameMode::FourPlayerRedEast),
+            "s",
+            "t",
+            "123456",
+            "agent",
+        );
+        assert_eq!(
+            notification_uris(&watcher, "server_shutdown"),
+            vec![
+                "riichi://rooms/123456/participants/agent/state",
+                "riichi://rooms/123456/public-state",
+                "riichi://rooms/123456/history",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn unjoined_transport_sessions_are_bounded_and_recover_after_close() {
+        let registry = Arc::new(McpSessionRegistry::new(Duration::from_secs(60)));
+        let manager = Arc::new(LocalSessionManager::default());
+        let bounded = BoundedSessionManager::new(manager, registry);
+        let mut sessions = Vec::with_capacity(MCP_MAX_SESSIONS);
+        for _ in 0..MCP_MAX_SESSIONS {
+            sessions.push(
+                bounded
+                    .create_session()
+                    .await
+                    .expect("unjoined transport session within capacity"),
+            );
+        }
+        assert!(
+            bounded.create_session().await.is_err(),
+            "cap + 1 unjoined initialize must be rejected"
+        );
+
+        for (id, _transport) in sessions {
+            bounded
+                .close_session(&id)
+                .await
+                .expect("closed session releases its capacity permit");
+        }
+        assert!(bounded.create_session().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn subscription_permits_recover_for_repeated_subscribe_unsubscribe_cycles() {
+        let registry = McpSessionRegistry::new(Duration::from_secs(60));
+        for _ in 0..(MCP_MAX_SUBSCRIPTIONS + 8) {
+            let permit = registry
+                .acquire_subscription()
+                .await
+                .expect("subscription permit available");
+            drop(permit);
+        }
+
+        let mut permits = Vec::with_capacity(MCP_MAX_SUBSCRIPTIONS);
+        for _ in 0..MCP_MAX_SUBSCRIPTIONS {
+            permits.push(
+                registry
+                    .acquire_subscription()
+                    .await
+                    .expect("subscription capacity remains reusable"),
+            );
+        }
+        assert!(registry.acquire_subscription().await.is_none());
+        drop(permits.pop());
+        assert!(registry.acquire_subscription().await.is_some());
+    }
+
+    #[tokio::test]
     async fn room_delete_and_shutdown_publish_terminal_events() {
         let deleted = room(GameMode::FourPlayerRedEast);
         let mut deleted_events = deleted.subscribe().await.unwrap();

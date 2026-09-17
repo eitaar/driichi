@@ -8,6 +8,24 @@ keeps the production token contract: `driichi-mcp` reads `DRIICHI_MCP_TOKEN`
 only; the explicit token argument is a non-default `test-support` seam used
 only by the in-process transport test and is not serialized or logged.
 
+## Review evidence refreshed from `e1b9883`
+
+- Added a live join barrier regression: `join_room` does not return until the
+  watcher has consumed the initial snapshot, so an immediate revision-zero
+  `wait_for_turn` returns the initial `deselected` wake rather than timing out.
+- Strengthened the real stdio bridge Match to use a multi-Kyoku FourPlayer
+  Half room and assert the Post-Match history envelope retains bounded current
+  Kyoku events plus prior summaries, while private fields remain redacted.
+- Added deterministic terminal-wake coverage for equal-revision
+  `server_shutdown` waits and all three shutdown resource notification URIs.
+  The bridge now also observes all three shutdown notifications end to end.
+- Added unjoined transport cap+1 coverage through the bounded session manager,
+  including permit recovery after closing the cap-sized set.
+- Added repeated legacy subscribe/unsubscribe cycles in the real bridge and
+  semaphore exhaustion/recovery coverage for subscription permits.
+- Existing core `TemporaryAuto` turn/response tests were rerun; both prove
+  immediate follow-up decisions after timeout for Casual and Riichi.dev timing.
+
 ## Implemented
 
 - Added injectable downstream transport wiring while preserving the normal
@@ -32,18 +50,22 @@ only by the in-process transport test and is not serialized or logged.
 ## Verification
 
 - `cargo fmt --all -- --check` — passed.
-- `cargo test -p double_riichi_server --test task14_mcp` — 5 passed.
-- `cargo test -p double_riichi_server --test task14_mcp live_mcp_bridge_protocol_bot_completes_resource_driven_match -- --exact` — passed; bounded bridge Match completed in under 10 seconds.
-- `cargo test -p double_riichi_mcp` — 2 unit tests, 1 CLI integration test, and doc tests passed.
+- `cargo test -p double_riichi_server mcp::tests -- --nocapture` — 13 passed.
+- `cargo test -p double_riichi_server --test task14_mcp -- --nocapture` — 6 passed.
+- `cargo test -p double_riichi_server --test task14_mcp live_mcp_bridge_protocol_bot_completes_resource_driven_match -- --exact` — passed; complete stdio bridge Match and shutdown notifications completed within the bounded test.
+- `cargo test -p double_riichi_core --test task4_machine temporary_auto -- --nocapture` — 3 passed.
 - `cargo clippy -p double_riichi_mcp --tests --features test-support -- -D warnings` — passed.
 - `cargo check --workspace` — passed.
-- `cargo test --workspace` — passed across all workspace unit, integration, and doc-test targets.
 - `git diff --check` — passed.
 
-Strict server/workspace Clippy remains blocked by pre-existing baseline lints
-in core/replay and existing server modules; the focused MCP package Clippy run
-is clean. No external OAuth or upstream compatibility claim is made.
+The workspace test command was run. Two unrelated pre-existing Task 13 live
+compat tests (`live_validate_reports_illegal_action_but_completes_match` and
+`live_ranked_bot_completes_and_persists_mjson_metadata`) failed to observe their
+external live `end_game` messages in this environment; Task 14 focused tests
+and all local workspace targets passed. Strict server/workspace Clippy remains
+blocked by documented pre-existing core/replay/server baseline lints. No
+external OAuth or upstream compatibility claim is made.
 
 ## Commit
 
-`6c04978 test(mcp): prove resource driven agent play`
+`test(mcp): close Task 14 review findings`
