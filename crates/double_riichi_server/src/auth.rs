@@ -692,6 +692,10 @@ impl BotTokenService {
         Self { storage, authority }
     }
 
+    pub(crate) fn storage(&self) -> Arc<Storage> {
+        Arc::clone(&self.storage)
+    }
+
     pub fn authenticate(&self, raw_token: &str) -> Result<BotTokenRecord, CredentialError> {
         self.authority.authenticate(raw_token)
     }

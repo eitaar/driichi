@@ -5,7 +5,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -21,9 +21,9 @@ use double_riichi_core::{
     RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl, TimingConfig,
 };
 use double_riichi_mjai::{
-    ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition, RequestTime,
-    TimingBudget, TimingOutcome, encode_event, match_legal_action, parse_client_action,
-    request_id_from_frame,
+    AckStatus, ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition,
+    RequestTime, TimingBudget, TimingOutcome, encode_event, match_legal_action,
+    parse_client_action, request_id_from_frame,
 };
 use double_riichi_replay::ReplayWriter;
 use futures_util::{FutureExt, SinkExt, StreamExt};
@@ -41,7 +41,7 @@ use crate::http::{
     json_response, origin_not_allowed, rate_limited, room_error_response, room_not_found,
     server_busy,
 };
-use crate::{BotTokenRecord, BotTokenService, TokenRevoked};
+use crate::{BotTokenRecord, BotTokenService, Storage, TokenRevoked};
 
 const RANKED_FILL_DELAY: Duration = Duration::from_secs(5);
 const OUTBOUND_CAPACITY: usize = 64;
@@ -62,6 +62,14 @@ enum CompatKind {
     Validate,
 }
 
+struct CompatReplay {
+    writer: Option<ReplayWriter>,
+    storage: Option<Arc<Storage>>,
+    metadata_open: bool,
+    failed: bool,
+    match_id: String,
+}
+
 struct QueuedBot {
     ticket: u64,
     token: BotTokenRecord,
@@ -69,6 +77,7 @@ struct QueuedBot {
     assignment: oneshot::Sender<Result<StartAssignment, AssignmentError>>,
     permit: Option<ConnectionPermit>,
     replay_root: Option<std::path::PathBuf>,
+    replay_storage: Option<Arc<Storage>>,
 }
 
 #[derive(Clone, Copy)]
@@ -206,6 +215,7 @@ impl CompatState {
         token: BotTokenRecord,
         display_name: String,
         replay_root: Option<std::path::PathBuf>,
+        replay_storage: Option<Arc<Storage>>,
         permit: ConnectionPermit,
     ) -> Result<
         (
@@ -235,6 +245,7 @@ impl CompatState {
                 assignment: tx,
                 permit: Some(permit),
                 replay_root,
+                replay_storage,
             });
             if inner.queue.len() >= 4
                 && self.active_matches.load(Ordering::Acquire)
@@ -289,6 +300,7 @@ impl CompatState {
                 assignment: tx,
                 permit: Some(permit),
                 replay_root: None,
+                replay_storage: None,
             }],
         )
         .await;
@@ -406,6 +418,10 @@ impl CompatState {
                 return;
             }
         };
+        let players = actor.machine.players().to_vec();
+        if let Some(replay) = actor.replay.as_mut() {
+            replay.open(actor.mode, &players).await;
+        }
         let revoked = {
             let mut inner = self.inner.lock().await;
             if !actor
@@ -469,10 +485,9 @@ impl CompatState {
                 true
             }
         };
-        if abort
-            && let Some(task) = task {
-                task.abort();
-            }
+        if abort && let Some(task) = task {
+            task.abort();
+        }
     }
 
     async fn finish(self: &Arc<Self>, match_id: u64) {
@@ -746,8 +761,11 @@ struct AgentJoinRequest {
 }
 
 pub(crate) async fn status(State(state): State<Arc<ServerState>>) -> Response {
-    let _ = state.compat.active_count().await;
-    json_response(StatusCode::OK, json!({"status":"ok"}))
+    let active_matches = state.compat.active_count().await;
+    json_response(
+        StatusCode::OK,
+        json!({"status":"ok", "active_matches": active_matches}),
+    )
 }
 
 pub(crate) async fn ranked_upgrade(
@@ -774,11 +792,12 @@ pub(crate) async fn ranked_upgrade(
     };
     let compat = Arc::clone(&state.compat);
     let replay_root = state.replay_root();
+    let replay_storage = state.replay_storage();
     ws.max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             match compat
-                .enqueue_ranked(token, display_name, replay_root, permit)
+                .enqueue_ranked(token, display_name, replay_root, replay_storage, permit)
                 .await
             {
                 Ok((ticket, assignment)) => {
@@ -912,12 +931,121 @@ struct CompatMatch {
     bots: Vec<QueuedBot>,
     validation_failed: bool,
     validation_reason: Option<&'static str>,
-    replay: Option<ReplayWriter>,
+    replay: Option<CompatReplay>,
 }
 struct PlayerRuntime {
     output: mpsc::Sender<Message>,
     adapter: MjaiAdapter,
     active: bool,
+}
+
+impl CompatReplay {
+    async fn open(&mut self, mode: GameMode, players: &[Participant]) {
+        let Some(storage) = self.storage.as_ref() else {
+            return;
+        };
+        let Some(writer) = self.writer.as_ref() else {
+            return;
+        };
+        let started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if let Err(error) = storage
+            .open_ranked_match(
+                &self.match_id,
+                mode,
+                started_at,
+                &writer.relative_path_string(),
+                players,
+            )
+            .await
+        {
+            self.failed = true;
+            report_replay_failure(&self.match_id, "open", &error);
+            if let Some(writer) = self.writer.take() {
+                writer.abort();
+            }
+        } else {
+            self.metadata_open = true;
+        }
+    }
+
+    fn record(&mut self, events: &[GameEvent]) {
+        if self.failed {
+            return;
+        }
+        let Some(writer) = self.writer.as_mut() else {
+            return;
+        };
+        for event in events {
+            if let Err(error) = writer.append(event.clone()) {
+                self.failed = true;
+                report_replay_failure(&self.match_id, "append", &error);
+                break;
+            }
+        }
+        if self.failed {
+            self.writer.take();
+        }
+    }
+
+    async fn finish(mut self, result: Option<&double_riichi_core::MatchResult>) {
+        if self.failed {
+            if let Some(storage) = &self.storage
+                && self.metadata_open
+            {
+                let _ = storage.delete_writing_match(&self.match_id).await;
+            }
+            return;
+        }
+        let Some(writer) = self.writer.take() else {
+            return;
+        };
+        let artifact = match writer.finalize() {
+            Ok(artifact) => artifact,
+            Err(error) => {
+                report_replay_failure(&self.match_id, "finalize", &error);
+                if let Some(storage) = &self.storage
+                    && self.metadata_open
+                {
+                    let _ = storage.delete_writing_match(&self.match_id).await;
+                }
+                return;
+            }
+        };
+        let Some(result) = result else {
+            report_replay_failure(&self.match_id, "result", &"completed match had no result");
+            if let Some(storage) = &self.storage {
+                let _ = storage.remove_replay_file(&artifact.relative_path_string());
+                if self.metadata_open {
+                    let _ = storage.delete_writing_match(&self.match_id).await;
+                }
+            }
+            return;
+        };
+        if let Some(storage) = &self.storage
+            && let Err(error) = storage
+                .complete_ranked_match(
+                    &self.match_id,
+                    &artifact,
+                    result,
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                )
+                .await
+        {
+            report_replay_failure(&self.match_id, "metadata", &error);
+            let _ = storage.remove_replay_file(&artifact.relative_path_string());
+            let _ = storage.delete_writing_match(&self.match_id).await;
+        }
+    }
+}
+
+fn report_replay_failure(match_id: &str, stage: &str, error: &dyn std::fmt::Display) {
+    tracing::warn!(match_id, stage, error = %error, "ranked replay persistence degraded");
 }
 
 fn prepare_match(
@@ -1020,6 +1148,19 @@ fn prepare_match(
         });
     }
     let replay_root = bots.first().and_then(|bot| bot.replay_root.clone());
+    let replay_storage = bots.first().and_then(|bot| bot.replay_storage.clone());
+    let replay_id = format!("ranked-{match_id}");
+    let replay = replay_root.and_then(|root| {
+        ReplayWriter::new(&root, replay_id.clone(), mode)
+            .ok()
+            .map(|writer| CompatReplay {
+                writer: Some(writer),
+                storage: replay_storage,
+                metadata_open: false,
+                failed: false,
+                match_id: replay_id.clone(),
+            })
+    });
     Ok((
         CompatMatch {
             kind,
@@ -1030,8 +1171,7 @@ fn prepare_match(
             bots,
             validation_failed: false,
             validation_reason: None,
-            replay: replay_root
-                .and_then(|root| ReplayWriter::new(root, format!("ranked-{match_id}"), mode).ok()),
+            replay,
         },
         assignments,
         controls,
@@ -1192,24 +1332,16 @@ impl CompatMatch {
                 let _ = self.send(seat, Message::text(result.to_string()));
             }
         }
-        self.close(1000, "complete");
+        let result = self.machine.result().cloned();
         if let Some(replay) = self.replay.take() {
-            let _ = replay.finalize();
+            replay.finish(result.as_ref()).await;
         }
+        self.close(1000, "complete");
     }
 
     fn record_replay(&mut self, events: &[GameEvent]) {
-        let mut failed = false;
         if let Some(replay) = self.replay.as_mut() {
-            for event in events {
-                if replay.append(event.clone()).is_err() {
-                    failed = true;
-                    break;
-                }
-            }
-        }
-        if failed {
-            self.replay = None;
+            replay.record(events);
         }
     }
 
@@ -1261,47 +1393,39 @@ impl CompatMatch {
                         .as_millis() as u64
                 })
                 .min(TURN_SECONDS * 1000);
-        let (before, after, outcome) = {
+        let outcome = {
             let Some(player) = self.players.get_mut(&seat) else {
                 return;
             };
-            let before = player.adapter.replies().current_request_id();
-            let outcome =
-                match player
-                    .adapter
-                    .submit_reply(&mut self.machine, seat, &bytes, elapsed)
-                {
-                    Ok(outcome) => outcome,
-                    Err(_) => {
-                        player.active = false;
-                        self.validation_failed = true;
-                        self.validation_reason.get_or_insert("protocol_error");
-                        return;
-                    }
-                };
-            let after = player.adapter.replies().current_request_id();
-            (before, after, outcome)
+            match player
+                .adapter
+                .submit_reply(&mut self.machine, seat, &bytes, elapsed)
+            {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    player.active = false;
+                    self.validation_failed = true;
+                    self.validation_reason.get_or_insert("protocol_error");
+                    return;
+                }
+            }
         };
+        let status = outcome.ack.status;
         let _ = self.send_ack(seat, outcome.ack);
+        if self.kind == CompatKind::Validate
+            && matches!(status, AckStatus::Rejected | AckStatus::Unparseable)
+        {
+            self.validation_failed = true;
+            self.validation_reason.get_or_insert(match status {
+                AckStatus::Rejected => "illegal_action",
+                AckStatus::Unparseable => "protocol_error",
+                _ => "protocol_error",
+            });
+        }
         if let Some(result) = outcome.result {
             deadlines.remove(&seat);
             let events = result.events().to_vec();
             let _ = self.broadcast(&events).await;
-        } else if before.is_some() && after != before {
-            deadlines.remove(&seat);
-            self.validation_failed = true;
-            self.validation_reason.get_or_insert("illegal_action");
-            if let Ok(Some(decision)) = self.machine.current_decision() {
-                let action = decision.default_action_id(seat).clone();
-                if let Ok(result) = self
-                    .machine
-                    .submit_action(seat, decision.id().clone(), action)
-                    && result.is_resolved()
-                {
-                    let events = result.events().to_vec();
-                    let _ = self.broadcast(&events).await;
-                }
-            }
         }
     }
 
@@ -2073,6 +2197,7 @@ mod tests {
             assignment,
             permit: None,
             replay_root: None,
+            replay_storage: None,
         }
     }
 

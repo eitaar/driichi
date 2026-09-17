@@ -917,9 +917,9 @@ impl PossibleAction {
     pub fn from_game_action(action: &GameAction) -> Result<Self, ProtocolError> {
         let action = action.clone().canonicalize_for_adapter();
         match action {
-            GameAction::Discard { tile, .. } => Ok(Self::Dahai {
+            GameAction::Discard { tile, tsumogiri } => Ok(Self::Dahai {
                 pai: tile_to_mjai(tile),
-                tsumogiri: None,
+                tsumogiri: Some(tsumogiri),
             }),
             GameAction::RiichiDiscard { tile } => Ok(Self::Reach {
                 pai: Some(tile_to_mjai(tile)),
@@ -1256,14 +1256,22 @@ fn sorted_wire_tiles(tiles: &[Tile]) -> Vec<String> {
 }
 
 fn candidate_unique(candidates: Vec<&DecisionAction>) -> Result<MatchedAction, ProtocolError> {
-    match candidates.as_slice() {
-        [candidate] => Ok(MatchedAction {
-            action_id: candidate.id.clone(),
-            action: candidate.action.clone(),
-        }),
-        [] => Err(ProtocolError::NoMatchingAction),
-        _ => Err(ProtocolError::AmbiguousAction),
+    let Some(candidate) = candidates.first() else {
+        return Err(ProtocolError::NoMatchingAction);
+    };
+    // MJAI names a tile type, while the engine keeps physical copies.  Copies
+    // with the same wire shape are equivalent; red/ordinary and tsumogiri
+    // variants remain distinct and therefore still report ambiguity.
+    if candidates.iter().skip(1).any(|other| {
+        PossibleAction::from_game_action(&other.action).ok()
+            != PossibleAction::from_game_action(&candidate.action).ok()
+    }) {
+        return Err(ProtocolError::AmbiguousAction);
     }
+    Ok(MatchedAction {
+        action_id: candidate.id.clone(),
+        action: candidate.action.clone(),
+    })
 }
 
 fn action_target_matches(
@@ -1570,7 +1578,9 @@ impl RequestTime {
                 .then_some(())
                 .ok_or(ProtocolError::InvalidField);
         }
-        if self.deadline_ms > MAX_TIME_MS {
+        if self.deadline_ms > MAX_TIME_MS
+            || self.deadline_ms != self.grace_ms.saturating_add(self.bank_ms)
+        {
             return Err(ProtocolError::InvalidField);
         }
         Ok(())

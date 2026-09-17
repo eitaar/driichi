@@ -4,6 +4,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use double_riichi_core::{GameMode, MatchResult, Participant};
+use double_riichi_replay::ReplayArtifact;
 use serde_json::{Value, json};
 use sqlx::{
     Row, SqlitePool,
@@ -30,6 +32,8 @@ pub enum StorageError {
     InvalidAuditSummary,
     #[error("database returned an invalid token record")]
     InvalidTokenRecord,
+    #[error("replay metadata operation failed")]
+    ReplayMetadata,
 }
 
 impl From<sqlx::Error> for StorageError {
@@ -370,6 +374,97 @@ impl Storage {
         Ok(result.rows_affected())
     }
 
+    pub(crate) async fn open_ranked_match(
+        &self,
+        match_id: &str,
+        mode: GameMode,
+        started_at: i64,
+        replay_path: &str,
+        players: &[Participant],
+    ) -> Result<(), StorageError> {
+        self.resolve_replay_path(replay_path)?;
+        if players.len() != mode.seat_count() {
+            return Err(StorageError::ReplayMetadata);
+        }
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        sqlx::query(
+            "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status, replay_path) VALUES (?, 'ranked', NULL, ?, ?, 'writing', ?)",
+        )
+        .bind(match_id)
+        .bind(mode.as_str())
+        .bind(started_at)
+        .bind(replay_path)
+        .execute(&mut *transaction)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        for (seat, player) in players.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO match_players (match_id, participant_id, display_name, participant_kind, seat, character_id) VALUES (?, ?, ?, ?, ?, NULL)",
+            )
+            .bind(match_id)
+            .bind(player.id.as_str())
+            .bind(&player.display_name)
+            .bind(participant_kind(player))
+            .bind(i64::try_from(seat).map_err(|_| StorageError::ReplayMetadata)?)
+            .execute(&mut *transaction)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        }
+        transaction.commit().await.map_err(StorageError::Sqlx)
+    }
+
+    pub(crate) async fn complete_ranked_match(
+        &self,
+        match_id: &str,
+        artifact: &ReplayArtifact,
+        result: &MatchResult,
+        completed_at: i64,
+    ) -> Result<(), StorageError> {
+        self.resolve_replay_path(&artifact.relative_path_string())?;
+        let file_size =
+            i64::try_from(artifact.file_size).map_err(|_| StorageError::ReplayMetadata)?;
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        let updated = sqlx::query(
+            "UPDATE matches SET completed_at = ?, status = 'completed', replay_path = ?, file_size = ? WHERE match_id = ? AND source = 'ranked' AND status = 'writing'",
+        )
+        .bind(completed_at)
+        .bind(artifact.relative_path_string())
+        .bind(file_size)
+        .bind(match_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::ReplayMetadata);
+        }
+        for player in &result.players {
+            sqlx::query(
+                "UPDATE match_players SET final_points = ? WHERE match_id = ? AND seat = ?",
+            )
+            .bind(player.final_score)
+            .bind(match_id)
+            .bind(i64::from(player.seat.index()))
+            .execute(&mut *transaction)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        }
+        transaction.commit().await.map_err(StorageError::Sqlx)
+    }
+
+    pub(crate) async fn delete_writing_match(&self, match_id: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM matches WHERE match_id = ? AND status = 'writing'")
+            .bind(match_id)
+            .execute(&self.pool)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_replay_file(&self, relative_path: &str) -> Result<(), StorageError> {
+        let path = self.resolve_replay_path(relative_path)?;
+        remove_if_exists(&path)
+    }
+
     pub async fn close(&self) {
         self.pool.close().await;
     }
@@ -407,6 +502,15 @@ async fn insert_audit_tx(
     .await
     .map_err(StorageError::Sqlx)?;
     Ok(())
+}
+
+fn participant_kind(participant: &Participant) -> &'static str {
+    match participant.kind {
+        double_riichi_core::ParticipantKind::Human => "human",
+        double_riichi_core::ParticipantKind::MJAI => "mjai",
+        double_riichi_core::ParticipantKind::MCP => "mcp",
+        double_riichi_core::ParticipantKind::BuiltInBot => "builtin_bot",
+    }
 }
 
 fn string_contains_raw_token(value: &str) -> bool {
