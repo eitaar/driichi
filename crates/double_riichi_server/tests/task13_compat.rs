@@ -4,12 +4,15 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use axum::{body::Body, http::Request};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use double_riichi_core::{GameMode, RoomConfig, RoomRegistry};
 use double_riichi_replay::parse_mjson;
 use double_riichi_server::{
-    AdminAuthenticator, BotTokenAuthority, BotTokenService, ServerState, Storage, hash_password,
-    server_router,
+    AdminAuthenticator, BotTokenAuthority, BotTokenService, ServerLimits, ServerState, Storage,
+    hash_password, server_router,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -90,6 +93,15 @@ async fn ws(
             .insert("origin", origin.parse().unwrap());
     }
     Ok(connect_async(request).await?.0)
+}
+
+async fn response_json(response: axum::response::Response) -> Value {
+    serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 async fn play_bot(
@@ -215,6 +227,77 @@ async fn live_compat_upgrade_checks_auth_origin_and_revocation() {
     server.abort();
     state.shutdown().await;
     storage.close().await;
+}
+
+#[tokio::test]
+async fn live_room_join_is_strict_for_unknown_fields_rooms_and_rate_limits() {
+    let (base_state, service, storage, raw) = fixture("join-boundaries").await;
+    let mut limits = ServerLimits::default();
+    limits.participant_creation_limit = 2;
+    let state = Arc::new((*base_state).clone().with_limits(limits));
+    let room = state
+        .rooms()
+        .create(RoomConfig::new(
+            "Room",
+            GameMode::FourPlayerRedEast,
+            double_riichi_core::CharacterCatalog::starter(),
+        ))
+        .await
+        .unwrap();
+    let app = server_router(state.clone());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/rooms/{}/agents/join", room.join_code()))
+                .header("authorization", format!("Bearer {raw}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"display_name":"agent", "unexpected":true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(response).await["code"], "invalid_request");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/rooms/MISSING/agents/join")
+                .header("authorization", format!("Bearer {raw}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"display_name":"agent"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_json(response).await["code"], "room_not_found");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/rooms/{}/agents/join", room.join_code()))
+                .header("authorization", format!("Bearer {raw}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"display_name":"agent"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response_json(response).await["code"], "rate_limited");
+
+    state.shutdown().await;
+    storage.close().await;
+    drop(service);
 }
 
 #[tokio::test]
@@ -404,6 +487,102 @@ async fn live_validate_reports_illegal_action_but_completes_match() {
     );
     server.abort();
     state.shutdown().await;
+    storage.close().await;
+}
+
+#[tokio::test]
+async fn shutdown_closes_waiters_and_rejects_new_compat_admission() {
+    let (state, _service, storage, raw) = fixture("shutdown-admission").await;
+    let (base, server) = serve(state.clone()).await;
+    let mut waiting = ws(&base, "/ws/ranked", Some(&raw), None).await.unwrap();
+
+    state.begin_shutdown();
+    let response = server_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response_json(response).await["code"],
+        "server_shutting_down"
+    );
+    assert!(ws(&base, "/ws/ranked", Some(&raw), None).await.is_err());
+
+    state.shutdown().await;
+    let close = tokio::time::timeout(Duration::from_secs(2), waiting.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(close, WsMessage::Close(Some(frame))
+        if frame.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4006)
+            && frame.reason == "server_shutdown"));
+    server.abort();
+    storage.close().await;
+}
+
+#[tokio::test]
+async fn health_reports_active_compat_count_while_ranked_match_waits() {
+    let (state, _service, storage, raw) = fixture("health-count").await;
+    let app = server_router(state.clone());
+    let login = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/login")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"username":"admin","password":"correct horse battery staple"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login.headers()["set-cookie"].to_str().unwrap().to_owned();
+    let (base, server) = serve(state.clone()).await;
+    let mut sockets = Vec::new();
+    for _ in 0..4 {
+        sockets.push(ws(&base, "/ws/ranked", Some(&raw), None).await.unwrap());
+    }
+
+    let (status, body) = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let response = server_router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/health")
+                        .header("cookie", &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response_json(response).await;
+            if body["active_compat_matches"].as_u64() == Some(1) {
+                break (status, body);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["active_rooms"], 0);
+    assert_eq!(body["active_room_matches"], 0);
+    assert_eq!(body["active_compat_matches"], 1);
+
+    state.shutdown().await;
+    drop(sockets);
+    server.abort();
     storage.close().await;
 }
 
