@@ -2377,7 +2377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_compat_replay_cleans_partial_file_and_metadata() {
+    async fn aborted_compat_replay_cleans_partial_file_and_metadata() {
         let root =
             std::env::temp_dir().join(format!("double-riichi-compat-abort-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -2404,26 +2404,78 @@ mod tests {
             )
             .await
             .unwrap();
-        drop(CompatReplay {
+        CompatReplay {
             writer: Some(writer),
             storage: Some(storage.clone()),
             metadata_open: true,
             failed: false,
             match_id: "abortmatch".to_owned(),
-        });
-        for _ in 0..100 {
-            let count: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'abortmatch'")
-                    .fetch_one(storage.pool())
-                    .await
-                    .unwrap();
-            if count == 0 && !part.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        .abort()
+        .await;
         let count: i64 =
             sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'abortmatch'")
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        assert!(!part.exists());
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn failed_compat_replay_cleans_partial_file_and_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "double-riichi-compat-failure-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let mode = GameMode::FourPlayerRedHalf;
+        let players = (0..4)
+            .map(|seat| {
+                Participant::new(
+                    format!("failure{seat}"),
+                    format!("Failure {seat}"),
+                    ParticipantKind::MJAI,
+                )
+            })
+            .collect::<Vec<_>>();
+        let writer =
+            ReplayWriter::with_failure_after_writes(storage.replay_root(), "failurematch", mode, 0)
+                .unwrap();
+        let part = writer.part_path().to_path_buf();
+        storage
+            .open_ranked_match(
+                "failurematch",
+                mode,
+                1,
+                &writer.relative_path_string(),
+                &players,
+            )
+            .await
+            .unwrap();
+        let mut replay = CompatReplay {
+            writer: Some(writer),
+            storage: Some(storage.clone()),
+            metadata_open: true,
+            failed: false,
+            match_id: "failurematch".to_owned(),
+        };
+        replay.record(&[GameEvent::StartGame {
+            names: Some(vec![
+                "East".into(),
+                "South".into(),
+                "West".into(),
+                "North".into(),
+            ]),
+            id: Some("failurematch".into()),
+        }]);
+        assert!(replay.failed);
+        replay.finish(None).await;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'failurematch'")
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
@@ -2471,6 +2523,7 @@ mod tests {
             inner.timer_running = true;
             inner.timer_generation = 7;
         }
+        assert_eq!(state.active_count().await, 1);
 
         assert!(state.fill_ranked(7).await);
         {
@@ -2481,6 +2534,7 @@ mod tests {
         }
 
         state.finish(1).await;
+        assert_eq!(state.active_count().await, 0);
         {
             let inner = state.inner.lock().await;
             assert_eq!(inner.queue.len(), 1);
