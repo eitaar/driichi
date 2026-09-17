@@ -1029,6 +1029,7 @@ struct CompatMatch {
     validation_failed: bool,
     validation_reason: Option<&'static str>,
     replay: Option<CompatReplay>,
+    event_cursor: usize,
 }
 struct PlayerRuntime {
     output: mpsc::Sender<Message>,
@@ -1356,6 +1357,7 @@ fn prepare_match(
             validation_failed: false,
             validation_reason: None,
             replay,
+            event_cursor: 0,
         },
         assignments,
         controls,
@@ -1409,6 +1411,7 @@ fn origin_allowed(headers: &HeaderMap, state: &ServerState) -> bool {
 impl CompatMatch {
     async fn run(&mut self) {
         let initial_len = self.machine.events().len();
+        let mut event_cursor = initial_len;
         let initial = self.machine.events().to_vec();
         if !self.broadcast(&initial).await {
             self.close(CLOSE_PROTOCOL, "protocol_error");
@@ -1420,13 +1423,32 @@ impl CompatMatch {
             if self.machine.is_complete() {
                 break;
             }
+            match self.machine.resolve_expired() {
+                Ok(Some(result)) => {
+                    recent = result.events().to_vec();
+                    self.broadcast(&recent).await;
+                    event_cursor = self.machine.events().len();
+                    continue;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.close(CLOSE_PROTOCOL, "protocol_error");
+                    self.abort_replay().await;
+                    return;
+                }
+            }
             let Ok(Some(decision)) = self.machine.current_decision() else {
                 break;
             };
+            let now = Instant::now();
             let mut resolved = None;
             for seat in decision
                 .eligible()
                 .filter(|seat| self.players.get(seat).is_none_or(|player| !player.active))
+                .filter(|seat| {
+                    decision.submitted_action_id(*seat).is_none()
+                        && !decision.is_expired_for(*seat, now)
+                })
                 .collect::<Vec<_>>()
             {
                 let action = decision.default_action_id(seat).clone();
@@ -1449,6 +1471,7 @@ impl CompatMatch {
             if let Some(result) = resolved {
                 recent = result.events().to_vec();
                 self.broadcast(&recent).await;
+                event_cursor = self.machine.events().len();
                 continue;
             }
             let decision = match self.machine.current_decision() {
@@ -1503,16 +1526,21 @@ impl CompatMatch {
             recent.clear();
             self.collect(&mut pending).await;
             let events = self.machine.events();
-            let from = initial_len.min(events.len());
+            let from = event_cursor.min(events.len());
             recent = events[from..].to_vec();
-            if recent.len() > initial_len {
-                recent = recent[recent.len().saturating_sub(32)..].to_vec();
-            }
+            event_cursor = events.len();
+            self.broadcast(&recent).await;
         }
         if !self.machine.is_complete() {
             self.close(CLOSE_PROTOCOL, "protocol_error");
             self.abort_replay().await;
             return;
+        }
+        let events = self.machine.events();
+        let from = self.event_cursor.min(events.len());
+        if from < events.len() {
+            let pending = events[from..].to_vec();
+            self.broadcast(&pending).await;
         }
         if self.kind == CompatKind::Validate {
             let mut result = json!({"type":"validation_result", "passed": !self.validation_failed});
@@ -1562,10 +1590,6 @@ impl CompatMatch {
                                 .timeout_request(&mut self.machine, seat, elapsed)
                     {
                         let _ = self.send_ack(seat, outcome.ack);
-                        if let Some(result) = outcome.result {
-                            let events = result.events().to_vec();
-                            let _ = self.broadcast(&events).await;
-                        }
                     }
                     self.validation_failed = true;
                     self.validation_reason.get_or_insert("timeout");
@@ -1624,10 +1648,8 @@ impl CompatMatch {
                 _ => "protocol_error",
             });
         }
-        if let Some(result) = outcome.result {
+        if outcome.result.is_some() {
             pending.remove(&seat);
-            let events = result.events().to_vec();
-            let _ = self.broadcast(&events).await;
         }
     }
 
@@ -1644,10 +1666,7 @@ impl CompatMatch {
                 .machine
                 .submit_action(seat, decision.id().clone(), action)
                 && result.is_resolved()
-            {
-                let events = result.events().to_vec();
-                let _ = self.broadcast(&events).await;
-            }
+            {}
         }
     }
 
@@ -1678,6 +1697,7 @@ impl CompatMatch {
                 player.adapter.reset_kyoku();
             }
         }
+        self.event_cursor = self.event_cursor.saturating_add(events.len());
         healthy
     }
     fn send(&self, seat: Seat, message: Message) -> bool {
