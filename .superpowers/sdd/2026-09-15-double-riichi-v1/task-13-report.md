@@ -45,7 +45,7 @@ changes:
 - `cargo test -p double_riichi_server --lib --tests -- --nocapture` — 17 unit tests, 8 Task 13 tests, 10 Task 6 tests, 11 Task 7 tests, and 10 Task 9 tests passed.
 - `cargo check --workspace` — passed.
 - `cargo test --workspace` — passed across core, server, MJAI, replay, MCP, and all integration/doc-test targets.
-- `cargo clippy --workspace --all-targets -- -D warnings` — failed on five pre-existing Clippy errors in `double_riichi_core` (`type_complexity`, two `needless_range_loop`, `too_many_arguments`, and `len_without_is_empty`); no Task 13 warning was reported. These unrelated baseline findings were not widened into this test-only change.
+- `cargo clippy --workspace --all-targets -- -D warnings` — failed on five pre-existing Clippy errors in `double_riichi_core` (`type_complexity`, two `needless_range_loop`, `too_many_arguments`, and `len_without_is_empty`); no Task 13 warning was reported. These unrelated baseline findings were not widened into this lifecycle fix.
 - `git diff --check` — passed.
 
 Focused tests use bounded WebSocket timeouts; timer/capacity, replay-health
