@@ -268,11 +268,18 @@ impl AdminSessionStore {
         }
     }
 
-    pub fn revoke<C: AsRef<[u8]>>(&self, credential: C) {
+    pub fn revoke<C: AsRef<[u8]>>(&self, credential: C) -> Option<SystemTime> {
         self.sessions
             .lock()
             .expect("admin session mutex poisoned")
-            .remove(&hash_bytes(credential.as_ref()));
+            .remove(&hash_bytes(credential.as_ref()))
+    }
+
+    pub(crate) fn restore<C: AsRef<[u8]>>(&self, credential: C, expires_at: SystemTime) {
+        self.sessions
+            .lock()
+            .expect("admin session mutex poisoned")
+            .insert(hash_bytes(credential.as_ref()), expires_at);
     }
 
     pub fn clear(&self) {

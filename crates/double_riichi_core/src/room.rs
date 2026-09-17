@@ -2896,6 +2896,12 @@ pub enum RoomRegistryError {
     Room(#[from] RoomError),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomRemoval {
+    Removed,
+    AlreadyGone,
+}
+
 impl RoomRegistry {
     pub fn new() -> Self {
         Self::with_max_rooms(DEFAULT_MAX_ROOMS)
@@ -2937,6 +2943,24 @@ impl RoomRegistry {
 
     pub async fn create(&self, config: RoomConfig) -> Result<RoomHandle, RoomRegistryError> {
         self.purge_closed().await;
+        for _ in 0..128 {
+            match self
+                .create_with_join_code(config.clone(), RoomJoinCode::generate())
+                .await
+            {
+                Err(RoomRegistryError::CodeUnavailable) => continue,
+                result => return result,
+            }
+        }
+        Err(RoomRegistryError::CodeUnavailable)
+    }
+
+    pub async fn create_with_join_code(
+        &self,
+        config: RoomConfig,
+        join_code: RoomJoinCode,
+    ) -> Result<RoomHandle, RoomRegistryError> {
+        self.purge_closed().await;
         {
             let rooms = self.rooms.read().await;
             if rooms.len() >= self.max_rooms {
@@ -2944,26 +2968,22 @@ impl RoomRegistry {
             }
         }
         let now = Instant::now();
-        let mut cooldowns = self.cooldowns.write().await;
-        cooldowns.retain(|_, expires| *expires > now);
-        let mut join_code = None;
-        for _ in 0..128 {
-            let candidate = RoomJoinCode::generate();
-            if !cooldowns.contains_key(&candidate) {
-                let rooms = self.rooms.read().await;
-                if !rooms.contains_key(&candidate) {
-                    join_code = Some(candidate);
-                    break;
-                }
-            }
+        let on_cooldown = {
+            let mut cooldowns = self.cooldowns.write().await;
+            cooldowns.retain(|_, expires| *expires > now);
+            cooldowns.contains_key(&join_code)
+        };
+        if on_cooldown || self.rooms.read().await.contains_key(&join_code) {
+            return Err(RoomRegistryError::CodeUnavailable);
         }
-        drop(cooldowns);
-        let join_code = join_code.ok_or(RoomRegistryError::CodeUnavailable)?;
         let state = RoomState::with_ids(RoomId::generate(), join_code.clone(), config)?;
         let handle = RoomActor::spawn_with_state(state);
         let mut rooms = self.rooms.write().await;
         if rooms.len() >= self.max_rooms {
             return Err(RoomRegistryError::Full);
+        }
+        if rooms.contains_key(&join_code) {
+            return Err(RoomRegistryError::CodeUnavailable);
         }
         rooms.insert(join_code, handle.clone());
         Ok(handle)
@@ -2988,6 +3008,13 @@ impl RoomRegistry {
     }
 
     pub async fn remove(&self, join_code: &str) -> Result<(), RoomRegistryError> {
+        self.remove_with_outcome(join_code).await.map(|_| ())
+    }
+
+    pub async fn remove_with_outcome(
+        &self,
+        join_code: &str,
+    ) -> Result<RoomRemoval, RoomRegistryError> {
         let code = RoomJoinCode::new(join_code).map_err(|_| RoomRegistryError::NotFound)?;
         let handle = self
             .rooms
@@ -3005,13 +3032,21 @@ impl RoomRegistry {
             tokio::task::yield_now().await;
         }
         match result {
-            Ok(RoomResponse::Deleted) | Err(RoomError::Closed | RoomError::Deleted) => {
+            Ok(RoomResponse::Deleted) => {
                 self.rooms.write().await.remove(&code);
                 self.cooldowns
                     .write()
                     .await
                     .insert(code, Instant::now() + ROOM_CODE_COOLDOWN);
-                Ok(())
+                Ok(RoomRemoval::Removed)
+            }
+            Err(RoomError::Closed | RoomError::Deleted) => {
+                self.rooms.write().await.remove(&code);
+                self.cooldowns
+                    .write()
+                    .await
+                    .insert(code, Instant::now() + ROOM_CODE_COOLDOWN);
+                Ok(RoomRemoval::AlreadyGone)
             }
             Ok(_) => Err(RoomRegistryError::Room(RoomError::Closed)),
             Err(error) => Err(RoomRegistryError::Room(error)),

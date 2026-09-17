@@ -5,6 +5,8 @@ use thiserror::Error;
 pub const MAX_REPLAY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REPLAY_BYTES: usize = MAX_REPLAY_FRAME_BYTES;
 pub const MAX_DECOMPRESSED_REPLAY_BYTES: usize = MAX_REPLAY_FRAME_BYTES;
+/// Bounds frame construction independently of the serialized byte ceiling.
+pub const MAX_REPLAY_EVENTS: usize = 100_000;
 
 #[derive(Debug, Error)]
 pub enum PersistenceError {

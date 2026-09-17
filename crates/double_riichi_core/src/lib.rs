@@ -30,6 +30,6 @@ pub use room::{
     RoomCommand, RoomConfig, RoomConnection, RoomController, RoomEffect, RoomEffectError,
     RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomHistoryProjection, RoomId,
     RoomJoinCode, RoomKyokuProjection, RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot,
-    RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse, RoomSnapshot, RoomState,
+    RoomPhase, RoomRegistry, RoomRegistryError, RoomRemoval, RoomResponse, RoomSnapshot, RoomState,
     ShutdownMode,
 };

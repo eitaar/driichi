@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use double_riichi_core::{GameEvent, GameMode, Seat, Tile, Wind};
 use serde_json::{Map, Value, json};
 
-use crate::error::ReplayError;
+use crate::error::{MAX_REPLAY_EVENTS, ReplayError};
 
 pub type CanonicalEvent = GameEvent;
 pub type MjsonEvent = CanonicalEvent;
@@ -20,6 +20,12 @@ pub fn parse_mjson(input: impl AsRef<str>) -> Result<Vec<CanonicalEvent>, Replay
     let mut events = Vec::new();
     let mut mode: Option<GameMode> = None;
     for (index, line) in input.lines().enumerate() {
+        if events.len() >= MAX_REPLAY_EVENTS {
+            return Err(ReplayError::ReplayTooLarge {
+                actual: events.len().saturating_add(1),
+                limit: MAX_REPLAY_EVENTS,
+            });
+        }
         if line.trim().is_empty() {
             return Err(ReplayError::Corrupt {
                 line: index + 1,
@@ -96,6 +102,12 @@ pub fn validate_canonical_events(
     events: &[CanonicalEvent],
     mode: GameMode,
 ) -> Result<(), ReplayError> {
+    if events.len() > MAX_REPLAY_EVENTS {
+        return Err(ReplayError::ReplayTooLarge {
+            actual: events.len(),
+            limit: MAX_REPLAY_EVENTS,
+        });
+    }
     for (index, event) in events.iter().enumerate() {
         validate_event(event, mode).map_err(|message| ReplayError::Corrupt {
             line: index + 1,

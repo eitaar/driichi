@@ -11,8 +11,8 @@ mod persistence;
 mod reader;
 
 pub use error::{
-    MAX_DECOMPRESSED_REPLAY_BYTES, MAX_REPLAY_BYTES, MAX_REPLAY_FRAME_BYTES, PersistenceError,
-    ReplayError, ReplayPersistenceError, validate_frame_payload_size,
+    MAX_DECOMPRESSED_REPLAY_BYTES, MAX_REPLAY_BYTES, MAX_REPLAY_EVENTS, MAX_REPLAY_FRAME_BYTES,
+    PersistenceError, ReplayError, ReplayPersistenceError, validate_frame_payload_size,
 };
 pub use frames::{
     ReplayFrame, build_replay_frames, build_replay_frames_with_auxiliary, encode_replay_frames,

@@ -622,6 +622,38 @@ fn reconstructed_frames_include_calls_kans_riichi_multi_ron_draws_and_score_upda
 }
 
 #[test]
+fn frame_reconstruction_rejects_expansion_incrementally() {
+    let large_name = "x".repeat(20 * 1024 * 1024);
+    let events = vec![
+        GameEvent::StartGame {
+            names: Some(vec![
+                large_name,
+                "South".into(),
+                "West".into(),
+                "North".into(),
+            ]),
+            id: Some("large-expansion".into()),
+        },
+        GameEvent::StartKyoku {
+            bakaze: Wind::East,
+            kyoku: 1,
+            honba: 0,
+            kyotaku: 0,
+            oya: Seat::new(0).unwrap(),
+            scores: vec![25_000; 4],
+            dora_marker: Tile::from_id(0).unwrap(),
+            tehais: vec![vec![Tile::from_id(0).unwrap(); 13]; 4],
+        },
+        GameEvent::EndKyoku,
+        GameEvent::EndGame,
+    ];
+    assert!(matches!(
+        build_replay_frames(&events),
+        Err(ReplayError::ReplayTooLarge { .. })
+    ));
+}
+
+#[test]
 fn auxiliary_events_are_not_in_canonical_mjson_or_player_public_projection() {
     let line = serialize_event(&GameEvent::StartGame {
         names: None,

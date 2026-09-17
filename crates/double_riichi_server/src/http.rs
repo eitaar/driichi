@@ -27,10 +27,9 @@ use double_riichi_core::{
     AudienceProjection, CharacterCatalog, CharacterUsage as CoreCharacterUsage, GameAction,
     GameEvent, GameMode, MatchPlayerSnapshot, MatchRole, Participant, ParticipantId,
     ParticipantKind, Presence, RoomCommand, RoomConfig, RoomController, RoomError, RoomEvent,
-    RoomHandle, RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomResponse,
-    RoomSnapshot, Seat, TimeControl,
+    RoomHandle, RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomRemoval,
+    RoomResponse, RoomSnapshot, Seat, TimeControl,
 };
-use double_riichi_replay::MAX_DECOMPRESSED_REPLAY_BYTES;
 use futures_util::{SinkExt, StreamExt};
 use rand::random;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -41,10 +40,11 @@ use tokio::{
     time::{self, MissedTickBehavior},
 };
 use tokio_util::sync::CancellationToken;
+use tower_http::compression::CompressionLayer;
 use url::Url;
 
 use crate::compat::CompatState;
-use crate::storage::{ReplayPlayer, ReplaySummary, ReplayView};
+use crate::storage::{ReplaySummary, StorageError};
 use crate::{
     AdminAuthenticator, AdminSecrets, BotTokenAuthority, BotTokenService, CharacterAsset,
     CharacterRegistry, CharacterRegistryError, CredentialError, RuntimeConfig, Storage,
@@ -213,6 +213,9 @@ pub struct ServerState {
     started_at: Instant,
     admission_open: Arc<AtomicBool>,
     shutdown_token: CancellationToken,
+    admin_mutation_lock: Arc<AsyncMutex<()>>,
+    replay_probe_ok: Arc<AtomicBool>,
+    storage_maintenance_started: Arc<AtomicBool>,
     storage: Option<Arc<Storage>>,
     bot_tokens: Option<Arc<BotTokenService>>,
     pub(crate) compat: Arc<CompatState>,
@@ -248,6 +251,7 @@ impl ServerState {
         );
         if self.storage.is_none() {
             self.storage = Some(service.storage());
+            self.start_storage_maintenance();
         }
         self.bot_tokens = Some(service);
         self
@@ -442,6 +446,7 @@ impl ServerState {
             state.rooms.clone(),
         );
         state.bot_tokens = Some(token_service);
+        state.start_storage_maintenance();
         Ok(state)
     }
 
@@ -463,17 +468,7 @@ impl ServerState {
             limits.max_ranked_queue,
         ));
         let guest_sessions = Arc::new(GuestSessionStore::default());
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let cleanup_sessions = guest_sessions.clone();
-            let cleanup_rooms = rooms.clone();
-            handle.spawn(async move {
-                loop {
-                    time::sleep(Duration::from_secs(60)).await;
-                    cleanup_sessions.prune_for_rooms(&cleanup_rooms).await;
-                }
-            });
-        }
-        Self {
+        let state = Self {
             public_origin,
             public_origin_url,
             secure_cookies,
@@ -487,6 +482,9 @@ impl ServerState {
             connection_count: Arc::new(AtomicUsize::new(0)),
             limits,
             shutdown_token: CancellationToken::new(),
+            admin_mutation_lock: Arc::new(AsyncMutex::new(())),
+            replay_probe_ok: Arc::new(AtomicBool::new(true)),
+            storage_maintenance_started: Arc::new(AtomicBool::new(false)),
             shutdown_seconds: 10,
             started_at: Instant::now(),
             admission_open: Arc::new(AtomicBool::new(true)),
@@ -496,7 +494,74 @@ impl ServerState {
             mcp_session_idle_seconds: 30 * 60,
             mcp_character,
             mcp_provider_characters: std::collections::BTreeMap::new(),
+        };
+        state.start_guest_session_cleanup();
+        state
+    }
+
+    fn start_guest_session_cleanup(&self) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let cleanup_sessions = self.guest_sessions.clone();
+        let cleanup_rooms = self.rooms.clone();
+        let shutdown = self.shutdown_token.clone();
+        handle.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = time::sleep(Duration::from_secs(60)) => {
+                        cleanup_sessions.prune_for_rooms(&cleanup_rooms).await;
+                    }
+                }
+            }
+        });
+    }
+
+    fn start_storage_maintenance(&self) {
+        let Some(storage) = self.storage.clone() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if self
+            .storage_maintenance_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
         }
+        self.replay_probe_ok.store(
+            !storage.replay_degraded() && storage.probe_replay().is_ok(),
+            Ordering::Release,
+        );
+        let replay_probe_ok = self.replay_probe_ok.clone();
+        let shutdown = self.shutdown_token.clone();
+        handle.spawn(async move {
+            let mut replay_tick = time::interval(Duration::from_secs(60));
+            replay_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            replay_tick.tick().await;
+            let mut audit_tick = time::interval(Duration::from_secs(24 * 60 * 60));
+            audit_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            audit_tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = replay_tick.tick() => {
+                        replay_probe_ok.store(storage.probe_replay().is_ok(), Ordering::Release);
+                    }
+                    _ = audit_tick.tick() => {
+                        if let Err(error) = storage.retry_pending_audits().await {
+                            tracing::warn!(error = ?error, "pending Admin audit recovery failed");
+                        }
+                        if let Err(error) = storage.cleanup_audit(audit_now()).await {
+                            tracing::warn!(error = ?error, "audit retention cleanup failed");
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub fn shutdown_seconds(&self) -> u64 {
@@ -790,7 +855,15 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
         .route("/api/v1/admin/replays", get(admin_list_replays))
         .route(
             "/api/v1/admin/replays/{match_id}",
-            get(admin_view_replay).delete(admin_delete_replay),
+            get(admin_view_replay)
+                .layer(
+                    CompressionLayer::new()
+                        .gzip(true)
+                        .no_deflate()
+                        .no_br()
+                        .no_zstd(),
+                )
+                .delete(admin_delete_replay),
         )
         .route(
             "/api/v1/admin/rooms/{join_code}",
@@ -958,6 +1031,77 @@ fn require_admin(
     Ok(())
 }
 
+fn audit_now() -> i64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+async fn prepare_admin_audit(
+    state: &ServerState,
+    request_id: &RequestId,
+    action: &'static str,
+    target_type: &'static str,
+    target_id: &str,
+    summary: &Value,
+) -> Result<(), StorageError> {
+    let Some(storage) = state.replay_storage() else {
+        return Ok(());
+    };
+    storage
+        .prepare_admin_audit(
+            audit_now(),
+            &request_id.0,
+            action,
+            target_type,
+            target_id,
+            summary,
+        )
+        .await
+}
+
+async fn complete_admin_audit(
+    state: &ServerState,
+    request_id: &RequestId,
+) -> Result<(), StorageError> {
+    let Some(storage) = state.replay_storage() else {
+        return Ok(());
+    };
+    storage.complete_admin_audit(&request_id.0).await
+}
+
+async fn cancel_admin_audit(state: &ServerState, request_id: &RequestId) {
+    let Some(storage) = state.replay_storage() else {
+        return;
+    };
+    if let Err(error) = storage.cancel_admin_audit(&request_id.0).await {
+        tracing::error!(
+            request_id = %request_id.0,
+            error = ?error,
+            "failed to discard pending Admin audit"
+        );
+    }
+}
+
+fn audit_failure(
+    request_id: &RequestId,
+    action: &str,
+    target_type: &str,
+    target_id: &str,
+    error: &StorageError,
+) -> Response {
+    tracing::error!(
+        request_id = %request_id.0,
+        action,
+        target_type,
+        target_id,
+        error = %error,
+        "admin mutation audit failed; success is not reported"
+    );
+    internal_error(request_id)
+}
+
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
     cookies.split(';').find_map(|part| {
@@ -1010,10 +1154,9 @@ async fn admin_login(
         Ok(payload) => payload,
         Err(response) => return response,
     };
-    let session = match state
-        .admin
-        .login(&payload.username, &payload.password, SystemTime::now())
-    {
+    let _operation = state.admin_mutation_lock.lock().await;
+    let now = SystemTime::now();
+    let session = match state.admin.login(&payload.username, &payload.password, now) {
         Ok(session) => session,
         Err(CredentialError::InvalidCredentials) => {
             state.rate_limiter.record(
@@ -1039,6 +1182,17 @@ async fn admin_login(
             .response(&request_id);
         }
     };
+    let summary = json!({});
+    if let Err(error) =
+        prepare_admin_audit(&state, &request_id, "login", "admin", "admin", &summary).await
+    {
+        state.admin.sessions().revoke(session.credential());
+        return audit_failure(&request_id, "login", "admin", "admin", &error);
+    }
+    if let Err(error) = complete_admin_audit(&state, &request_id).await {
+        state.admin.sessions().revoke(session.credential());
+        return audit_failure(&request_id, "login", "admin", "admin", &error);
+    }
     let value = URL_SAFE_NO_PAD.encode(session.credential().as_bytes());
     let expires_at = system_time_rfc3339(session.expires_at());
     let cookie = format!(
@@ -1067,10 +1221,30 @@ async fn admin_logout(
         )
         .response(&request_id);
     }
-    if let Some(value) = cookie_value(&headers, ADMIN_SESSION_COOKIE)
-        && let Ok(credential) = URL_SAFE_NO_PAD.decode(value.as_bytes())
-    {
-        state.admin.sessions().revoke(credential);
+    let _operation = state.admin_mutation_lock.lock().await;
+    let revoked = cookie_value(&headers, ADMIN_SESSION_COOKIE)
+        .and_then(|value| URL_SAFE_NO_PAD.decode(value.as_bytes()).ok())
+        .and_then(|credential| {
+            state
+                .admin
+                .sessions()
+                .validate(&credential, SystemTime::now())
+                .then(|| state.admin.sessions().revoke(&credential))
+                .flatten()
+                .map(|expires_at| (credential, expires_at))
+        });
+    if let Some((credential, expires_at)) = revoked {
+        let summary = json!({});
+        if let Err(error) =
+            prepare_admin_audit(&state, &request_id, "logout", "admin", "admin", &summary).await
+        {
+            state.admin.sessions().restore(&credential, expires_at);
+            return audit_failure(&request_id, "logout", "admin", "admin", &error);
+        }
+        if let Err(error) = complete_admin_audit(&state, &request_id).await {
+            state.admin.sessions().restore(&credential, expires_at);
+            return audit_failure(&request_id, "logout", "admin", "admin", &error);
+        }
     }
     let cookie = format!(
         "{ADMIN_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/api/v1/admin; Max-Age=0{}",
@@ -1154,6 +1328,7 @@ async fn admin_create_token(
         Ok(payload) => payload,
         Err(response) => return response,
     };
+    let _operation = state.admin_mutation_lock.lock().await;
     let Some(service) = &state.bot_tokens else {
         return internal_error(&request_id);
     };
@@ -1202,6 +1377,7 @@ async fn admin_revoke_token(
         )
         .response(&request_id);
     }
+    let _operation = state.admin_mutation_lock.lock().await;
     let Some(service) = &state.bot_tokens else {
         return internal_error(&request_id);
     };
@@ -1309,10 +1485,40 @@ async fn admin_create_room(
         }
         config.max_participants = limit;
     }
-    let handle = match state.rooms.create(config).await {
-        Ok(handle) => handle,
-        Err(error) => return registry_error_response(error, &request_id),
+    let _operation = state.admin_mutation_lock.lock().await;
+    let summary = json!({"room_name": config.room_name});
+    let (target_id, handle) = loop {
+        let target = RoomJoinCode::generate();
+        if let Err(error) = prepare_admin_audit(
+            &state,
+            &request_id,
+            "room_create",
+            "room",
+            target.as_str(),
+            &summary,
+        )
+        .await
+        {
+            return audit_failure(&request_id, "room_create", "room", target.as_str(), &error);
+        }
+        match state
+            .rooms
+            .create_with_join_code(config.clone(), target.clone())
+            .await
+        {
+            Ok(handle) => break (target.to_string(), handle),
+            Err(RoomRegistryError::CodeUnavailable) => {
+                cancel_admin_audit(&state, &request_id).await;
+            }
+            Err(error) => {
+                cancel_admin_audit(&state, &request_id).await;
+                return registry_error_response(error, &request_id);
+            }
+        }
     };
+    if let Err(error) = complete_admin_audit(&state, &request_id).await {
+        return audit_failure(&request_id, "room_create", "room", &target_id, &error);
+    }
     let snapshot = match handle.snapshot().await {
         Ok(snapshot) => snapshot,
         Err(_) => return internal_error(&request_id),
@@ -1414,8 +1620,12 @@ async fn admin_view_replay(
     let Some(storage) = state.replay_storage() else {
         return internal_error(&request_id);
     };
-    match storage.load_replay(&match_id).await {
-        Ok(replay) => replay_view_response(&replay, &request_id),
+    match storage
+        .load_replay(&match_id)
+        .await
+        .and_then(|replay| storage.encode_replay_view(&replay))
+    {
+        Ok(payload) => replay_view_response(payload, &request_id),
         Err(error) => {
             if matches!(
                 error,
@@ -1443,6 +1653,7 @@ async fn admin_delete_replay(
     if !unsafe_admin_origin_allowed(&headers, &state) {
         return origin_not_allowed(&request_id);
     }
+    let _operation = state.admin_mutation_lock.lock().await;
     let Some(storage) = state.replay_storage() else {
         return internal_error(&request_id);
     };
@@ -1473,43 +1684,7 @@ fn replay_summary_view(summary: &ReplaySummary) -> Value {
     })
 }
 
-fn replay_player_view(player: &ReplayPlayer) -> Value {
-    json!({
-        "participant_id": player.participant_id,
-        "display_name": player.display_name,
-        "participant_kind": player.participant_kind,
-        "seat": player.seat,
-        "character_id": player.character_id,
-        "final_points": player.final_points,
-    })
-}
-
-fn replay_view_response(replay: &ReplayView, request_id: &RequestId) -> Response {
-    let mut body = replay_summary_view(&replay.summary);
-    if let Value::Object(ref mut object) = body {
-        object.insert(
-            "players".to_owned(),
-            json!(
-                replay
-                    .players
-                    .iter()
-                    .map(replay_player_view)
-                    .collect::<Vec<_>>()
-            ),
-        );
-        let frames = match serde_json::to_value(&replay.frames) {
-            Ok(frames) => frames,
-            Err(_) => return internal_error(request_id),
-        };
-        object.insert("frames".to_owned(), frames);
-    }
-    let payload = match serde_json::to_vec(&body) {
-        Ok(payload) if payload.len() <= MAX_DECOMPRESSED_REPLAY_BYTES => payload,
-        Ok(_) => {
-            return replay_error_response(crate::storage::StorageError::ReplayTooLarge, request_id);
-        }
-        Err(_) => return internal_error(request_id),
-    };
+fn replay_view_response(payload: Vec<u8>, _request_id: &RequestId) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
@@ -1612,8 +1787,13 @@ async fn admin_patch_room(
     {
         return invalid_request(&request_id);
     }
+    let _operation = state.admin_mutation_lock.lock().await;
     let Some(handle) = state.rooms.get(&join_code).await else {
         return room_not_found(&request_id);
+    };
+    let before = match handle.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return room_not_found(&request_id),
     };
     let mode = match payload.game_mode.as_deref() {
         Some(value) => match parse_mode(value) {
@@ -1635,6 +1815,35 @@ async fn admin_patch_room(
     {
         return invalid_request(&request_id);
     }
+    let mut requested_fields = Vec::new();
+    if payload.room_name.is_some() {
+        requested_fields.push("room_name");
+    }
+    if payload.game_mode.is_some() {
+        requested_fields.push("game_mode");
+    }
+    if payload.time_control.is_some() {
+        requested_fields.push("time_control");
+    }
+    if payload.replay_save.is_some() {
+        requested_fields.push("replay_save");
+    }
+    if payload.participant_limit.is_some() {
+        requested_fields.push("participant_limit");
+    }
+    let summary = json!({"changed_fields": requested_fields});
+    if let Err(error) = prepare_admin_audit(
+        &state,
+        &request_id,
+        "room_configure",
+        "room",
+        &join_code,
+        &summary,
+    )
+    .await
+    {
+        return audit_failure(&request_id, "room_configure", "room", &join_code, &error);
+    }
     let command = RoomCommand::configure(
         payload.room_name,
         mode,
@@ -1642,13 +1851,27 @@ async fn admin_patch_room(
         payload.replay_save,
         payload.participant_limit,
     );
-    if let Err(error) = handle.send(command).await {
-        return room_error_response(error, &request_id);
+    let snapshot = match handle.send(command).await {
+        Ok(RoomResponse::Accepted(snapshot)) => snapshot,
+        Ok(_) => {
+            cancel_admin_audit(&state, &request_id).await;
+            return internal_error(&request_id);
+        }
+        Err(error) => {
+            cancel_admin_audit(&state, &request_id).await;
+            return room_error_response(error, &request_id);
+        }
+    };
+    let mut comparable = snapshot.clone();
+    comparable.revision = before.revision;
+    if comparable == before {
+        cancel_admin_audit(&state, &request_id).await;
+        return room_detail_response(StatusCode::OK, &snapshot);
     }
-    match handle.snapshot().await {
-        Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
-        Err(_) => room_not_found(&request_id),
+    if let Err(error) = complete_admin_audit(&state, &request_id).await {
+        return audit_failure(&request_id, "room_configure", "room", &join_code, &error);
     }
+    room_detail_response(StatusCode::OK, &snapshot)
 }
 
 async fn admin_delete_room(
@@ -1669,15 +1892,46 @@ async fn admin_delete_room(
         )
         .response(&request_id);
     }
-    match state.rooms.remove(&join_code).await {
-        Ok(()) => {
+    let _operation = state.admin_mutation_lock.lock().await;
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    let room_name = match handle.snapshot().await {
+        Ok(snapshot) => snapshot.room_name,
+        Err(_) => return room_not_found(&request_id),
+    };
+    let summary = json!({"room_name": room_name});
+    if let Err(error) = prepare_admin_audit(
+        &state,
+        &request_id,
+        "room_delete",
+        "room",
+        &join_code,
+        &summary,
+    )
+    .await
+    {
+        return audit_failure(&request_id, "room_delete", "room", &join_code, &error);
+    }
+    match state.rooms.remove_with_outcome(&join_code).await {
+        Ok(RoomRemoval::Removed) => {
             state.guest_sessions.invalidate_room(&join_code);
+            if let Err(error) = complete_admin_audit(&state, &request_id).await {
+                return audit_failure(&request_id, "room_delete", "room", &join_code, &error);
+            }
             Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .body(Body::empty())
                 .unwrap()
         }
-        Err(error) => registry_error_response(error, &request_id),
+        Ok(RoomRemoval::AlreadyGone) => {
+            cancel_admin_audit(&state, &request_id).await;
+            room_not_found(&request_id)
+        }
+        Err(error) => {
+            cancel_admin_audit(&state, &request_id).await;
+            registry_error_response(error, &request_id)
+        }
     }
 }
 
@@ -1693,6 +1947,7 @@ async fn admin_select(
         participant_id,
         headers,
         request_id,
+        "participant_select",
         RoomCommand::select(ParticipantId::new("placeholder")),
     )
     .await
@@ -1710,6 +1965,7 @@ async fn admin_deselect(
         participant_id,
         headers,
         request_id,
+        "participant_deselect",
         RoomCommand::deselect(ParticipantId::new("placeholder")),
     )
     .await
@@ -1727,6 +1983,7 @@ async fn admin_kick(
         participant_id,
         headers,
         request_id,
+        "participant_kick",
         RoomCommand::leave(ParticipantId::new("placeholder")),
     )
     .await
@@ -1738,6 +1995,7 @@ async fn admin_participant_command(
     participant_id: String,
     headers: HeaderMap,
     request_id: RequestId,
+    action: &'static str,
     command: RoomCommand,
 ) -> Response {
     if let Err(response) = require_admin(state, &headers, &request_id) {
@@ -1752,8 +2010,13 @@ async fn admin_participant_command(
         )
         .response(&request_id);
     }
+    let _admin_operation = state.admin_mutation_lock.lock().await;
     let Some(handle) = state.rooms.get(&join_code).await else {
         return room_not_found(&request_id);
+    };
+    let before = match handle.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return room_not_found(&request_id),
     };
     let participant_id = ParticipantId::new(participant_id);
     let is_leave = matches!(command, RoomCommand::Leave { .. });
@@ -1762,6 +2025,48 @@ async fn admin_participant_command(
     } else {
         None
     };
+    let summary = json!({"participant_id": participant_id});
+    if let Err(error) = prepare_admin_audit(
+        state,
+        &request_id,
+        action,
+        "participant",
+        participant_id.as_str(),
+        &summary,
+    )
+    .await
+    {
+        return audit_failure(
+            &request_id,
+            action,
+            "participant",
+            participant_id.as_str(),
+            &error,
+        );
+    }
+    let command = match command {
+        RoomCommand::Select { .. } => RoomCommand::select(participant_id.clone()),
+        RoomCommand::Deselect { .. } => RoomCommand::deselect(participant_id.clone()),
+        RoomCommand::Leave { .. } => RoomCommand::leave(participant_id.clone()),
+        _ => unreachable!(),
+    };
+    let snapshot = match handle.send(command).await {
+        Ok(RoomResponse::Accepted(snapshot)) => snapshot,
+        Ok(_) => {
+            cancel_admin_audit(state, &request_id).await;
+            return internal_error(&request_id);
+        }
+        Err(error) => {
+            cancel_admin_audit(state, &request_id).await;
+            return room_error_response(error, &request_id);
+        }
+    };
+    let mut comparable = snapshot.clone();
+    comparable.revision = before.revision;
+    if comparable == before {
+        cancel_admin_audit(state, &request_id).await;
+        return room_detail_response(StatusCode::OK, &snapshot);
+    }
     if is_leave {
         state
             .guest_sessions
@@ -1770,19 +2075,16 @@ async fn admin_participant_command(
             .connections
             .close(&participant_id, 4006, "session_expired");
     }
-    let command = match command {
-        RoomCommand::Select { .. } => RoomCommand::select(participant_id.clone()),
-        RoomCommand::Deselect { .. } => RoomCommand::deselect(participant_id.clone()),
-        RoomCommand::Leave { .. } => RoomCommand::leave(participant_id.clone()),
-        _ => unreachable!(),
-    };
-    match handle.send(command).await {
-        Ok(_) => match handle.snapshot().await {
-            Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
-            Err(_) => room_not_found(&request_id),
-        },
-        Err(error) => room_error_response(error, &request_id),
+    if let Err(error) = complete_admin_audit(state, &request_id).await {
+        return audit_failure(
+            &request_id,
+            action,
+            "participant",
+            participant_id.as_str(),
+            &error,
+        );
     }
+    room_detail_response(StatusCode::OK, &snapshot)
 }
 
 async fn admin_fill(
@@ -1796,6 +2098,7 @@ async fn admin_fill(
         &join_code,
         headers,
         request_id,
+        "fill_with_bots",
         RoomCommand::fill_with_bots(),
     )
     .await
@@ -1812,6 +2115,7 @@ async fn admin_start(
         &join_code,
         headers,
         request_id,
+        "match_start",
         RoomCommand::start(),
     )
     .await
@@ -1828,6 +2132,7 @@ async fn admin_rematch(
         &join_code,
         headers,
         request_id,
+        "rematch",
         RoomCommand::rematch(),
     )
     .await
@@ -1844,6 +2149,7 @@ async fn admin_back_to_lobby(
         &join_code,
         headers,
         request_id,
+        "back_to_lobby",
         RoomCommand::back_to_lobby(),
     )
     .await
@@ -1854,6 +2160,7 @@ async fn admin_room_command(
     join_code: &str,
     headers: HeaderMap,
     request_id: RequestId,
+    action: &'static str,
     command: RoomCommand,
 ) -> Response {
     if let Err(response) = require_admin(state, &headers, &request_id) {
@@ -1868,19 +2175,52 @@ async fn admin_room_command(
         )
         .response(&request_id);
     }
+    let _admin_operation = state.admin_mutation_lock.lock().await;
     let Some(handle) = state.rooms.get(join_code).await else {
         return room_not_found(&request_id);
     };
-    match handle.send(command).await {
-        Ok(RoomResponse::Started(_)) | Ok(RoomResponse::Accepted(_)) => {
-            match handle.snapshot().await {
-                Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
-                Err(_) => room_not_found(&request_id),
-            }
-        }
-        Ok(_) => internal_error(&request_id),
-        Err(error) => room_error_response(error, &request_id),
+    let before = match handle.snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return room_not_found(&request_id),
+    };
+    let summary = json!({});
+    if let Err(error) =
+        prepare_admin_audit(state, &request_id, action, "room", join_code, &summary).await
+    {
+        return audit_failure(&request_id, action, "room", join_code, &error);
     }
+    let response = match handle.send(command).await {
+        Ok(response @ RoomResponse::Started(_)) => response,
+        Ok(RoomResponse::Accepted(snapshot)) => {
+            let mut comparable = snapshot.clone();
+            comparable.revision = before.revision;
+            if comparable == before {
+                cancel_admin_audit(state, &request_id).await;
+                return room_detail_response(StatusCode::OK, &snapshot);
+            }
+            RoomResponse::Accepted(snapshot)
+        }
+        Ok(_) => {
+            cancel_admin_audit(state, &request_id).await;
+            return internal_error(&request_id);
+        }
+        Err(error) => {
+            cancel_admin_audit(state, &request_id).await;
+            return room_error_response(error, &request_id);
+        }
+    };
+    if let Err(error) = complete_admin_audit(state, &request_id).await {
+        return audit_failure(&request_id, action, "room", join_code, &error);
+    }
+    let snapshot = match response {
+        RoomResponse::Accepted(snapshot) => snapshot,
+        RoomResponse::Started(_) => match handle.snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(_) => return internal_error(&request_id),
+        },
+        _ => unreachable!(),
+    };
+    room_detail_response(StatusCode::OK, &snapshot)
 }
 
 async fn public_room_lookup(
@@ -3185,7 +3525,8 @@ async fn health(
                 .is_ok_and(|result| result.is_ok());
             let replay_ok = !state.compat.replay_degraded()
                 && !storage.replay_degraded()
-                && storage.probe_replay().is_ok();
+                && state.replay_probe_ok.load(Ordering::Acquire)
+                && storage.replay_root().is_dir();
             (
                 if database_ok { "ok" } else { "degraded" },
                 if replay_ok { "ok" } else { "degraded" },

@@ -16,13 +16,34 @@ unclaimed.
 - Added Admin Replay view and delete routes. View resolves the registered path
   below the configured Replay root, loads auxiliary metadata, and returns
   server-built `ReplayFrame` values. The 64 MiB decompressed payload limit is
-  enforced by the Replay reader/frame builder and the HTTP response boundary.
+  enforced by the Replay reader/frame builder and the HTTP response boundary;
+  list availability uses the same bounded frame reconstruction, including
+  parseable-but-invalid and oversized frame payloads.
+- Completed Replay rows are bounded-validated during Storage startup, so
+  corruption degrades fresh-instance health and logs only match ID/error
+  details; startup validation never allocates an HTTP response.
 - Corrupt, missing, unsafe, and oversized files remain listable/deletable;
   view errors are stable RFC Problem responses, internal details are logged,
   and replay health is degraded.
 - Delete removes the registered file first (missing is success), then deletes
   Match/Player/auxiliary rows and writes the allowlisted Admin audit record in
   one transaction, leaving metadata retryable when the database step fails.
+- All Admin state-changing Room, participant, session, and token operations
+  now preflight their audit insert, serialize mutations, and complete through a
+  durable pending-audit outbox; failed commands cancel pending records and
+  no-op commands do not emit success audits. Room deletion distinguishes an
+  actual removal from an already-gone actor.
+- Ranked replay cleanup retains the writing metadata/path when post-finalize
+  unlink fails, so startup can retry the registered artifact cleanup.
+- Replay parsing and frame reconstruction cap event counts as well as bytes;
+  auxiliary and Player rows are counted/budgeted before materialization.
+- Storage startup cleanup invokes the Replay crate's global `.incomplete`
+  cleanup in addition to the database-backed writing-row cleanup. A
+  cancellation-aware maintenance task retries pending audits and retention
+  cleanup daily, probes Replay storage every 60 seconds, and feeds cached
+  component status to health.
+- Admin Replay View negotiates gzip through a route-scoped tower-http layer
+  with only the `compression-gzip` feature enabled.
 - Persisted ranked auxiliary Replay events during completion.
 - Added TanStack Query Replay list/view/delete data flow, URL-backed
   pagination with Back/Forward support and later-page delete clamping,
@@ -36,23 +57,32 @@ unclaimed.
 ## Verification
 
 - `cargo fmt --all -- --check` — passed.
-- `cargo check --workspace` — passed before final focused reruns; changed server
-  tests also pass `cargo check -p double_riichi_server --tests`.
-- `cargo test -p double_riichi_server --test task15_replay` — 4 passed,
-  including authenticated route coverage, path containment, oversize/corrupt
+- `cargo check --workspace` — passed; changed server tests also pass
+  `cargo check -p double_riichi_server --tests`.
+- `cargo test -p double_riichi_server --test task15_replay` — 15 passed,
+  including bounded frame/list parity, fresh-startup corruption health, orphan
+  `.part` cleanup, applied-audit recovery, gzip negotiation/decompression,
+  authenticated route and Admin audit coverage, no-op fill suppression,
+  logout rollback, concurrent deletion, path containment, oversize/corrupt
   handling, auxiliary persistence, and file-first delete retryability.
-- `cargo test --workspace` — parent verification passed all workspace unit,
-  integration, and doc tests, including Task 15.
+- `cargo test --workspace` — passed all workspace unit, integration, and doc
+  tests, including Task 15.
 - `cd frontend && npm run typecheck` — passed.
-- `cd frontend && npm test -- --run src/replay.test.tsx` — 9 passed, including
-  URL pagination, later-page deletion, Retry, real asset-policy mocks, Room
+- `cd frontend && npm test -- --run` — 41 passed across 3 files, including URL
+  pagination, later-page deletion, Retry, real asset-policy mocks, Room
   audio/portrait helpers, and playback controls.
-- `cd frontend && npm test -- --run` — parent verification passed the full
-  frontend suite.
 - `cd frontend && npm run build` — passed.
 - `cd frontend && npx playwright test tests/task15.spec.ts` — focused library /
   viewer and review-fix flows passed at 1024x600 and 1440x900; screenshots
   were written under `frontend/test-results/task-15/`.
+- `cargo test -p double_riichi_replay` — 16 passed, including incremental
+  reconstruction expansion limits.
+- `cargo test -p double_riichi_server --lib` — 36 passed, including retained
+  writing metadata when finalized-replay cleanup cannot unlink its artifact.
+- `cargo test -p double_riichi_core --lib` — 11 passed.
+- `cargo clippy -p double_riichi_server --all-targets -- -D warnings` — blocked
+  by the same five pre-existing `double_riichi_core` lints; no changed-file
+  lint was reported before that baseline failure.
 - `git diff --check` — passed.
 
 ## Review-fix recovery evidence
@@ -72,6 +102,14 @@ renderer or API design.
 
 ## Scope and residual risks
 
+- Internal test-only `FailureInjection`/`ServerState::for_tests` and the
+  pre-existing `Storage::pool` remain non-blocking API-surface notes; they are
+  not network-reachable production capabilities and this is not a security
+  claim.
+- Pending audit recovery is durable across process interruption after the
+  mutation's applied marker; the actor mutation and database audit cannot be
+  committed in one SQL transaction, so the serialized outbox is the recovery
+  boundary.
 - Room Replay metadata remains dependent on the existing persistence producer;
   this slice does not add a new Room persistence pipeline.
 - External yamai/riichi.dev/Conditional Design Freeze/release gates remain
