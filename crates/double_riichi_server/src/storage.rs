@@ -1,7 +1,7 @@
 use std::{
     fs,
     fs::OpenOptions,
-    io::Write,
+    io::{self, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -9,9 +9,11 @@ use std::{
 
 use double_riichi_core::{GameMode, MatchResult, Participant};
 use double_riichi_replay::{
-    AuxiliaryPhase, AuxiliaryRecord, MAX_DECOMPRESSED_REPLAY_BYTES, ReplayArtifact, ReplayError,
-    ReplayFrame, ReplayReader,
+    AuxiliaryPhase, AuxiliaryRecord, MAX_DECOMPRESSED_REPLAY_BYTES, MAX_REPLAY_EVENTS,
+    ReplayArtifact, ReplayError, ReplayFrame, ReplayReader, startup_cleanup as cleanup_replay_root,
 };
+use futures_util::TryStreamExt;
+use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{
     Row, SqlitePool,
@@ -48,6 +50,10 @@ pub enum StorageError {
     ReplayTooLarge,
     #[error("replay is corrupt")]
     ReplayCorrupt,
+    #[error("replay startup cleanup failed")]
+    ReplayCleanup(#[source] ReplayError),
+    #[error("Admin audit operation is not pending")]
+    AuditPending,
 }
 
 impl From<sqlx::Error> for StorageError {
@@ -75,7 +81,7 @@ pub(crate) struct ReplaySummary {
     pub availability: &'static str,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ReplayPlayer {
     pub participant_id: String,
     pub display_name: String,
@@ -90,6 +96,21 @@ pub(crate) struct ReplayView {
     pub summary: ReplaySummary,
     pub players: Vec<ReplayPlayer>,
     pub frames: Vec<ReplayFrame>,
+}
+
+#[derive(Serialize)]
+struct ReplayResponse<'a> {
+    match_id: &'a str,
+    source: &'a str,
+    room_name: &'a Option<String>,
+    game_mode: &'a str,
+    started_at: String,
+    completed_at: String,
+    file_size: i64,
+    availability: &'static str,
+    replay_available: bool,
+    players: &'a [ReplayPlayer],
+    frames: &'a [ReplayFrame],
 }
 
 pub struct Storage {
@@ -150,6 +171,13 @@ impl Storage {
             max_connections: 4,
         };
         storage.startup_cleanup().await?;
+        if let Err(error) = storage.validate_completed_replays().await {
+            storage.mark_replay_degraded();
+            tracing::warn!(error = ?error, "completed replay startup validation failed");
+        }
+        if let Err(error) = storage.retry_pending_audits().await {
+            tracing::warn!(error = ?error, "pending Admin audit recovery failed during startup");
+        }
         if let Err(error) = storage.cleanup_audit(now_unix_seconds()).await {
             tracing::warn!(error = ?error, "audit retention cleanup failed during startup");
         }
@@ -191,7 +219,8 @@ impl Storage {
             } else {
                 self.replay_root.join(directory)
             };
-            if !fs::metadata(path).map_err(StorageError::Io)?.is_dir() {
+            let metadata = fs::symlink_metadata(path).map_err(StorageError::Io)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(StorageError::Io(std::io::Error::new(
                     std::io::ErrorKind::NotADirectory,
                     "replay path is not a directory",
@@ -291,6 +320,12 @@ impl Storage {
             ));
         }
 
+        cleanup_replay_root(
+            &self.replay_root,
+            unfinished.iter().map(|(match_id, _)| match_id.as_str()),
+        )
+        .map_err(StorageError::ReplayCleanup)?;
+
         for (match_id, replay_path) in &unfinished {
             if let Some(replay_path) = replay_path {
                 let path = self.resolve_replay_path(replay_path)?;
@@ -309,6 +344,43 @@ impl Storage {
                     .map_err(StorageError::Sqlx)?;
             }
             transaction.commit().await.map_err(StorageError::Sqlx)?;
+        }
+        Ok(())
+    }
+
+    async fn validate_completed_replays(&self) -> Result<(), StorageError> {
+        let mut rows = sqlx::query(
+            "SELECT match_id, source, room_name, game_mode, started_at, completed_at, replay_path, file_size
+             FROM matches WHERE status = 'completed'",
+        )
+        .fetch(&self.pool);
+        while let Some(row) = rows.try_next().await.map_err(StorageError::Sqlx)? {
+            let summary = ReplaySummary {
+                match_id: row.try_get("match_id").map_err(StorageError::Sqlx)?,
+                source: row.try_get("source").map_err(StorageError::Sqlx)?,
+                room_name: row.try_get("room_name").map_err(StorageError::Sqlx)?,
+                game_mode: row.try_get("game_mode").map_err(StorageError::Sqlx)?,
+                started_at: row.try_get("started_at").map_err(StorageError::Sqlx)?,
+                completed_at: row.try_get("completed_at").map_err(StorageError::Sqlx)?,
+                file_size: row.try_get("file_size").map_err(StorageError::Sqlx)?,
+                availability: "available",
+            };
+            let match_id = summary.match_id.clone();
+            let replay_path = row
+                .try_get::<String, _>("replay_path")
+                .map_err(StorageError::Sqlx)?;
+            let result = self
+                .load_replay_view(summary, &replay_path)
+                .await
+                .and_then(|replay| self.encode_replay_view(&replay).map(|_| replay));
+            if let Err(error) = result {
+                self.mark_replay_degraded();
+                tracing::warn!(
+                    match_id = %match_id,
+                    error = ?error,
+                    "completed replay failed startup validation"
+                );
+            }
         }
         Ok(())
     }
@@ -462,6 +534,134 @@ impl Storage {
         Ok(result.rows_affected())
     }
 
+    pub(crate) async fn preflight_audit(
+        &self,
+        occurred_at: i64,
+        request_id: &str,
+        action: &str,
+        target_type: &str,
+        target_id: &str,
+        summary: &Value,
+    ) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        insert_audit_tx(
+            &mut transaction,
+            occurred_at,
+            request_id,
+            action,
+            target_type,
+            target_id,
+            summary,
+        )
+        .await?;
+        transaction.rollback().await.map_err(StorageError::Sqlx)
+    }
+
+    pub(crate) async fn prepare_admin_audit(
+        &self,
+        occurred_at: i64,
+        request_id: &str,
+        action: &str,
+        target_type: &str,
+        target_id: &str,
+        summary: &Value,
+    ) -> Result<(), StorageError> {
+        self.preflight_audit(
+            occurred_at,
+            request_id,
+            action,
+            target_type,
+            target_id,
+            summary,
+        )
+        .await?;
+        let summary_json = audit_summary_json(request_id, action, target_id, summary)?;
+        sqlx::query(
+            "INSERT INTO admin_audit_pending (request_id, occurred_at, action, target_type, target_id, summary_json, state)
+             VALUES (?, ?, ?, ?, ?, ?, 'prepared')",
+        )
+        .bind(request_id)
+        .bind(occurred_at)
+        .bind(action)
+        .bind(target_type)
+        .bind(target_id)
+        .bind(summary_json)
+        .execute(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        Ok(())
+    }
+
+    pub(crate) async fn cancel_admin_audit(&self, request_id: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM admin_audit_pending WHERE request_id = ? AND state = 'prepared'")
+            .bind(request_id)
+            .execute(&self.pool)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        Ok(())
+    }
+
+    pub(crate) async fn complete_admin_audit(&self, request_id: &str) -> Result<(), StorageError> {
+        let updated = sqlx::query(
+            "UPDATE admin_audit_pending SET state = 'applied' WHERE request_id = ? AND state = 'prepared'",
+        )
+        .bind(request_id)
+        .execute(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::AuditPending);
+        }
+        self.flush_pending_audit(request_id).await
+    }
+
+    async fn flush_pending_audit(&self, request_id: &str) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        let inserted = sqlx::query(
+            "INSERT INTO audit_logs (occurred_at, request_id, action, target_type, target_id, summary_json)
+             SELECT occurred_at, request_id, action, target_type, target_id, summary_json
+             FROM admin_audit_pending
+             WHERE request_id = ? AND state = 'applied'
+               AND NOT EXISTS (SELECT 1 FROM audit_logs WHERE request_id = ?)",
+        )
+        .bind(request_id)
+        .bind(request_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        if inserted.rows_affected() != 1 {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM audit_logs WHERE request_id = ?)",
+            )
+            .bind(request_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(StorageError::Sqlx)?;
+            if exists == 0 {
+                return Err(StorageError::AuditPending);
+            }
+        }
+        sqlx::query("DELETE FROM admin_audit_pending WHERE request_id = ? AND state = 'applied'")
+            .bind(request_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        transaction.commit().await.map_err(StorageError::Sqlx)
+    }
+
+    pub(crate) async fn retry_pending_audits(&self) -> Result<(), StorageError> {
+        let request_ids = sqlx::query_scalar::<_, String>(
+            "SELECT request_id FROM admin_audit_pending WHERE state = 'applied' ORDER BY occurred_at, request_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        for request_id in request_ids {
+            self.flush_pending_audit(&request_id).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn list_replays(
         &self,
         offset: u64,
@@ -483,24 +683,23 @@ impl Storage {
         .map_err(StorageError::Sqlx)?;
         let mut summaries = Vec::with_capacity(rows.len());
         for row in rows {
-            let match_id = row
-                .try_get::<String, _>("match_id")
-                .map_err(StorageError::Sqlx)?;
-            let replay_path = row
-                .try_get::<String, _>("replay_path")
-                .map_err(StorageError::Sqlx)?;
-            let file_size = row
-                .try_get::<i64, _>("file_size")
-                .map_err(StorageError::Sqlx)?;
-            summaries.push(ReplaySummary {
-                match_id,
+            let summary = ReplaySummary {
+                match_id: row.try_get("match_id").map_err(StorageError::Sqlx)?,
                 source: row.try_get("source").map_err(StorageError::Sqlx)?,
                 room_name: row.try_get("room_name").map_err(StorageError::Sqlx)?,
                 game_mode: row.try_get("game_mode").map_err(StorageError::Sqlx)?,
                 started_at: row.try_get("started_at").map_err(StorageError::Sqlx)?,
                 completed_at: row.try_get("completed_at").map_err(StorageError::Sqlx)?,
-                file_size,
-                availability: self.replay_availability(&replay_path, file_size),
+                file_size: row.try_get("file_size").map_err(StorageError::Sqlx)?,
+                availability: "available",
+            };
+            let replay_path = row
+                .try_get::<String, _>("replay_path")
+                .map_err(StorageError::Sqlx)?;
+            let availability = self.replay_availability(&summary, &replay_path).await;
+            summaries.push(ReplaySummary {
+                availability,
+                ..summary
             });
         }
         Ok((summaries, u64::try_from(total).unwrap_or(0)))
@@ -519,9 +718,6 @@ impl Storage {
         let replay_path = row
             .try_get::<String, _>("replay_path")
             .map_err(StorageError::Sqlx)?;
-        let file_size = row
-            .try_get::<i64, _>("file_size")
-            .map_err(StorageError::Sqlx)?;
         let summary = ReplaySummary {
             match_id: row.try_get("match_id").map_err(StorageError::Sqlx)?,
             source: row.try_get("source").map_err(StorageError::Sqlx)?,
@@ -529,24 +725,124 @@ impl Storage {
             game_mode: row.try_get("game_mode").map_err(StorageError::Sqlx)?,
             started_at: row.try_get("started_at").map_err(StorageError::Sqlx)?,
             completed_at: row.try_get("completed_at").map_err(StorageError::Sqlx)?,
-            file_size,
+            file_size: row.try_get("file_size").map_err(StorageError::Sqlx)?,
             availability: "available",
         };
+        self.load_replay_view(summary, &replay_path).await
+    }
+
+    async fn load_replay_view(
+        &self,
+        summary: ReplaySummary,
+        replay_path: &str,
+    ) -> Result<ReplayView, StorageError> {
+        let frames = self
+            .reconstruct_replay(&summary.match_id, replay_path, summary.file_size)
+            .await?;
+        let players = self.load_players(&summary.match_id).await?;
+        Ok(ReplayView {
+            summary,
+            players,
+            frames,
+        })
+    }
+
+    async fn load_players(&self, match_id: &str) -> Result<Vec<ReplayPlayer>, StorageError> {
+        let stats = sqlx::query(
+            "SELECT count(*) AS row_count,
+                    COALESCE(sum(
+                        length(CAST(participant_id AS BLOB))
+                        + length(CAST(display_name AS BLOB))
+                        + length(CAST(participant_kind AS BLOB))
+                        + COALESCE(length(CAST(character_id AS BLOB)), 0)
+                        + 64
+                    ), 0) AS payload_bytes
+             FROM match_players WHERE match_id = ?",
+        )
+        .bind(match_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        let row_count = stats
+            .try_get::<i64, _>("row_count")
+            .map_err(StorageError::Sqlx)?;
+        let payload_bytes = stats
+            .try_get::<i64, _>("payload_bytes")
+            .map_err(StorageError::Sqlx)?;
+        if row_count < 0
+            || u64::try_from(row_count).unwrap_or(u64::MAX) > MAX_REPLAY_EVENTS as u64
+            || payload_bytes < 0
+            || u64::try_from(payload_bytes).unwrap_or(u64::MAX)
+                > MAX_DECOMPRESSED_REPLAY_BYTES as u64
+        {
+            self.mark_replay_degraded();
+            return Err(StorageError::ReplayTooLarge);
+        }
+        let mut rows = sqlx::query(
+            "SELECT participant_id, display_name, participant_kind, seat, character_id, final_points
+             FROM match_players WHERE match_id = ? ORDER BY seat",
+        )
+        .bind(match_id)
+        .fetch(&self.pool);
+        let mut players = Vec::with_capacity(usize::try_from(row_count).unwrap_or(0));
+        while let Some(row) = rows.try_next().await.map_err(StorageError::Sqlx)? {
+            players.push(ReplayPlayer {
+                participant_id: row.try_get("participant_id").map_err(StorageError::Sqlx)?,
+                display_name: row.try_get("display_name").map_err(StorageError::Sqlx)?,
+                participant_kind: row
+                    .try_get("participant_kind")
+                    .map_err(StorageError::Sqlx)?,
+                seat: row.try_get("seat").map_err(StorageError::Sqlx)?,
+                character_id: row.try_get("character_id").map_err(StorageError::Sqlx)?,
+                final_points: row.try_get("final_points").map_err(StorageError::Sqlx)?,
+            });
+        }
+        Ok(players)
+    }
+
+    pub(crate) fn encode_replay_view(&self, replay: &ReplayView) -> Result<Vec<u8>, StorageError> {
+        let response = ReplayResponse {
+            match_id: &replay.summary.match_id,
+            source: &replay.summary.source,
+            room_name: &replay.summary.room_name,
+            game_mode: &replay.summary.game_mode,
+            started_at: unix_seconds_rfc3339(replay.summary.started_at),
+            completed_at: unix_seconds_rfc3339(replay.summary.completed_at),
+            file_size: replay.summary.file_size,
+            availability: replay.summary.availability,
+            replay_available: replay.summary.availability == "available",
+            players: &replay.players,
+            frames: &replay.frames,
+        };
+        let mut writer = LimitedJsonWriter::new(MAX_DECOMPRESSED_REPLAY_BYTES);
+        match serde_json::to_writer(&mut writer, &response) {
+            Ok(()) => Ok(writer.into_inner()),
+            Err(_error) if writer.overflowed => {
+                self.mark_replay_degraded();
+                Err(StorageError::ReplayTooLarge)
+            }
+            Err(_) => Err(StorageError::ReplayMetadata),
+        }
+    }
+
+    async fn reconstruct_replay(
+        &self,
+        match_id: &str,
+        replay_path: &str,
+        file_size: i64,
+    ) -> Result<Vec<ReplayFrame>, StorageError> {
         if file_size < 0 || file_size as u64 > MAX_DECOMPRESSED_REPLAY_BYTES as u64 {
             self.mark_replay_degraded();
             return Err(StorageError::ReplayTooLarge);
         }
-        let path = match self.resolve_replay_path(&replay_path) {
-            Ok(path) => path,
-            Err(error @ StorageError::UnsafeReplayPath) => {
+        let path = self
+            .resolve_replay_path(replay_path)
+            .inspect_err(|_error| {
                 self.mark_replay_degraded();
-                return Err(error);
-            }
-            Err(error) => return Err(error),
-        };
+            })?;
         let metadata = fs::metadata(&path).map_err(|error| {
+            self.mark_replay_degraded();
             if error.kind() == std::io::ErrorKind::NotFound {
-                self.mark_replay_degraded();
                 StorageError::ReplayUnavailable
             } else {
                 StorageError::Io(error)
@@ -566,102 +862,84 @@ impl Storage {
                 _ => StorageError::ReplayCorrupt,
             }
         })?;
-        let auxiliary = match self.load_auxiliary(match_id).await {
-            Ok(auxiliary) => auxiliary,
-            Err(error) => {
-                self.mark_replay_degraded();
-                return Err(error);
-            }
-        };
-        let frames = reader.frames_with_auxiliary(&auxiliary).map_err(|error| {
+        let auxiliary = self.load_auxiliary(match_id).await.inspect_err(|_error| {
+            self.mark_replay_degraded();
+        })?;
+        reader.frames_with_auxiliary(&auxiliary).map_err(|error| {
             self.mark_replay_degraded();
             match error {
                 ReplayError::ReplayTooLarge { .. } => StorageError::ReplayTooLarge,
                 _ => StorageError::ReplayCorrupt,
             }
-        })?;
-        let players = sqlx::query(
-            "SELECT participant_id, display_name, participant_kind, seat, character_id, final_points
-             FROM match_players WHERE match_id = ? ORDER BY seat",
-        )
-        .bind(match_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StorageError::Sqlx)?
-        .into_iter()
-        .map(|row| {
-            Ok(ReplayPlayer {
-                participant_id: row.try_get("participant_id").map_err(StorageError::Sqlx)?,
-                display_name: row.try_get("display_name").map_err(StorageError::Sqlx)?,
-                participant_kind: row.try_get("participant_kind").map_err(StorageError::Sqlx)?,
-                seat: row.try_get("seat").map_err(StorageError::Sqlx)?,
-                character_id: row.try_get("character_id").map_err(StorageError::Sqlx)?,
-                final_points: row.try_get("final_points").map_err(StorageError::Sqlx)?,
-            })
-        })
-        .collect::<Result<Vec<_>, StorageError>>()?;
-        Ok(ReplayView {
-            summary,
-            players,
-            frames,
         })
     }
 
     async fn load_auxiliary(&self, match_id: &str) -> Result<Vec<AuxiliaryRecord>, StorageError> {
-        let rows = sqlx::query(
+        let stats = sqlx::query(
+            "SELECT count(*) AS row_count, COALESCE(sum(length(CAST(payload_json AS BLOB))), 0) AS payload_bytes
+             FROM replay_auxiliary_events WHERE match_id = ?",
+        )
+        .bind(match_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        let row_count = stats
+            .try_get::<i64, _>("row_count")
+            .map_err(StorageError::Sqlx)?;
+        let payload_bytes = stats
+            .try_get::<i64, _>("payload_bytes")
+            .map_err(StorageError::Sqlx)?;
+        if row_count < 0
+            || u64::try_from(row_count).unwrap_or(u64::MAX) > MAX_REPLAY_EVENTS as u64
+            || payload_bytes < 0
+            || u64::try_from(payload_bytes).unwrap_or(u64::MAX)
+                > MAX_DECOMPRESSED_REPLAY_BYTES as u64
+        {
+            self.mark_replay_degraded();
+            return Err(StorageError::ReplayTooLarge);
+        }
+        let mut rows = sqlx::query(
             "SELECT line_index, phase, sequence, payload_json FROM replay_auxiliary_events
              WHERE match_id = ? ORDER BY line_index, CASE phase WHEN 'before' THEN 0 ELSE 2 END, sequence",
         )
         .bind(match_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StorageError::Sqlx)?;
-        rows.into_iter()
-            .map(|row| {
-                let line_index = row
-                    .try_get::<i64, _>("line_index")
-                    .map_err(StorageError::Sqlx)?;
-                let sequence = row
-                    .try_get::<i64, _>("sequence")
-                    .map_err(StorageError::Sqlx)?;
-                let phase = row
-                    .try_get::<String, _>("phase")
-                    .map_err(StorageError::Sqlx)?;
-                let payload = row
-                    .try_get::<String, _>("payload_json")
-                    .map_err(StorageError::Sqlx)?;
-                let phase = serde_json::from_value::<AuxiliaryPhase>(Value::String(phase))
-                    .map_err(|_| StorageError::ReplayCorrupt)?;
-                let event =
-                    serde_json::from_str(&payload).map_err(|_| StorageError::ReplayCorrupt)?;
-                Ok(AuxiliaryRecord {
-                    event,
-                    line_index: usize::try_from(line_index)
-                        .map_err(|_| StorageError::ReplayCorrupt)?,
-                    phase,
-                    sequence: u64::try_from(sequence).map_err(|_| StorageError::ReplayCorrupt)?,
-                })
-            })
-            .collect()
+        .fetch(&self.pool);
+        let mut auxiliary = Vec::with_capacity(usize::try_from(row_count).unwrap_or(0));
+        while let Some(row) = rows.try_next().await.map_err(StorageError::Sqlx)? {
+            let line_index = row
+                .try_get::<i64, _>("line_index")
+                .map_err(StorageError::Sqlx)?;
+            let sequence = row
+                .try_get::<i64, _>("sequence")
+                .map_err(StorageError::Sqlx)?;
+            let phase = row
+                .try_get::<String, _>("phase")
+                .map_err(StorageError::Sqlx)?;
+            let payload = row
+                .try_get::<String, _>("payload_json")
+                .map_err(StorageError::Sqlx)?;
+            let phase = serde_json::from_value::<AuxiliaryPhase>(Value::String(phase))
+                .map_err(|_| StorageError::ReplayCorrupt)?;
+            let event = serde_json::from_str(&payload).map_err(|_| StorageError::ReplayCorrupt)?;
+            auxiliary.push(AuxiliaryRecord {
+                event,
+                line_index: usize::try_from(line_index).map_err(|_| StorageError::ReplayCorrupt)?,
+                phase,
+                sequence: u64::try_from(sequence).map_err(|_| StorageError::ReplayCorrupt)?,
+            });
+        }
+        Ok(auxiliary)
     }
 
-    fn replay_availability(&self, replay_path: &str, file_size: i64) -> &'static str {
-        let Ok(path) = self.resolve_replay_path(replay_path) else {
-            self.mark_replay_degraded();
-            return "unavailable";
-        };
-        if file_size < 0 || file_size as u64 > MAX_DECOMPRESSED_REPLAY_BYTES as u64 {
-            self.mark_replay_degraded();
-            return "too_large";
-        }
-        match fs::metadata(&path) {
-            Ok(metadata) if metadata.len() > MAX_DECOMPRESSED_REPLAY_BYTES as u64 => {
-                self.mark_replay_degraded();
-                "too_large"
-            }
-            Ok(_) => match ReplayReader::open(path) {
+    async fn replay_availability(
+        &self,
+        summary: &ReplaySummary,
+        replay_path: &str,
+    ) -> &'static str {
+        match self.load_replay_view(summary.clone(), replay_path).await {
+            Ok(replay) => match self.encode_replay_view(&replay) {
                 Ok(_) => "available",
-                Err(ReplayError::ReplayTooLarge { .. }) => {
+                Err(StorageError::ReplayTooLarge) => {
                     self.mark_replay_degraded();
                     "too_large"
                 }
@@ -670,10 +948,8 @@ impl Storage {
                     "unavailable"
                 }
             },
-            Err(_) => {
-                self.mark_replay_degraded();
-                "unavailable"
-            }
+            Err(StorageError::ReplayTooLarge) => "too_large",
+            Err(_) => "unavailable",
         }
     }
 
@@ -691,8 +967,11 @@ impl Storage {
         .await
         .map_err(StorageError::Sqlx)?
         .ok_or(StorageError::ReplayNotFound)?;
-        let path = self.resolve_replay_path(&replay_path)?;
-        remove_if_exists(&path)?;
+        match self.resolve_replay_path(&replay_path) {
+            Ok(path) => remove_if_exists(&path)?,
+            Err(StorageError::UnsafeReplayPath) => {}
+            Err(error) => return Err(error),
+        }
         let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
         let deleted =
             sqlx::query("DELETE FROM matches WHERE match_id = ? AND status = 'completed'")
@@ -831,6 +1110,89 @@ impl Storage {
     }
 }
 
+struct LimitedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    overflowed: bool,
+}
+
+impl LimitedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            overflowed: false,
+        }
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl Write for LimitedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(total) = self.bytes.len().checked_add(bytes.len()) else {
+            self.overflowed = true;
+            return Err(io::Error::other("replay response size overflow"));
+        };
+        if total > self.limit {
+            self.overflowed = true;
+            return Err(io::Error::other("replay response size limit exceeded"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn unix_seconds_rfc3339(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        day_seconds / 3_600,
+        (day_seconds / 60) % 60,
+        day_seconds % 60
+    )
+}
+
+fn civil_from_days(days: i64) -> (i64, u8, u8) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year, month as u8, day as u8)
+}
+
+fn audit_summary_json(
+    request_id: &str,
+    action: &str,
+    target_id: &str,
+    summary: &Value,
+) -> Result<String, StorageError> {
+    if request_id.is_empty()
+        || target_id.is_empty()
+        || string_contains_raw_token(request_id)
+        || string_contains_raw_token(target_id)
+        || !validate_audit_summary(action, summary)
+    {
+        return Err(StorageError::InvalidAuditSummary);
+    }
+    serde_json::to_string(summary).map_err(|_| StorageError::InvalidAuditSummary)
+}
+
 async fn insert_audit_tx(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     occurred_at: i64,
@@ -840,16 +1202,7 @@ async fn insert_audit_tx(
     target_id: &str,
     summary: &Value,
 ) -> Result<(), StorageError> {
-    if request_id.is_empty()
-        || target_id.is_empty()
-        || string_contains_raw_token(request_id)
-        || string_contains_raw_token(target_id)
-        || !validate_audit_summary(action, summary)
-    {
-        return Err(StorageError::InvalidAuditSummary);
-    }
-    let summary_json =
-        serde_json::to_string(summary).map_err(|_| StorageError::InvalidAuditSummary)?;
+    let summary_json = audit_summary_json(request_id, action, target_id, summary)?;
     sqlx::query(
         "INSERT INTO audit_logs (occurred_at, request_id, action, target_type, target_id, summary_json) VALUES (?, ?, ?, ?, ?, ?)",
     )
@@ -928,7 +1281,6 @@ fn remove_match_files(root: &Path, match_id: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn now_unix_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

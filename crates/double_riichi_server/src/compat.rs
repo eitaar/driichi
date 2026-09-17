@@ -1125,22 +1125,21 @@ impl CompatReplay {
             self.delete_metadata().await;
             return;
         };
+        let relative_path = writer.relative_path_string();
         let artifact = match writer.finalize() {
             Ok(artifact) => artifact,
             Err(error) => {
                 self.mark_degraded();
                 report_replay_failure(&self.match_id, "finalize", &error);
-                self.delete_metadata().await;
+                self.cleanup_finalized_replay(&relative_path).await;
                 return;
             }
         };
         let Some(result) = result else {
             self.mark_degraded();
             report_replay_failure(&self.match_id, "result", &"completed match had no result");
-            if let Some(storage) = &self.storage {
-                let _ = storage.remove_replay_file(&artifact.relative_path_string());
-            }
-            self.delete_metadata().await;
+            self.cleanup_finalized_replay(&artifact.relative_path_string())
+                .await;
             return;
         };
         if let Some(storage) = &self.storage {
@@ -1160,9 +1159,25 @@ impl CompatReplay {
                 Err(error) => {
                     self.mark_degraded();
                     report_replay_failure(&self.match_id, "metadata", &error);
-                    let _ = storage.remove_replay_file(&artifact.relative_path_string());
-                    self.delete_metadata().await;
+                    self.cleanup_finalized_replay(&artifact.relative_path_string())
+                        .await;
                 }
+            }
+        }
+    }
+
+    async fn cleanup_finalized_replay(&mut self, relative_path: &str) {
+        let Some(storage) = self.storage.clone() else {
+            self.delete_metadata().await;
+            return;
+        };
+        match storage.remove_replay_file(relative_path) {
+            Ok(()) => self.delete_metadata().await,
+            Err(error) => {
+                self.mark_degraded();
+                report_replay_failure(&self.match_id, "cleanup_file", &error);
+                // Keep the writing row and registered path for startup cleanup/retry.
+                self.metadata_open = false;
             }
         }
     }
@@ -2698,6 +2713,47 @@ mod tests {
                 .unwrap();
         assert_eq!(count, 0);
         assert!(!part.exists());
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn post_finalize_cleanup_failure_keeps_writing_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "double-riichi-compat-cleanup-failure-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let relative_path = "4p/cleanup-directory.mjson";
+        std::fs::create_dir(storage.replay_root().join("4p/cleanup-directory.mjson")).unwrap();
+        sqlx::query(
+            "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status, replay_path) VALUES ('cleanup-failure', 'ranked', NULL, '4p-red-half', 1, 'writing', ?)",
+        )
+        .bind(relative_path)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        let mut replay = CompatReplay {
+            writer: None,
+            storage: Some(storage.clone()),
+            replay_health: Arc::new(AtomicBool::new(false)),
+            cleanup_tasks: Arc::new(Mutex::new(Vec::new())),
+            metadata_open: true,
+            failed: false,
+            match_id: "cleanup-failure".to_owned(),
+        };
+        replay.cleanup_finalized_replay(relative_path).await;
+        assert!(!replay.metadata_open);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM matches WHERE match_id = 'cleanup-failure' AND status = 'writing'",
+            )
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+            1
+        );
         storage.close().await;
         let _ = std::fs::remove_dir_all(&root);
     }

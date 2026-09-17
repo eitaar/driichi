@@ -1,7 +1,10 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    io::{self, Write},
+};
 
 use crate::{
-    error::{MAX_REPLAY_FRAME_BYTES, ReplayError, validate_frame_payload_size},
+    error::{MAX_REPLAY_EVENTS, MAX_REPLAY_FRAME_BYTES, ReplayError},
     mjson::{CanonicalEvent, event_value},
     persistence::{AuxiliaryRecord, ReplayArtifact},
 };
@@ -36,7 +39,9 @@ impl Serialize for ReplayFrame {
 
 impl ReplayFrame {
     pub fn to_json(&self) -> Result<String, ReplayError> {
-        serde_json::to_string(self).map_err(ReplayError::Json)
+        let payload = serialize_bounded(self)?;
+        String::from_utf8(payload)
+            .map_err(|error| ReplayError::InvalidEvent(format!("frame JSON is not UTF-8: {error}")))
     }
 }
 
@@ -295,6 +300,9 @@ pub fn build_replay_frames_with_auxiliary(
     events: &[CanonicalEvent],
     auxiliary_events: &[AuxiliaryRecord],
 ) -> Result<Vec<ReplayFrame>, ReplayError> {
+    if events.len() > MAX_REPLAY_EVENTS || auxiliary_events.len() > MAX_REPLAY_EVENTS {
+        return Err(replay_too_large());
+    }
     let mode = events
         .iter()
         .find_map(|event| match event {
@@ -327,17 +335,27 @@ pub fn build_replay_frames_with_auxiliary(
         records.sort_by_key(|record| (record.phase.sort_key(), record.sequence));
     }
 
-    let mut frames = Vec::with_capacity(events.len());
+    let mut frames = Vec::new();
+    let mut serialized_size = 2usize;
     for (event_index, event) in events.iter().enumerate() {
         state.apply(event)?;
-        frames.push(ReplayFrame {
+        let frame = ReplayFrame {
             event_index,
             visible_event: event.clone(),
             visible_state: state.projection()?,
             auxiliary_events: aux_by_line.remove(&event_index).unwrap_or_default(),
-        });
+        };
+        let separator = usize::from(!frames.is_empty());
+        serialized_size = serialized_size
+            .checked_add(separator)
+            .ok_or_else(replay_too_large)?;
+        let remaining = MAX_REPLAY_FRAME_BYTES.saturating_sub(serialized_size);
+        let frame_size = serialized_len(&frame, remaining)?;
+        serialized_size = serialized_size
+            .checked_add(frame_size)
+            .ok_or_else(replay_too_large)?;
+        frames.push(frame);
     }
-    validate_frame_payload_size(serde_json::to_vec(&frames)?.len())?;
     Ok(frames)
 }
 
@@ -349,9 +367,93 @@ pub fn frames_from_artifact(
 }
 
 pub fn encode_replay_frames(frames: &[ReplayFrame]) -> Result<Vec<u8>, ReplayError> {
-    let payload = serde_json::to_vec(frames)?;
-    validate_frame_payload_size(payload.len())?;
-    Ok(payload)
+    if frames.len() > MAX_REPLAY_EVENTS {
+        return Err(replay_too_large());
+    }
+    serialize_bounded(frames)
+}
+
+fn replay_too_large() -> ReplayError {
+    ReplayError::ReplayTooLarge {
+        actual: MAX_REPLAY_FRAME_BYTES.saturating_add(1),
+        limit: MAX_REPLAY_FRAME_BYTES,
+    }
+}
+
+fn serialized_len<T: serde::Serialize>(value: &T, limit: usize) -> Result<usize, ReplayError> {
+    let mut writer = CountingWriter {
+        bytes: 0,
+        limit,
+        overflowed: false,
+    };
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(writer.bytes),
+        Err(_error) if writer.overflowed => Err(replay_too_large()),
+        Err(error) => Err(ReplayError::Json(error)),
+    }
+}
+
+fn serialize_bounded<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, ReplayError> {
+    let mut writer = LimitedWriter {
+        bytes: Vec::new(),
+        limit: MAX_REPLAY_FRAME_BYTES,
+        overflowed: false,
+    };
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(writer.bytes),
+        Err(_error) if writer.overflowed => Err(replay_too_large()),
+        Err(error) => Err(ReplayError::Json(error)),
+    }
+}
+
+struct CountingWriter {
+    bytes: usize,
+    limit: usize,
+    overflowed: bool,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(total) = self.bytes.checked_add(bytes.len()) else {
+            self.overflowed = true;
+            return Err(io::Error::other("replay frame size overflow"));
+        };
+        if total > self.limit {
+            self.overflowed = true;
+            return Err(io::Error::other("replay frame size limit exceeded"));
+        }
+        self.bytes = total;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct LimitedWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    overflowed: bool,
+}
+
+impl Write for LimitedWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(total) = self.bytes.len().checked_add(bytes.len()) else {
+            self.overflowed = true;
+            return Err(io::Error::other("replay frame size overflow"));
+        };
+        if total > self.limit {
+            self.overflowed = true;
+            return Err(io::Error::other("replay frame size limit exceeded"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub const fn replay_frame_limit() -> usize {

@@ -465,10 +465,15 @@ where
         .map(|id| id.as_ref().to_owned())
         .collect();
     let incomplete = root.join(".incomplete");
-    if incomplete.exists() {
+    if let Ok(metadata) = fs::symlink_metadata(&incomplete)
+        && !metadata.file_type().is_symlink()
+        && metadata.is_dir()
+    {
         for entry in fs::read_dir(&incomplete)? {
             let path = entry?.path();
-            if path.is_file()
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.file_type().is_symlink()
+                && metadata.is_file()
                 && path
                     .extension()
                     .is_some_and(|extension| extension == "part")
@@ -478,7 +483,10 @@ where
         }
     }
     for directory in [root.join("4p"), root.join("3p")] {
-        if !directory.exists() {
+        let Ok(metadata) = fs::symlink_metadata(&directory) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
             continue;
         }
         for entry in fs::read_dir(directory)? {
