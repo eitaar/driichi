@@ -684,6 +684,22 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
     ))
     .await
     .unwrap();
+    room.send(double_riichi_core::RoomCommand::join_with_token(
+        double_riichi_core::Participant::new(
+            "other-agent",
+            "other-agent",
+            double_riichi_core::ParticipantKind::MJAI,
+        ),
+        "other-token",
+    ))
+    .await
+    .unwrap();
+    room.send(double_riichi_core::RoomCommand::select_with_character(
+        "other-agent",
+        "mjai-bot",
+    ))
+    .await
+    .unwrap();
     room.send(double_riichi_core::RoomCommand::fill_with_bots())
         .await
         .unwrap();
