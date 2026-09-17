@@ -366,6 +366,11 @@ impl ReplayWriter {
         self.finalize()
     }
 
+    /// Discard an unfinished replay without making it visible.
+    pub fn abort(mut self) {
+        self.fail_and_cleanup();
+    }
+
     fn write_line(&mut self, line: &str) -> Result<(), ReplayError> {
         self.ensure_open()?;
         if let Some(failure) = self.failure_injection {
@@ -509,6 +514,14 @@ fn validate_match_id(match_id: &str) -> Result<(), ReplayError> {
         ));
     }
     Ok(())
+}
+
+impl Drop for ReplayWriter {
+    fn drop(&mut self) {
+        if self.writer.is_some() {
+            let _ = fs::remove_file(&self.part_path);
+        }
+    }
 }
 
 fn utc_filename_timestamp(time: SystemTime) -> String {

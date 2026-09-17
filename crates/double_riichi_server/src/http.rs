@@ -238,6 +238,9 @@ impl ServerState {
             service.clone(),
             self.rooms.clone(),
         );
+        if self.storage.is_none() {
+            self.storage = Some(service.storage());
+        }
         self.bot_tokens = Some(service);
         self
     }
@@ -471,6 +474,10 @@ impl ServerState {
         self.storage
             .as_ref()
             .map(|storage| storage.replay_root().to_path_buf())
+    }
+
+    pub(crate) fn replay_storage(&self) -> Option<Arc<Storage>> {
+        self.storage.clone()
     }
 
     pub(crate) fn connection_permit(&self) -> Option<ConnectionPermit> {
