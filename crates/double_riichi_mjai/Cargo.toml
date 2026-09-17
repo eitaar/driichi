@@ -6,7 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.22"
 double_riichi_core = { path = "../double_riichi_core" }
+riichienv-core = "=0.4.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
 
 [lints]
 workspace = true

@@ -374,7 +374,12 @@ dependencies = [
 name = "double_riichi_mjai"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "double_riichi_core",
+ "riichienv-core",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
