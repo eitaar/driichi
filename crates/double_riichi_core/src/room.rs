@@ -982,6 +982,9 @@ impl RoomState {
         if self.participants.contains_key(&participant.id) {
             return Err(RoomError::DuplicateParticipant);
         }
+        if self.config.mode.is_three_player() && participant.kind == ParticipantKind::MJAI {
+            return Err(RoomError::InvalidCharacter);
+        }
         if self.participants.len() >= self.config.max_participants {
             return Err(RoomError::RoomFull);
         }

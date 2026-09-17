@@ -1,6 +1,6 @@
 use double_riichi_core::room::{
     CharacterCatalog, CharacterUsage, RoomActor, RoomCommand, RoomConfig, RoomController,
-    RoomEvent, RoomPhase, RoomRegistry, RoomResponse, ShutdownMode,
+    RoomError, RoomEvent, RoomPhase, RoomRegistry, RoomResponse, ShutdownMode,
 };
 use double_riichi_core::{GameMode, Participant, ParticipantKind, TimeControl};
 
@@ -74,19 +74,20 @@ async fn actor_lifecycle_selects_fills_readies_and_starts_atomically() {
 }
 
 #[tokio::test]
-async fn three_player_mode_rejects_mjai_selection_and_mode_change_clears_selection() {
+async fn three_player_mode_rejects_mjai_join_and_mode_change_clears_selection() {
     let mut cfg = config();
     cfg.mode = GameMode::ThreePlayerRedEast;
     let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
-    handle
-        .send(RoomCommand::join(Participant::new(
-            "bot",
-            "bot",
-            ParticipantKind::MJAI,
-        )))
-        .await
-        .unwrap();
-    assert!(handle.send(RoomCommand::select("bot")).await.is_err());
+    assert!(matches!(
+        handle
+            .send(RoomCommand::join(Participant::new(
+                "bot",
+                "bot",
+                ParticipantKind::MJAI,
+            )))
+            .await,
+        Err(RoomError::InvalidCharacter)
+    ));
 
     handle
         .send(RoomCommand::join(human("h", "player-red")))
@@ -100,6 +101,33 @@ async fn three_player_mode_rejects_mjai_selection_and_mode_change_clears_selecti
     let snapshot = handle.snapshot().await.unwrap();
     assert_eq!(snapshot.mode, GameMode::FourPlayerRedEast);
     assert!(snapshot.participants.iter().all(|p| !p.selected));
+}
+
+#[tokio::test]
+async fn mjai_join_and_mode_change_are_serialized_by_the_room_actor() {
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(config());
+    let mode_change = handle
+        .try_send(RoomCommand::set_mode(GameMode::ThreePlayerRedEast))
+        .unwrap();
+    let join = handle
+        .try_send(RoomCommand::join(Participant::new(
+            "bot",
+            "bot",
+            ParticipantKind::MJAI,
+        )))
+        .unwrap();
+
+    assert!(matches!(
+        mode_change.await.unwrap(),
+        Ok(RoomResponse::Accepted(_))
+    ));
+    assert!(matches!(
+        join.await.unwrap(),
+        Err(RoomError::InvalidCharacter)
+    ));
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot.mode, GameMode::ThreePlayerRedEast);
+    assert!(snapshot.participants.is_empty());
 }
 
 #[tokio::test]
