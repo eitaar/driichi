@@ -39,6 +39,7 @@ use tokio::{
     sync::{Mutex as AsyncMutex, OwnedMutexGuard, mpsc},
     time::{self, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::compat::CompatState;
@@ -209,6 +210,7 @@ pub struct ServerState {
     shutdown_seconds: u64,
     started_at: Instant,
     admission_open: Arc<AtomicBool>,
+    shutdown_token: CancellationToken,
     storage: Option<Arc<Storage>>,
     bot_tokens: Option<Arc<BotTokenService>>,
     pub(crate) compat: Arc<CompatState>,
@@ -356,11 +358,16 @@ impl ServerState {
 
     pub fn begin_shutdown(&self) {
         self.admission_open.store(false, Ordering::Release);
+        self.shutdown_token.cancel();
         self.compat.begin_shutdown();
     }
 
     pub(crate) fn admission_open(&self) -> bool {
         self.admission_open.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown_token.clone()
     }
 
     pub async fn shutdown(&self) {
@@ -477,6 +484,7 @@ impl ServerState {
             rate_limiter: Arc::new(RateLimiter::new()),
             connection_count: Arc::new(AtomicUsize::new(0)),
             limits,
+            shutdown_token: CancellationToken::new(),
             shutdown_seconds: 10,
             started_at: Instant::now(),
             admission_open: Arc::new(AtomicBool::new(true)),
