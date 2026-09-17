@@ -72,14 +72,21 @@ only by the in-process transport test and is not serialized or logged.
 - `cargo check --workspace` — passed.
 - `git diff --check` — passed.
 
-The workspace test command was run. Two unrelated pre-existing Task 13 live
-compat tests (`live_validate_reports_illegal_action_but_completes_match` and
-`live_ranked_bot_completes_and_persists_mjson_metadata`) failed to observe their
-external live `end_game` messages in this environment; Task 14 focused tests
-and all local workspace targets passed. Strict server/workspace Clippy remains
-blocked by documented pre-existing core/replay/server baseline lints. No
-external OAuth or upstream compatibility claim is made.
+Fresh parent verification subsequently diagnosed the two Task 13 failures as a
+real Compat control-flow regression exposed by the corrected zero-duration
+Temporary Auto timing: Compat submitted an already-expired built-in response
+instead of resolving it through the authoritative timeout path. Commit
+`670bf3f` fixes that path and final event ordering. Task 13 live tests now pass
+8/8, Task 14 live tests pass 6/6, focused Compat tests pass 12/12, focused MCP
+tests pass 16/16, `cargo check --workspace` passes, and `cargo test --workspace`
+passes every unit, integration, and doc-test target. Commit `bd99db1` makes the
+Task 9 revocation fixture deterministic under immediate automation; Task 9
+passes 10/10. Strict server/workspace Clippy remains blocked by documented
+pre-existing baseline lints. No external OAuth or upstream compatibility claim
+is made.
 
-## Commit
+## Commits
 
-`fix(mcp): close Task 14 rereview findings`
+- `0fc7ff3 fix(mcp): close Task 14 rereview findings`
+- `670bf3f fix(mjai): resolve automated compatibility defaults`
+- `bd99db1 test(server): stabilize token revocation lifecycle`
