@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -19,8 +19,8 @@ use rmcp::{
     },
     model::{
         CallToolResult, ErrorCode, ListResourceTemplatesResult, ListResourcesResult,
-        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
-        ResourceTemplate, ServerCapabilities, ServerConfig,
+        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+        ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
     },
     schemars::JsonSchema,
     service::{RequestContext, RoleServer, SubscriptionContext},
@@ -49,6 +49,7 @@ pub(crate) const MCP_MAX_WAIT_SECONDS: u64 = 330;
 const MCP_DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
 const MCP_MAX_SESSIONS: usize = 1_024;
 const MCP_MAX_WAIT_TASKS: usize = 1_024;
+const MCP_MAX_SUBSCRIPTIONS: usize = 4_096;
 
 const STATE_TEMPLATE: &str = "riichi://rooms/{code}/participants/{participant_id}/state";
 const PUBLIC_STATE_TEMPLATE: &str = "riichi://rooms/{code}/public-state";
@@ -71,10 +72,18 @@ struct SessionEntry {
     cancel: CancellationToken,
 }
 
+#[derive(Clone)]
+struct TransportSession {
+    token_id: String,
+    last_seen: Instant,
+}
+
 #[derive(Default)]
 struct RegistryState {
     sessions: HashMap<String, SessionEntry>,
+    transport_sessions: HashMap<String, TransportSession>,
     participants: HashMap<(String, String), ParticipantId>,
+    retired_participants: HashSet<(String, String)>,
     bound_rooms: HashMap<String, (String, String)>,
 }
 
@@ -119,21 +128,39 @@ impl RevisionWake {
         self.state.lock().expect("MCP wake lock poisoned").clone()
     }
 
+    #[cfg(test)]
     async fn wait(&self, after_revision: u64, timeout: Duration) -> WakeState {
+        self.wait_until(after_revision, timeout, &CancellationToken::new())
+            .await
+            .unwrap_or_else(|| self.current())
+    }
+
+    async fn wait_until(
+        &self,
+        after_revision: u64,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Option<WakeState> {
         let deadline = Instant::now() + timeout;
         loop {
             let current = self.current();
             if current.revision > after_revision {
-                return current;
+                return Some(current);
             }
             let notified = self.notify.notified();
             let current = self.current();
             if current.revision > after_revision {
-                return current;
+                return Some(current);
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() || time::timeout(remaining, notified).await.is_err() {
-                return self.current();
+            if remaining.is_zero() {
+                return Some(self.current());
+            }
+            tokio::pin!(notified);
+            tokio::select! {
+                _ = cancel.cancelled() => return None,
+                _ = &mut notified => {}
+                _ = time::sleep(remaining) => return Some(self.current()),
             }
         }
     }
@@ -167,7 +194,8 @@ impl McpRuntime {
             .with_allowed_hosts([host, authority])
             .with_allowed_origins([state.public_origin().to_owned()])
             .with_max_request_body_bytes(MCP_MAX_BODY_BYTES)
-            .with_json_response(true);
+            .with_json_response(true)
+            .with_cancellation_token(state.shutdown_token());
         let factory_state = state.clone();
         let factory_registry = registry.clone();
         let manager = Arc::new(
@@ -202,12 +230,21 @@ impl McpRuntime {
         }
         let runtime_reaper = runtime.clone();
         tokio::spawn(async move {
+            let interval = idle.min(Duration::from_secs(60));
             loop {
-                time::sleep(Duration::from_secs(60)).await;
+                time::sleep(interval).await;
                 let entries = runtime_reaper.registry.expire_idle(Instant::now()).await;
                 disconnect_entries(entries.clone()).await;
                 runtime_reaper.close_sessions(&entries).await;
             }
+        });
+        let runtime_shutdown = runtime.clone();
+        let shutdown = state.shutdown_token();
+        tokio::spawn(async move {
+            shutdown.cancelled().await;
+            let entries = runtime_shutdown.registry.terminate_all().await;
+            disconnect_entries(entries.clone()).await;
+            runtime_shutdown.close_sessions(&entries).await;
         });
         runtime
     }
@@ -258,6 +295,11 @@ impl McpRuntime {
                 .body(Body::from(r#"{"code":"invalid_credentials"}"#))
                 .expect("MCP auth response is valid");
         }
+        if let Some(session_id) = session_id.as_deref() {
+            self.registry
+                .touch_transport(session_id, record.token_id())
+                .await;
+        }
         request
             .extensions_mut()
             .insert(McpAuth(record.token_id().to_owned()));
@@ -274,7 +316,11 @@ impl McpRuntime {
                 if let Some(entry) = self.registry.remove(&session_id).await {
                     disconnect_entry(entry).await;
                 }
-            } else {
+            } else if response.status().is_success() {
+                let _ = self
+                    .registry
+                    .register_transport(session_id.clone(), record.token_id().to_owned())
+                    .await;
                 self.registry.touch(&session_id, record.token_id()).await;
             }
         }
@@ -338,6 +384,7 @@ pub(crate) struct McpSessionRegistry {
     idle: Duration,
     join_lock: tokio::sync::Mutex<()>,
     waiters: Arc<Semaphore>,
+    subscriptions: Arc<Semaphore>,
 }
 
 impl McpSessionRegistry {
@@ -351,6 +398,7 @@ impl McpSessionRegistry {
             },
             join_lock: tokio::sync::Mutex::new(()),
             waiters: Arc::new(Semaphore::new(MCP_MAX_WAIT_TASKS)),
+            subscriptions: Arc::new(Semaphore::new(MCP_MAX_SUBSCRIPTIONS)),
         }
     }
 
@@ -358,13 +406,49 @@ impl McpSessionRegistry {
         self.state
             .lock()
             .await
-            .sessions
+            .transport_sessions
             .get(session_id)
-            .map(|entry| entry.token_id.clone())
+            .map(|session| session.token_id.clone())
+    }
+
+    async fn register_transport(
+        &self,
+        session_id: String,
+        token_id: String,
+    ) -> Result<(), McpFailure> {
+        let mut state = self.state.lock().await;
+        if let Some(session) = state.transport_sessions.get(&session_id)
+            && session.token_id != token_id
+        {
+            return Err(McpFailure::InvalidCredentials);
+        }
+        state
+            .transport_sessions
+            .entry(session_id)
+            .or_insert(TransportSession {
+                token_id,
+                last_seen: Instant::now(),
+            });
+        Ok(())
+    }
+
+    async fn touch_transport(&self, session_id: &str, token_id: &str) {
+        let mut state = self.state.lock().await;
+        if let Some(session) = state.transport_sessions.get_mut(session_id)
+            && session.token_id == token_id
+        {
+            session.last_seen = Instant::now();
+        }
     }
 
     async fn touch(&self, session_id: &str, token_id: &str) {
-        if let Some(entry) = self.state.lock().await.sessions.get_mut(session_id)
+        let mut state = self.state.lock().await;
+        if let Some(session) = state.transport_sessions.get_mut(session_id)
+            && session.token_id == token_id
+        {
+            session.last_seen = Instant::now();
+        }
+        if let Some(entry) = state.sessions.get_mut(session_id)
             && entry.token_id == token_id
         {
             entry.last_seen = Instant::now();
@@ -374,23 +458,34 @@ impl McpSessionRegistry {
     async fn expire_idle(&self, now: Instant) -> Vec<SessionEntry> {
         let mut state = self.state.lock().await;
         let expired_ids: Vec<_> = state
-            .sessions
+            .transport_sessions
             .iter()
-            .filter_map(|(id, entry)| {
-                (now.duration_since(entry.last_seen) >= self.idle).then_some(id.clone())
+            .filter_map(|(id, session)| {
+                (now.duration_since(session.last_seen) >= self.idle).then_some(id.clone())
             })
             .collect();
         expired_ids
             .into_iter()
             .filter_map(|id| {
+                state.transport_sessions.remove(&id);
                 state.bound_rooms.remove(&id);
                 state.sessions.remove(&id)
             })
             .collect()
     }
 
+    async fn terminate_all(&self) -> Vec<SessionEntry> {
+        let mut state = self.state.lock().await;
+        state.transport_sessions.clear();
+        state.bound_rooms.clear();
+        state.participants.clear();
+        state.retired_participants.clear();
+        state.sessions.drain().map(|(_, entry)| entry).collect()
+    }
+
     async fn remove(&self, session_id: &str) -> Option<SessionEntry> {
         let mut state = self.state.lock().await;
+        state.transport_sessions.remove(session_id);
         state.bound_rooms.remove(session_id);
         state.sessions.remove(session_id)
     }
@@ -398,16 +493,20 @@ impl McpSessionRegistry {
     async fn revoke_token(&self, token_id: &str) -> Vec<SessionEntry> {
         let mut state = self.state.lock().await;
         let ids: Vec<_> = state
-            .sessions
+            .transport_sessions
             .iter()
-            .filter_map(|(id, entry)| (entry.token_id == token_id).then_some(id.clone()))
+            .filter_map(|(id, session)| (session.token_id == token_id).then_some(id.clone()))
             .collect();
         for id in &ids {
+            state.transport_sessions.remove(id);
             state.bound_rooms.remove(id);
         }
         state
             .participants
             .retain(|(bound_token, _), _| bound_token != token_id);
+        state
+            .retired_participants
+            .retain(|(bound_token, _)| bound_token != token_id);
         ids.into_iter()
             .filter_map(|id| state.sessions.remove(&id))
             .collect()
@@ -451,6 +550,18 @@ impl McpSessionRegistry {
         if state.sessions.len() >= MCP_MAX_SESSIONS && !state.sessions.contains_key(&session_id) {
             return Err(McpFailure::Busy);
         }
+        if let Some(current) = state.transport_sessions.get(&session_id)
+            && current.token_id != token_id
+        {
+            return Err(McpFailure::InvalidCredentials);
+        }
+        state
+            .transport_sessions
+            .entry(session_id.clone())
+            .or_insert(TransportSession {
+                token_id: token_id.clone(),
+                last_seen: Instant::now(),
+            });
         if let Some(current) = state.sessions.get(&session_id)
             && current.token_id != token_id
         {
@@ -470,6 +581,7 @@ impl McpSessionRegistry {
                 .then_some(id.clone())
         });
         let old = old_id.and_then(|id| {
+            state.transport_sessions.remove(&id);
             state.bound_rooms.remove(&id);
             state.sessions.remove(&id)
         });
@@ -499,6 +611,10 @@ impl McpSessionRegistry {
         self.waiters.clone().try_acquire_owned().ok()
     }
 
+    async fn acquire_subscription(&self) -> Option<OwnedSemaphorePermit> {
+        self.subscriptions.clone().try_acquire_owned().ok()
+    }
+
     async fn participant_for(&self, token_id: &str, room_code: &str) -> Option<ParticipantId> {
         self.state
             .lock()
@@ -508,12 +624,20 @@ impl McpSessionRegistry {
             .cloned()
     }
 
+    async fn retired(&self, token_id: &str, room_code: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .retired_participants
+            .contains(&(token_id.to_owned(), room_code.to_owned()))
+    }
+
     async fn remove_binding(&self, session_id: &str) -> Option<SessionEntry> {
         let mut state = self.state.lock().await;
         let entry = state.sessions.remove(session_id)?;
         state
-            .participants
-            .remove(&(entry.token_id.clone(), entry.room_code.clone()));
+            .retired_participants
+            .insert((entry.token_id.clone(), entry.room_code.clone()));
         Some(entry)
     }
 }
@@ -678,6 +802,9 @@ impl McpHandler {
     async fn start_watcher(&self, session_id: String, entry: SessionEntry) {
         let registry = self.registry.clone();
         tokio::spawn(async move {
+            let Some(_subscription) = registry.acquire_subscription().await else {
+                return;
+            };
             let Ok(mut connection) = entry.room.subscribe().await else {
                 return;
             };
@@ -721,6 +848,15 @@ impl McpHandler {
                 }
             }
         }
+        add_decision_timing(&mut value);
+        let actions = value
+            .get("decision")
+            .and_then(|decision| decision.get("actions"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        value["is_my_turn"] = Value::Bool(!actions.is_empty());
+        value["legal_actions"] = Value::Array(actions);
         value["state_uri"] = Value::String(uri.to_owned());
         Ok(value)
     }
@@ -749,6 +885,7 @@ impl McpHandler {
                 target.insert(key.clone(), value.clone());
             }
         }
+        add_decision_timing(&mut value);
         value["state_uri"] = Value::String(uri.to_owned());
         Ok(value)
     }
@@ -852,6 +989,9 @@ impl McpHandler {
                         participant.display_name.clone(),
                     )
                 } else {
+                    if self.registry.retired(&token_id, &room_code).await {
+                        return Err(McpFailure::LeaveUnavailable.result());
+                    }
                     let participant_id = ParticipantId::new(crate::http::generate_ulid());
                     let participant = Participant::new(
                         participant_id.clone(),
@@ -940,6 +1080,9 @@ impl McpHandler {
         Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(input): Parameters<SubmitActionInput>,
     ) -> Result<Json<SubmitActionOutput>, CallToolResult> {
+        if input.action_id.is_empty() || input.action_id.len() > 128 {
+            return Err(McpFailure::InvalidInput.result());
+        }
         let (_session_id, entry) = self.binding(&parts).await.map_err(|e| e.result())?;
         let projection = entry
             .room
@@ -1008,7 +1151,13 @@ impl McpHandler {
         } else {
             input.timeout_seconds
         });
-        let wake = entry.wake.wait(input.after_revision, timeout).await;
+        let Some(wake) = entry
+            .wake
+            .wait_until(input.after_revision, timeout, &entry.cancel)
+            .await
+        else {
+            return Err(McpFailure::SessionExpired.result());
+        };
         let reason = if wake.revision > input.after_revision {
             wake.reason
         } else {
@@ -1038,11 +1187,19 @@ impl ServerHandler for McpHandler {
     fn list_resources(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        std::future::ready(Ok(ListResourcesResult::with_all_items(Vec::new())))
+        async move {
+            let Some(parts) = context.extensions.get::<axum::http::request::Parts>() else {
+                return Ok(ListResourcesResult::with_all_items(Vec::new()));
+            };
+            let Ok((_session_id, entry)) = self.binding(parts).await else {
+                return Ok(ListResourcesResult::with_all_items(Vec::new()));
+            };
+            Ok(ListResourcesResult::with_all_items(resources(&entry)))
+        }
     }
 
     fn list_resource_templates(
@@ -1122,6 +1279,9 @@ impl ServerHandler for McpHandler {
                 .binding(&session_id, &token_id)
                 .await
                 .map_err(|error| error.error_data())?;
+            let Some(_subscription) = self.registry.acquire_subscription().await else {
+                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
+            };
             let mut connection = entry
                 .room
                 .subscribe()
@@ -1161,6 +1321,16 @@ impl ServerHandler for McpHandler {
 }
 
 async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, &'static str)> {
+    if let RoomEvent::RoomDeleted | RoomEvent::ServerShutdown = event {
+        return Some((
+            entry.wake.current().revision.saturating_add(1),
+            match event {
+                RoomEvent::RoomDeleted => "room_deleted",
+                RoomEvent::ServerShutdown => "server_shutdown",
+                _ => unreachable!(),
+            },
+        ));
+    }
     let snapshot = entry.room.snapshot().await.ok()?;
     let revision = snapshot.revision;
     match event {
@@ -1249,6 +1419,23 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
     }
 }
 
+fn resources(entry: &SessionEntry) -> Vec<Resource> {
+    vec![
+        Resource::new(
+            McpHandler::uri(&entry.room_code, entry.participant_id.as_str(), "state"),
+            "private-state",
+        )
+        .with_mime_type("application/json"),
+        Resource::new(
+            McpHandler::uri(&entry.room_code, "", "public"),
+            "public-state",
+        )
+        .with_mime_type("application/json"),
+        Resource::new(McpHandler::uri(&entry.room_code, "", "history"), "history")
+            .with_mime_type("application/json"),
+    ]
+}
+
 fn resource_templates() -> Vec<ResourceTemplate> {
     vec![
         ResourceTemplate::new(STATE_TEMPLATE, "private-state").with_mime_type("application/json"),
@@ -1256,6 +1443,21 @@ fn resource_templates() -> Vec<ResourceTemplate> {
             .with_mime_type("application/json"),
         ResourceTemplate::new(HISTORY_TEMPLATE, "history").with_mime_type("application/json"),
     ]
+}
+
+fn add_decision_timing(value: &mut Value) {
+    let remaining = value
+        .get("decision")
+        .and_then(|decision| decision.get("remaining_ms"))
+        .and_then(Value::as_u64);
+    value["remaining_ms_at_read"] = remaining.map_or(Value::Null, Value::from);
+    value["decision_expires_at"] = remaining.map_or(Value::Null, |value| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        Value::from(now.saturating_add(u128::from(value)) as u64)
+    });
 }
 
 fn notification_uris(entry: &SessionEntry, reason: &str) -> Vec<String> {
