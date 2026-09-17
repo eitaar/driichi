@@ -432,3 +432,80 @@ async fn built_in_match_reaches_post_match_and_can_rematch() {
     };
     assert_ne!(first, second);
 }
+
+#[tokio::test]
+async fn room_history_bounds_current_events_and_prior_kyoku_summaries() {
+    let mut cfg = config();
+    cfg.mode = GameMode::FourPlayerRedHalf;
+    cfg.replay_save = false;
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    handle.send(RoomCommand::start()).await.unwrap();
+
+    let snapshot = handle.snapshot().await.unwrap();
+    assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+    let history = handle.public_history_projection().await.unwrap();
+    let current = history.current_kyoku.as_ref().expect("final kyoku details");
+    assert!(history.previous_kyoku.len() >= 1, "expected multiple kyoku");
+    assert!(!current.events.is_empty());
+    assert!(
+        current.events.len() < 1_000,
+        "current kyoku grew without a bound"
+    );
+    assert!(
+        history
+            .previous_kyoku
+            .iter()
+            .all(|summary| { !summary.results.is_empty() })
+    );
+    let value = serde_json::to_value(history).unwrap();
+    let encoded = value.to_string();
+    for concealed in ["tehais", "hands", "wall", "private_state", "raw_state"] {
+        assert!(
+            !encoded.contains(concealed),
+            "concealed field leaked: {concealed}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn room_history_keeps_player_visibility_and_survives_match_machine_clear() {
+    let mut cfg = config();
+    cfg.replay_save = false;
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(cfg);
+    handle
+        .send(RoomCommand::join(human("h", "player-red")))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::select("h")).await.unwrap();
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    handle
+        .send(RoomCommand::set_ready(
+            "h",
+            vec![
+                "player-red".to_owned(),
+                "player-blue".to_owned(),
+                "tsumogiri-bot".to_owned(),
+            ],
+        ))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::start()).await.unwrap();
+
+    let private = serde_json::to_value(handle.history_projection("h").await.unwrap()).unwrap();
+    let public = serde_json::to_value(handle.public_history_projection().await.unwrap()).unwrap();
+    assert!(private.to_string().contains("own_tehai"));
+    assert!(!public.to_string().contains("own_tehai"));
+    for concealed in ["tehais", "hands", "wall", "private_state", "raw_state"] {
+        assert!(!private.to_string().contains(concealed));
+        assert!(!public.to_string().contains(concealed));
+    }
+
+    handle.send(RoomCommand::disconnect("h")).await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(300)).await;
+    tokio::task::yield_now().await;
+    let snapshot = handle.snapshot().await.unwrap();
+    assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+    let retained = handle.public_history_projection().await.unwrap();
+    assert!(retained.current_kyoku.is_some());
+}

@@ -81,6 +81,129 @@ fn unlimited_connected_human_has_no_deadline_but_built_in_bot_is_immediate() {
     assert!(decision.is_expired_at(tokio::time::Instant::now()));
 }
 
+#[tokio::test(start_paused = true)]
+async fn temporary_auto_turn_is_immediate_after_casual_or_riichi_dev_timeout() {
+    for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
+        let mut machine = MatchMachine::with_time_control(
+            GameMode::FourPlayerRedEast,
+            roster(GameMode::FourPlayerRedEast, ParticipantKind::Human),
+            time_control,
+        )
+        .unwrap();
+        let first = machine.current_decision().unwrap().unwrap();
+        let seat = first.eligible().next().expect("initial turn");
+        let initial_duration = first.duration_for(seat).expect("turn deadline");
+        machine.disconnect(seat).unwrap();
+        time::advance(initial_duration).await;
+        machine.resolve_expired().unwrap().expect("initial timeout");
+        assert_eq!(
+            machine.controller(seat).unwrap(),
+            ControllerState::TemporaryAuto
+        );
+
+        for _ in 0..2_000 {
+            let decision = machine.current_decision().unwrap().expect("decision");
+            if decision.kind() == DecisionKind::Turn && !decision.actions_for(seat).is_empty() {
+                assert_eq!(decision.duration_for(seat), Some(Duration::ZERO));
+                return;
+            }
+            let pending = decision.actions_for(seat).is_empty();
+            for eligible in decision.eligible().collect::<Vec<_>>() {
+                if eligible == seat {
+                    continue;
+                }
+                machine
+                    .submit_action(
+                        eligible,
+                        decision.id().clone(),
+                        decision.default_action_id(eligible).clone(),
+                    )
+                    .unwrap();
+            }
+            if !pending || !decision.actions_for(seat).is_empty() {
+                let current = machine.current_decision().unwrap().expect("decision");
+                if current.actions_for(seat).is_empty() {
+                    continue;
+                }
+                if let Some(duration) = current.duration_for(seat) {
+                    time::advance(duration).await;
+                }
+                machine.resolve_expired().unwrap();
+            }
+        }
+        panic!("temporary auto seat did not receive a subsequent turn");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout() {
+    for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
+        let mut machine = MatchMachine::with_time_control(
+            GameMode::FourPlayerRedEast,
+            roster(GameMode::FourPlayerRedEast, ParticipantKind::Human),
+            time_control,
+        )
+        .unwrap();
+        let first = machine.current_decision().unwrap().unwrap();
+        let seat = first.eligible().next().expect("initial turn");
+        let initial_duration = first.duration_for(seat).expect("turn deadline");
+        machine.disconnect(seat).unwrap();
+        time::advance(initial_duration).await;
+        machine.resolve_expired().unwrap().expect("initial timeout");
+        assert_eq!(
+            machine.controller(seat).unwrap(),
+            ControllerState::TemporaryAuto
+        );
+
+        for _ in 0..5_000 {
+            let decision = machine.current_decision().unwrap().expect("decision");
+            if decision.kind() == DecisionKind::Response && !decision.actions_for(seat).is_empty() {
+                assert_eq!(decision.duration_for(seat), Some(Duration::ZERO));
+                return;
+            }
+            for eligible in decision.eligible().collect::<Vec<_>>() {
+                if eligible == seat {
+                    continue;
+                }
+                machine
+                    .submit_action(
+                        eligible,
+                        decision.id().clone(),
+                        decision.default_action_id(eligible).clone(),
+                    )
+                    .unwrap();
+            }
+            let current = machine.current_decision().unwrap().expect("decision");
+            if !current.actions_for(seat).is_empty() {
+                if let Some(duration) = current.duration_for(seat) {
+                    time::advance(duration).await;
+                }
+                machine.resolve_expired().unwrap();
+            }
+        }
+        panic!("temporary auto seat did not receive a subsequent response");
+    }
+}
+
+#[test]
+fn permanent_auto_remains_immediate_in_casual_and_riichi_dev() {
+    let mode = GameMode::FourPlayerRedEast;
+    for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
+        let mut machine = MatchMachine::with_time_control(
+            mode,
+            roster(mode, ParticipantKind::BuiltInBot),
+            time_control,
+        )
+        .unwrap();
+        let decision = machine.current_decision().unwrap().unwrap();
+        assert!(
+            decision
+                .eligible()
+                .all(|seat| decision.duration_for(seat) == Some(Duration::ZERO))
+        );
+    }
+}
+
 #[test]
 fn seat_validation_remains_mode_specific() {
     let mode = GameMode::ThreePlayerRedEast;
