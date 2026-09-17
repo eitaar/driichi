@@ -17,8 +17,8 @@ use axum::{
 };
 use double_riichi_core::{
     AudienceProjection, Decision, DecisionId, GameEvent, GameMode, MatchMachine, Participant,
-    ParticipantId, ParticipantKind, PlayerDecisionProjection, RoomCommand, RoomError, RoomEvent,
-    RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl, TimingConfig,
+    ParticipantId, ParticipantKind, PlayerDecisionProjection, ROOM_COMMAND_CAPACITY, RoomCommand,
+    RoomError, RoomEvent, RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl, TimingConfig,
 };
 use double_riichi_mjai::{
     AckStatus, ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition,
@@ -1326,8 +1326,9 @@ fn prepare_match(
     let replay_root = bots.first().and_then(|bot| bot.replay_root.clone());
     let replay_storage = bots.first().and_then(|bot| bot.replay_storage.clone());
     let replay_id = format!("ranked-{match_id}");
-    let replay = replay_root
-        .and_then(|root| match ReplayWriter::new(&root, replay_id.clone(), mode) {
+    let replay =
+        replay_root.and_then(
+            |root| match ReplayWriter::new(&root, replay_id.clone(), mode) {
                 Ok(writer) => Some(CompatReplay {
                     writer: Some(writer),
                     storage: replay_storage,
@@ -1342,7 +1343,8 @@ fn prepare_match(
                     report_replay_failure(&replay_id, "create", &error);
                     None
                 }
-            });
+            },
+        );
     Ok((
         CompatMatch {
             kind,
@@ -1864,6 +1866,19 @@ pub(crate) async fn room_mjai_upgrade(
         })
 }
 
+/// Deliver disconnect cleanup after transient Room command backpressure.
+async fn disconnect_room_participant(room: &RoomHandle, participant_id: &ParticipantId) {
+    for attempt in 0..=ROOM_COMMAND_CAPACITY {
+        let result = room
+            .send(RoomCommand::disconnect(participant_id.clone()))
+            .await;
+        if !matches!(result, Err(RoomError::Busy)) || attempt == ROOM_COMMAND_CAPACITY {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 async fn teardown_room_connection(
     state: &Arc<ServerState>,
     room: &RoomHandle,
@@ -1883,9 +1898,7 @@ async fn teardown_room_connection(
         .room_connections
         .is_current(participant_id, generation)
     {
-        let _ = room
-            .send(RoomCommand::disconnect(participant_id.clone()))
-            .await;
+        disconnect_room_participant(room, participant_id).await;
     }
     state
         .compat
@@ -2344,7 +2357,7 @@ fn room_error_reason(error: &RoomError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TokenState;
+    use crate::{AdminAuthenticator, TokenState, hash_password};
     use double_riichi_core::{ActionId, DecisionKind};
 
     fn projected_decision(
@@ -2457,6 +2470,74 @@ mod tests {
             serde_json::from_str::<AgentJoinRequest>(r#"{"display_name":"bot","unexpected":true}"#)
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn room_teardown_retries_a_busy_disconnect_before_removing_generation() {
+        let state = Arc::new(ServerState::for_tests(
+            "http://127.0.0.1:3000",
+            Arc::new(
+                AdminAuthenticator::new(
+                    "admin",
+                    hash_password("correct horse battery staple").unwrap(),
+                )
+                .unwrap(),
+            ),
+            RoomRegistry::with_max_rooms(1),
+        ));
+        let room = state
+            .rooms()
+            .create(double_riichi_core::RoomConfig::new(
+                "Room",
+                GameMode::FourPlayerRedEast,
+                double_riichi_core::CharacterCatalog::starter(),
+            ))
+            .await
+            .unwrap();
+        let participant = Participant::new("agent", "Agent", ParticipantKind::MJAI);
+        room.send(RoomCommand::join_with_token(participant.clone(), "token"))
+            .await
+            .unwrap();
+        let generation = state
+            .compat
+            .room_connections
+            .register(participant.id.clone(), "token".to_owned())
+            .0;
+        let mut queued = Vec::new();
+        for _ in 0..=ROOM_COMMAND_CAPACITY {
+            match room.try_send(RoomCommand::GetSnapshot) {
+                Ok(reply) => queued.push(reply),
+                Err(RoomError::Busy) => break,
+                Err(error) => panic!("failed to fill Room command queue: {error}"),
+            }
+        }
+        assert_eq!(queued.len(), ROOM_COMMAND_CAPACITY);
+
+        teardown_room_connection(&state, &room, &participant.id, generation).await;
+
+        let snapshot = loop {
+            match room.snapshot().await {
+                Ok(snapshot) => break snapshot,
+                Err(RoomError::Busy) => tokio::task::yield_now().await,
+                Err(error) => panic!("failed to read Room after teardown: {error}"),
+            }
+        };
+        assert_eq!(
+            snapshot
+                .participants
+                .iter()
+                .find(|entry| entry.id == participant.id)
+                .expect("participant remains in Room")
+                .presence,
+            double_riichi_core::Presence::Disconnected
+        );
+        assert!(
+            !state
+                .compat
+                .room_connections
+                .is_current(&participant.id, generation)
+        );
+        state.shutdown().await;
     }
 
     #[test]
