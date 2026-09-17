@@ -18,7 +18,11 @@ remain blocked.
 - Ranked matches persist a `writing` metadata row and participant records before
   play, finalize the MJSON artifact and result metadata after completion, and
   degrade persistence without aborting the Match when replay/metadata work
-  fails. Unfinished writers and metadata are cleaned up.
+  fails. Replay failure latches health degraded, and forced shutdown awaits
+  tracked metadata cleanup tasks.
+- Room MJAI setup failures run the same generation-guarded disconnect/removal
+  teardown as normal close; replacement input is serialized against generation
+  registration, and token joins serialize with revocation.
 - Added live acceptance coverage for strict Room join payloads and unknown
   Rooms, participant-creation rate limiting, wrong-token reconnect protection
   while an existing socket remains connected, ranked MJSON and metadata
@@ -34,18 +38,19 @@ Commands were run from clean-base HEAD `b236621` plus the focused Task 13
 changes:
 
 - `cargo test -p double_riichi_server --test task13_compat -- --nocapture` — 8 passed.
-- `cargo test -p double_riichi_server --lib compat::tests -- --nocapture` — 10 passed.
+- `cargo test -p double_riichi_server --lib compat::tests -- --nocapture` — 11 passed.
 - `cargo fmt --all -- --check` — passed.
 - `cargo test -p double_riichi_mjai` — 13 passed; doc tests passed.
 - `cargo test -p double_riichi_replay` — 15 integration tests passed; doc tests passed.
-- `cargo test -p double_riichi_server` — 16 unit tests, 8 Task 13 tests, 10 Task 6 tests, 11 Task 7 tests, and 10 Task 9 tests passed; doc tests passed.
+- `cargo test -p double_riichi_server --lib --tests -- --nocapture` — 17 unit tests, 8 Task 13 tests, 10 Task 6 tests, 11 Task 7 tests, and 10 Task 9 tests passed.
 - `cargo check --workspace` — passed.
 - `cargo test --workspace` — passed across core, server, MJAI, replay, MCP, and all integration/doc-test targets.
 - `cargo clippy --workspace --all-targets -- -D warnings` — failed on five pre-existing Clippy errors in `double_riichi_core` (`type_complexity`, two `needless_range_loop`, `too_many_arguments`, and `len_without_is_empty`); no Task 13 warning was reported. These unrelated baseline findings were not widened into this test-only change.
 - `git diff --check` — passed.
 
-Focused tests use bounded WebSocket timeouts; timer/capacity and persistence
-cleanup checks are actor-level and do not depend on full-network sleeps.
+Focused tests use bounded WebSocket timeouts; timer/capacity, replay-health
+latching, generation teardown, and persistence cleanup checks are actor-level
+and do not depend on full-network sleeps.
 
 ## Explicit blockers
 

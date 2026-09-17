@@ -2908,7 +2908,7 @@ async fn health(
             let database_ok = time::timeout(Duration::from_secs(1), storage.scalar_i64("SELECT 1"))
                 .await
                 .is_ok_and(|result| result.is_ok());
-            let replay_ok = storage.probe_replay().is_ok();
+            let replay_ok = !state.compat.replay_degraded() && storage.probe_replay().is_ok();
             (
                 if database_ok { "ok" } else { "degraded" },
                 if replay_ok { "ok" } else { "degraded" },

@@ -67,6 +67,8 @@ enum CompatKind {
 struct CompatReplay {
     writer: Option<ReplayWriter>,
     storage: Option<Arc<Storage>>,
+    replay_health: Arc<AtomicBool>,
+    cleanup_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     metadata_open: bool,
     failed: bool,
     match_id: String,
@@ -125,6 +127,8 @@ pub(crate) struct CompatState {
     max_active: AtomicUsize,
     max_queue: AtomicUsize,
     active_matches: AtomicUsize,
+    replay_degraded: Arc<AtomicBool>,
+    replay_cleanup_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     shutting_down: AtomicBool,
     shutdown_notify: Notify,
     token_service: OnceLock<Arc<BotTokenService>>,
@@ -139,6 +143,8 @@ impl CompatState {
             max_active: AtomicUsize::new(max_active),
             max_queue: AtomicUsize::new(max_queue),
             active_matches: AtomicUsize::new(0),
+            replay_degraded: Arc::new(AtomicBool::new(false)),
+            replay_cleanup_tasks: Arc::new(Mutex::new(Vec::new())),
             shutting_down: AtomicBool::new(false),
             shutdown_notify: Notify::new(),
             token_service: OnceLock::new(),
@@ -214,6 +220,22 @@ impl CompatState {
 
     pub(crate) async fn active_count(&self) -> usize {
         self.active_matches.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn replay_degraded(&self) -> bool {
+        self.replay_degraded.load(Ordering::Acquire)
+    }
+
+    async fn wait_replay_cleanups(&self) {
+        let tasks = std::mem::take(
+            &mut *self
+                .replay_cleanup_tasks
+                .lock()
+                .expect("replay cleanup task lock poisoned"),
+        );
+        for task in tasks {
+            let _ = task.await;
+        }
     }
 
     fn token_is_active(&self, token_id: &str) -> bool {
@@ -433,7 +455,13 @@ impl CompatState {
             }
             return;
         };
-        let prepared = prepare_match(match_id, kind, batch);
+        let prepared = prepare_match(
+            match_id,
+            kind,
+            batch,
+            Arc::clone(&self.replay_degraded),
+            Arc::clone(&self.replay_cleanup_tasks),
+        );
         let (mut actor, assignments, controls) = match prepared {
             Ok(value) => value,
             Err((_error, bots)) => {
@@ -539,13 +567,7 @@ impl CompatState {
         self.schedule_ranked_timer().await;
     }
 
-    async fn revoke_token(self: &Arc<Self>, token_id: &str) -> bool {
-        let transition = tokio::select! {
-            _ = self.shutdown_notify.notified() => return false,
-            permit = self.room_connections.transition.clone().acquire_owned() => {
-                permit.expect("agent transition semaphore closed")
-            }
-        };
+    async fn revoke_token_locked(self: &Arc<Self>, token_id: &str) -> bool {
         let (waiting, mut controls) = {
             let mut inner = self.inner.lock().await;
             let mut waiting = Vec::new();
@@ -575,7 +597,6 @@ impl CompatState {
             (waiting, controls)
         };
         controls.extend(self.room_connections.controls_for_token(token_id));
-        drop(transition);
         for assignment in waiting {
             let _ = assignment.send(Err(AssignmentError {
                 code: CLOSE_SESSION_EXPIRED,
@@ -661,6 +682,7 @@ impl CompatState {
         {
             task.abort();
         }
+        self.wait_replay_cleanups().await;
     }
 }
 
@@ -673,11 +695,18 @@ async fn deliver_revocation(
         if state.is_shutting_down() {
             return false;
         }
-        let compat_delivered = state.revoke_token(token_id).await;
+        let transition = tokio::select! {
+            _ = state.shutdown_notify.notified() => return false,
+            permit = state.room_connections.transition.clone().acquire_owned() => {
+                permit.expect("agent transition semaphore closed")
+            }
+        };
+        let compat_delivered = state.revoke_token_locked(token_id).await;
         let rooms_delivered = matches!(
             time::timeout(REVOCATION_ATTEMPT_TIMEOUT, rooms.revoke_token(token_id)).await,
             Ok(Ok(()))
         );
+        drop(transition);
         if compat_delivered && rooms_delivered {
             return true;
         }
@@ -1030,6 +1059,10 @@ fn due_requests(pending: &HashMap<Seat, PendingRequest>, now: Instant) -> Vec<(S
 }
 
 impl CompatReplay {
+    fn mark_degraded(&self) {
+        self.replay_health.store(true, Ordering::Release);
+    }
+
     async fn open(&mut self, mode: GameMode, players: &[Participant]) {
         let Some(storage) = self.storage.as_ref() else {
             return;
@@ -1052,6 +1085,7 @@ impl CompatReplay {
             .await
         {
             self.failed = true;
+            self.mark_degraded();
             report_replay_failure(&self.match_id, "open", &error);
             if let Some(writer) = self.writer.take() {
                 writer.abort();
@@ -1071,6 +1105,7 @@ impl CompatReplay {
         for event in events {
             if let Err(error) = writer.append(event.clone()) {
                 self.failed = true;
+                self.mark_degraded();
                 report_replay_failure(&self.match_id, "append", &error);
                 break;
             }
@@ -1092,12 +1127,14 @@ impl CompatReplay {
         let artifact = match writer.finalize() {
             Ok(artifact) => artifact,
             Err(error) => {
+                self.mark_degraded();
                 report_replay_failure(&self.match_id, "finalize", &error);
                 self.delete_metadata().await;
                 return;
             }
         };
         let Some(result) = result else {
+            self.mark_degraded();
             report_replay_failure(&self.match_id, "result", &"completed match had no result");
             if let Some(storage) = &self.storage {
                 let _ = storage.remove_replay_file(&artifact.relative_path_string());
@@ -1120,6 +1157,7 @@ impl CompatReplay {
             {
                 Ok(()) => self.metadata_open = false,
                 Err(error) => {
+                    self.mark_degraded();
                     report_replay_failure(&self.match_id, "metadata", &error);
                     let _ = storage.remove_replay_file(&artifact.relative_path_string());
                     self.delete_metadata().await;
@@ -1135,11 +1173,19 @@ impl CompatReplay {
     }
 
     async fn delete_metadata(&mut self) {
-        if self.metadata_open {
-            if let Some(storage) = &self.storage {
-                let _ = storage.delete_writing_match(&self.match_id).await;
-            }
+        if !self.metadata_open {
+            return;
+        }
+        let Some(storage) = &self.storage else {
             self.metadata_open = false;
+            return;
+        };
+        match storage.delete_writing_match(&self.match_id).await {
+            Ok(()) => self.metadata_open = false,
+            Err(error) => {
+                self.mark_degraded();
+                report_replay_failure(&self.match_id, "cleanup", &error);
+            }
         }
     }
 }
@@ -1154,11 +1200,21 @@ impl Drop for CompatReplay {
             return;
         };
         let match_id = self.match_id.clone();
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::spawn(async move {
-                let _ = storage.delete_writing_match(&match_id).await;
-            });
-        }
+        let replay_health = Arc::clone(&self.replay_health);
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            replay_health.store(true, Ordering::Release);
+            return;
+        };
+        let task = handle.spawn(async move {
+            if let Err(error) = storage.delete_writing_match(&match_id).await {
+                replay_health.store(true, Ordering::Release);
+                report_replay_failure(&match_id, "cleanup", &error);
+            }
+        });
+        self.cleanup_tasks
+            .lock()
+            .expect("replay cleanup task lock poisoned")
+            .push(task);
     }
 }
 
@@ -1170,6 +1226,8 @@ fn prepare_match(
     match_id: u64,
     kind: CompatKind,
     mut bots: Vec<QueuedBot>,
+    replay_health: Arc<AtomicBool>,
+    cleanup_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 ) -> Result<
     (
         CompatMatch,
@@ -1268,17 +1326,23 @@ fn prepare_match(
     let replay_root = bots.first().and_then(|bot| bot.replay_root.clone());
     let replay_storage = bots.first().and_then(|bot| bot.replay_storage.clone());
     let replay_id = format!("ranked-{match_id}");
-    let replay = replay_root.and_then(|root| {
-        ReplayWriter::new(&root, replay_id.clone(), mode)
-            .ok()
-            .map(|writer| CompatReplay {
-                writer: Some(writer),
-                storage: replay_storage,
-                metadata_open: false,
-                failed: false,
-                match_id: replay_id.clone(),
-            })
-    });
+    let replay = replay_root
+        .and_then(|root| match ReplayWriter::new(&root, replay_id.clone(), mode) {
+                Ok(writer) => Some(CompatReplay {
+                    writer: Some(writer),
+                    storage: replay_storage,
+                    replay_health: Arc::clone(&replay_health),
+                    cleanup_tasks: Arc::clone(&cleanup_tasks),
+                    metadata_open: false,
+                    failed: false,
+                    match_id: replay_id.clone(),
+                }),
+                Err(error) => {
+                    replay_health.store(true, Ordering::Release);
+                    report_replay_failure(&replay_id, "create", &error);
+                    None
+                }
+            });
     Ok((
         CompatMatch {
             kind,
@@ -1660,6 +1724,15 @@ pub(crate) async fn agent_join(
     let Some(display_name) = normalize_name(&request.display_name) else {
         return invalid_request(&request_id);
     };
+    let transition = tokio::select! {
+        _ = state.compat.shutdown_notify.notified() => return invalid_credentials(&request_id),
+        permit = state.compat.room_connections.transition.clone().acquire_owned() => {
+            permit.expect("agent transition semaphore closed")
+        }
+    };
+    if state.compat.is_shutting_down() || !state.bot_token_active(token.token_id()) {
+        return invalid_credentials(&request_id);
+    }
     let Some(room) = state.rooms().get(&join_code).await else {
         return room_not_found(&request_id);
     };
@@ -1674,7 +1747,7 @@ pub(crate) async fn agent_join(
         );
     }
     let participant_id = ParticipantId::new(generate_ulid());
-    match room
+    let response = match room
         .send(RoomCommand::join_with_token(
             Participant::new(participant_id.clone(), display_name, ParticipantKind::MJAI),
             token.token_id(),
@@ -1686,7 +1759,9 @@ pub(crate) async fn agent_join(
             json!({"participant_id":participant_id.as_str(), "websocket_url":format!("/ws/v1/rooms/{join_code}/mjai?participant_id={}", participant_id.as_str())}),
         ),
         Err(error) => room_error_response(error, &request_id),
-    }
+    };
+    drop(transition);
+    response
 }
 
 pub(crate) async fn room_mjai_upgrade(
@@ -1789,6 +1864,36 @@ pub(crate) async fn room_mjai_upgrade(
         })
 }
 
+async fn teardown_room_connection(
+    state: &Arc<ServerState>,
+    room: &RoomHandle,
+    participant_id: &ParticipantId,
+    generation: u64,
+) {
+    let transition = state
+        .compat
+        .room_connections
+        .transition
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("agent transition semaphore closed");
+    if state
+        .compat
+        .room_connections
+        .is_current(participant_id, generation)
+    {
+        let _ = room
+            .send(RoomCommand::disconnect(participant_id.clone()))
+            .await;
+    }
+    state
+        .compat
+        .room_connections
+        .remove(participant_id, generation);
+    drop(transition);
+}
+
 async fn run_room_socket(
     socket: WebSocket,
     state: Arc<ServerState>,
@@ -1801,6 +1906,7 @@ async fn run_room_socket(
     let mode = match room.snapshot().await {
         Ok(snapshot) => snapshot.mode,
         Err(_) => {
+            teardown_room_connection(&state, &room, &participant_id, generation).await;
             drop(permit);
             return;
         }
@@ -1824,6 +1930,7 @@ async fn run_room_socket(
         Ok(connection) => connection,
         Err(_) => {
             writer.abort();
+            teardown_room_connection(&state, &room, &participant_id, generation).await;
             drop(permit);
             return;
         }
@@ -1857,6 +1964,7 @@ async fn run_room_socket(
     {
         drop(output);
         writer.abort();
+        teardown_room_connection(&state, &room, &participant_id, generation).await;
         drop(permit);
         return;
     }
@@ -1864,7 +1972,30 @@ async fn run_room_socket(
         tokio::select! {
             command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = queue_output(&output, close_message(code, reason)); close_queued = true; } break; }
             message = receiver.next() => match message {
-                Some(Ok(Message::Text(text))) => { if text.len() > MAX_FRAME_BYTES { let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large")); close_queued = true; break; } room_reply(&room, &participant_id, mode, &mut adapter, &mut timing, request_time, request_opened, &mut last_decision, &mut last_request_id, &output, text.as_bytes()).await; }
+                Some(Ok(Message::Text(text))) => {
+                    let transition = state
+                        .compat
+                        .room_connections
+                        .transition
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("agent transition semaphore closed");
+                    if !state.compat.room_connections.is_current(&participant_id, generation) {
+                        let _ = queue_output(&output, close_message(CLOSE_REPLACED, "connected_elsewhere"));
+                        close_queued = true;
+                        drop(transition);
+                        break;
+                    }
+                    if text.len() > MAX_FRAME_BYTES {
+                        let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large"));
+                        close_queued = true;
+                        drop(transition);
+                        break;
+                    }
+                    room_reply(&room, &participant_id, mode, &mut adapter, &mut timing, request_time, request_opened, &mut last_decision, &mut last_request_id, &output, text.as_bytes()).await;
+                    drop(transition);
+                }
                 Some(Ok(Message::Ping(payload))) => { let _ = queue_output(&output, Message::Pong(payload)); }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
@@ -1872,28 +2003,7 @@ async fn run_room_socket(
             event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
         }
     }
-    let transition = state
-        .compat
-        .room_connections
-        .transition
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("agent transition semaphore closed");
-    if state
-        .compat
-        .room_connections
-        .is_current(&participant_id, generation)
-    {
-        let _ = room
-            .send(RoomCommand::disconnect(participant_id.clone()))
-            .await;
-    }
-    state
-        .compat
-        .room_connections
-        .remove(&participant_id, generation);
-    drop(transition);
+    teardown_room_connection(&state, &room, &participant_id, generation).await;
     drop(output);
     if close_queued {
         let _ = time::timeout(Duration::from_secs(1), &mut writer).await;
@@ -2407,6 +2517,8 @@ mod tests {
         CompatReplay {
             writer: Some(writer),
             storage: Some(storage.clone()),
+            replay_health: Arc::new(AtomicBool::new(false)),
+            cleanup_tasks: Arc::new(Mutex::new(Vec::new())),
             metadata_open: true,
             failed: false,
             match_id: "abortmatch".to_owned(),
@@ -2456,9 +2568,12 @@ mod tests {
             )
             .await
             .unwrap();
+        let replay_health = Arc::new(AtomicBool::new(false));
         let mut replay = CompatReplay {
             writer: Some(writer),
             storage: Some(storage.clone()),
+            replay_health: replay_health.clone(),
+            cleanup_tasks: Arc::new(Mutex::new(Vec::new())),
             metadata_open: true,
             failed: false,
             match_id: "failurematch".to_owned(),
@@ -2474,6 +2589,7 @@ mod tests {
         }]);
         assert!(replay.failed);
         replay.finish(None).await;
+        assert!(replay_health.load(Ordering::Acquire));
         let count: i64 =
             sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'failurematch'")
                 .fetch_one(storage.pool())
@@ -2481,6 +2597,56 @@ mod tests {
                 .unwrap();
         assert_eq!(count, 0);
         assert!(!part.exists());
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn forced_shutdown_waits_for_detached_replay_cleanup() {
+        let root = std::env::temp_dir().join(format!(
+            "double-riichi-compat-shutdown-cleanup-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let mode = GameMode::FourPlayerRedHalf;
+        let players = (0..4)
+            .map(|seat| {
+                Participant::new(
+                    format!("shutdown{seat}"),
+                    format!("Shutdown {seat}"),
+                    ParticipantKind::MJAI,
+                )
+            })
+            .collect::<Vec<_>>();
+        let writer = ReplayWriter::new(storage.replay_root(), "shutdownmatch", mode).unwrap();
+        storage
+            .open_ranked_match(
+                "shutdownmatch",
+                mode,
+                1,
+                &writer.relative_path_string(),
+                &players,
+            )
+            .await
+            .unwrap();
+        let state = Arc::new(CompatState::new(1, 1));
+        drop(CompatReplay {
+            writer: Some(writer),
+            storage: Some(storage.clone()),
+            replay_health: state.replay_degraded.clone(),
+            cleanup_tasks: state.replay_cleanup_tasks.clone(),
+            metadata_open: true,
+            failed: false,
+            match_id: "shutdownmatch".to_owned(),
+        });
+        state.shutdown().await;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'shutdownmatch'")
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
         storage.close().await;
         let _ = std::fs::remove_dir_all(&root);
     }
