@@ -80,12 +80,13 @@ async fn run_server(path: PathBuf) -> Result<(), String> {
         _ = shutdown_signal() => {}
     }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(shutdown_seconds);
+    state.begin_shutdown();
+    let _ = stop_tx.send(());
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(shutdown_seconds),
         state.shutdown(),
     )
     .await;
-    let _ = stop_tx.send(());
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     match tokio::time::timeout(remaining, &mut server).await {
         Ok(result) => result.map_err(|_| "server stopped unexpectedly".to_owned()),

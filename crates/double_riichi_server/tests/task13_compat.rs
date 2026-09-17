@@ -406,3 +406,81 @@ async fn live_validate_reports_illegal_action_but_completes_match() {
     state.shutdown().await;
     storage.close().await;
 }
+
+#[tokio::test]
+async fn health_probes_database_and_replay_storage() {
+    let (state, _service, storage, _raw) = fixture("health").await;
+    let app = server_router(state.clone());
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/login")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"username":"admin","password":"correct horse battery staple"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = login.headers()["set-cookie"].to_str().unwrap().to_owned();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let healthy = serde_json::from_slice::<Value>(
+        &axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(healthy["database"], "ok");
+    assert_eq!(healthy["replay_storage"], "ok");
+
+    fs::remove_dir_all(storage.replay_root()).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    let degraded = serde_json::from_slice::<Value>(
+        &axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(degraded["database"], "ok");
+    assert_eq!(degraded["replay_storage"], "degraded");
+
+    state.begin_shutdown();
+    let response = server_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    state.shutdown().await;
+    storage.close().await;
+}

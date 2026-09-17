@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -208,6 +208,7 @@ pub struct ServerState {
     limits: ServerLimits,
     shutdown_seconds: u64,
     started_at: Instant,
+    admission_open: Arc<AtomicBool>,
     storage: Option<Arc<Storage>>,
     bot_tokens: Option<Arc<BotTokenService>>,
     pub(crate) compat: Arc<CompatState>,
@@ -331,7 +332,17 @@ impl ServerState {
         }
     }
 
+    pub fn begin_shutdown(&self) {
+        self.admission_open.store(false, Ordering::Release);
+        self.compat.begin_shutdown();
+    }
+
+    pub(crate) fn admission_open(&self) -> bool {
+        self.admission_open.load(Ordering::Acquire)
+    }
+
     pub async fn shutdown(&self) {
+        self.begin_shutdown();
         self.compat.shutdown().await;
         self.rooms
             .shutdown(double_riichi_core::ShutdownMode::Graceful)
@@ -440,6 +451,7 @@ impl ServerState {
             limits,
             shutdown_seconds: 10,
             started_at: Instant::now(),
+            admission_open: Arc::new(AtomicBool::new(true)),
             storage: None,
             bot_tokens: None,
             compat,
@@ -626,11 +638,25 @@ where
     })
 }
 
-async fn request_context(mut request: Request<Body>, next: Next) -> Response {
+async fn request_context(
+    Extension(state): Extension<Arc<ServerState>>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
     let request_id = RequestId(generate_ulid());
     let path = request.uri().path().to_owned();
     request.extensions_mut().insert(request_id.clone());
-    let mut response = next.run(request).await;
+    let mut response = if state.admission_open() {
+        next.run(request).await
+    } else {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server shutting down",
+            "The server is not accepting new requests.",
+            "server_shutting_down",
+        )
+        .response(&request_id)
+    };
     if (path.starts_with("/api/v1/") || path.starts_with("/ws/v1/"))
         && response.status().is_client_error()
         && !response
@@ -767,6 +793,7 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(state.limits.http_json_limit))
         .layer(middleware::from_fn(request_context))
+        .layer(Extension(state.clone()))
         .with_state(state)
 }
 
@@ -1135,17 +1162,8 @@ async fn admin_revoke_token(
         .as_secs() as i64;
     match service.revoke(&token_id, now, &request_id.0).await {
         Ok(()) | Err(CredentialError::AlreadyRevoked) => {
-            // SQLite/cache revocation is irreversible. A repeated request is the
-            // delivery retry that lets a transient Room signal failure recover.
-            if state.rooms.revoke_token(&token_id).await.is_err() {
-                return ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Token signal unavailable",
-                    "The Token was revoked, but active Room connections could not be updated.",
-                    "token_signal_unavailable",
-                )
-                .response(&request_id);
-            }
+            // SQLite and the authority are durable; the supervised revocation
+            // worker delivers the same TokenRevoked transition to every Room.
             match service.list().await {
                 Ok(records) => records
                     .iter()
@@ -2885,14 +2903,32 @@ async fn health(
     }
     let uptime = state.started_at.elapsed().as_secs();
     let active_compat_matches = state.compat.active_count().await;
+    let (database, replay_storage) = match &state.storage {
+        Some(storage) => {
+            let database_ok = time::timeout(Duration::from_secs(1), storage.scalar_i64("SELECT 1"))
+                .await
+                .is_ok_and(|result| result.is_ok());
+            let replay_ok = storage.probe_replay().is_ok();
+            (
+                if database_ok { "ok" } else { "degraded" },
+                if replay_ok { "ok" } else { "degraded" },
+            )
+        }
+        None => ("not_configured", "not_configured"),
+    };
+    let healthy = database == "ok" && replay_storage == "ok";
     json_response(
-        StatusCode::OK,
+        if healthy {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         json!({
             "version": env!("CARGO_PKG_VERSION"),
             "commit": option_env!("GIT_COMMIT").unwrap_or("unknown"),
             "uptime_seconds": uptime,
-            "database": if state.storage.is_some() { "ok" } else { "not_configured" },
-            "replay_storage": if state.storage.is_some() { "ok" } else { "not_configured" },
+            "database": database,
+            "replay_storage": replay_storage,
             "active_rooms": rooms,
             "active_room_matches": active_matches,
             "active_compat_matches": active_compat_matches,
