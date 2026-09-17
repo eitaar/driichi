@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -10,6 +11,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, header},
     response::Response,
 };
+use futures_util::Stream;
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::{
@@ -18,16 +20,18 @@ use rmcp::{
         wrapper::{Json, Parameters},
     },
     model::{
-        CallToolResult, ErrorCode, ListResourceTemplatesResult, ListResourcesResult,
-        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-        ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
-        SubscribeRequestParams,
+        CallToolResult, ClientJsonRpcMessage, ErrorCode, ListResourceTemplatesResult,
+        ListResourcesResult, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+        Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
+        ServerJsonRpcMessage, SubscribeRequestParams, UnsubscribeRequestParams,
     },
     schemars::JsonSchema,
-    service::{RequestContext, RoleServer, SubscriptionContext},
+    service::{Peer, RequestContext, RoleServer, SubscriptionContext, SubscriptionSink},
     tool, tool_handler, tool_router,
     transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService, session::SessionManager,
+        StreamableHttpServerConfig, StreamableHttpService,
+        session::local::{LocalSessionManager, LocalSessionManagerError},
+        session::{ServerSseMessage, SessionId, SessionManager},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -39,8 +43,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use double_riichi_core::{
-    DecisionId, Participant, ParticipantId, ParticipantKind, RoomCommand, RoomError, RoomEvent,
-    RoomHandle, RoomPhase, RoomResponse,
+    AudienceProjection, DecisionId, Participant, ParticipantId, ParticipantKind, RoomCommand,
+    RoomConnection, RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomPhase, RoomResponse,
+    RoomSnapshot,
 };
 
 use crate::http::ServerState;
@@ -48,7 +53,7 @@ use crate::http::ServerState;
 pub(crate) const MCP_MAX_BODY_BYTES: usize = 1024 * 1024;
 pub(crate) const MCP_MAX_WAIT_SECONDS: u64 = 330;
 const MCP_DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
-const MCP_MAX_SESSIONS: usize = 1_024;
+pub(crate) const MCP_MAX_SESSIONS: usize = 1_024;
 const MCP_MAX_WAIT_TASKS: usize = 1_024;
 const MCP_MAX_SUBSCRIPTIONS: usize = 4_096;
 
@@ -79,6 +84,22 @@ struct TransportSession {
     last_seen: Instant,
 }
 
+struct LegacySubscription {
+    id: u64,
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+    peer: Peer<RoleServer>,
+    uri: String,
+    _permit: OwnedSemaphorePermit,
+}
+
+struct LiveSubscription {
+    cancel: CancellationToken,
+    sink: SubscriptionSink,
+    entry: SessionEntry,
+    _permit: OwnedSemaphorePermit,
+}
+
 #[derive(Default)]
 struct RegistryState {
     sessions: HashMap<String, SessionEntry>,
@@ -86,6 +107,9 @@ struct RegistryState {
     participants: HashMap<(String, String), ParticipantId>,
     retired_participants: HashSet<(String, String)>,
     bound_rooms: HashMap<String, (String, String)>,
+    legacy_subscriptions: HashMap<(String, String), LegacySubscription>,
+    live_subscriptions: HashMap<(String, u64), LiveSubscription>,
+    next_subscription_id: u64,
 }
 
 #[derive(Clone)]
@@ -98,6 +122,7 @@ struct RevisionWake {
 struct WakeState {
     revision: u64,
     reason: String,
+    terminal: bool,
 }
 
 impl Default for RevisionWake {
@@ -106,6 +131,7 @@ impl Default for RevisionWake {
             state: Arc::new(Mutex::new(WakeState {
                 revision: 0,
                 reason: "timeout".to_owned(),
+                terminal: false,
             })),
             notify: Arc::new(Notify::new()),
         }
@@ -120,6 +146,19 @@ impl RevisionWake {
         }
         state.revision = revision;
         state.reason = reason.into();
+        drop(state);
+        self.notify.notify_waiters();
+        true
+    }
+
+    fn record_terminal(&self, revision: u64, reason: impl Into<String>) -> bool {
+        let mut state = self.state.lock().expect("MCP wake lock poisoned");
+        if state.terminal || revision < state.revision {
+            return false;
+        }
+        state.revision = revision;
+        state.reason = reason.into();
+        state.terminal = true;
         drop(state);
         self.notify.notify_waiters();
         true
@@ -145,12 +184,12 @@ impl RevisionWake {
         let deadline = Instant::now() + timeout;
         loop {
             let current = self.current();
-            if current.revision > after_revision {
+            if current.revision > after_revision || current.terminal {
                 return Some(current);
             }
             let notified = self.notify.notified();
             let current = self.current();
-            if current.revision > after_revision {
+            if current.revision > after_revision || current.terminal {
                 return Some(current);
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -159,7 +198,10 @@ impl RevisionWake {
             }
             tokio::pin!(notified);
             tokio::select! {
-                _ = cancel.cancelled() => return None,
+                _ = cancel.cancelled() => {
+                    let current = self.current();
+                    return current.terminal.then_some(current);
+                }
                 _ = &mut notified => {}
                 _ = time::sleep(remaining) => return Some(self.current()),
             }
@@ -167,14 +209,138 @@ impl RevisionWake {
     }
 }
 
+#[derive(Debug)]
+struct BoundedSessionManagerError(String);
+
+impl fmt::Display for BoundedSessionManagerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BoundedSessionManagerError {}
+
+impl From<LocalSessionManagerError> for BoundedSessionManagerError {
+    fn from(error: LocalSessionManagerError) -> Self {
+        Self(error.to_string())
+    }
+}
+
+struct BoundedSessionManager {
+    inner: Arc<LocalSessionManager>,
+    registry: Arc<McpSessionRegistry>,
+    reservations: Arc<tokio::sync::Mutex<HashMap<SessionId, OwnedSemaphorePermit>>>,
+}
+
+impl BoundedSessionManager {
+    fn new(inner: Arc<LocalSessionManager>, registry: Arc<McpSessionRegistry>) -> Self {
+        Self {
+            inner,
+            registry,
+            reservations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn release(&self, id: &SessionId) {
+        self.reservations.lock().await.remove(id);
+    }
+}
+
+impl SessionManager for BoundedSessionManager {
+    type Error = BoundedSessionManagerError;
+    type Transport = <LocalSessionManager as SessionManager>::Transport;
+
+    async fn create_session(&self) -> Result<(SessionId, Self::Transport), Self::Error> {
+        let permit =
+            self.registry.acquire_transport().await.ok_or_else(|| {
+                BoundedSessionManagerError("MCP session capacity is full".to_owned())
+            })?;
+        let result = self.inner.create_session().await.map_err(Into::into);
+        let (id, transport) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                drop(permit);
+                return Err(error);
+            }
+        };
+        self.reservations.lock().await.insert(id.clone(), permit);
+        Ok((id, transport))
+    }
+
+    async fn initialize_session(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<ServerJsonRpcMessage, Self::Error> {
+        match self.inner.initialize_session(id, message).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                let _ = self.close_session(id).await;
+                Err(error.into())
+            }
+        }
+    }
+
+    async fn has_session(&self, id: &SessionId) -> Result<bool, Self::Error> {
+        self.inner.has_session(id).await.map_err(Into::into)
+    }
+
+    async fn close_session(&self, id: &SessionId) -> Result<(), Self::Error> {
+        let result = self.inner.close_session(id).await.map_err(Into::into);
+        self.release(id).await;
+        result
+    }
+
+    async fn create_stream(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + 'static, Self::Error> {
+        self.inner
+            .create_stream(id, message)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn accept_message(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .accept_message(id, message)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn create_standalone_stream(
+        &self,
+        id: &SessionId,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + 'static, Self::Error> {
+        self.inner
+            .create_standalone_stream(id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn resume(
+        &self,
+        id: &SessionId,
+        last_event_id: String,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + 'static, Self::Error> {
+        self.inner
+            .resume(id, last_event_id)
+            .await
+            .map_err(Into::into)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct McpRuntime {
     registry: Arc<McpSessionRegistry>,
-    manager: Arc<rmcp::transport::streamable_http_server::session::local::LocalSessionManager>,
-    service: StreamableHttpService<
-        McpHandler,
-        rmcp::transport::streamable_http_server::session::local::LocalSessionManager,
-    >,
+    manager: Arc<LocalSessionManager>,
+    service: StreamableHttpService<McpHandler, BoundedSessionManager>,
+    service_shutdown: CancellationToken,
 }
 
 impl McpRuntime {
@@ -191,18 +357,23 @@ impl McpRuntime {
             .port()
             .map(|port| format!("{host}:{port}"))
             .unwrap_or_else(|| host.clone());
+        let service_shutdown = CancellationToken::new();
         let config = StreamableHttpServerConfig::default()
             .with_allowed_hosts([host, authority])
             .with_allowed_origins([state.public_origin().to_owned()])
             .with_max_request_body_bytes(MCP_MAX_BODY_BYTES)
             .with_json_response(true)
-            .with_cancellation_token(state.shutdown_token());
+            .with_cancellation_token(service_shutdown.clone());
         let factory_state = state.clone();
         let factory_registry = registry.clone();
         let manager = Arc::new(
             rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
         );
         let factory_manager = manager.clone();
+        let bounded_manager = Arc::new(BoundedSessionManager::new(
+            manager.clone(),
+            registry.clone(),
+        ));
         let service = StreamableHttpService::new(
             move || {
                 Ok(McpHandler::new(
@@ -211,21 +382,22 @@ impl McpRuntime {
                     factory_manager.clone(),
                 ))
             },
-            manager.clone(),
+            bounded_manager,
             config,
         );
         let runtime = Arc::new(Self {
             registry,
             manager,
             service,
+            service_shutdown,
         });
         if let Some(mut revocations) = state.subscribe_bot_revocations() {
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 while let Ok(revocation) = revocations.recv().await {
-                    let entries = runtime.registry.revoke_token(revocation.token_id()).await;
-                    disconnect_entries(entries.clone()).await;
-                    runtime.close_sessions(&entries).await;
+                    let cleanup = runtime.registry.revoke_token(revocation.token_id()).await;
+                    disconnect_entries(cleanup.entries.clone()).await;
+                    runtime.close_sessions(&cleanup).await;
                 }
             });
         }
@@ -234,28 +406,35 @@ impl McpRuntime {
             let interval = idle.min(Duration::from_secs(60));
             loop {
                 time::sleep(interval).await;
-                let entries = runtime_reaper.registry.expire_idle(Instant::now()).await;
-                disconnect_entries(entries.clone()).await;
-                runtime_reaper.close_sessions(&entries).await;
+                let cleanup = runtime_reaper.registry.expire_idle(Instant::now()).await;
+                disconnect_entries(cleanup.entries.clone()).await;
+                runtime_reaper.close_sessions(&cleanup).await;
             }
         });
         let runtime_shutdown = runtime.clone();
         let shutdown = state.shutdown_token();
         tokio::spawn(async move {
             shutdown.cancelled().await;
-            let entries = runtime_shutdown.registry.terminate_all().await;
-            disconnect_entries(entries.clone()).await;
-            runtime_shutdown.close_sessions(&entries).await;
+            let shutdown = runtime_shutdown.registry.terminate_all().await;
+            for entry in &shutdown.cleanup.entries {
+                let revision = entry.wake.current().revision.saturating_add(1);
+                entry.wake.record_terminal(revision, "server_shutdown");
+            }
+            for notification in shutdown.notifications {
+                notification.send().await;
+            }
+            disconnect_entries(shutdown.cleanup.entries.clone()).await;
+            runtime_shutdown.close_sessions(&shutdown.cleanup).await;
+            runtime_shutdown.service_shutdown.cancel();
         });
         runtime
     }
 
-    async fn close_sessions(&self, entries: &[SessionEntry]) {
-        for entry in entries {
-            let _ = self
-                .manager
-                .close_session(&entry.session_id.clone().into())
-                .await;
+    async fn close_sessions(&self, cleanup: &SessionCleanup) {
+        let mut ids: HashSet<String> = cleanup.session_ids.iter().cloned().collect();
+        ids.extend(cleanup.entries.iter().map(|entry| entry.session_id.clone()));
+        for id in ids {
+            let _ = self.manager.close_session(&id.into()).await;
         }
     }
 
@@ -281,7 +460,7 @@ impl McpRuntime {
         }
         let session_id = header_session_id(&headers);
         let expired = self.registry.expire_idle(Instant::now()).await;
-        disconnect_entries(expired.clone()).await;
+        disconnect_entries(expired.entries.clone()).await;
         self.close_sessions(&expired).await;
         if let Some(session_id) = session_id.as_deref()
             && self
@@ -380,12 +559,53 @@ async fn disconnect_entry(entry: SessionEntry) {
         .await;
 }
 
+struct SessionCleanup {
+    entries: Vec<SessionEntry>,
+    session_ids: Vec<String>,
+}
+
+struct ShutdownCleanup {
+    cleanup: SessionCleanup,
+    notifications: Vec<ShutdownNotification>,
+}
+
+enum ShutdownNotification {
+    Legacy {
+        peer: Peer<RoleServer>,
+        uri: String,
+    },
+    Live {
+        sink: SubscriptionSink,
+        uris: Vec<String>,
+    },
+}
+
+impl ShutdownNotification {
+    async fn send(self) {
+        match self {
+            Self::Legacy { peer, uri } => {
+                let _ = peer
+                    .notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(
+                        uri,
+                    ))
+                    .await;
+            }
+            Self::Live { sink, uris } => {
+                for uri in uris {
+                    let _ = sink.notify_resource_updated(uri).await;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) struct McpSessionRegistry {
     state: tokio::sync::Mutex<RegistryState>,
     idle: Duration,
     join_lock: tokio::sync::Mutex<()>,
     waiters: Arc<Semaphore>,
     subscriptions: Arc<Semaphore>,
+    transports: Arc<Semaphore>,
 }
 
 impl McpSessionRegistry {
@@ -400,6 +620,7 @@ impl McpSessionRegistry {
             join_lock: tokio::sync::Mutex::new(()),
             waiters: Arc::new(Semaphore::new(MCP_MAX_WAIT_TASKS)),
             subscriptions: Arc::new(Semaphore::new(MCP_MAX_SUBSCRIPTIONS)),
+            transports: Arc::new(Semaphore::new(MCP_MAX_SESSIONS)),
         }
     }
 
@@ -456,51 +677,85 @@ impl McpSessionRegistry {
         }
     }
 
-    async fn expire_idle(&self, now: Instant) -> Vec<SessionEntry> {
+    async fn expire_idle(&self, now: Instant) -> SessionCleanup {
         let mut state = self.state.lock().await;
-        let expired_ids: Vec<_> = state
+        let session_ids: Vec<_> = state
             .transport_sessions
             .iter()
             .filter_map(|(id, session)| {
                 (now.duration_since(session.last_seen) >= self.idle).then_some(id.clone())
             })
             .collect();
-        expired_ids
-            .into_iter()
-            .filter_map(|id| {
-                state.transport_sessions.remove(&id);
-                state.bound_rooms.remove(&id);
-                state.sessions.remove(&id)
-            })
-            .collect()
+        let mut entries = Vec::new();
+        for id in &session_ids {
+            state.transport_sessions.remove(id);
+            state.bound_rooms.remove(id);
+            clear_subscriptions(&mut state, id);
+            if let Some(entry) = state.sessions.remove(id) {
+                entries.push(entry);
+            }
+        }
+        SessionCleanup {
+            entries,
+            session_ids,
+        }
     }
 
-    async fn terminate_all(&self) -> Vec<SessionEntry> {
+    async fn terminate_all(&self) -> ShutdownCleanup {
         let mut state = self.state.lock().await;
-        state.transport_sessions.clear();
+        let session_ids = state.transport_sessions.drain().map(|(id, _)| id).collect();
+        let mut notifications = Vec::new();
+        for (_, subscription) in state.legacy_subscriptions.drain() {
+            subscription.cancel.cancel();
+            subscription.task.abort();
+            notifications.push(ShutdownNotification::Legacy {
+                peer: subscription.peer,
+                uri: subscription.uri,
+            });
+        }
+        for (_, subscription) in state.live_subscriptions.drain() {
+            subscription.cancel.cancel();
+            notifications.push(ShutdownNotification::Live {
+                sink: subscription.sink,
+                uris: notification_uris(&subscription.entry, "server_shutdown"),
+            });
+        }
         state.bound_rooms.clear();
         state.participants.clear();
         state.retired_participants.clear();
-        state.sessions.drain().map(|(_, entry)| entry).collect()
+        let entries = state.sessions.drain().map(|(_, entry)| entry).collect();
+        ShutdownCleanup {
+            cleanup: SessionCleanup {
+                entries,
+                session_ids,
+            },
+            notifications,
+        }
     }
 
     async fn remove(&self, session_id: &str) -> Option<SessionEntry> {
         let mut state = self.state.lock().await;
         state.transport_sessions.remove(session_id);
         state.bound_rooms.remove(session_id);
+        clear_subscriptions(&mut state, session_id);
         state.sessions.remove(session_id)
     }
 
-    async fn revoke_token(&self, token_id: &str) -> Vec<SessionEntry> {
+    async fn revoke_token(&self, token_id: &str) -> SessionCleanup {
         let mut state = self.state.lock().await;
-        let ids: Vec<_> = state
+        let session_ids: Vec<_> = state
             .transport_sessions
             .iter()
             .filter_map(|(id, session)| (session.token_id == token_id).then_some(id.clone()))
             .collect();
-        for id in &ids {
+        let mut entries = Vec::new();
+        for id in &session_ids {
             state.transport_sessions.remove(id);
             state.bound_rooms.remove(id);
+            clear_subscriptions(&mut state, id);
+            if let Some(entry) = state.sessions.remove(id) {
+                entries.push(entry);
+            }
         }
         state
             .participants
@@ -508,9 +763,10 @@ impl McpSessionRegistry {
         state
             .retired_participants
             .retain(|(bound_token, _)| bound_token != token_id);
-        ids.into_iter()
-            .filter_map(|id| state.sessions.remove(&id))
-            .collect()
+        SessionCleanup {
+            entries,
+            session_ids,
+        }
     }
 
     async fn binding(&self, session_id: &str, token_id: &str) -> Result<SessionEntry, McpFailure> {
@@ -548,9 +804,6 @@ impl McpSessionRegistry {
         character_id: String,
     ) -> Result<(SessionEntry, Option<SessionEntry>), McpFailure> {
         let mut state = self.state.lock().await;
-        if state.sessions.len() >= MCP_MAX_SESSIONS && !state.sessions.contains_key(&session_id) {
-            return Err(McpFailure::Busy);
-        }
         if let Some(current) = state.transport_sessions.get(&session_id)
             && current.token_id != token_id
         {
@@ -584,6 +837,7 @@ impl McpSessionRegistry {
         let old = old_id.and_then(|id| {
             state.transport_sessions.remove(&id);
             state.bound_rooms.remove(&id);
+            clear_subscriptions(&mut state, &id);
             state.sessions.remove(&id)
         });
         let entry = SessionEntry {
@@ -616,6 +870,10 @@ impl McpSessionRegistry {
         self.subscriptions.clone().try_acquire_owned().ok()
     }
 
+    async fn acquire_transport(&self) -> Option<OwnedSemaphorePermit> {
+        self.transports.clone().try_acquire_owned().ok()
+    }
+
     async fn participant_for(&self, token_id: &str, room_code: &str) -> Option<ParticipantId> {
         self.state
             .lock()
@@ -633,13 +891,188 @@ impl McpSessionRegistry {
             .contains(&(token_id.to_owned(), room_code.to_owned()))
     }
 
+    async fn start_legacy_subscription(
+        self: &Arc<Self>,
+        session_id: String,
+        entry: SessionEntry,
+        uri: String,
+        peer: Peer<RoleServer>,
+    ) -> Result<(), McpFailure> {
+        let Some(permit) = self.acquire_subscription().await else {
+            return Err(McpFailure::Busy);
+        };
+        let mut state = self.state.lock().await;
+        if state
+            .legacy_subscriptions
+            .contains_key(&(session_id.clone(), uri.clone()))
+        {
+            return Ok(());
+        }
+        if !state.sessions.contains_key(&session_id) {
+            return Err(McpFailure::SessionExpired);
+        }
+        let mut connection = entry
+            .room
+            .subscribe()
+            .await
+            .map_err(|_| McpFailure::Internal)?;
+        let id = next_subscription_id(&mut state);
+        let cancel = entry.cancel.child_token();
+        let registry = self.clone();
+        let task_session = session_id.clone();
+        let task_uri = uri.clone();
+        let task_cancel = cancel.clone();
+        let task_entry = entry.clone();
+        let task_uri_for_loop = uri.clone();
+        let task_peer = peer.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    event = connection.recv() => {
+                        let Some(event) = event else { break; };
+                        let Some((_revision, reason)) = watcher_reason(&task_entry, event).await else { continue; };
+                        if notification_uris(&task_entry, reason).iter().any(|candidate| candidate == &task_uri_for_loop)
+                            && task_peer
+                                .notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(task_uri_for_loop.clone()))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            registry
+                .finish_legacy_subscription(&task_session, &task_uri, id)
+                .await;
+        });
+        state.legacy_subscriptions.insert(
+            (session_id, uri.clone()),
+            LegacySubscription {
+                id,
+                cancel,
+                task,
+                peer: peer.clone(),
+                uri,
+                _permit: permit,
+            },
+        );
+        Ok(())
+    }
+
+    async fn remove_legacy_subscription(&self, session_id: &str, uri: &str) {
+        let subscription = self
+            .state
+            .lock()
+            .await
+            .legacy_subscriptions
+            .remove(&(session_id.to_owned(), uri.to_owned()));
+        if let Some(subscription) = subscription {
+            subscription.cancel.cancel();
+            subscription.task.abort();
+        }
+    }
+
+    async fn finish_legacy_subscription(&self, session_id: &str, uri: &str, id: u64) {
+        let mut state = self.state.lock().await;
+        if state
+            .legacy_subscriptions
+            .get(&(session_id.to_owned(), uri.to_owned()))
+            .is_some_and(|subscription| subscription.id == id)
+        {
+            state
+                .legacy_subscriptions
+                .remove(&(session_id.to_owned(), uri.to_owned()));
+        }
+    }
+
+    async fn start_live_subscription(
+        self: &Arc<Self>,
+        session_id: String,
+        entry: SessionEntry,
+        sink: SubscriptionSink,
+    ) -> Result<(u64, CancellationToken, RoomConnection), McpFailure> {
+        let Some(permit) = self.acquire_subscription().await else {
+            return Err(McpFailure::Busy);
+        };
+        let connection = entry
+            .room
+            .subscribe()
+            .await
+            .map_err(|_| McpFailure::Internal)?;
+        let mut state = self.state.lock().await;
+        if !state.sessions.contains_key(&session_id) {
+            return Err(McpFailure::SessionExpired);
+        }
+        let id = next_subscription_id(&mut state);
+        let cancel = entry.cancel.child_token();
+        state.live_subscriptions.insert(
+            (session_id, id),
+            LiveSubscription {
+                cancel: cancel.clone(),
+                sink,
+                entry,
+                _permit: permit,
+            },
+        );
+        drop(state);
+        Ok((id, cancel, connection))
+    }
+
+    async fn finish_live_subscription(&self, session_id: &str, id: u64) {
+        let mut state = self.state.lock().await;
+        state
+            .live_subscriptions
+            .remove(&(session_id.to_owned(), id));
+    }
+
     async fn remove_binding(&self, session_id: &str) -> Option<SessionEntry> {
         let mut state = self.state.lock().await;
         let entry = state.sessions.remove(session_id)?;
+        clear_subscriptions(&mut state, session_id);
         state
             .retired_participants
             .insert((entry.token_id.clone(), entry.room_code.clone()));
         Some(entry)
+    }
+
+    async fn rollback_binding(&self, session_id: &str) -> Option<SessionEntry> {
+        let mut state = self.state.lock().await;
+        clear_subscriptions(&mut state, session_id);
+        state.bound_rooms.remove(session_id);
+        state.sessions.remove(session_id)
+    }
+}
+
+fn next_subscription_id(state: &mut RegistryState) -> u64 {
+    state.next_subscription_id = state.next_subscription_id.saturating_add(1);
+    state.next_subscription_id
+}
+
+fn clear_subscriptions(state: &mut RegistryState, session_id: &str) {
+    let legacy: Vec<_> = state
+        .legacy_subscriptions
+        .keys()
+        .filter(|(id, _)| id == session_id)
+        .cloned()
+        .collect();
+    for key in legacy {
+        if let Some(subscription) = state.legacy_subscriptions.remove(&key) {
+            subscription.cancel.cancel();
+            subscription.task.abort();
+        }
+    }
+    let live: Vec<_> = state
+        .live_subscriptions
+        .keys()
+        .filter(|(id, _)| id == session_id)
+        .cloned()
+        .collect();
+    for key in live {
+        if let Some(subscription) = state.live_subscriptions.remove(&key) {
+            subscription.cancel.cancel();
+        }
     }
 }
 
@@ -800,28 +1233,55 @@ impl McpHandler {
         }
     }
 
-    async fn start_watcher(&self, session_id: String, entry: SessionEntry) {
+    async fn attach_watcher(
+        &self,
+        session_id: String,
+        entry: SessionEntry,
+    ) -> Result<(), McpFailure> {
+        let Some(subscription) = self.registry.acquire_subscription().await else {
+            return Err(McpFailure::Busy);
+        };
+        let mut connection = entry
+            .room
+            .subscribe()
+            .await
+            .map_err(|_| McpFailure::Internal)?;
+        let initial = tokio::select! {
+            _ = entry.cancel.cancelled() => return Err(McpFailure::SessionExpired),
+            event = connection.recv() => event.ok_or(McpFailure::Internal)?,
+        };
+        if let Some((revision, reason)) = watcher_reason(&entry, initial).await {
+            if is_terminal_reason(reason) {
+                entry.wake.record_terminal(revision, reason);
+            } else {
+                entry.wake.record(revision, reason);
+            }
+        }
+        if entry.cancel.is_cancelled() {
+            return Err(McpFailure::SessionExpired);
+        }
         let registry = self.registry.clone();
         tokio::spawn(async move {
-            let Some(_subscription) = registry.acquire_subscription().await else {
-                return;
-            };
-            let Ok(mut connection) = entry.room.subscribe().await else {
-                return;
-            };
+            let _subscription = subscription;
             loop {
                 tokio::select! {
                     _ = entry.cancel.cancelled() => break,
                     event = connection.recv() => {
                         let Some(event) = event else { break; };
                         let Some((revision, reason)) = watcher_reason(&entry, event).await else { continue; };
-                        if entry.wake.record(revision, reason) {
+                        let recorded = if is_terminal_reason(reason) {
+                            entry.wake.record_terminal(revision, reason)
+                        } else {
+                            entry.wake.record(revision, reason)
+                        };
+                        if recorded {
                             registry.touch(&session_id, &entry.token_id).await;
                         }
                     }
                 }
             }
         });
+        Ok(())
     }
 
     async fn read_state(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
@@ -1045,7 +1505,7 @@ impl McpHandler {
                 };
                 (joined.id, false, joined.character_id, joined.display_name)
             };
-        let (entry, old) = self
+        let (entry, old) = match self
             .registry
             .bind(
                 session_id.clone(),
@@ -1057,7 +1517,13 @@ impl McpHandler {
                 character_id.clone(),
             )
             .await
-            .map_err(|e| e.result())?;
+        {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = room.send(RoomCommand::disconnect(participant_id)).await;
+                return Err(error.result());
+            }
+        };
         if let Some(old) = old {
             old.cancel.cancel();
             let _ = self
@@ -1065,7 +1531,15 @@ impl McpHandler {
                 .close_session(&old.session_id.clone().into())
                 .await;
         }
-        self.start_watcher(session_id, entry.clone()).await;
+        if let Err(error) = self.attach_watcher(session_id.clone(), entry.clone()).await {
+            let _ = self.registry.rollback_binding(&session_id).await;
+            entry.cancel.cancel();
+            let _ = entry
+                .room
+                .send(RoomCommand::disconnect(entry.participant_id.clone()))
+                .await;
+            return Err(error.result());
+        }
         Ok(Json(Self::join_output(&entry, resumed)))
     }
 
@@ -1170,7 +1644,7 @@ impl McpHandler {
         else {
             return Err(McpFailure::SessionExpired.result());
         };
-        let reason = if wake.revision > input.after_revision {
+        let reason = if wake.terminal || wake.revision > input.after_revision {
             wake.reason
         } else {
             "timeout".to_owned()
@@ -1295,42 +1769,48 @@ impl ServerHandler for McpHandler {
             if !valid_uri {
                 return Err(ErrorData::resource_not_found(request.uri, None));
             }
-            let Some(subscription) = self.registry.acquire_subscription().await else {
-                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
-            };
-            let mut connection = entry
-                .room
-                .subscribe()
-                .await
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
             let uri = request.uri;
-            let peer = context.peer.clone();
-            tokio::spawn(async move {
-                let _subscription = subscription;
-                loop {
-                    tokio::select! {
-                        _ = entry.cancel.cancelled() => break,
-                        event = connection.recv() => {
-                            let Some(event) = event else { break; };
-                            let Some((_revision, reason)) = watcher_reason(&entry, event).await else {
-                                continue;
-                            };
-                            if notification_uris(&entry, reason).iter().any(|candidate| candidate == &uri)
-                                && peer
-                                    .notify_resource_updated(
-                                        rmcp::model::ResourceUpdatedNotificationParam::new(
-                                            uri.clone(),
-                                        ),
-                                    )
-                                    .await
-                                    .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
+            self.registry
+                .start_legacy_subscription(
+                    Self::session_id(parts).map_err(|error| error.error_data())?,
+                    entry,
+                    uri,
+                    context.peer.clone(),
+                )
+                .await
+                .map_err(|error| error.error_data())?;
+            Ok(())
+        }
+    }
+
+    #[allow(deprecated)]
+    fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<(), ErrorData>> + rmcp::service::MaybeSendFuture + '_
+    {
+        async move {
+            let parts = context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .ok_or_else(|| ErrorData::invalid_request("missing request context", None))?;
+            let session_id = Self::session_id(parts).map_err(|error| error.error_data())?;
+            let token_id = Self::auth(parts).map_err(|error| error.error_data())?;
+            let entry = self
+                .registry
+                .binding(&session_id, &token_id)
+                .await
+                .map_err(|error| error.error_data())?;
+            if !resources(&entry)
+                .iter()
+                .any(|resource| resource.uri == request.uri)
+            {
+                return Err(ErrorData::resource_not_found(request.uri, None));
+            }
+            self.registry
+                .remove_legacy_subscription(&session_id, &request.uri)
+                .await;
             Ok(())
         }
     }
@@ -1353,48 +1833,105 @@ impl ServerHandler for McpHandler {
                 .binding(&session_id, &token_id)
                 .await
                 .map_err(|error| error.error_data())?;
-            let Some(_subscription) = self.registry.acquire_subscription().await else {
-                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, "busy", None));
-            };
-            let mut connection = entry
-                .room
-                .subscribe()
-                .await
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-            let accepted = context
-                .accepted()
-                .resource_subscriptions
-                .clone()
-                .unwrap_or_default();
             let sink = context.sink().clone();
+            let (subscription_id, subscription_cancel, mut connection) = self
+                .registry
+                .start_live_subscription(session_id.clone(), entry.clone(), sink.clone())
+                .await
+                .map_err(|error| error.error_data())?;
             loop {
                 tokio::select! {
                     _ = context.cancelled() => break,
+                    _ = subscription_cancel.cancelled() => break,
                     event = connection.recv() => {
                         let Some(event) = event else { break; };
                         let Some((revision, reason)) = watcher_reason(&entry, event).await else {
                             continue;
                         };
-                        if !entry.wake.record(revision, reason) {
+                        let recorded = if is_terminal_reason(reason) {
+                            entry.wake.record_terminal(revision, reason)
+                        } else {
+                            entry.wake.record(revision, reason)
+                        };
+                        if !recorded {
                             continue;
                         }
                         self.registry.touch(&session_id, &entry.token_id).await;
                         for uri in notification_uris(&entry, reason) {
-                            if accepted.iter().any(|candidate| candidate == &uri)
-                                && sink.notify_resource_updated(uri).await.is_err()
-                            {
-                                return Ok(());
+                            if sink.notify_resource_updated(uri).await.is_err() {
+                                break;
                             }
                         }
                     }
                 }
             }
+            self.registry
+                .finish_live_subscription(&session_id, subscription_id)
+                .await;
             Ok(())
         }
     }
 }
 
+async fn snapshot_reason(
+    entry: &SessionEntry,
+    snapshot: RoomSnapshot,
+) -> Option<(u64, &'static str)> {
+    let participant = snapshot
+        .participants
+        .iter()
+        .find(|value| value.id == entry.participant_id)?;
+    if matches!(
+        participant.controller,
+        double_riichi_core::RoomController::PermanentAuto(_)
+    ) {
+        return Some((snapshot.revision, "permanent_auto"));
+    }
+    match snapshot.phase {
+        RoomPhase::Lobby => Some((
+            snapshot.revision,
+            if participant.selected {
+                "selected"
+            } else {
+                "deselected"
+            },
+        )),
+        RoomPhase::PostMatch(_) => Some((snapshot.revision, "game_ended")),
+        RoomPhase::Playing(_) => {
+            if let Ok(Some(AudienceProjection::Player(projection))) =
+                entry.room.projection(entry.participant_id.clone()).await
+                && projection
+                    .decision
+                    .is_some_and(|decision| !decision.actions.is_empty())
+            {
+                return Some((snapshot.revision, "my_decision"));
+            }
+            if let Ok(history) = entry
+                .room
+                .history_projection(entry.participant_id.clone())
+                .await
+                && history.current_kyoku.as_ref().is_some_and(|kyoku| {
+                    kyoku
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, RoomHistoryEvent::StartKyoku { .. }))
+                })
+            {
+                return Some((snapshot.revision, "round_started"));
+            }
+            Some((snapshot.revision, "match_started"))
+        }
+    }
+}
+
+fn is_terminal_reason(reason: &str) -> bool {
+    matches!(reason, "room_deleted" | "server_shutdown")
+}
+
 async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, &'static str)> {
+    if let RoomEvent::Snapshot(snapshot) = event {
+        return snapshot_reason(entry, snapshot).await;
+    }
     if let RoomEvent::RoomDeleted | RoomEvent::ServerShutdown = event {
         return Some((
             entry.wake.current().revision.saturating_add(1),
@@ -1476,17 +2013,7 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
                     .then_some((revision, "permanent_auto"))
                 })
         }
-        RoomEvent::Snapshot(_) => snapshot
-            .participants
-            .iter()
-            .find(|value| value.id == entry.participant_id)
-            .and_then(|participant| {
-                matches!(
-                    participant.controller,
-                    double_riichi_core::RoomController::PermanentAuto(_)
-                )
-                .then_some((revision, "permanent_auto"))
-            }),
+        RoomEvent::Snapshot(_) => unreachable!("snapshots are handled before the event match"),
         RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
         RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
         RoomEvent::StorageDegraded
@@ -1793,8 +2320,8 @@ mod tests {
         let expired = registry
             .expire_idle(Instant::now() + Duration::from_secs(2))
             .await;
-        assert_eq!(expired.len(), 1);
-        disconnect_entries(expired).await;
+        assert_eq!(expired.entries.len(), 1);
+        disconnect_entries(expired.entries).await;
         assert!(matches!(
             registry.binding("session", "token").await,
             Err(McpFailure::SessionExpired)
