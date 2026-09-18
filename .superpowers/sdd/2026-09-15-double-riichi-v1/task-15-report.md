@@ -59,7 +59,7 @@ unclaimed.
 - `cargo fmt --all -- --check` — passed.
 - `cargo check --workspace` — passed; changed server tests also pass
   `cargo check -p double_riichi_server --tests`.
-- `cargo test -p double_riichi_server --test task15_replay` — 21 passed,
+- `cargo test -p double_riichi_server --test task15_replay` — 22 passed,
   including bounded frame/list parity, fresh-startup corruption health, orphan
   `.part` cleanup, prepared/applied audit recovery, gzip
   negotiation/decompression, authenticated route and Admin audit coverage,
@@ -183,6 +183,24 @@ Final validation passed focused Task 15 and storage/audit tests, `cargo fmt
 --all -- --check`, `cargo check --workspace`, the serial full workspace suite,
 and `git diff --check`. Frontend checks were not rerun because this fix changed
 no frontend files.
+
+## Final parent acceptance evidence
+
+Fresh parent verification at `e8ae64e` passed `cargo fmt --all -- --check`,
+`cargo check --workspace`, Replay 18/18, Task 6 11/11, Task 9 10/10, Task 15
+22/22, every workspace unit/integration/doc test with one test thread, frontend
+typecheck, 41/41 Vitest tests, production build, and Task 15 Playwright 4/4 in
+isolation at 1024×600 and 1440×900. A concurrent Playwright run under the full
+Rust test load hit one 30-second browser timeout; the exact suite passed in
+isolation, so no product change was made. LSP diagnostics were clean for all 13
+changed Rust source files, both representative Replay screenshots were
+nonblank and inspected, `git diff --check` passed, and the worktree was clean.
+
+Independent final review approved Replay with `Merge verdict: OK` and Admin
+audit with `Merge verdict: OK with notes`; there were no P0/P1 findings. The
+remaining P2 note is that an internal retry which deliberately reuses the same
+server request ID after a durable rolled-back audit tombstone is rejected;
+normal HTTP retries receive a fresh server request ID.
 
 ## Scope and residual risks
 
