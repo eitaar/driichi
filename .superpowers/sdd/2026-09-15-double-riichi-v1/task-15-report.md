@@ -164,6 +164,26 @@ Follow-up validation passed focused Task 6/8/9/15 tests, `cargo fmt --all
 --test-threads=1`, and `git diff --check`. Frontend checks were not rerun
 because this follow-up changed no frontend files.
 
+## Final cancellation follow-up evidence
+
+The final narrow fix preserves prepared-row recovery while making cancellation
+itself durable:
+
+- `cancel_admin_audit` deletes prepared rows when possible, falls back to a
+  durable `rolled_back` transition when deletion fails, and verifies the row
+  is absent or rolled back. Any inability to guarantee cancellation is
+  propagated to the Admin route instead of returning a false success/no-op.
+- Recovery continues to exclude rolled-back rows and request-ID deduplication
+  remains unchanged.
+- A Task 15 regression injects cancellation DELETE failure during a true
+  `fill_with_bots` no-op, verifies the fallback rolled-back outcome, closes and
+  reopens storage, and proves no audit row is created for the canceled request.
+
+Final validation passed focused Task 15 and storage/audit tests, `cargo fmt
+--all -- --check`, `cargo check --workspace`, the serial full workspace suite,
+and `git diff --check`. Frontend checks were not rerun because this fix changed
+no frontend files.
+
 ## Scope and residual risks
 
 - Internal test-only `FailureInjection`/`ServerState::for_tests` and the

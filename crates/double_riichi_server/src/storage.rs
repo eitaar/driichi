@@ -613,12 +613,44 @@ impl Storage {
     }
 
     pub(crate) async fn cancel_admin_audit(&self, request_id: &str) -> Result<(), StorageError> {
-        sqlx::query("DELETE FROM admin_audit_pending WHERE request_id = ? AND state = 'prepared'")
-            .bind(request_id)
-            .execute(&self.pool)
-            .await
-            .map_err(StorageError::Sqlx)?;
-        Ok(())
+        let deleted = sqlx::query(
+            "DELETE FROM admin_audit_pending WHERE request_id = ? AND state = 'prepared'",
+        )
+        .bind(request_id)
+        .execute(&self.pool)
+        .await;
+        match deleted {
+            Ok(result) if result.rows_affected() == 1 => Ok(()),
+            Ok(_) => self.ensure_admin_audit_cancelled(request_id).await,
+            Err(_) => {
+                let rolled_back = sqlx::query(
+                    "UPDATE admin_audit_pending SET state = 'rolled_back'
+                     WHERE request_id = ? AND state = 'prepared'",
+                )
+                .bind(request_id)
+                .execute(&self.pool)
+                .await;
+                match rolled_back {
+                    Ok(result) if result.rows_affected() == 1 => Ok(()),
+                    Ok(_) => self.ensure_admin_audit_cancelled(request_id).await,
+                    Err(error) => Err(StorageError::Sqlx(error)),
+                }
+            }
+        }
+    }
+
+    async fn ensure_admin_audit_cancelled(&self, request_id: &str) -> Result<(), StorageError> {
+        let state = sqlx::query_scalar::<_, String>(
+            "SELECT state FROM admin_audit_pending WHERE request_id = ?",
+        )
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        match state.as_deref() {
+            None | Some("rolled_back") => Ok(()),
+            Some(_) => Err(StorageError::AuditPending),
+        }
     }
 
     pub(crate) async fn rollback_admin_audit(&self, request_id: &str) -> Result<(), StorageError> {
