@@ -318,11 +318,23 @@ export function PixiTable({
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<TableScene | null>(null);
   const latestRef = useRef({ projection, room, portraitEffect });
+  const renderFrameRef = useRef<number | null>(null);
   const onAnimationConsumedRef = useRef(onAnimationConsumed);
 
   useEffect(() => {
     latestRef.current = { projection, room, portraitEffect };
-    sceneRef.current?.render(projection, room, portraitEffect);
+    if (renderFrameRef.current !== null) cancelAnimationFrame(renderFrameRef.current);
+    renderFrameRef.current = requestAnimationFrame(() => {
+      renderFrameRef.current = null;
+      const latest = latestRef.current;
+      sceneRef.current?.render(latest.projection, latest.room, latest.portraitEffect);
+    });
+    return () => {
+      if (renderFrameRef.current !== null) {
+        cancelAnimationFrame(renderFrameRef.current);
+        renderFrameRef.current = null;
+      }
+    };
   }, [projection, room, portraitEffect]);
 
   useEffect(() => {
@@ -387,6 +399,15 @@ export function PixiTable({
         let renderVersion = 0;
         let renderedTileCount = 0;
         let renderedTablePrimitives = 0;
+        let renderScheduled = false;
+        const requestRender = () => {
+          if (disposed || renderScheduled) return;
+          renderScheduled = true;
+          requestAnimationFrame(() => {
+            renderScheduled = false;
+            if (!disposed) app.render();
+          });
+        };
         const updateRenderInstrumentation = () => {
           host.dataset.renderedTileCount = String(renderedTileCount);
           host.dataset.renderedTablePrimitives = String(
@@ -415,7 +436,7 @@ export function PixiTable({
             (width - TABLE_WIDTH * scale) / 2,
             (height - TABLE_HEIGHT * scale) / 2,
           );
-          app.render();
+          requestRender();
         };
 
         const clearStage = () => {
@@ -520,7 +541,7 @@ export function PixiTable({
               "Geist Mono",
             ).anchor.set(0.5, 0.5);
           }
-          app.render();
+          requestRender();
         };
 
         const drawTile = async (
@@ -558,7 +579,7 @@ export function PixiTable({
             renderedTileCount += 1;
             updateRenderInstrumentation();
           }
-          app.render();
+          requestRender();
         };
 
         const render = (
@@ -599,7 +620,7 @@ export function PixiTable({
               15,
               0x81938a,
             ).anchor.set(0.5, 0.5);
-            app.render();
+            requestRender();
             return;
           }
 
@@ -896,10 +917,10 @@ export function PixiTable({
               host.dataset.portraitResult = nextPortrait.result;
               host.dataset.portraitEffect = nextPortrait.limit ?? "Mangan";
               host.dataset.portraitReady = "true";
-              app.render();
+              requestRender();
             })();
           }
-          app.render();
+          requestRender();
         };
 
         const animate = (
