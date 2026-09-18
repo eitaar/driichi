@@ -15,7 +15,7 @@ import json
 import os
 import platform as host_platform
 import re
-import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -35,8 +35,11 @@ STARTER_VOICES = ("chi", "pon", "kan", "riichi", "ron", "tsumo")
 PLATFORM_TARGETS = {
     "linux-x86_64": "x86_64-unknown-linux-gnu",
     "windows-x86_64": "x86_64-pc-windows-msvc",
-    "macos-arm64": "aarch64-apple-darwin",
+    "linux-arm64": "aarch64-unknown-linux-gnu",
 }
+ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+EXECUTABLE_NAMES = frozenset({"driichi", "driichi.exe", "driichi-mcp", "driichi-mcp.exe"})
+REGULAR_FILE_MODE = stat.S_IFREG
 SEMVER = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 HEX_COMMIT = re.compile(r"^[0-9a-f]{7,64}$")
 CHECKSUM = re.compile(r"^([0-9a-f]{64})  ([^\r\n]+)$")
@@ -63,9 +66,85 @@ def _safe_relative_name(name: str, label: str = "archive entry") -> str:
     return name
 
 
+def _path_components(path: Path) -> Iterable[Path]:
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        yield current
+
+
+def _lstat_no_symlink(path: Path, label: str) -> os.stat_result | None:
+    """Reject symlink path components before any resolve or file operation."""
+
+    for component in _path_components(path):
+        try:
+            metadata = component.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise ReleaseError(f"could not inspect {label}: {path}: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ReleaseError(f"symlink is not allowed for {label}: {component}")
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ReleaseError(f"could not inspect {label}: {path}: {error}") from error
+    return metadata
+
+
+def _resolve_input(path: Path, label: str) -> Path:
+    _lstat_no_symlink(path, label)
+    resolved = path.resolve()
+    _lstat_no_symlink(resolved, label)
+    return resolved
+
+
+def _regular_file(path: Path, label: str) -> os.stat_result:
+    metadata = _lstat_no_symlink(path, label)
+    if metadata is None or not stat.S_ISREG(metadata.st_mode):
+        raise ReleaseError(f"missing {label}: {path}")
+    return metadata
+
+
+def _regular_tree(root: Path, label: str) -> list[Path]:
+    metadata = _lstat_no_symlink(root, label)
+    _require(metadata is not None and stat.S_ISDIR(metadata.st_mode), f"missing {label}: {root}")
+    files: list[Path] = []
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda path: path.name)
+        except OSError as error:
+            raise ReleaseError(f"could not read {label}: {current}: {error}") from error
+        for path in children:
+            child_metadata = _lstat_no_symlink(path, label)
+            if child_metadata is None:
+                raise ReleaseError(f"missing {label} input: {path}")
+            if stat.S_ISDIR(child_metadata.st_mode):
+                pending.append(path)
+            elif stat.S_ISREG(child_metadata.st_mode):
+                files.append(path)
+            else:
+                raise ReleaseError(f"non-regular {label} input: {path}")
+    return sorted(files, key=lambda path: path.relative_to(root).as_posix())
+
+
 def _read_required_file(path: Path, label: str) -> bytes:
-    _require(path.is_file() and not path.is_symlink(), f"missing {label}: {path}")
-    return path.read_bytes()
+    _regular_file(path, label)
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ReleaseError(f"could not read {label}: {path}: {error}") from error
+
+
+def _copy_regular_file(source: Path, destination: Path, label: str) -> None:
+    _lstat_no_symlink(destination, "copy destination")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(_read_required_file(source, label))
 
 
 def _hash_bytes(data: bytes) -> str:
@@ -73,7 +152,7 @@ def _hash_bytes(data: bytes) -> str:
 
 
 def _hash_file(path: Path) -> str:
-    return _hash_bytes(path.read_bytes())
+    return _hash_bytes(_read_required_file(path, "checksum input"))
 
 
 def _parse_checksum_text(
@@ -101,8 +180,8 @@ def _parse_checksum_text(
 
 def _manifest(path: Path, expected_id: str, expected_usage: str) -> None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        value = json.loads(_read_required_file(path, "Starter manifest").decode("utf-8"))
+    except (ReleaseError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ReleaseError(f"invalid Starter manifest: {path}: {error}") from error
     _require(isinstance(value, dict) and set(value) == {"id", "name", "usage"}, f"invalid Starter manifest fields: {path}")
     _require(value["id"] == expected_id and value["usage"] == expected_usage, f"Starter manifest identity mismatch: {path}")
@@ -112,7 +191,7 @@ def _manifest(path: Path, expected_id: str, expected_usage: str) -> None:
 def _verify_starter_directory(starter: Path) -> str:
     """Validate generated Starter Pack files and return their version."""
 
-    _require(starter.is_dir() and not starter.is_symlink(), f"missing Starter Pack directory: {starter}")
+    _regular_tree(starter, "Starter Pack")
     version_path = starter / "STARTER_VERSION"
     version = _read_required_file(version_path, "Starter version").decode("utf-8").strip()
     _require(bool(SEMVER.fullmatch(version)), f"invalid Starter version: {version!r}")
@@ -123,7 +202,9 @@ def _verify_starter_directory(starter: Path) -> str:
     binary_paths: list[str] = []
     for pack_id, usage in STARTER_PACKS:
         pack = starter / pack_id
-        _require(pack.is_dir() and not pack.is_symlink(), f"missing Starter Pack: {pack_id}")
+        pack_metadata = _lstat_no_symlink(pack, "Starter Pack directory")
+        if pack_metadata is None or not stat.S_ISDIR(pack_metadata.st_mode):
+            raise ReleaseError(f"missing Starter Pack: {pack_id}")
         _manifest(pack / "manifest.json", pack_id, usage)
         _require(bool(_read_required_file(pack / "LICENSE", f"Starter license {pack_id}").strip()), f"empty Starter license: {pack_id}")
         required.update(f"{pack_id}/{name}" for name in ("manifest.json", "LICENSE", "portrait.webp", "icon.webp"))
@@ -140,15 +221,14 @@ def _verify_starter_directory(starter: Path) -> str:
 
     files = {
         _safe_relative_name(path.relative_to(starter).as_posix(), "Starter file")
-        for path in starter.rglob("*")
-        if path.is_file()
+        for path in _regular_tree(starter, "Starter Pack")
     }
     _require("SHA256SUMS" in files, "Starter checksum file is missing")
     _require(files - {"SHA256SUMS"} == required, "Starter Pack contains unexpected or missing files")
     _parse_checksum_text(
         checksums,
         files - {"SHA256SUMS"},
-        lambda name: (starter / Path(*name.split("/"))).read_bytes(),
+        lambda name: _read_required_file(starter / Path(*name.split("/")), f"Starter checksum input {name}"),
         "Starter Pack",
     )
     for relative in binary_paths:
@@ -156,15 +236,44 @@ def _verify_starter_directory(starter: Path) -> str:
     return version
 
 
+def _verify_zip_info(info: zipfile.ZipInfo, name: str, expected_mode: int, label: str) -> None:
+    _require(not info.is_dir(), f"{label} contains a directory entry: {name}")
+    _require(info.date_time == ZIP_TIMESTAMP, f"{label} timestamp is not normalized: {name}")
+    _require(info.create_system == 3, f"{label} does not use POSIX metadata: {name}")
+    mode = info.external_attr >> 16
+    _require(
+        stat.S_IFMT(mode) == REGULAR_FILE_MODE,
+        f"{label} entry is not a regular file: {name}",
+    )
+    _require(info.external_attr & 0xFFFF == 0, f"{label} has unexpected DOS attributes: {name}")
+    _require(mode == REGULAR_FILE_MODE | expected_mode, f"{label} mode is not normalized: {name}")
+
+
+def _zip_members(archive: Path, expected_mode: Callable[[str], int], label: str) -> dict[str, bytes]:
+    _regular_file(archive, label)
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            infos = bundle.infolist()
+            raw_names = [info.filename for info in infos]
+            names = [_safe_relative_name(name, f"{label} entry") for name in raw_names]
+            _require(names == raw_names, f"{label} contains a non-portable path")
+            _require(names == sorted(names), f"{label} entries are not deterministic")
+            _require(len(names) == len(set(names)), f"{label} contains duplicate entries")
+            for info, name in zip(infos, names, strict=True):
+                _verify_zip_info(info, name, expected_mode(name), label)
+            return {name: bundle.read(info) for info, name in zip(infos, names, strict=True)}
+    except zipfile.BadZipFile as error:
+        raise ReleaseError(f"invalid {label}: {archive}") from error
+
+
+def _starter_archive_name(version: str) -> str:
+    return f"character-packs-{version}.zip"
+
+
 def _verify_starter_zip(archive: Path, expected_version: str) -> None:
-    _require(archive.is_file(), f"missing standalone Starter archive: {archive}")
-    with zipfile.ZipFile(archive) as bundle:
-        raw_names = bundle.namelist()
-        names = [_safe_relative_name(name, "Starter archive entry") for name in raw_names]
-        _require(names == raw_names, "Starter archive contains a non-portable path")
-        _require(names == sorted(names), "Starter archive entries are not deterministic")
-        _require(len(names) == len(set(names)), "Starter archive contains duplicate entries")
-        members = {name: bundle.read(name) for name in names}
+    _regular_file(archive, "standalone Starter archive")
+    _require(archive.name == _starter_archive_name(expected_version), "standalone Starter archive is not versioned")
+    members = _zip_members(archive, lambda _name: 0o644, "Starter archive")
     _require(members.get("STARTER_VERSION", b"").decode("utf-8").strip() == expected_version, "Starter archive version mismatch")
     required: set[str] = {"STARTER_VERSION", "CC0-NOTICE.txt"}
     binary_paths: list[str] = []
@@ -258,29 +367,35 @@ def _platform_name(value: str, target: str | None) -> str:
         return "linux-x86_64"
     if system == "windows" and machine in {"x86_64", "amd64"}:
         return "windows-x86_64"
-    if system == "darwin" and machine in {"arm64", "aarch64"}:
-        return "macos-arm64"
+    if system == "linux" and machine in {"arm64", "aarch64"}:
+        return "linux-arm64"
     raise ReleaseError("cannot infer a supported platform; pass --platform")
 
 
 def _binary_path(repo_root: Path, explicit: str | None, target: str | None, filename: str, platform_name: str) -> Path:
     if explicit:
-        return Path(explicit).resolve()
+        return _resolve_input(Path(explicit), "release binary")
     release_dir = repo_root / "target"
     if target:
         release_dir /= target
     release_dir /= "release"
     suffix = ".exe" if platform_name == "windows-x86_64" else ""
-    return (release_dir / f"{filename}{suffix}").resolve()
+    return _resolve_input(release_dir / f"{filename}{suffix}", "release binary")
 
 
 def _assert_no_generated_media(repo_root: Path) -> None:
     generated_root = repo_root / "character-packs"
-    if generated_root.is_dir() and any(path.is_file() for path in generated_root.rglob("*")):
+    generated_metadata = _lstat_no_symlink(generated_root, "repository Starter directory")
+    if generated_metadata is not None:
+        if not stat.S_ISDIR(generated_metadata.st_mode):
+            raise ReleaseError(f"generated Starter Pack path is not a directory: {generated_root}")
         raise ReleaseError("generated Starter Pack media exists in repository character-packs/; use a temporary staging directory")
     for path in repo_root.glob("character-packs-*.zip"):
-        if path.is_file():
+        metadata = _lstat_no_symlink(path, "repository Starter archive")
+        if metadata is not None and stat.S_ISREG(metadata.st_mode):
             raise ReleaseError(f"generated Starter archive exists in repository root: {path.name}")
+        if metadata is not None:
+            raise ReleaseError(f"repository Starter archive path is not regular: {path.name}")
     git_dir = repo_root / ".git"
     if not git_dir.exists():
         return
@@ -297,60 +412,60 @@ def _assert_no_generated_media(repo_root: Path) -> None:
 
 
 def _copy_tree(source: Path, destination: Path) -> None:
-    for path in sorted(source.rglob("*")):
+    files = _regular_tree(source, "release tree")
+    directories = {path.parent for path in files}
+    for directory in sorted(directories, key=lambda path: path.relative_to(source).as_posix()):
+        relative = directory.relative_to(source)
+        if relative != Path("."):
+            _safe_relative_name(relative.as_posix(), "staged path")
+            (destination / relative).mkdir(parents=True, exist_ok=True)
+    for path in files:
         relative = path.relative_to(source)
         _safe_relative_name(relative.as_posix(), "staged path")
-        target = destination / relative
-        if path.is_symlink():
-            raise ReleaseError(f"symlink is not allowed in release input: {path}")
-        if path.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
+        _copy_regular_file(path, destination / relative, "release input")
 
 
 def _write_checksums(root: Path) -> None:
-    paths = sorted(
-        (path for path in root.rglob("*") if path.is_file() and path != root / "SHA256SUMS"),
-        key=lambda path: path.relative_to(root).as_posix(),
-    )
+    paths = [path for path in _regular_tree(root, "checksum tree") if path != root / "SHA256SUMS"]
     lines = [f"{_hash_file(path)}  {path.relative_to(root).as_posix()}" for path in paths]
-    (root / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    checksum = root / "SHA256SUMS"
+    _lstat_no_symlink(checksum, "checksum output")
+    checksum.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
 
 
 def _create_zip(source: Path, archive: Path) -> None:
-    if archive.exists():
+    files = _regular_tree(source, "archive source")
+    archive_metadata = _lstat_no_symlink(archive, "archive output")
+    if archive_metadata is not None:
+        if stat.S_ISLNK(archive_metadata.st_mode):
+            raise ReleaseError(f"symlink is not allowed for archive output: {archive}")
         archive.unlink()
     archive.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-        for path in sorted(
-            (path for path in source.rglob("*") if path.is_file()),
-            key=lambda path: path.relative_to(source).as_posix(),
-        ):
+        for path in files:
             name = _safe_relative_name(path.relative_to(source).as_posix(), "release archive entry")
-            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info = zipfile.ZipInfo(name, date_time=ZIP_TIMESTAMP)
             info.create_system = 3
-            mode = 0o755 if name in {"driichi", "driichi-mcp"} else 0o644
-            info.external_attr = mode << 16
+            mode = 0o755 if name in EXECUTABLE_NAMES else 0o644
+            info.external_attr = (REGULAR_FILE_MODE | mode) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
-            bundle.writestr(info, path.read_bytes())
+            bundle.writestr(info, _read_required_file(path, "archive input"))
 
 
 def _write_archive_checksum(archive: Path) -> Path:
+    _regular_file(archive, "release archive")
     checksum = archive.with_name(archive.name + ".sha256")
+    _lstat_no_symlink(checksum, "archive checksum output")
     checksum.write_text(f"{_hash_file(archive)}  {archive.name}\n", encoding="ascii", newline="\n")
     return checksum
 
 
 def _archive_members(archive: Path) -> dict[str, bytes]:
-    with zipfile.ZipFile(archive) as bundle:
-        raw_names = bundle.namelist()
-        names = [_safe_relative_name(name, "release archive entry") for name in raw_names]
-        _require(names == raw_names, "release archive contains a non-portable path")
-        _require(names == sorted(names), "release archive entries are not deterministic")
-        _require(len(names) == len(set(names)), "release archive contains duplicate entries")
-        return {name: bundle.read(name) for name in names}
+    return _zip_members(
+        archive,
+        lambda name: 0o755 if name in EXECUTABLE_NAMES else 0o644,
+        "release archive",
+    )
 
 
 def _verify_archive(archive: Path, platform_name: str, version: str, commit: str) -> None:
@@ -459,34 +574,39 @@ def stage_release(
     starter_dir: Path,
     starter_archive: Path | None = None,
 ) -> Path:
+    repo_root = _resolve_input(repo_root, "repository root")
     _assert_no_generated_media(repo_root)
     _require(target == PLATFORM_TARGETS[platform_name], f"target {target!r} does not match {platform_name}")
     _require(bool(SEMVER.fullmatch(version)), f"invalid release version: {version!r}")
     _require(bool(HEX_COMMIT.fullmatch(commit)), f"invalid release commit: {commit!r}")
     for path, label in ((server, "driichi binary"), (mcp, "driichi-mcp binary")):
-        _require(path.is_file() and not path.is_symlink() and path.stat().st_size > 0, f"missing {label}: {path}")
-    _require((frontend_dist / "index.html").is_file(), f"built frontend is missing index.html: {frontend_dist}")
+        _require(_regular_file(path, label).st_size > 0, f"missing {label}: {path}")
+    _regular_tree(frontend_dist, "frontend dist")
+    _regular_file(frontend_dist / "index.html", "built frontend index")
     starter_version = _verify_starter_directory(starter_dir)
     if starter_archive is not None:
         _verify_starter_zip(starter_archive, starter_version)
 
-    output = output.resolve()
+    output_metadata = _lstat_no_symlink(output, "release output")
+    if output_metadata is not None and not stat.S_ISDIR(output_metadata.st_mode):
+        raise ReleaseError(f"release output is not a directory: {output}")
+    output = _resolve_input(output, "release output")
     output.mkdir(parents=True, exist_ok=True)
     archive = output / _release_archive_name(version, platform_name)
     with tempfile.TemporaryDirectory(prefix="driichi-release-", dir=output) as temporary:
         staged = Path(temporary)
         suffix = ".exe" if platform_name == "windows-x86_64" else ""
-        shutil.copyfile(server, staged / f"driichi{suffix}")
-        shutil.copyfile(mcp, staged / f"driichi-mcp{suffix}")
+        _copy_regular_file(server, staged / f"driichi{suffix}", "driichi binary")
+        _copy_regular_file(mcp, staged / f"driichi-mcp{suffix}", "driichi-mcp binary")
         for source_name, archive_name in (
             ("README.md", "README"),
             ("LICENSE-MIT", "LICENSE-MIT"),
             ("LICENSE-APACHE", "LICENSE-APACHE"),
             ("THIRD_PARTY_NOTICES", "THIRD_PARTY_NOTICES"),
         ):
-            shutil.copyfile(repo_root / "release" / source_name, staged / archive_name)
-        shutil.copyfile(repo_root / "config.toml.example", staged / "config.toml.example")
-        shutil.copyfile(repo_root / ".env.example", staged / ".env.example")
+            _copy_regular_file(repo_root / "release" / source_name, staged / archive_name, f"release notice {source_name}")
+        _copy_regular_file(repo_root / "config.toml.example", staged / "config.toml.example", "config example")
+        _copy_regular_file(repo_root / ".env.example", staged / ".env.example", "environment example")
         (staged / "VERSION").write_text(version + "\n", encoding="ascii", newline="\n")
         (staged / "RELEASE-METADATA.json").write_text(
             json.dumps(
@@ -513,8 +633,9 @@ def stage_release(
     _write_archive_checksum(archive)
     if starter_archive is not None:
         destination = output / starter_archive.name
-        if starter_archive.resolve() != destination.resolve():
-            shutil.copyfile(starter_archive, destination)
+        source = _resolve_input(starter_archive, "standalone Starter archive")
+        if source != destination:
+            _copy_regular_file(source, destination, "standalone Starter archive")
         _write_archive_checksum(destination)
     return archive
 
@@ -533,13 +654,14 @@ def _npm_command() -> str:
 
 
 def build_release(args: argparse.Namespace) -> Path:
-    repo_root = Path(args.repo_root).resolve()
+    repo_root = _resolve_input(Path(args.repo_root), "repository root")
     platform_name = _platform_name(args.platform, args.target)
     target = args.target or PLATFORM_TARGETS[platform_name]
     version = args.version or _workspace_version(repo_root)
     commit = (args.commit or _git_commit(repo_root)).lower()
     _assert_no_generated_media(repo_root)
     frontend = repo_root / "frontend"
+    _lstat_no_symlink(frontend, "frontend source")
     _run([_npm_command(), "ci", "--prefix", str(frontend)], repo_root)
     _run([_npm_command(), "run", "build", "--prefix", str(frontend)], repo_root)
     cargo = ["cargo", "build", "--release", "--locked"]
@@ -552,12 +674,13 @@ def build_release(args: argparse.Namespace) -> Path:
     binary_dir /= "release"
     with tempfile.TemporaryDirectory(prefix="driichi-starter-build-") as temporary:
         starter_dir = Path(temporary) / "character-packs"
-        starter_archive = Path(temporary) / "driichi-starter-packs.zip"
         starter_generator = repo_root / "scripts" / "generate_starter_packs.py"
-        _require(starter_generator.is_file(), f"missing Starter generator: {starter_generator}")
+        _regular_file(starter_generator, "Starter generator")
         _run([sys.executable, str(starter_generator), "--output", str(starter_dir)], repo_root)
         # The generator's own ZIP uses host Path ordering; rewrite it with
         # POSIX-relative sorting so Windows and Unix archives are identical.
+        starter_version = _verify_starter_directory(starter_dir)
+        starter_archive = Path(temporary) / _starter_archive_name(starter_version)
         _write_checksums(starter_dir)
         _create_zip(starter_dir, starter_archive)
         _write_archive_checksum(starter_archive)
@@ -617,26 +740,27 @@ def main() -> int:
         if args.handler == "stage":
             platform_name = _platform_name(args.platform, args.target)
             target = args.target or PLATFORM_TARGETS[platform_name]
-            version = args.version or _workspace_version(Path(args.repo_root).resolve())
-            commit = (args.commit or _git_commit(Path(args.repo_root).resolve())).lower()
+            repo_root = _resolve_input(Path(args.repo_root), "repository root")
+            version = args.version or _workspace_version(repo_root)
+            commit = (args.commit or _git_commit(repo_root)).lower()
             archive = stage_release(
-                repo_root=Path(args.repo_root).resolve(),
+                repo_root=repo_root,
                 output=args.output,
                 platform_name=platform_name,
                 target=target,
                 version=version,
                 commit=commit,
-                server=args.server.resolve(),
-                mcp=args.mcp.resolve(),
-                frontend_dist=args.frontend_dist.resolve(),
-                starter_dir=args.starter_dir.resolve(),
-                starter_archive=args.starter_archive.resolve() if args.starter_archive else None,
+                server=args.server,
+                mcp=args.mcp,
+                frontend_dist=args.frontend_dist,
+                starter_dir=args.starter_dir,
+                starter_archive=args.starter_archive,
             )
             print(archive)
         elif args.handler == "build":
             print(build_release(args))
         else:
-            _verify_archive(args.archive.resolve(), args.platform, args.version, args.commit)
+            _verify_archive(args.archive, args.platform, args.version, args.commit)
             print(f"verified {args.archive}")
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError, zipfile.BadZipFile, ReleaseError) as error:
         print(f"release error: {error}", file=sys.stderr)

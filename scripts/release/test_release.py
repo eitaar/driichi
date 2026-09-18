@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -41,7 +43,7 @@ class ReleaseScriptTests(unittest.TestCase):
                 covered.append(relative)
         (starter / "CC0-NOTICE.txt").write_text("\n".join(covered) + "\n", encoding="utf-8")
         package._write_checksums(starter)
-        archive = root / "starter.zip"
+        archive = root / "character-packs-1.0.0.zip"
         package._create_zip(starter, archive)
         return starter, archive
 
@@ -96,7 +98,21 @@ class ReleaseScriptTests(unittest.TestCase):
             with zipfile.ZipFile(archive) as bundle:
                 self.assertIn("driichi", bundle.namelist())
                 self.assertNotIn("config.toml", bundle.namelist())
-                self.assertEqual(bundle.getinfo("driichi").external_attr >> 16 & 0o777, 0o755)
+                info = bundle.getinfo("driichi")
+                self.assertEqual(info.date_time, (1980, 1, 1, 0, 0, 0))
+                self.assertEqual(info.create_system, 3)
+                self.assertEqual(stat.S_IFMT(info.external_attr >> 16), stat.S_IFREG)
+                self.assertEqual(info.external_attr >> 16 & 0o777, 0o755)
+            with zipfile.ZipFile(starter_archive) as bundle:
+                info = bundle.getinfo("STARTER_VERSION")
+                self.assertEqual(info.date_time, (1980, 1, 1, 0, 0, 0))
+                self.assertEqual(stat.S_IFMT(info.external_attr >> 16), stat.S_IFREG)
+                self.assertEqual(info.external_attr >> 16 & 0o777, 0o644)
+            with tempfile.TemporaryDirectory() as extracted:
+                with zipfile.ZipFile(archive) as bundle:
+                    smoke._extract_archive(bundle, Path(extracted))
+                if os.name != "nt":
+                    self.assertEqual(stat.S_IMODE((Path(extracted) / "driichi").stat().st_mode), 0o755)
 
     def test_smoke_commands_and_live_endpoint_are_portable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -106,6 +122,37 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertEqual(test_live._endpoint("https://example.test/base/"), "https://example.test/base/status")
         with self.assertRaises(test_live.LiveCheckError):
             test_live._endpoint("https://example.test/base?secret=1")
+        with self.assertRaises(test_live.LiveCheckError):
+            test_live._endpoint("https://secret@example.test/base")
+        self.assertEqual(test_live._bot_command('["production-bot", "--once"]'), ["production-bot", "--once"])
+        with self.assertRaises(test_live.LiveCheckError):
+            test_live._bot_command("production-bot")
+        with self.assertRaises(test_live.LiveCheckError):
+            test_live._timeout("121")
+
+    def test_supported_platforms_match_the_release_contract(self) -> None:
+        self.assertEqual(
+            package.PLATFORM_TARGETS,
+            {
+                "linux-x86_64": "x86_64-unknown-linux-gnu",
+                "windows-x86_64": "x86_64-pc-windows-msvc",
+                "linux-arm64": "aarch64-unknown-linux-gnu",
+            },
+        )
+        self.assertEqual(package._platform_name("auto", "aarch64-unknown-linux-gnu"), "linux-arm64")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable on this host")
+    def test_symlink_inputs_are_rejected_before_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target"
+            target.write_bytes(b"input")
+            link = root / "link"
+            link.symlink_to(target)
+            with self.assertRaises(package.ReleaseError):
+                package._read_required_file(link, "linked input")
+            with self.assertRaises(package.ReleaseError):
+                package._binary_path(root, str(link), None, "driichi", "linux-x86_64")
 
     def test_generated_media_is_rejected_from_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

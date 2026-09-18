@@ -23,10 +23,13 @@ jobs:
         include:
           - platform: linux-x86_64
             runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
           - platform: windows-x86_64
             runner: windows-2022
-          - platform: macos-arm64
-            runner: macos-14
+            target: x86_64-pc-windows-msvc
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
 
     steps:
       - name: Check out source
@@ -47,11 +50,13 @@ jobs:
         with:
           python-version: 3.14
 
-      - name: Set up Rust
+      - name: Set up Rust target
         shell: bash
-        run: >
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          --component rustfmt
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" \
+            --profile minimal \
+            --component rustfmt
+          rustup target add --toolchain "$RUST_TOOLCHAIN" "${{ matrix.target }}"
 
       - name: Install ffmpeg on Linux
         if: runner.os == 'Linux'
@@ -59,11 +64,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes ffmpeg
-
-      - name: Install ffmpeg on macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: brew install ffmpeg
 
       - name: Install ffmpeg on Windows
         if: runner.os == 'Windows'
@@ -81,6 +81,7 @@ jobs:
         run: |
           python scripts/release/package.py build \
             --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
             --output target/release-artifacts
 
       - name: Verify release archive without host-specific execution
@@ -102,8 +103,28 @@ jobs:
             --version "$version" \
             --commit "$GIT_COMMIT" \
             --dry-run
+          starter_version="$(python - "$archive" <<'PY'
+          import sys
+          import zipfile
+          with zipfile.ZipFile(sys.argv[1]) as bundle:
+              print(bundle.read("character-packs/STARTER_VERSION").decode().strip())
+          PY
+          )"
+          starter_zip="$archive_dir/character-packs-${starter_version}.zip"
+          test -f "$starter_zip"
+          test -f "$starter_zip.sha256"
+          PYTHONPATH=scripts/release \
+            python - "$starter_zip" "$starter_version" <<'PY'
+          import sys
+          from pathlib import Path
+          import package
+          import smoke
+          starter_zip = Path(sys.argv[1])
+          smoke._verify_published_checksum(starter_zip)
+          package._verify_starter_zip(starter_zip, sys.argv[2])
+          PY
           test ! -e character-packs
-          test ! -e character-packs-1.0.0.zip
+          test ! -e character-packs-${starter_version}.zip
 
       - name: Run native version/start smoke
         shell: bash
