@@ -992,43 +992,48 @@ fn canonical_origin(value: &str) -> (String, Url) {
     (origin, url)
 }
 
+fn authentication_required(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "Unauthorized",
+        "Authentication is required.",
+        "authentication_required",
+    )
+    .response(request_id)
+}
+
 fn require_admin(
     state: &ServerState,
     headers: &HeaderMap,
     request_id: &RequestId,
-) -> Result<(), Response> {
+) -> Result<Vec<u8>, Response> {
     let Some(value) = cookie_value(headers, ADMIN_SESSION_COOKIE) else {
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "Unauthorized",
-            "Authentication is required.",
-            "authentication_required",
-        )
-        .response(request_id));
+        return Err(authentication_required(request_id));
     };
     let Ok(credential) = URL_SAFE_NO_PAD.decode(value.as_bytes()) else {
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "Unauthorized",
-            "Authentication is required.",
-            "authentication_required",
-        )
-        .response(request_id));
+        return Err(authentication_required(request_id));
     };
     if !state
         .admin
         .sessions()
-        .validate(credential, SystemTime::now())
+        .validate(&credential, SystemTime::now())
     {
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "Unauthorized",
-            "Authentication is required.",
-            "authentication_required",
-        )
-        .response(request_id));
+        return Err(authentication_required(request_id));
     }
-    Ok(())
+    Ok(credential)
+}
+
+fn revalidate_admin(
+    state: &ServerState,
+    credential: &[u8],
+    request_id: &RequestId,
+) -> Result<(), Response> {
+    state
+        .admin
+        .sessions()
+        .validate(credential, SystemTime::now())
+        .then_some(())
+        .ok_or_else(|| authentication_required(request_id))
 }
 
 fn audit_now() -> i64 {
@@ -1078,10 +1083,20 @@ async fn cancel_admin_audit(state: &ServerState, request_id: &RequestId) {
     if let Err(error) = storage.cancel_admin_audit(&request_id.0).await {
         tracing::error!(
             request_id = %request_id.0,
-            error = ?error,
+            error_kind = error.replay_failure_kind(),
             "failed to discard pending Admin audit"
         );
     }
+}
+
+async fn rollback_admin_audit(
+    state: &ServerState,
+    request_id: &RequestId,
+) -> Result<(), StorageError> {
+    let Some(storage) = state.replay_storage() else {
+        return Ok(());
+    };
+    storage.rollback_admin_audit(&request_id.0).await
 }
 
 fn audit_failure(
@@ -1095,11 +1110,19 @@ fn audit_failure(
         request_id = %request_id.0,
         action,
         target_type,
-        target_id,
-        error = %error,
+        target_id = %redact_audit_target_id(target_type, target_id),
+        error_kind = error.replay_failure_kind(),
         "admin mutation audit failed; success is not reported"
     );
     internal_error(request_id)
+}
+
+fn redact_audit_target_id(_target_type: &str, target_id: &str) -> String {
+    if crate::storage::string_contains_raw_token(target_id) {
+        "[REDACTED]".to_owned()
+    } else {
+        target_id.to_owned()
+    }
 }
 
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -1190,7 +1213,14 @@ async fn admin_login(
         return audit_failure(&request_id, "login", "admin", "admin", &error);
     }
     if let Err(error) = complete_admin_audit(&state, &request_id).await {
-        state.admin.sessions().revoke(session.credential());
+        if rollback_admin_audit(&state, &request_id).await.is_ok() {
+            state.admin.sessions().revoke(session.credential());
+        } else {
+            tracing::error!(
+                request_id = %request_id.0,
+                "failed to durably mark the login audit rolled back"
+            );
+        }
         return audit_failure(&request_id, "login", "admin", "admin", &error);
     }
     let value = URL_SAFE_NO_PAD.encode(session.credential().as_bytes());
@@ -1242,7 +1272,14 @@ async fn admin_logout(
             return audit_failure(&request_id, "logout", "admin", "admin", &error);
         }
         if let Err(error) = complete_admin_audit(&state, &request_id).await {
-            state.admin.sessions().restore(&credential, expires_at);
+            if rollback_admin_audit(&state, &request_id).await.is_ok() {
+                state.admin.sessions().restore(&credential, expires_at);
+            } else {
+                tracing::error!(
+                    request_id = %request_id.0,
+                    "failed to durably mark the logout audit rolled back"
+                );
+            }
             return audit_failure(&request_id, "logout", "admin", "admin", &error);
         }
     }
@@ -1312,9 +1349,10 @@ async fn admin_create_token(
     Extension(request_id): Extension<RequestId>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(&state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, &state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1329,6 +1367,9 @@ async fn admin_create_token(
         Err(response) => return response,
     };
     let _operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(&state, &credential, &request_id) {
+        return response;
+    }
     let Some(service) = &state.bot_tokens else {
         return internal_error(&request_id);
     };
@@ -1365,9 +1406,10 @@ async fn admin_revoke_token(
     headers: HeaderMap,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(&state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, &state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1378,6 +1420,9 @@ async fn admin_revoke_token(
         .response(&request_id);
     }
     let _operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(&state, &credential, &request_id) {
+        return response;
+    }
     let Some(service) = &state.bot_tokens else {
         return internal_error(&request_id);
     };
@@ -1444,15 +1489,65 @@ fn parse_time_control(value: &str) -> Option<TimeControl> {
     }
 }
 
+fn room_configuration_changed(
+    before: &RoomSnapshot,
+    after: &RoomSnapshot,
+    request: &PatchRoomRequest,
+) -> bool {
+    (request.room_name.is_some() && before.room_name != after.room_name)
+        || (request.game_mode.is_some() && before.mode != after.mode)
+        || (request.time_control.is_some() && before.time_control != after.time_control)
+        || (request.replay_save.is_some() && before.replay_save != after.replay_save)
+        || (request.participant_limit.is_some()
+            && before.participant_limit != after.participant_limit)
+}
+
+fn participant_command_changed(
+    before: &RoomSnapshot,
+    after: &RoomSnapshot,
+    participant_id: &ParticipantId,
+) -> bool {
+    before
+        .participants
+        .iter()
+        .find(|participant| participant.id == *participant_id)
+        != after
+            .participants
+            .iter()
+            .find(|participant| participant.id == *participant_id)
+}
+
+fn room_command_changed(action: &str, before: &RoomSnapshot, after: &RoomSnapshot) -> bool {
+    match action {
+        "fill_with_bots" => {
+            before
+                .participants
+                .iter()
+                .filter(|participant| participant.kind == ParticipantKind::BuiltInBot)
+                .cloned()
+                .collect::<Vec<_>>()
+                != after
+                    .participants
+                    .iter()
+                    .filter(|participant| participant.kind == ParticipantKind::BuiltInBot)
+                    .cloned()
+                    .collect::<Vec<_>>()
+        }
+        "match_start" | "rematch" | "back_to_lobby" => before.phase != after.phase,
+        _ => before.revision != after.revision,
+    }
+}
+
 async fn admin_create_room(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Extension(request_id): Extension<RequestId>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(&state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, &state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1486,6 +1581,9 @@ async fn admin_create_room(
         config.max_participants = limit;
     }
     let _operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(&state, &credential, &request_id) {
+        return response;
+    }
     let summary = json!({"room_name": config.room_name});
     let (target_id, handle) = loop {
         let target = RoomJoinCode::generate();
@@ -1647,13 +1745,17 @@ async fn admin_delete_replay(
     headers: HeaderMap,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(&state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, &state) {
         return origin_not_allowed(&request_id);
     }
     let _operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(&state, &credential, &request_id) {
+        return response;
+    }
     let Some(storage) = state.replay_storage() else {
         return internal_error(&request_id);
     };
@@ -1763,9 +1865,10 @@ async fn admin_patch_room(
     Extension(request_id): Extension<RequestId>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(&state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, &state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1788,6 +1891,9 @@ async fn admin_patch_room(
         return invalid_request(&request_id);
     }
     let _operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(&state, &credential, &request_id) {
+        return response;
+    }
     let Some(handle) = state.rooms.get(&join_code).await else {
         return room_not_found(&request_id);
     };
@@ -1845,7 +1951,7 @@ async fn admin_patch_room(
         return audit_failure(&request_id, "room_configure", "room", &join_code, &error);
     }
     let command = RoomCommand::configure(
-        payload.room_name,
+        payload.room_name.clone(),
         mode,
         time_control,
         payload.replay_save,
@@ -1862,9 +1968,7 @@ async fn admin_patch_room(
             return room_error_response(error, &request_id);
         }
     };
-    let mut comparable = snapshot.clone();
-    comparable.revision = before.revision;
-    if comparable == before {
+    if !room_configuration_changed(&before, &snapshot, &payload) {
         cancel_admin_audit(&state, &request_id).await;
         return room_detail_response(StatusCode::OK, &snapshot);
     }
@@ -1880,9 +1984,10 @@ async fn admin_delete_room(
     headers: HeaderMap,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(&state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, &state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1893,6 +1998,9 @@ async fn admin_delete_room(
         .response(&request_id);
     }
     let _operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(&state, &credential, &request_id) {
+        return response;
+    }
     let Some(handle) = state.rooms.get(&join_code).await else {
         return room_not_found(&request_id);
     };
@@ -1998,9 +2106,10 @@ async fn admin_participant_command(
     action: &'static str,
     command: RoomCommand,
 ) -> Response {
-    if let Err(response) = require_admin(state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -2011,6 +2120,9 @@ async fn admin_participant_command(
         .response(&request_id);
     }
     let _admin_operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(state, &credential, &request_id) {
+        return response;
+    }
     let Some(handle) = state.rooms.get(&join_code).await else {
         return room_not_found(&request_id);
     };
@@ -2061,9 +2173,7 @@ async fn admin_participant_command(
             return room_error_response(error, &request_id);
         }
     };
-    let mut comparable = snapshot.clone();
-    comparable.revision = before.revision;
-    if comparable == before {
+    if !participant_command_changed(&before, &snapshot, &participant_id) {
         cancel_admin_audit(state, &request_id).await;
         return room_detail_response(StatusCode::OK, &snapshot);
     }
@@ -2163,9 +2273,10 @@ async fn admin_room_command(
     action: &'static str,
     command: RoomCommand,
 ) -> Response {
-    if let Err(response) = require_admin(state, &headers, &request_id) {
-        return response;
-    }
+    let credential = match require_admin(state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
     if !unsafe_admin_origin_allowed(&headers, state) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
@@ -2176,6 +2287,9 @@ async fn admin_room_command(
         .response(&request_id);
     }
     let _admin_operation = state.admin_mutation_lock.lock().await;
+    if let Err(response) = revalidate_admin(state, &credential, &request_id) {
+        return response;
+    }
     let Some(handle) = state.rooms.get(join_code).await else {
         return room_not_found(&request_id);
     };
@@ -2192,9 +2306,7 @@ async fn admin_room_command(
     let response = match handle.send(command).await {
         Ok(response @ RoomResponse::Started(_)) => response,
         Ok(RoomResponse::Accepted(snapshot)) => {
-            let mut comparable = snapshot.clone();
-            comparable.revision = before.revision;
-            if comparable == before {
+            if !room_command_changed(action, &before, &snapshot) {
                 cancel_admin_audit(state, &request_id).await;
                 return room_detail_response(StatusCode::OK, &snapshot);
             }
@@ -4017,6 +4129,73 @@ mod tests {
             }
             other => panic!("expected slow-consumer close, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn audit_failure_target_ids_redact_raw_tokens_but_keep_safe_ids() {
+        assert_eq!(redact_audit_target_id("room", "ROOM-123"), "ROOM-123");
+        assert_eq!(
+            redact_audit_target_id(
+                "bot_token",
+                "driichi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ),
+            "[REDACTED]"
+        );
+    }
+
+    #[tokio::test]
+    async fn revalidation_rejects_a_credential_revoked_while_waiting_for_mutation_lock() {
+        let admin = Arc::new(
+            AdminAuthenticator::new(
+                "admin",
+                crate::hash_password("correct horse battery staple").unwrap(),
+            )
+            .unwrap(),
+        );
+        let state = ServerState::for_tests(
+            "http://127.0.0.1:3000",
+            admin.clone(),
+            RoomRegistry::with_max_rooms(1),
+        );
+        let session = admin
+            .login("admin", "correct horse battery staple", SystemTime::now())
+            .unwrap();
+        let credential = session.credential().as_bytes().to_vec();
+        let _lock = state.admin_mutation_lock.lock().await;
+        admin.sessions().revoke(&credential);
+        assert!(revalidate_admin(&state, &credential, &RequestId("REQ".into())).is_err());
+    }
+
+    #[tokio::test]
+    async fn command_change_detection_ignores_unrelated_public_join() {
+        let rooms = RoomRegistry::with_max_rooms(1);
+        let handle = rooms
+            .create(RoomConfig::new(
+                "Race",
+                GameMode::FourPlayerRedEast,
+                CharacterCatalog::starter(),
+            ))
+            .await
+            .unwrap();
+        let before = handle.snapshot().await.unwrap();
+        handle
+            .send(RoomCommand::join(Participant::new(
+                "public-join",
+                "Public",
+                ParticipantKind::Human,
+            )))
+            .await
+            .unwrap();
+        let after = handle.snapshot().await.unwrap();
+        assert!(!room_command_changed("fill_with_bots", &before, &after));
+        let request = PatchRoomRequest {
+            room_name: Some(before.room_name.clone()),
+            game_mode: None,
+            time_control: None,
+            replay_save: None,
+            participant_limit: None,
+        };
+        assert!(!room_configuration_changed(&before, &after, &request));
     }
 
     #[test]

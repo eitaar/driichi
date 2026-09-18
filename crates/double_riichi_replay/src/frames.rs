@@ -55,6 +55,7 @@ struct ReplayState {
     melds: Vec<Vec<MeldState>>,
     riichi: Vec<bool>,
     dora_indicators: Vec<Tile>,
+    kyoku_active: bool,
 }
 
 impl ReplayState {
@@ -77,10 +78,21 @@ impl ReplayState {
             melds: vec![Vec::new(); mode.seat_count()],
             riichi: vec![false; mode.seat_count()],
             dora_indicators: Vec::new(),
+            kyoku_active: false,
         }
     }
 
     fn apply(&mut self, event: &CanonicalEvent) -> Result<(), ReplayError> {
+        if !self.kyoku_active
+            && !matches!(
+                event,
+                GameEvent::StartGame { .. } | GameEvent::StartKyoku { .. } | GameEvent::EndGame
+            )
+        {
+            return Err(ReplayError::InvalidEvent(
+                "event appears outside an active kyoku".into(),
+            ));
+        }
         match event {
             GameEvent::StartGame { names, .. } => {
                 if let Some(names) = names {
@@ -95,6 +107,11 @@ impl ReplayState {
                 dora_marker,
                 ..
             } => {
+                if self.kyoku_active {
+                    return Err(ReplayError::InvalidEvent(
+                        "start_kyoku appeared before the previous kyoku ended".into(),
+                    ));
+                }
                 if scores.len() != self.mode.seat_count() || tehais.len() != self.mode.seat_count()
                 {
                     return Err(ReplayError::InvalidEvent(
@@ -108,13 +125,14 @@ impl ReplayState {
                 self.riichi.fill(false);
                 self.dora_indicators.clear();
                 self.dora_indicators.push(*dora_marker);
+                self.kyoku_active = true;
             }
             GameEvent::Tsumo { actor, tile } => {
                 self.player_mut(*actor)?.hands_mut().push(*tile);
             }
             GameEvent::Dahai { actor, tile, .. } => {
-                let mut player = self.player_mut(*actor)?;
-                remove_tile(&mut player.hand, *tile);
+                let player = self.player_mut(*actor)?;
+                remove_required_tile(player.hand, *tile)?;
                 player.discards.push(*tile);
             }
             GameEvent::Pon {
@@ -135,9 +153,15 @@ impl ReplayState {
                 called,
                 consumed,
             } => {
-                let mut player = self.player_mut(*actor)?;
+                if actor == target {
+                    return Err(ReplayError::InvalidEvent(
+                        "meld target cannot be the calling player".into(),
+                    ));
+                }
+                validate_open_meld(*called, consumed, matches!(event, GameEvent::Chi { .. }))?;
+                let player = self.player_mut(*actor)?;
                 for tile in consumed {
-                    remove_tile(&mut player.hand, *tile);
+                    remove_required_tile(player.hand, *tile)?;
                 }
                 let mut tiles = consumed.clone();
                 tiles.push(*called);
@@ -149,30 +173,40 @@ impl ReplayState {
                 });
             }
             GameEvent::Kakan { actor, called } => {
-                let mut player = self.player_mut(*actor)?;
-                if let Some(meld) = player.melds.iter_mut().find(|meld| {
+                let player = self.player_mut(*actor)?;
+                remove_required_tile(player.hand, *called)?;
+                let Some(meld) = player.melds.iter_mut().find(|meld| {
                     meld.opened
+                        && meld.tiles.len() == 3
+                        && meld
+                            .tiles
+                            .iter()
+                            .all(|tile| tile.tile_type() == called.tile_type())
                         && meld
                             .tiles
                             .iter()
                             .any(|tile| tile.tile_type() == called.tile_type())
-                }) {
-                    remove_tile(&mut player.hand, *called);
-                    meld.tiles.push(*called);
-                    meld.called_tile = Some(*called);
-                } else {
-                    player.melds.push(MeldState {
-                        tiles: vec![*called],
-                        opened: true,
-                        from_who: None,
-                        called_tile: Some(*called),
-                    });
-                }
+                }) else {
+                    return Err(ReplayError::InvalidEvent(
+                        "kakan requires an existing open pon meld".into(),
+                    ));
+                };
+                meld.tiles.push(*called);
+                meld.called_tile = Some(*called);
             }
             GameEvent::Ankan { actor, consumed } => {
-                let mut player = self.player_mut(*actor)?;
+                if consumed.is_empty()
+                    || consumed
+                        .iter()
+                        .any(|tile| tile.tile_type() != consumed[0].tile_type())
+                {
+                    return Err(ReplayError::InvalidEvent(
+                        "ankan tiles must have one tile type".into(),
+                    ));
+                }
+                let player = self.player_mut(*actor)?;
                 for tile in consumed {
-                    remove_tile(&mut player.hand, *tile);
+                    remove_required_tile(player.hand, *tile)?;
                 }
                 player.melds.push(MeldState {
                     tiles: consumed.clone(),
@@ -219,7 +253,15 @@ impl ReplayState {
                 };
                 player.hand.remove(index);
             }
-            GameEvent::EndKyoku | GameEvent::EndGame => {}
+            GameEvent::EndKyoku => {
+                if !self.kyoku_active {
+                    return Err(ReplayError::InvalidEvent(
+                        "end_kyoku appeared outside an active kyoku".into(),
+                    ));
+                }
+                self.kyoku_active = false;
+            }
+            GameEvent::EndGame => {}
         }
         Ok(())
     }
@@ -285,35 +327,83 @@ impl PlayerStateMut<'_> {
     }
 }
 
-fn remove_tile(hand: &mut Vec<Tile>, wanted: Tile) {
-    if let Some(index) = hand.iter().position(|tile| *tile == wanted) {
-        hand.remove(index);
+fn remove_required_tile(hand: &mut Vec<Tile>, wanted: Tile) -> Result<(), ReplayError> {
+    let Some(index) = hand.iter().position(|tile| *tile == wanted) else {
+        return Err(ReplayError::InvalidEvent(format!(
+            "tile {} is not in concealed hand",
+            wanted.id()
+        )));
+    };
+    hand.remove(index);
+    Ok(())
+}
+
+fn validate_open_meld(called: Tile, consumed: &[Tile], chi: bool) -> Result<(), ReplayError> {
+    let mut tiles = consumed.to_vec();
+    tiles.push(called);
+    if chi {
+        let mut types: Vec<_> = tiles.iter().map(|tile| tile.tile_type().index()).collect();
+        types.sort_unstable();
+        let same_suit = types.iter().all(|index| *index < 27)
+            && types.windows(2).all(|window| window[1] == window[0] + 1)
+            && types.first().is_some_and(|index| index / 9 == types[0] / 9);
+        if types.len() != 3 || !same_suit {
+            return Err(ReplayError::InvalidEvent(
+                "chi tiles must form a consecutive suited sequence".into(),
+            ));
+        }
+    } else if tiles.len() != 3 && tiles.len() != 4 {
+        return Err(ReplayError::InvalidEvent(
+            "open meld has an invalid tile count".into(),
+        ));
+    } else if tiles
+        .iter()
+        .any(|tile| tile.tile_type() != called.tile_type())
+    {
+        return Err(ReplayError::InvalidEvent(
+            "pon or daiminkan tiles must have one tile type".into(),
+        ));
     }
+    Ok(())
 }
 
 /// Build the complete Admin-only timeline from validated canonical events.
 pub fn build_replay_frames(events: &[CanonicalEvent]) -> Result<Vec<ReplayFrame>, ReplayError> {
-    build_replay_frames_with_auxiliary(events, &[])
+    let mode = infer_mode(events)?;
+    build_replay_frames_with_auxiliary_for_mode(events, &[], mode)
+}
+
+/// Build frames using the persisted match mode rather than inferring East mode
+/// from the number of seats. East and half-game replays share MJSON events.
+pub fn build_replay_frames_for_mode(
+    events: &[CanonicalEvent],
+    mode: GameMode,
+) -> Result<Vec<ReplayFrame>, ReplayError> {
+    build_replay_frames_with_auxiliary_for_mode(events, &[], mode)
 }
 
 pub fn build_replay_frames_with_auxiliary(
     events: &[CanonicalEvent],
     auxiliary_events: &[AuxiliaryRecord],
 ) -> Result<Vec<ReplayFrame>, ReplayError> {
+    let mode = infer_mode(events)?;
+    build_replay_frames_with_auxiliary_for_mode(events, auxiliary_events, mode)
+}
+
+pub fn build_replay_frames_with_auxiliary_for_mode(
+    events: &[CanonicalEvent],
+    auxiliary_events: &[AuxiliaryRecord],
+    mode: GameMode,
+) -> Result<Vec<ReplayFrame>, ReplayError> {
     if events.len() > MAX_REPLAY_EVENTS || auxiliary_events.len() > MAX_REPLAY_EVENTS {
         return Err(replay_too_large());
     }
-    let mode = events
-        .iter()
-        .find_map(|event| match event {
-            GameEvent::StartKyoku { scores, .. } => match scores.len() {
-                3 => Some(GameMode::ThreePlayerRedEast),
-                4 => Some(GameMode::FourPlayerRedEast),
-                _ => None,
-            },
-            _ => None,
-        })
-        .ok_or_else(|| ReplayError::InvalidEvent("replay has no start_kyoku event".into()))?;
+    let inferred = infer_mode(events)?;
+    if inferred.seat_count() != mode.seat_count() {
+        return Err(ReplayError::InvalidEvent(format!(
+            "stored replay mode {mode} does not match event player count"
+        )));
+    }
     for event in events {
         crate::mjson::validate_event(event, mode).map_err(ReplayError::InvalidEvent)?;
     }
@@ -364,6 +454,28 @@ pub fn frames_from_artifact(
     artifact: &ReplayArtifact,
 ) -> Result<Vec<ReplayFrame>, ReplayError> {
     build_replay_frames_with_auxiliary(events, &artifact.auxiliary_events)
+}
+
+pub fn frames_from_artifact_for_mode(
+    events: &[CanonicalEvent],
+    artifact: &ReplayArtifact,
+    mode: GameMode,
+) -> Result<Vec<ReplayFrame>, ReplayError> {
+    build_replay_frames_with_auxiliary_for_mode(events, &artifact.auxiliary_events, mode)
+}
+
+fn infer_mode(events: &[CanonicalEvent]) -> Result<GameMode, ReplayError> {
+    events
+        .iter()
+        .find_map(|event| match event {
+            GameEvent::StartKyoku { scores, .. } => match scores.len() {
+                3 => Some(GameMode::ThreePlayerRedEast),
+                4 => Some(GameMode::FourPlayerRedEast),
+                _ => None,
+            },
+            _ => None,
+        })
+        .ok_or_else(|| ReplayError::InvalidEvent("replay has no start_kyoku event".into()))
 }
 
 pub fn encode_replay_frames(frames: &[ReplayFrame]) -> Result<Vec<u8>, ReplayError> {

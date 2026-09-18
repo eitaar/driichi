@@ -25,11 +25,27 @@ pub fn resolve_replay_path(
         ));
     }
     let root = fs::canonicalize(root)?;
-    let candidate = fs::canonicalize(root.join(relative))?;
-    if !candidate.starts_with(&root) {
-        return Err(ReplayError::InvalidPath(
-            "replay path resolves outside the replay root".into(),
-        ));
+    let candidate = root.join(relative);
+    let mut current = root.clone();
+    let components: Vec<_> = relative.components().collect();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink()
+                    || (index + 1 < components.len() && !metadata.is_dir())
+                {
+                    return Err(ReplayError::InvalidPath(
+                        "replay path resolves outside the replay root".into(),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(ReplayError::Io(error)),
+        }
     }
     Ok(candidate)
 }
