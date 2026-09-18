@@ -1,0 +1,273 @@
+---
+asyncapi: 3.0.0
+info:
+  title: Double Riichi Human WebSocket API
+  version: 0.1.0
+  description: >-
+    Hand-authored AsyncAPI contract for Human /ws/v1 sessions. Room MJAI is
+    represented only by its join/auth wrapper and the pinned upstream pointer.
+defaultContentType: application/json
+servers:
+  local:
+    host: 127.0.0.1:3000
+    pathname: /ws/v1
+    protocol: ws
+    description: Local default server; deployments use their public origin.
+channels:
+  humanRoom:
+    address: /rooms/{join_code}/human
+    description: >-
+      Same-origin Human Room WebSocket. The Guest Session cookie authenticates
+      the Participant for this Room.
+    parameters:
+      join_code:
+        description: Six-character Room join code.
+        schema:
+          type: string
+          pattern: '^[0-9]{6}$'
+    messages:
+      clientMessage:
+        $ref: '#/components/messages/humanClientMessage'
+      serverMessage:
+        $ref: '#/components/messages/humanServerMessage'
+  roomMjaiWrapper:
+    address: /rooms/{join_code}/mjai
+    description: >-
+      Room MJAI wrapper. The participant_id query parameter and the Bot Token
+      Authorization header establish the Room connection; after upgrade the
+      message contract is exactly the pinned riichi.dev Protocol v2 contract.
+    parameters:
+      join_code:
+        description: Six-character Room join code.
+        schema:
+          type: string
+          pattern: '^[0-9]{6}$'
+    bindings:
+      ws:
+        query:
+          type: object
+          required: [participant_id]
+          properties:
+            participant_id:
+              type: string
+        headers:
+          type: object
+          required: [Authorization]
+          properties:
+            Authorization:
+              type: string
+              description: Bearer Bot Token; never accepted in the query.
+    externalDocs:
+      description: >-
+        Pinned riichi.dev Protocol v2 pointer. Immutable authenticated upstream
+        evidence is unavailable in this provisional slice.
+      url: https://riichi.dev/
+    x-upstream-contract:
+      name: riichi.dev Protocol v2
+      revision: unavailable-provisional
+      status: immutable-authenticated-evidence-unavailable
+    messages:
+      upstreamMessage:
+        payload:
+          type: object
+          description: >-
+            Defined by the pinned upstream contract, not duplicated here.
+operations:
+  humanReceive:
+    action: receive
+    channel:
+      $ref: '#/channels/humanRoom'
+    messages:
+      - $ref: '#/channels/humanRoom/messages/serverMessage'
+  humanSend:
+    action: send
+    channel:
+      $ref: '#/channels/humanRoom'
+    messages:
+      - $ref: '#/channels/humanRoom/messages/clientMessage'
+components:
+  messages:
+    humanClientMessage:
+      name: humanClientMessage
+      title: Human client message
+      summary: A bounded, strict JSON command from the Human client.
+      payload:
+        oneOf:
+          - $ref: '#/components/schemas/setReady'
+          - $ref: '#/components/schemas/submitAction'
+          - $ref: '#/components/schemas/leave'
+    humanServerMessage:
+      name: humanServerMessage
+      title: Human server message
+      summary: A projected snapshot, update, result, error, or close notice.
+      payload:
+        oneOf:
+          - $ref: '#/components/schemas/snapshotMessage'
+          - $ref: '#/components/schemas/roomUpdateMessage'
+          - $ref: '#/components/schemas/gameUpdateMessage'
+          - $ref: '#/components/schemas/actionResultMessage'
+          - $ref: '#/components/schemas/errorMessage'
+  schemas:
+    setReady:
+      type: object
+      additionalProperties: false
+      required: [type, preloaded_characters]
+      properties:
+        type:
+          type: string
+          const: set_ready
+        preloaded_characters:
+          type: array
+          maxItems: 32
+          items:
+            type: string
+    submitAction:
+      type: object
+      additionalProperties: false
+      required: [type, decision_id, action_id]
+      properties:
+        type:
+          type: string
+          const: submit_action
+        decision_id:
+          type: string
+        action_id:
+          type: string
+    leave:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: leave
+    snapshotMessage:
+      type: object
+      additionalProperties: false
+      required: [type, room, state]
+      properties:
+        type:
+          type: string
+          const: snapshot
+        room:
+          $ref: '#/components/schemas/roomSnapshot'
+        state:
+          oneOf:
+            - $ref: '#/components/schemas/playerProjection'
+            - type: 'null'
+    roomUpdateMessage:
+      type: object
+      additionalProperties: false
+      required: [type, event, room, state]
+      properties:
+        type:
+          type: string
+          const: room_update
+        event:
+          $ref: '#/components/schemas/roomEvent'
+        room:
+          $ref: '#/components/schemas/roomSnapshot'
+        state:
+          oneOf:
+            - $ref: '#/components/schemas/playerProjection'
+            - type: 'null'
+    gameUpdateMessage:
+      type: object
+      additionalProperties: false
+      required: [type, event, state]
+      properties:
+        type:
+          type: string
+          const: game_update
+        event:
+          type: object
+          additionalProperties: true
+        state:
+          $ref: '#/components/schemas/playerProjection'
+    actionResultMessage:
+      type: object
+      additionalProperties: false
+      required: [type, decision_id, status]
+      properties:
+        type:
+          type: string
+          const: action_result
+        decision_id:
+          type: string
+        status:
+          type: string
+          enum: [accepted, rejected]
+        code:
+          type: string
+    errorMessage:
+      type: object
+      additionalProperties: false
+      required: [type, code]
+      properties:
+        type:
+          type: string
+          const: error
+        code:
+          type: string
+    roomSnapshot:
+      type: object
+      additionalProperties: true
+      required: [join_code, room_name, game_mode, phase, revision]
+      properties:
+        join_code:
+          type: string
+        room_name:
+          type: string
+        game_mode:
+          type: string
+        phase:
+          type: string
+          enum: [lobby, playing, post_match]
+        revision:
+          type: integer
+          minimum: 0
+        participants:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        match_players:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        roster:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        result:
+          type:
+            - object
+            - 'null'
+    playerProjection:
+      type: object
+      additionalProperties: true
+      description: >-
+        Audience-projected Player state. Concealed information is limited to
+        the authenticated Participant and is never canonical Match state.
+    roomEvent:
+      type: object
+      additionalProperties: true
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum:
+            - snapshot
+            - participant_joined
+            - participant_left
+            - participant_updated
+            - match_started
+            - match_completed
+            - match_aborted
+            - storage_degraded
+            - server_shutdown
+            - room_deleted
+            - decision_opened
+            - action_resolved

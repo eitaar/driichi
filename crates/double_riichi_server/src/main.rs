@@ -6,7 +6,10 @@ use std::{
     sync::Arc,
 };
 
-use double_riichi_server::{RuntimeConfig, ServerState, hash_password_for_cli, server_router};
+use double_riichi_server::{
+    BUILD_COMMIT, BUILD_VERSION, RuntimeConfig, ServerState, TracingFormat, hash_password_for_cli,
+    server_router,
+};
 
 #[tokio::main]
 async fn main() {
@@ -19,7 +22,7 @@ async fn main() {
             }
         }
         Some("--version") if arguments.next().is_none() => {
-            println!("driichi {} (unknown)", env!("CARGO_PKG_VERSION"));
+            println!("driichi {BUILD_VERSION} ({BUILD_COMMIT})");
         }
         Some("--config") => {
             let Some(path) = arguments.next() else {
@@ -50,6 +53,7 @@ async fn main() {
 
 async fn run_server(path: PathBuf) -> Result<(), String> {
     let config = RuntimeConfig::from_path(&path).map_err(|error| error.to_string())?;
+    init_tracing(config.tracing_format);
     let bind: SocketAddr = config
         .bind
         .parse()
@@ -82,15 +86,38 @@ async fn run_server(path: PathBuf) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(shutdown_seconds);
     state.begin_shutdown();
     let _ = stop_tx.send(());
-    let _ = tokio::time::timeout(
+    if tokio::time::timeout(
         std::time::Duration::from_secs(shutdown_seconds),
         state.shutdown(),
     )
-    .await;
+    .await
+    .is_err()
+    {
+        tracing::warn!("graceful shutdown deadline elapsed");
+    }
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     match tokio::time::timeout(remaining, &mut server).await {
         Ok(result) => result.map_err(|_| "server stopped unexpectedly".to_owned()),
         Err(_) => Ok(()),
+    }
+}
+
+fn init_tracing(format: TracingFormat) {
+    match format {
+        TracingFormat::Text => {
+            let _ = tracing_subscriber::fmt()
+                .with_target(false)
+                .compact()
+                .try_init();
+        }
+        TracingFormat::Json => {
+            let _ = tracing_subscriber::fmt()
+                .with_target(false)
+                .json()
+                .with_current_span(false)
+                .with_span_list(false)
+                .try_init();
+        }
     }
 }
 

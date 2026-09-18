@@ -1,5 +1,8 @@
 //! Configuration, credentials, and durable storage for double-riichi.
 
+pub const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const BUILD_COMMIT: &str = env!("GIT_COMMIT");
+
 mod auth;
 mod characters;
 mod compat;
@@ -21,6 +24,7 @@ pub use characters::{
 };
 pub use config::{
     CasualTimeControl, CharacterConfig, ConfigError, NetworkConfig, RuntimeConfig, TimeControls,
+    TracingFormat,
 };
 pub use http::{IpCidr, ServerInitError, ServerLimits, ServerState, server_router};
 pub use storage::{Storage, StorageError};

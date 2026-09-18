@@ -28,6 +28,19 @@ const DEFAULT_AGENT_AUTH_FAILURES: usize = 20;
 const DEFAULT_MAX_COMPAT_MATCHES: usize = 32;
 const DEFAULT_MAX_RANKED_QUEUE: usize = 128;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TracingFormat {
+    Text,
+    Json,
+}
+
+impl Default for TracingFormat {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("could not read configuration")]
@@ -44,6 +57,10 @@ struct RawRuntimeConfig {
     #[serde(default = "default_bind")]
     bind: String,
     public_origin: String,
+    #[serde(default)]
+    api_docs: bool,
+    #[serde(default)]
+    tracing_format: TracingFormat,
     #[serde(default)]
     characters: RawCharacterConfig,
     #[serde(default)]
@@ -257,6 +274,8 @@ pub struct NetworkConfig {
 pub struct RuntimeConfig {
     pub bind: String,
     pub public_origin: String,
+    pub api_docs: bool,
+    pub tracing_format: TracingFormat,
     pub characters: CharacterConfig,
     pub time_controls: TimeControls,
     pub unlimited_watchdog_seconds: u64,
@@ -291,6 +310,8 @@ impl RuntimeConfig {
         Ok(Self {
             bind: raw.bind,
             public_origin: raw.public_origin,
+            api_docs: raw.api_docs,
+            tracing_format: raw.tracing_format,
             characters: CharacterConfig {
                 mjai: raw.characters.mjai,
                 builtin: raw.characters.builtin,

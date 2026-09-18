@@ -1,7 +1,7 @@
 set shell := ["bash", "-cu"]
 
 # Verify the bootstrap workspace without requiring a production frontend build.
-check: fmt-check test-rust test-frontend test-spec test-smoke
+check: fmt-check test-rust test-frontend test-spec test-contract test-smoke
 
 fmt-check:
     cargo fmt --all -- --check
@@ -12,6 +12,10 @@ test-rust:
 test-frontend:
     npm ci --prefix frontend
     npm run typecheck --prefix frontend
+
+test-contract:
+    python scripts/validate_contracts.py
+    cargo test -p double_riichi_server --test task16_contracts -- --test-threads=1
 
 test-spec:
     grep -Fq 'Basic accessibility is a v1 requirement.' spec/implementation-v1.md

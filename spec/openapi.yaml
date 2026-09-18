@@ -1,0 +1,860 @@
+---
+openapi: 3.1.0
+info:
+  title: Double Riichi HTTP API
+  version: 0.1.0
+  description: Hand-authored custom HTTP contract for Double Riichi v1.
+servers:
+  - url: http://127.0.0.1:3000
+    description: >-
+      Local default server; deployments configure their public origin.
+tags:
+  - name: health
+  - name: admin
+  - name: rooms
+  - name: characters
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      security:
+        - adminCookie: []
+      responses:
+        '200':
+          description: All bounded health components are available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: A bounded health component is degraded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/v1/openapi.yaml:
+    get:
+      operationId: getOpenApiDocument
+      tags: [admin]
+      security:
+        - adminCookie: []
+      description: >-
+        Raw hand-authored OpenAPI YAML. Disabled unless explicitly enabled in
+        runtime configuration.
+      responses:
+        '200':
+          description: The raw OpenAPI document; no Swagger UI is served.
+          content:
+            text/yaml:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/characters/human:
+    get:
+      operationId: listHumanCharacters
+      tags: [characters]
+      responses:
+        '200':
+          description: Available Human Character summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+  /assets/characters/{id}/portrait.webp:
+    get:
+      operationId: getCharacterPortrait
+      tags: [characters]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+      responses:
+        '200':
+          description: Character portrait asset.
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: The requested ETag is still current.
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /assets/characters/{id}/icon.webp:
+    get:
+      operationId: getCharacterIcon
+      tags: [characters]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+      responses:
+        '200':
+          description: Character icon asset.
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: The requested ETag is still current.
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /assets/characters/{id}/voices/{voice}:
+    get:
+      operationId: getCharacterVoice
+      tags: [characters]
+      parameters:
+        - $ref: '#/components/parameters/CharacterId'
+        - name: voice
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [chi, pon, kan, riichi, ron, tsumo]
+      responses:
+        '200':
+          description: Character voice asset.
+          content:
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/admin/login:
+    post:
+      operationId: adminLogin
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLoginRequest'
+      responses:
+        '200':
+          description: Admin session established in an HttpOnly cookie.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [authenticated]
+                properties:
+                  authenticated:
+                    type: boolean
+                    const: true
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/logout:
+    post:
+      operationId: adminLogout
+      tags: [admin]
+      security:
+        - adminCookie: []
+      responses:
+        '204':
+          description: Admin session ended.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/tokens:
+    get:
+      operationId: listBotTokens
+      tags: [admin]
+      security:
+        - adminCookie: []
+      responses:
+        '200':
+          description: Bot Token records without secrets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BotToken'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createBotToken
+      tags: [admin]
+      security:
+        - adminCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name:
+                  $ref: '#/components/schemas/DisplayName'
+      responses:
+        '201':
+          description: A newly created one-time Bot Token secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedBotToken'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/tokens/{token_id}/revoke:
+    post:
+      operationId: revokeBotToken
+      tags: [admin]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/TokenId'
+      responses:
+        '200':
+          description: Revoked Bot Token record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotToken'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/admin/rooms:
+    get:
+      operationId: listAdminRooms
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      responses:
+        '200':
+          description: Bounded Admin Room list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoomSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createRoom
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoomRequest'
+      responses:
+        '201':
+          description: Created Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/rooms/{join_code}:
+    get:
+      operationId: getAdminRoom
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      responses:
+        '200':
+          description: Admin Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: patchAdminRoom
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchRoomRequest'
+      responses:
+        '200':
+          description: Updated Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      operationId: deleteAdminRoom
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      responses:
+        '204':
+          description: Room deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/admin/rooms/{join_code}/participants/{participant_id}/select:
+    post:
+      operationId: selectParticipant
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+        - $ref: '#/components/parameters/ParticipantId'
+      responses:
+        '200':
+          description: Updated Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/rooms/{join_code}/participants/{participant_id}/deselect:
+    post:
+      operationId: deselectParticipant
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+        - $ref: '#/components/parameters/ParticipantId'
+      responses:
+        '200':
+          description: Updated Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/rooms/{join_code}/participants/{participant_id}/kick:
+    post:
+      operationId: kickParticipant
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+        - $ref: '#/components/parameters/ParticipantId'
+      responses:
+        '200':
+          description: Updated Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/rooms/{join_code}/fill-with-bots:
+    post:
+      operationId: fillRoomWithBots
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      responses:
+        '200':
+          description: Updated Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/rooms/{join_code}/start:
+    post:
+      operationId: startRoomMatch
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      responses:
+        '200':
+          description: Started Room Match snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/rooms/{join_code}/rematch:
+    post:
+      operationId: rematchRoom
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      responses:
+        '200':
+          description: New Room Match snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/rooms/{join_code}/back-to-lobby:
+    post:
+      operationId: backToLobby
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      responses:
+        '200':
+          description: Room returned to Lobby.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/replays:
+    get:
+      operationId: listAdminReplays
+      tags: [admin]
+      security:
+        - adminCookie: []
+      responses:
+        '200':
+          description: Bounded Replay summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/replays/{match_id}:
+    get:
+      operationId: viewAdminReplay
+      tags: [admin]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      responses:
+        '200':
+          description: Admin-only Replay projection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteAdminReplay
+      tags: [admin]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      responses:
+        '204':
+          description: Replay deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/rooms/{join_code}:
+    get:
+      operationId: lookupRoom
+      tags: [rooms]
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      responses:
+        '200':
+          description: Public bounded Room lookup.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicRoomLookup'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/rooms/{join_code}/join:
+    post:
+      operationId: joinRoom
+      tags: [rooms]
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanJoinRequest'
+      responses:
+        '201':
+          description: Human Guest Session and WebSocket location.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/rooms/{join_code}/agents/join:
+    post:
+      operationId: joinRoomWithMjai
+      tags: [rooms]
+      security:
+        - botBearer: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [display_name]
+              properties:
+                display_name:
+                  $ref: '#/components/schemas/DisplayName'
+      responses:
+        '201':
+          description: MJAI Participant and wrapper WebSocket URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [participant_id, websocket_url]
+                properties:
+                  participant_id:
+                    type: string
+                  websocket_url:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /status:
+    get:
+      operationId: getCompatStatus
+      description: >-
+        Minimum compatibility status response; the upstream protocol contract
+        is not duplicated here.
+      externalDocs:
+        description: >-
+          Provisional riichi.dev compatibility pointer; immutable authenticated
+          evidence is unavailable for this slice.
+        url: https://riichi.dev/
+      responses:
+        '200':
+          description: Compatibility status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicStatus'
+components:
+  securitySchemes:
+    adminCookie:
+      type: apiKey
+      in: cookie
+      name: driichi_admin
+    botBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: BotToken
+  parameters:
+    CharacterId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9-]{1,64}$'
+    TokenId:
+      name: token_id
+      in: path
+      required: true
+      schema:
+        type: string
+    JoinCode:
+      name: join_code
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9]{6}$'
+    ParticipantId:
+      name: participant_id
+      in: path
+      required: true
+      schema:
+        type: string
+    MatchId:
+      name: match_id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Problem:
+      description: RFC 9457-style bounded problem details.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Authentication is required.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, detail, code, request_id]
+      properties:
+        type:
+          type: string
+          const: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+        code:
+          type: string
+          pattern: '^[a-z0-9_]+$'
+        request_id:
+          type: string
+          pattern: '^[0-9A-Z]{26}$'
+    Health:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - commit
+        - uptime_seconds
+        - database
+        - replay_storage
+        - active_rooms
+        - active_room_matches
+        - active_compat_matches
+      properties:
+        version:
+          type: string
+          pattern: '^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$'
+        commit:
+          type: string
+          pattern: '^(?:[0-9a-f]{12}|dev[0-9]{9})$'
+        uptime_seconds:
+          type: integer
+          minimum: 0
+        database:
+          type: string
+          enum: [ok, degraded, not_configured]
+        replay_storage:
+          type: string
+          enum: [ok, degraded, not_configured]
+        active_rooms:
+          type: integer
+          minimum: 0
+        active_room_matches:
+          type: integer
+          minimum: 0
+        active_compat_matches:
+          type: integer
+          minimum: 0
+    PublicStatus:
+      type: object
+      additionalProperties: false
+      required: [status, active_matches]
+      properties:
+        status:
+          type: string
+          const: ok
+        active_matches:
+          type: integer
+          minimum: 0
+    AdminLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          writeOnly: true
+    DisplayName:
+      type: string
+      minLength: 1
+      maxLength: 64
+    BotToken:
+      type: object
+      additionalProperties: false
+      required: [token_id, name, state]
+      properties:
+        token_id:
+          type: string
+        name:
+          $ref: '#/components/schemas/DisplayName'
+        state:
+          type: string
+          enum: [active, revoked]
+    CreatedBotToken:
+      type: object
+      additionalProperties: false
+      required: [token_id, token]
+      properties:
+        token_id:
+          type: string
+        token:
+          type: string
+          writeOnly: true
+        name:
+          $ref: '#/components/schemas/DisplayName'
+    CreateRoomRequest:
+      type: object
+      additionalProperties: false
+      required: [room_name, game_mode]
+      properties:
+        room_name:
+          $ref: '#/components/schemas/DisplayName'
+        game_mode:
+          type: string
+          enum: [4p-red-east, 4p-red-half, 3p-red-east, 3p-red-half]
+        replay_save:
+          type: boolean
+    PatchRoomRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        room_name:
+          $ref: '#/components/schemas/DisplayName'
+        game_mode:
+          type: string
+          enum: [4p-red-east, 4p-red-half, 3p-red-east, 3p-red-half]
+        replay_save:
+          type: boolean
+        participant_limit:
+          type: integer
+          minimum: 3
+          maximum: 32
+    RoomSummary:
+      type: object
+      additionalProperties: true
+      required: [join_code, room_name, game_mode, phase]
+      properties:
+        join_code:
+          type: string
+        room_name:
+          type: string
+        game_mode:
+          type: string
+        phase:
+          type: string
+    RoomDetail:
+      type: object
+      additionalProperties: true
+      required: [join_code, room_name, game_mode, phase]
+      properties:
+        join_code:
+          type: string
+        room_name:
+          type: string
+        game_mode:
+          type: string
+        phase:
+          type: string
+    PublicRoomLookup:
+      type: object
+      additionalProperties: false
+      required:
+        - room_name
+        - game_mode
+        - phase
+        - join_allowed
+        - participant_count
+        - participant_limit
+      properties:
+        room_name:
+          type: string
+        game_mode:
+          type: string
+        phase:
+          type: string
+          enum: [lobby, playing, post_match]
+        join_allowed:
+          type: boolean
+        participant_count:
+          type: integer
+          minimum: 0
+        participant_limit:
+          type: integer
+          minimum: 0
+    HumanJoinRequest:
+      type: object
+      additionalProperties: false
+      required: [nickname, character_id]
+      properties:
+        nickname:
+          $ref: '#/components/schemas/DisplayName'
+        character_id:
+          type: string
+    JoinResponse:
+      type: object
+      additionalProperties: false
+      required: [participant_id, websocket_url]
+      properties:
+        participant_id:
+          type: string
+        websocket_url:
+          type: string

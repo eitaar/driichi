@@ -1,0 +1,15 @@
+{
+  "type": "snapshot",
+  "room": {
+    "join_code": "123456",
+    "room_name": "Contract Room",
+    "game_mode": "4p-red-east",
+    "phase": "lobby",
+    "revision": 1,
+    "participants": [],
+    "match_players": [],
+    "roster": [],
+    "result": null
+  },
+  "state": null
+}
