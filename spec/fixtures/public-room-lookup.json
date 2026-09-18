@@ -1,0 +1,8 @@
+{
+  "room_name": "Contract Room",
+  "game_mode": "4p-red-east",
+  "phase": "lobby",
+  "join_allowed": true,
+  "participant_count": 0,
+  "participant_limit": 4
+}

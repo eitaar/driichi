@@ -1,0 +1,10 @@
+{
+  "version": "0.1.0",
+  "commit": "dev000000000",
+  "uptime_seconds": 0,
+  "database": "ok",
+  "replay_storage": "ok",
+  "active_rooms": 0,
+  "active_room_matches": 0,
+  "active_compat_matches": 0
+}

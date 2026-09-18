@@ -1,0 +1,43 @@
+{
+  "format": "double-riichi-contract-fixtures-v1",
+  "validator": {
+    "script": "scripts/validate_contracts.py",
+    "yaml_dependency": "PyYAML==6.0.3"
+  },
+  "fixtures": [
+    {
+      "file": "health-200.json",
+      "method": "GET",
+      "path": "/api/v1/health",
+      "status": 200,
+      "auth": "admin-cookie"
+    },
+    {
+      "file": "health-503.json",
+      "method": "GET",
+      "path": "/api/v1/health",
+      "status": 503,
+      "auth": "admin-cookie"
+    },
+    {
+      "file": "public-status.json",
+      "method": "GET",
+      "path": "/status",
+      "status": 200,
+      "auth": "none"
+    },
+    {
+      "file": "public-room-lookup.json",
+      "method": "GET",
+      "path": "/api/v1/rooms/{join_code}",
+      "status": 200,
+      "auth": "none"
+    },
+    {
+      "file": "human-snapshot.json",
+      "transport": "websocket",
+      "path": "/ws/v1/rooms/{join_code}/human",
+      "message": "snapshot"
+    }
+  ]
+}

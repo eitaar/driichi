@@ -13,7 +13,7 @@ use axum::{
     Extension, Router,
     body::{Body, Bytes},
     extract::{
-        ConnectInfo, DefaultBodyLimit, Path, RawQuery, State, WebSocketUpgrade,
+        ConnectInfo, DefaultBodyLimit, MatchedPath, Path, RawQuery, State, WebSocketUpgrade,
         rejection::BytesRejection,
         ws::{CloseFrame, Message, WebSocket},
     },
@@ -61,6 +61,7 @@ const HUMAN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const HUMAN_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 const HUMAN_OUTBOUND_CAPACITY: usize = 64;
 const SERVER_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+const OPENAPI_YAML: &str = include_str!("../../../spec/openapi.yaml");
 
 #[derive(Clone, Debug)]
 pub struct ServerLimits {
@@ -209,6 +210,7 @@ pub struct ServerState {
     rate_limiter: Arc<RateLimiter>,
     connection_count: Arc<AtomicUsize>,
     limits: ServerLimits,
+    api_docs_enabled: bool,
     shutdown_seconds: u64,
     started_at: Instant,
     admission_open: Arc<AtomicBool>,
@@ -272,6 +274,11 @@ impl ServerState {
             catalog,
             ServerLimits::default(),
         )
+    }
+
+    pub fn with_api_docs_enabled(mut self, enabled: bool) -> Self {
+        self.api_docs_enabled = enabled;
+        self
     }
 
     pub fn with_limits(mut self, limits: ServerLimits) -> Self {
@@ -382,6 +389,14 @@ impl ServerState {
         self.rooms
             .shutdown(double_riichi_core::ShutdownMode::Graceful)
             .await;
+        if let Some(storage) = &self.storage
+            && let Err(error) = storage.startup_cleanup().await
+        {
+            tracing::warn!(
+                error_kind = error.replay_failure_kind(),
+                "incomplete storage cleanup failed during shutdown"
+            );
+        }
     }
 
     pub async fn from_config(config: RuntimeConfig) -> Result<Self, ServerInitError> {
@@ -435,6 +450,7 @@ impl ServerState {
             .compat
             .set_limits(limits.max_compat_matches, limits.max_ranked_queue);
         state.limits = limits;
+        state.api_docs_enabled = config.api_docs;
         state.shutdown_seconds = config.shutdown_seconds;
         state.mcp_session_idle_seconds = config.mcp_session_idle_seconds;
         state.mcp_character = config.characters.mcp.clone();
@@ -481,6 +497,7 @@ impl ServerState {
             rate_limiter: Arc::new(RateLimiter::new()),
             connection_count: Arc::new(AtomicUsize::new(0)),
             limits,
+            api_docs_enabled: false,
             shutdown_token: CancellationToken::new(),
             admin_mutation_lock: Arc::new(AsyncMutex::new(())),
             replay_probe_ok: Arc::new(AtomicBool::new(true)),
@@ -751,6 +768,19 @@ async fn request_context(
 ) -> Response {
     let request_id = RequestId(generate_ulid());
     let path = request.uri().path().to_owned();
+    let method = request.method().as_str().to_owned();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_owned())
+        .unwrap_or_else(|| "unmatched".to_owned());
+    let peer_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|peer| peer.0.ip().to_string());
+    let auth_record_id = authenticated_record_id(&state, request.headers());
+    let request_ids = request_log_ids(&route, &path);
+    let started_at = Instant::now();
     request.extensions_mut().insert(request_id.clone());
     let mut response = if state.admission_open() {
         next.run(request).await
@@ -811,7 +841,76 @@ async fn request_context(
             .entry(header::CACHE_CONTROL)
             .or_insert(HeaderValue::from_static("no-store"));
     }
+    tracing::info!(
+        request_id = %request_id.0,
+        route = %route,
+        method = %method,
+        status = response.status().as_u16(),
+        latency_ms = started_at.elapsed().as_millis() as u64,
+        peer_ip = peer_ip.as_deref().unwrap_or("unknown"),
+        auth_record_id = auth_record_id.as_deref().unwrap_or("anonymous"),
+        room_id = request_ids.room_id.as_deref().unwrap_or("none"),
+        match_id = request_ids.match_id.as_deref().unwrap_or("none"),
+        participant_id = request_ids.participant_id.as_deref().unwrap_or("none"),
+        "http request"
+    );
     response
+}
+
+#[derive(Default)]
+struct RequestLogIds {
+    room_id: Option<String>,
+    match_id: Option<String>,
+    participant_id: Option<String>,
+}
+
+fn request_log_ids(route: &str, path: &str) -> RequestLogIds {
+    let segments: Vec<_> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let mut ids = RequestLogIds::default();
+    if route.contains("{join_code}") {
+        ids.room_id = segments
+            .windows(2)
+            .find(|window| window[0] == "rooms")
+            .map(|window| window[1].to_owned());
+    }
+    if route.contains("{match_id}") {
+        ids.match_id = segments
+            .windows(2)
+            .find(|window| window[0] == "replays")
+            .map(|window| window[1].to_owned());
+    }
+    if route.contains("{participant_id}") {
+        ids.participant_id = segments
+            .windows(2)
+            .find(|window| window[0] == "participants")
+            .map(|window| window[1].to_owned());
+    }
+    ids
+}
+
+fn authenticated_record_id(state: &ServerState, headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = cookie_value(headers, ADMIN_SESSION_COOKIE)
+        && let Ok(credential) = URL_SAFE_NO_PAD.decode(value.as_bytes())
+        && state
+            .admin
+            .sessions()
+            .validate(&credential, SystemTime::now())
+    {
+        return Some("admin".to_owned());
+    }
+    let raw_token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty() && !value.contains(char::is_whitespace));
+    state
+        .bot_tokens
+        .as_ref()
+        .and_then(|service| raw_token.and_then(|token| service.authenticate(token).ok()))
+        .map(|record| record.token_id().to_owned())
 }
 
 async fn not_found(Extension(request_id): Extension<RequestId>) -> Response {
@@ -828,6 +927,7 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
     let mcp_runtime = crate::mcp::McpRuntime::new(state.clone());
     Router::new()
         .route("/api/v1/health", get(health))
+        .route("/api/v1/openapi.yaml", get(openapi_document))
         .route("/api/v1/characters/human", get(human_characters))
         .route(
             "/assets/characters/{id}/portrait.webp",
@@ -3714,8 +3814,8 @@ async fn health(
             StatusCode::SERVICE_UNAVAILABLE
         },
         json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "commit": option_env!("GIT_COMMIT").unwrap_or("unknown"),
+            "version": crate::BUILD_VERSION,
+            "commit": crate::BUILD_COMMIT,
             "uptime_seconds": uptime,
             "database": database,
             "replay_storage": replay_storage,
@@ -3724,6 +3824,30 @@ async fn health(
             "active_compat_matches": active_compat_matches,
         }),
     )
+}
+
+async fn openapi_document(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if !state.api_docs_enabled {
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            "Not found",
+            "The requested resource does not exist.",
+            "not_found",
+        )
+        .response(&request_id);
+    }
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/yaml")
+        .body(Body::from(OPENAPI_YAML))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
 async fn human_characters(State(state): State<Arc<ServerState>>) -> Response {

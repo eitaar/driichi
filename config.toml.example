@@ -2,6 +2,10 @@
 # The config file's parent is the runtime data root.
 bind = "127.0.0.1:3000"
 public_origin = "http://127.0.0.1:3000"
+# Raw OpenAPI YAML is Admin-only and disabled unless explicitly enabled.
+api_docs = false
+# Request logs are allowlisted and secret-safe; text is the default.
+tracing_format = "text"
 unlimited_watchdog_seconds = 300
 mcp_session_idle_seconds = 1800
 empty_room_cleanup_seconds = 3600
