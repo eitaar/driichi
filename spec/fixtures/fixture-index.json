@@ -2,7 +2,12 @@
   "format": "double-riichi-contract-fixtures-v1",
   "validator": {
     "script": "scripts/validate_contracts.py",
-    "yaml_dependency": "PyYAML==6.0.3"
+    "python_requirements": "scripts/requirements-contracts.txt",
+    "yaml_dependency": "PyYAML==6.0.3",
+    "jsonschema_dependency": "jsonschema==4.25.1",
+    "openapi_dependency": "openapi-spec-validator==0.7.2",
+    "asyncapi_schema": "spec/asyncapi-schema-3.0.0.json",
+    "asyncapi_schema_source": "spec/asyncapi-schema-3.0.0.source"
   },
   "fixtures": [
     {

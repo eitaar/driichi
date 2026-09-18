@@ -1,0 +1,4 @@
+source_package = @asyncapi/specs
+source_version = 6.11.1
+source_path = schemas/3.0.0-without-$id.json
+sha256 = abe96881dbfaad495ccbb6bd8d3fb43ca18a13b9d7564849ccb66f39d5e5b20f

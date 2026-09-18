@@ -22,9 +22,7 @@ channels:
     parameters:
       join_code:
         description: Six-character Room join code.
-        schema:
-          type: string
-          pattern: '^[0-9]{6}$'
+        examples: ["123456"]
     messages:
       clientMessage:
         $ref: '#/components/messages/humanClientMessage'
@@ -39,9 +37,7 @@ channels:
     parameters:
       join_code:
         description: Six-character Room join code.
-        schema:
-          type: string
-          pattern: '^[0-9]{6}$'
+        examples: ["123456"]
     bindings:
       ws:
         query:
@@ -252,12 +248,38 @@ components:
         Audience-projected Player state. Concealed information is limited to
         the authenticated Participant and is never canonical Match state.
     roomEvent:
+      oneOf:
+        - $ref: '#/components/schemas/selectionChangedEvent'
+        - $ref: '#/components/schemas/phaseChangedEvent'
+        - $ref: '#/components/schemas/genericRoomEvent'
+    selectionChangedEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: selection_changed
+    phaseChangedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, phase]
+      properties:
+        type:
+          type: string
+          const: phase_changed
+        phase:
+          type: string
+          enum: [lobby, playing, post_match]
+    genericRoomEvent:
       type: object
       additionalProperties: true
       required: [type]
       properties:
         type:
           type: string
+          not:
+            enum: [selection_changed, phase_changed]
           enum:
             - snapshot
             - participant_joined

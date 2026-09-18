@@ -927,7 +927,7 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
     let mcp_runtime = crate::mcp::McpRuntime::new(state.clone());
     Router::new()
         .route("/api/v1/health", get(health))
-        .route("/api/v1/openapi.yaml", get(openapi_document))
+        .route("/api/v1/admin/openapi.yaml", get(openapi_document))
         .route("/api/v1/characters/human", get(human_characters))
         .route(
             "/assets/characters/{id}/portrait.webp",
