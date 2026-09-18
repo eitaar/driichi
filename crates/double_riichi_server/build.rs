@@ -36,14 +36,36 @@ fn watch_git_metadata() {
     let Some(git_dir) = git_dir(&git_entry) else {
         return;
     };
+    let common_dir = common_git_dir(&git_dir);
     println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        common_dir.join("HEAD").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        common_dir.join("packed-refs").display()
+    );
     if let Ok(head) = fs::read_to_string(git_dir.join("HEAD"))
         && let Some(reference) = head.trim().strip_prefix("ref: ")
     {
         println!(
             "cargo:rerun-if-changed={}",
-            git_dir.join(reference).display()
+            common_dir.join(reference).display()
         );
+    }
+}
+
+fn common_git_dir(git_dir: &Path) -> PathBuf {
+    let path = git_dir.join("commondir");
+    let Ok(value) = fs::read_to_string(path) else {
+        return git_dir.to_owned();
+    };
+    let value = Path::new(value.trim());
+    if value.is_absolute() {
+        value.to_owned()
+    } else {
+        git_dir.join(value)
     }
 }
 

@@ -1,38 +1,68 @@
 #!/usr/bin/env python3
 """Validate hand-authored contracts, fixtures, and the Axum route inventory.
 
-The validator intentionally has one exact YAML parser pin so contract checks do
-not silently vary between developer and CI environments.
+The validator uses exact-pinned Python distributions and the official
+AsyncAPI 3.0.0 JSON Schema vendored at a pinned source revision. It never
+writes generated contract source.
 """
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import json
 import re
 import sys
+import warnings
 from pathlib import Path
+from typing import Any, NoReturn
 
 YAML_VERSION = "6.0.3"
+JSONSCHEMA_VERSION = "4.25.1"
+OPENAPI_VALIDATOR_VERSION = "0.7.2"
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec"
 FIXTURES = SPEC / "fixtures"
 ROUTER_SOURCE = ROOT / "crates" / "double_riichi_server" / "src" / "http.rs"
+ASYNCAPI_SCHEMA = SPEC / "asyncapi-schema-3.0.0.json"
+ASYNCAPI_SCHEMA_SOURCE = SPEC / "asyncapi-schema-3.0.0.source"
+ASYNCAPI_SCHEMA_SHA256 = "abe96881dbfaad495ccbb6bd8d3fb43ca18a13b9d7564849ccb66f39d5e5b20f"
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     raise SystemExit(f"contract validation failed: {message}")
 
 
-def load_yaml(path: Path) -> dict:
+def require_distribution(name: str, expected: str) -> None:
+    try:
+        actual = importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError as error:
+        fail(
+            f"{name}=={expected} is required; run `just contracts-install` "
+            f"({error})"
+        )
+    if actual != expected:
+        fail(f"expected {name}=={expected}, found {actual}")
+
+
+def validate_requirements_lock() -> None:
+    requirements = ROOT / "scripts" / "requirements-contracts.txt"
+    for line in requirements.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, expected = line.partition("==")
+        if not separator or not name or not expected:
+            fail(f"contract dependency is not exactly pinned: {line!r}")
+        require_distribution(name, expected)
+
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    require_distribution("PyYAML", YAML_VERSION)
     try:
         import yaml
-    except ImportError as error:  # pragma: no cover - environment failure
-        fail(f"PyYAML=={YAML_VERSION} is required ({error})")
-    if getattr(yaml, "__version__", None) != YAML_VERSION:
-        fail(
-            f"expected PyYAML=={YAML_VERSION}, found "
-            f"{getattr(yaml, '__version__', 'unknown')}"
-        )
+    except ImportError as error:  # pragma: no cover - distribution failure
+        fail(f"PyYAML=={YAML_VERSION} cannot be imported ({error})")
     try:
         value = yaml.safe_load(path.read_text(encoding="utf-8"))
     except Exception as error:  # pragma: no cover - parser diagnostics
@@ -42,97 +72,324 @@ def load_yaml(path: Path) -> dict:
     return value
 
 
-def load_json(name: str) -> dict:
+def load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        fail(f"missing {path.relative_to(ROOT)} ({error})")
+    except json.JSONDecodeError as error:
+        fail(f"{path.relative_to(ROOT)} is not valid JSON: {error}")
+
+
+def load_fixture(name: str) -> dict[str, Any]:
     path = FIXTURES / name
     raw = path.read_bytes()
     if b"\0" in raw:
         fail(f"{path.relative_to(ROOT)} contains NUL bytes")
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as error:
-        fail(f"{path.relative_to(ROOT)} is not valid JSON: {error}")
+    value = load_json(path)
     if not isinstance(value, dict):
         fail(f"{path.relative_to(ROOT)} must contain an object")
     return value
 
 
-def validate_fixtures() -> None:
-    index = load_json("fixture-index.json")
+def schema_at(document: dict[str, Any], reference: str) -> dict[str, Any]:
+    if not reference.startswith("#/"):
+        fail(f"unsupported local schema reference {reference}")
+    value: Any = document
+    for part in reference[2:].split("/"):
+        value = value[part.replace("~1", "/").replace("~0", "~")]
+    if not isinstance(value, dict):
+        fail(f"schema reference {reference} does not resolve to an object")
+    return value
+
+
+def validate_instance(
+    instance: Any,
+    schema: dict[str, Any],
+    root: dict[str, Any],
+    label: str,
+) -> None:
+    require_distribution("jsonschema", JSONSCHEMA_VERSION)
+    error = None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            from jsonschema import Draft202012Validator, RefResolver
+
+        validator = Draft202012Validator(
+            schema,
+            resolver=RefResolver.from_schema(root),
+        )
+        error = next(iter(validator.iter_errors(instance)), None)
+    except Exception as validation_error:  # pragma: no cover - dependency diagnostics
+        fail(f"{label} schema validation could not run ({validation_error})")
+    if error is not None:
+        location = ".".join(str(part) for part in error.absolute_path) or "$"
+        fail(f"{label} violates schema at {location}: {error.message}")
+
+
+def validate_official_documents(openapi: dict[str, Any], asyncapi: dict[str, Any]) -> None:
+    require_distribution("openapi-spec-validator", OPENAPI_VALIDATOR_VERSION)
+    require_distribution("jsonschema", JSONSCHEMA_VERSION)
+    try:
+        validate_spec = importlib.import_module("openapi_spec_validator").validate_spec
+    except ImportError as error:  # pragma: no cover - distribution failure
+        fail(f"openapi-spec-validator=={OPENAPI_VALIDATOR_VERSION} cannot import ({error})")
+    try:
+        validate_spec(openapi)
+    except Exception as error:
+        fail(f"OpenAPI official schema validation failed: {error}")
+
+    source = ASYNCAPI_SCHEMA_SOURCE.read_text(encoding="utf-8")
+    if "source_package = @asyncapi/specs" not in source or "source_version = 6.11.1" not in source:
+        fail("AsyncAPI schema source metadata is not pinned")
+    if hashlib.sha256(ASYNCAPI_SCHEMA.read_bytes()).hexdigest() != ASYNCAPI_SCHEMA_SHA256:
+        fail("vendored AsyncAPI schema checksum does not match its pinned source")
+    schema = load_json(ASYNCAPI_SCHEMA)
+    if not isinstance(schema, dict):
+        fail("vendored AsyncAPI schema must contain an object")
+    try:
+        from jsonschema import Draft7Validator
+
+        Draft7Validator.check_schema(schema)
+        errors = sorted(Draft7Validator(schema).iter_errors(asyncapi), key=lambda item: list(item.path))
+    except Exception as error:  # pragma: no cover - dependency diagnostics
+        fail(f"AsyncAPI official schema validation could not run ({error})")
+    if errors:
+        error = errors[0]
+        location = ".".join(str(part) for part in error.absolute_path) or "$"
+        fail(f"AsyncAPI official schema validation failed at {location}: {error.message}")
+
+
+def route_operations(source: str) -> dict[str, set[str]]:
+    """Extract route methods without relying on generated source or line layout."""
+
+    operations: dict[str, set[str]] = {}
+    methods = {"get", "post", "put", "patch", "delete", "head", "options", "trace", "any"}
+    cursor = 0
+    while True:
+        start = source.find(".route(", cursor)
+        if start < 0:
+            return operations
+        path_match = re.match(r'\.route\(\s*"([^"]+)"\s*,', source[start:])
+        if path_match is None:
+            fail(f"could not parse router route near byte {start}")
+        path = path_match.group(1)
+        body_start = start + path_match.end()
+        depth = 1
+        index = body_start
+        quote = False
+        escaped = False
+        while index < len(source) and depth:
+            character = source[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    quote = False
+            elif character == '"':
+                quote = True
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+            index += 1
+        if depth:
+            fail(f"unterminated router route for {path}")
+        body = source[body_start : index - 1]
+        found = set(re.findall(r"\b(" + "|".join(methods) + r")\s*\(", body))
+        if not found:
+            fail(f"router route {path} has no HTTP method")
+        operations.setdefault(path, set()).update(found)
+        cursor = index
+
+
+def validate_router_mapping(openapi: dict[str, Any]) -> None:
+    source_operations = route_operations(ROUTER_SOURCE.read_text(encoding="utf-8"))
+    local_operations = {
+        path: methods
+        for path, methods in source_operations.items()
+        if path.startswith(("/api/v1/", "/assets/")) or path == "/status"
+    }
+    contract_operations = {
+        path: {
+            method.lower()
+            for method in item
+            if method.lower()
+            in {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+        }
+        for path, item in openapi.get("paths", {}).items()
+        if isinstance(item, dict)
+    }
+    if local_operations != contract_operations:
+        missing = sorted(
+            (path, method)
+            for path, methods in local_operations.items()
+            for method in methods - contract_operations.get(path, set())
+        )
+        extra = sorted(
+            (path, method)
+            for path, methods in contract_operations.items()
+            for method in methods - local_operations.get(path, set())
+        )
+        fail(f"router/OpenAPI method mismatch; missing={missing}, extra={extra}")
+
+
+def validate_dto_contracts(openapi: dict[str, Any]) -> None:
+    schemas = openapi["components"]["schemas"]
+    login = openapi["paths"]["/api/v1/admin/login"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+    if set(login.get("required", [])) != {"expires_at"} or set(login.get("properties", {})) != {"expires_at"}:
+        fail("Admin login response must be exactly expires_at")
+    for name in ("BotToken", "CreatedBotToken"):
+        schema = schemas[name]
+        required = set(schema.get("required", []))
+        if not {"token_id", "name", "state", "created_at", "revoked_at"}.issubset(required):
+            fail(f"{name} is missing durable state fields")
+        if schema["properties"]["state"].get("enum") != ["active", "revoked"]:
+            fail(f"{name}.state does not match TokenState")
+        if schema["properties"]["created_at"].get("format") != "date-time":
+            fail(f"{name}.created_at must be RFC3339")
+        if schema["properties"]["revoked_at"].get("type") != ["string", "null"]:
+            fail(f"{name}.revoked_at must be nullable RFC3339")
+    if "token" not in schemas["CreatedBotToken"]["required"]:
+        fail("CreatedBotToken.token is missing")
+
+    for name in ("CreateRoomRequest", "PatchRoomRequest"):
+        properties = schemas[name]["properties"]
+        if set(properties) != {
+            "room_name",
+            "game_mode",
+            "time_control",
+            "replay_save",
+            "participant_limit",
+        }:
+            fail(f"{name} does not enumerate the complete accepted field set")
+        if properties["time_control"].get("enum") != [
+            "casual",
+            "riichi_dev",
+            "riichi-dev",
+            "unlimited",
+        ]:
+            fail(f"{name}.time_control enum does not match runtime")
+        if properties["participant_limit"].get("minimum") != 3 or properties["participant_limit"].get("maximum") != 32:
+            fail(f"{name}.participant_limit bounds do not match runtime")
+
+
+def validate_asyncapi_events(asyncapi: dict[str, Any]) -> None:
+    schemas = asyncapi["components"]["schemas"]
+    room_event = schemas["roomEvent"]
+    refs = {item.get("$ref") for item in room_event.get("oneOf", [])}
+    if "#/components/schemas/selectionChangedEvent" not in refs:
+        fail("Human roomEvent does not define selection_changed")
+    if "#/components/schemas/phaseChangedEvent" not in refs:
+        fail("Human roomEvent does not define phase_changed")
+    if schemas["selectionChangedEvent"]["properties"]["type"].get("const") != "selection_changed":
+        fail("selection_changed schema is not exact")
+    phase = schemas["phaseChangedEvent"]
+    if phase["properties"]["type"].get("const") != "phase_changed":
+        fail("phase_changed schema is not exact")
+    if phase["properties"]["phase"].get("enum") != ["lobby", "playing", "post_match"]:
+        fail("phase_changed schema has the wrong phase enum")
+
+
+def expected_fixture_metadata() -> dict[str, dict[str, Any]]:
+    return {
+        "health-200.json": {
+            "file": "health-200.json",
+            "method": "GET",
+            "path": "/api/v1/health",
+            "status": 200,
+            "auth": "admin-cookie",
+        },
+        "health-503.json": {
+            "file": "health-503.json",
+            "method": "GET",
+            "path": "/api/v1/health",
+            "status": 503,
+            "auth": "admin-cookie",
+        },
+        "public-status.json": {
+            "file": "public-status.json",
+            "method": "GET",
+            "path": "/status",
+            "status": 200,
+            "auth": "none",
+        },
+        "public-room-lookup.json": {
+            "file": "public-room-lookup.json",
+            "method": "GET",
+            "path": "/api/v1/rooms/{join_code}",
+            "status": 200,
+            "auth": "none",
+        },
+        "human-snapshot.json": {
+            "file": "human-snapshot.json",
+            "transport": "websocket",
+            "path": "/ws/v1/rooms/{join_code}/human",
+            "message": "snapshot",
+        },
+    }
+
+
+def validate_fixtures(openapi: dict[str, Any], asyncapi: dict[str, Any]) -> None:
+    index = load_fixture("fixture-index.json")
     if index.get("format") != "double-riichi-contract-fixtures-v1":
         fail("fixture index format is not pinned")
-    if index.get("validator", {}).get("yaml_dependency") != "PyYAML==6.0.3":
-        fail("fixture index does not pin the YAML validator")
+    validator_metadata = index.get("validator", {})
+    if validator_metadata != {
+        "script": "scripts/validate_contracts.py",
+        "python_requirements": "scripts/requirements-contracts.txt",
+        "yaml_dependency": "PyYAML==6.0.3",
+        "jsonschema_dependency": "jsonschema==4.25.1",
+        "openapi_dependency": "openapi-spec-validator==0.7.2",
+        "asyncapi_schema": "spec/asyncapi-schema-3.0.0.json",
+        "asyncapi_schema_source": "spec/asyncapi-schema-3.0.0.source",
+    }:
+        fail("fixture index validator metadata is not exact")
     entries = index.get("fixtures")
-    if not isinstance(entries, list) or len(entries) != 5:
-        fail("fixture index must list exactly five representative fixtures")
-    expected = {
-        "health-200.json",
-        "health-503.json",
-        "public-status.json",
-        "public-room-lookup.json",
-        "human-snapshot.json",
-    }
-    if {entry.get("file") for entry in entries} != expected:
+    expected = expected_fixture_metadata()
+    if not isinstance(entries, list) or {entry.get("file") for entry in entries} != set(expected):
         fail("fixture index entries do not match the retained fixture set")
+    for entry in entries:
+        if entry != expected.get(entry.get("file")):
+            fail(f"fixture metadata is not exact for {entry.get('file')}")
 
-    health_fields = {
-        "version",
-        "commit",
-        "uptime_seconds",
-        "database",
-        "replay_storage",
-        "active_rooms",
-        "active_room_matches",
-        "active_compat_matches",
-    }
-    for name in ("health-200.json", "health-503.json"):
-        value = load_json(name)
-        if set(value) != health_fields:
-            fail(f"{name} has an uncontracted health field")
-        if value["database"] not in {"ok", "degraded", "not_configured"}:
-            fail(f"{name} has an invalid database state")
-        if value["replay_storage"] not in {"ok", "degraded", "not_configured"}:
-            fail(f"{name} has an invalid replay state")
-        if not isinstance(value["commit"], str) or len(value["commit"]) != 12:
-            fail(f"{name} must use a short commit placeholder")
-        for key in health_fields - {"version", "commit", "database", "replay_storage"}:
-            if not isinstance(value[key], int) or value[key] < 0:
-                fail(f"{name} has an unbounded {key}")
+    health_schema = schema_at(openapi, "#/components/schemas/Health")
+    status_schema = schema_at(openapi, "#/components/schemas/PublicStatus")
+    room_schema = schema_at(openapi, "#/components/schemas/PublicRoomLookup")
+    snapshot_schema = schema_at(asyncapi, "#/components/schemas/snapshotMessage")
+    for name, schema, document in [
+        ("health-200.json", health_schema, openapi),
+        ("health-503.json", health_schema, openapi),
+        ("public-status.json", status_schema, openapi),
+        ("public-room-lookup.json", room_schema, openapi),
+        ("human-snapshot.json", snapshot_schema, asyncapi),
+    ]:
+        validate_instance(load_fixture(name), schema, document, name)
 
-    if load_json("public-status.json") != {"status": "ok", "active_matches": 0}:
-        fail("public-status fixture is not the minimum pinned response")
+    if load_fixture("health-200.json")["database"] != "ok":
+        fail("health-200 fixture does not represent database ok")
+    if load_fixture("health-503.json")["database"] != "degraded":
+        fail("health-503 fixture does not represent database degraded")
+    human_message = asyncapi["components"]["messages"]["humanServerMessage"]["payload"]
+    if not any(
+        reference.get("$ref") == "#/components/schemas/snapshotMessage"
+        for reference in human_message.get("oneOf", [])
+    ):
+        fail("Human server messages do not include snapshot")
 
-    room = load_json("public-room-lookup.json")
-    if set(room) != {
-        "room_name",
-        "game_mode",
-        "phase",
-        "join_allowed",
-        "participant_count",
-        "participant_limit",
-    }:
-        fail("public-room-lookup fixture contains an uncontracted field")
-    if room["phase"] not in {"lobby", "playing", "post_match"}:
-        fail("public-room-lookup fixture has an invalid phase")
-
-    snapshot = load_json("human-snapshot.json")
-    if snapshot.get("type") != "snapshot" or set(snapshot) != {"type", "room", "state"}:
-        fail("human snapshot fixture does not match AsyncAPI")
-    if set(snapshot["room"]) != {
-        "join_code",
-        "room_name",
-        "game_mode",
-        "phase",
-        "revision",
-        "participants",
-        "match_players",
-        "roster",
-        "result",
-    }:
-        fail("human snapshot room contains an uncontracted field")
+    for entry in entries:
+        if "method" not in entry:
+            continue
+        response = openapi["paths"][entry["path"]][entry["method"].lower()]["responses"]
+        if str(entry["status"]) not in response:
+            fail(f"fixture status {entry['status']} is absent from {entry['path']}")
 
 
 def validate_contracts() -> None:
+    validate_requirements_lock()
     openapi = load_yaml(SPEC / "openapi.yaml")
     asyncapi = load_yaml(SPEC / "asyncapi.yaml")
     if openapi.get("openapi") != "3.1.0":
@@ -142,41 +399,22 @@ def validate_contracts() -> None:
     paths = openapi.get("paths")
     if not isinstance(paths, dict) or "/api/v1/health" not in paths:
         fail("OpenAPI health path is missing")
-    if "/mcp" in paths or any(path.startswith("/ws/") for path in paths):
-        fail("OpenAPI must not duplicate MCP or Human WebSocket schemas")
+    if any(path.startswith("/ws/") for path in paths) or "/mcp" in paths:
+        fail("OpenAPI must not duplicate Human WebSocket or MCP schemas")
     if "adminCookie" not in openapi.get("components", {}).get("securitySchemes", {}):
         fail("OpenAPI admin cookie scheme is missing")
-    health = openapi["components"]["schemas"]["Health"]
-    if health["properties"]["commit"]["pattern"] != r"^(?:[0-9a-f]{12}|dev[0-9]{9})$":
-        fail("OpenAPI commit schema is not short-SHA bounded")
-
-    channels = asyncapi.get("channels", {})
-    if "humanRoom" not in channels or "roomMjaiWrapper" not in channels:
-        fail("AsyncAPI Human or Room MJAI wrapper channel is missing")
-    wrapper = channels["roomMjaiWrapper"]
-    if "externalDocs" not in wrapper or "x-upstream-contract" not in wrapper:
-        fail("Room MJAI does not retain its upstream pointer")
-    if "mcp" in str(asyncapi).lower():
-        fail("AsyncAPI must not duplicate MCP schema")
-
-    source = ROUTER_SOURCE.read_text(encoding="utf-8")
-    source_paths = set(re.findall(r"\.route\(\s*\"([^\"]+)\"", source))
-    contract_paths = set(paths)
-    local_paths = {
-        path
-        for path in source_paths
-        if path.startswith("/api/v1/") or path.startswith("/assets/") or path == "/status"
-    }
-    if local_paths != contract_paths:
-        missing = sorted(local_paths - contract_paths)
-        extra = sorted(contract_paths - local_paths)
-        fail(f"router/OpenAPI path mismatch; missing={missing}, extra={extra}")
+    if "/api/v1/admin/openapi.yaml" not in paths:
+        fail("Admin-gated OpenAPI path is missing")
+    validate_dto_contracts(openapi)
+    validate_asyncapi_events(asyncapi)
+    validate_official_documents(openapi, asyncapi)
+    validate_router_mapping(openapi)
+    validate_fixtures(openapi, asyncapi)
 
 
 def main() -> int:
     validate_contracts()
-    validate_fixtures()
-    print("contract validation passed: OpenAPI, AsyncAPI, fixtures, and router paths")
+    print("contract validation passed: official OpenAPI/AsyncAPI schemas, fixtures, and router methods")
     return 0
 
 

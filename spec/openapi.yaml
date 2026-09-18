@@ -35,7 +35,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Health'
-  /api/v1/openapi.yaml:
+  /api/v1/admin/openapi.yaml:
     get:
       operationId: getOpenApiDocument
       tags: [admin]
@@ -145,11 +145,11 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [authenticated]
+                required: [expires_at]
                 properties:
-                  authenticated:
-                    type: boolean
-                    const: true
+                  expires_at:
+                    type: string
+                    format: date-time
         '400':
           $ref: '#/components/responses/Problem'
         '401':
@@ -689,7 +689,7 @@ components:
       properties:
         version:
           type: string
-          pattern: '^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$'
+          pattern: '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$'
         commit:
           type: string
           pattern: '^(?:[0-9a-f]{12}|dev[0-9]{9})$'
@@ -739,7 +739,7 @@ components:
     BotToken:
       type: object
       additionalProperties: false
-      required: [token_id, name, state]
+      required: [token_id, name, state, created_at, revoked_at]
       properties:
         token_id:
           type: string
@@ -748,10 +748,16 @@ components:
         state:
           type: string
           enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, 'null']
+          format: date-time
     CreatedBotToken:
       type: object
       additionalProperties: false
-      required: [token_id, token]
+      required: [token_id, name, state, created_at, revoked_at, token]
       properties:
         token_id:
           type: string
@@ -760,6 +766,15 @@ components:
           writeOnly: true
         name:
           $ref: '#/components/schemas/DisplayName'
+        state:
+          type: string
+          enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, 'null']
+          format: date-time
     CreateRoomRequest:
       type: object
       additionalProperties: false
@@ -772,6 +787,13 @@ components:
           enum: [4p-red-east, 4p-red-half, 3p-red-east, 3p-red-half]
         replay_save:
           type: boolean
+        time_control:
+          type: string
+          enum: [casual, riichi_dev, riichi-dev, unlimited]
+        participant_limit:
+          type: integer
+          minimum: 3
+          maximum: 32
     PatchRoomRequest:
       type: object
       additionalProperties: false
@@ -782,6 +804,9 @@ components:
         game_mode:
           type: string
           enum: [4p-red-east, 4p-red-half, 3p-red-east, 3p-red-half]
+        time_control:
+          type: string
+          enum: [casual, riichi_dev, riichi-dev, unlimited]
         replay_save:
           type: boolean
         participant_limit:

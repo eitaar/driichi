@@ -13,7 +13,10 @@ test-frontend:
     npm ci --prefix frontend
     npm run typecheck --prefix frontend
 
-test-contract:
+contracts-install:
+    python -m pip install --disable-pip-version-check --no-input --requirement scripts/requirements-contracts.txt
+
+test-contract: contracts-install
     python scripts/validate_contracts.py
     cargo test -p double_riichi_server --test task16_contracts -- --test-threads=1
 
