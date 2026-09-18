@@ -51,13 +51,13 @@ pub fn parse_mjson(input: impl AsRef<str>) -> Result<Vec<CanonicalEvent>, Replay
                     });
                 }
             };
-            if let Some(previous) = mode {
-                if previous.seat_count() != inferred.seat_count() {
-                    return Err(ReplayError::Corrupt {
-                        line: index + 1,
-                        message: "replay changes player count between kyoku events".into(),
-                    });
-                }
+            if let Some(previous) = mode
+                && previous.seat_count() != inferred.seat_count()
+            {
+                return Err(ReplayError::Corrupt {
+                    line: index + 1,
+                    message: "replay changes player count between kyoku events".into(),
+                });
             }
             mode = Some(inferred);
         }
@@ -595,15 +595,15 @@ pub(crate) fn validate_event(event: &CanonicalEvent, mode: GameMode) -> Result<(
             if let Some(ura_markers) = ura_markers {
                 tiles(ura_markers)?;
             }
-            if let Some(scores) = scores {
-                if scores.len() != mode.seat_count() {
-                    return Err("hora scores have the wrong player count".into());
-                }
+            if let Some(scores) = scores
+                && scores.len() != mode.seat_count()
+            {
+                return Err("hora scores have the wrong player count".into());
             }
-            if let Some(delta) = delta {
-                if delta.len() != mode.seat_count() {
-                    return Err("hora delta has the wrong player count".into());
-                }
+            if let Some(delta) = delta
+                && delta.len() != mode.seat_count()
+            {
+                return Err("hora delta has the wrong player count".into());
             }
             Ok(())
         }
@@ -621,15 +621,15 @@ pub(crate) fn validate_event(event: &CanonicalEvent, mode: GameMode) -> Result<(
                     tiles(hand)?;
                 }
             }
-            if let Some(delta) = delta {
-                if delta.len() != mode.seat_count() {
-                    return Err("ryukyoku delta has the wrong player count".into());
-                }
+            if let Some(delta) = delta
+                && delta.len() != mode.seat_count()
+            {
+                return Err("ryukyoku delta has the wrong player count".into());
             }
-            if let Some(scores) = scores {
-                if scores.len() != mode.seat_count() {
-                    return Err("ryukyoku scores have the wrong player count".into());
-                }
+            if let Some(scores) = scores
+                && scores.len() != mode.seat_count()
+            {
+                return Err("ryukyoku scores have the wrong player count".into());
             }
             Ok(())
         }

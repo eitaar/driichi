@@ -5,8 +5,9 @@ use double_riichi_core::{
 };
 use double_riichi_replay::{
     AuxiliaryEvent, AuxiliaryPhase, CanonicalEvent, MAX_REPLAY_FRAME_BYTES, ReplayError,
-    ReplayFrame, ReplayWriter, build_replay_frames, encode_replay_frames, frames_from_artifact,
-    parse_mjson, resolve_replay_path, serialize_event, startup_cleanup,
+    ReplayFrame, ReplayWriter, build_replay_frames, build_replay_frames_for_mode,
+    encode_replay_frames, frames_from_artifact, parse_mjson, resolve_replay_path, serialize_event,
+    startup_cleanup,
 };
 
 fn three_player_start_events() -> Vec<CanonicalEvent> {
@@ -215,6 +216,9 @@ fn registered_relative_paths_are_revalidated_below_the_replay_root() {
     assert!(resolve_replay_path(&root, "4p/replay.mjson").is_ok());
     assert!(resolve_replay_path(&root, "../replay.mjson").is_err());
     assert!(resolve_replay_path(&root, root.join("4p/replay.mjson")).is_err());
+    fs::remove_file(root.join("4p/replay.mjson")).unwrap();
+    fs::remove_dir(root.join("4p")).unwrap();
+    assert!(resolve_replay_path(&root, "4p/missing/replay.mjson").is_ok());
     let _ = fs::remove_dir_all(root);
 }
 
@@ -390,6 +394,52 @@ fn startup_cleanup_removes_parts_and_renamed_files_for_incomplete_matches_but_ke
             .exists()
     );
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn reconstruction_uses_the_stored_half_game_mode() {
+    let frames =
+        build_replay_frames_for_mode(&start_events(), GameMode::FourPlayerRedHalf).unwrap();
+    assert_eq!(frames[1].visible_state.mode, GameMode::FourPlayerRedHalf);
+}
+
+#[test]
+fn reconstruction_rejects_semantically_impossible_discards_and_melds() {
+    let mut outside_kyoku = start_events();
+    outside_kyoku.insert(
+        1,
+        GameEvent::Tsumo {
+            actor: Seat::new(0).unwrap(),
+            tile: Tile::from_id(1).unwrap(),
+        },
+    );
+    assert!(matches!(
+        build_replay_frames(&outside_kyoku),
+        Err(ReplayError::InvalidEvent(message)) if message.contains("outside an active kyoku")
+    ));
+
+    let mut missing_discard = start_events();
+    missing_discard.push(GameEvent::Dahai {
+        actor: Seat::new(0).unwrap(),
+        tile: Tile::from_id(1).unwrap(),
+        tsumogiri: false,
+    });
+    assert!(matches!(
+        build_replay_frames(&missing_discard),
+        Err(ReplayError::InvalidEvent(message)) if message.contains("not in concealed hand")
+    ));
+
+    let mut missing_meld_tile = start_events();
+    missing_meld_tile.push(GameEvent::Pon {
+        actor: Seat::new(1).unwrap(),
+        target: Seat::new(0).unwrap(),
+        called: Tile::from_id(0).unwrap(),
+        consumed: vec![Tile::from_id(1).unwrap(), Tile::from_id(1).unwrap()],
+    });
+    assert!(matches!(
+        build_replay_frames(&missing_meld_tile),
+        Err(ReplayError::InvalidEvent(message)) if message.contains("not in concealed hand")
+    ));
 }
 
 #[test]

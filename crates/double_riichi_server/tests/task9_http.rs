@@ -660,6 +660,16 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
     let created_body = body(created).await;
     let raw = created_body["token"].as_str().unwrap().to_owned();
     let token_id = created_body["token_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'token_create' AND target_id = ?",
+        )
+        .bind(&token_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        1
+    );
     let room = state
         .rooms()
         .create(double_riichi_core::RoomConfig::new(
@@ -735,6 +745,16 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
         .unwrap();
     assert_eq!(revoked.status(), 200);
     assert_eq!(body(revoked).await["state"], "revoked");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'token_revoke' AND target_id = ?",
+        )
+        .bind(&token_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        1
+    );
     let active_seat = room
         .snapshot()
         .await
@@ -762,6 +782,16 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
         .await
         .unwrap();
     assert_eq!(again.status(), 200);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'token_revoke' AND target_id = ?",
+        )
+        .bind(&token_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        1
+    );
     storage.close().await;
     let _ = fs::remove_dir_all(root);
 }

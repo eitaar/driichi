@@ -331,9 +331,7 @@ impl ReplayWriter {
             self.fail_and_cleanup();
             return Err(error);
         }
-        if let Err(error) = self.flush_buffer() {
-            return Err(error);
-        }
+        self.flush_buffer()?;
         let result = self.finalize_inner();
         if result.is_err() {
             self.fail_and_cleanup();
@@ -373,11 +371,11 @@ impl ReplayWriter {
 
     fn write_line(&mut self, line: &str) -> Result<(), ReplayError> {
         self.ensure_open()?;
-        if let Some(failure) = self.failure_injection {
-            if self.writes >= failure.fail_after_writes {
-                self.fail_and_cleanup();
-                return Err(PersistenceError::InjectedFailure.into());
-            }
+        if let Some(failure) = self.failure_injection
+            && self.writes >= failure.fail_after_writes
+        {
+            self.fail_and_cleanup();
+            return Err(PersistenceError::InjectedFailure.into());
         }
         self.writes += 1;
         let result = self

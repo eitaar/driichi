@@ -15,8 +15,9 @@ pub use error::{
     PersistenceError, ReplayError, ReplayPersistenceError, validate_frame_payload_size,
 };
 pub use frames::{
-    ReplayFrame, build_replay_frames, build_replay_frames_with_auxiliary, encode_replay_frames,
-    frames_from_artifact, replay_frame_limit,
+    ReplayFrame, build_replay_frames, build_replay_frames_for_mode,
+    build_replay_frames_with_auxiliary, build_replay_frames_with_auxiliary_for_mode,
+    encode_replay_frames, frames_from_artifact, frames_from_artifact_for_mode, replay_frame_limit,
 };
 pub use mjson::{
     CanonicalEvent, MjsonEvent, ReplayEvent, parse_event_line, parse_mjson, serialize_event,

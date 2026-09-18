@@ -152,6 +152,33 @@ async fn admin_cookie(app: &axum::Router) -> String {
 }
 
 #[tokio::test]
+async fn ranked_half_replay_reconstruction_uses_metadata_mode() {
+    let (app, storage, root) = app_fixture("half-mode").await;
+    sqlx::query("UPDATE matches SET game_mode = '4p-red-half' WHERE match_id = 'MATCH15'")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    let cookie = admin_cookie(&app).await;
+    let view = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/replays/MATCH15")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(view.status(), 200);
+    assert_eq!(
+        json_body(view).await["frames"][1]["visible_state"]["mode"],
+        "FourPlayerRedHalf"
+    );
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn admin_replay_list_view_and_delete_are_authenticated_and_server_built() {
     let (app, storage, root) = app_fixture("api").await;
     let unauthenticated = app
@@ -524,6 +551,56 @@ async fn replay_delete_keeps_metadata_retryable_after_database_failure() {
 }
 
 #[tokio::test]
+async fn missing_registered_replay_ancestor_is_unavailable_but_deletable() {
+    let (app, storage, root) = app_fixture("missing-ancestor").await;
+    let replay_path: String =
+        sqlx::query_scalar("SELECT replay_path FROM matches WHERE match_id = 'MATCH15'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+    fs::remove_dir_all(root.join("replays/4p")).unwrap();
+    let cookie = admin_cookie(&app).await;
+
+    let view = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/replays/MATCH15")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(view.status(), 422);
+    assert_eq!(json_body(view).await["code"], "replay_unavailable");
+
+    let deleted = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/admin/replays/MATCH15")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+    assert!(replay_path.starts_with("4p/"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE match_id = 'MATCH15'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn replay_list_validates_reconstructed_frames() {
     let root = temp_root("frame-validation");
     let storage = Arc::new(Storage::connect(&root).await.unwrap());
@@ -626,7 +703,14 @@ async fn storage_startup_retries_applied_admin_audits() {
         .unwrap()
         .as_secs() as i64;
     sqlx::query(
-        "INSERT INTO admin_audit_pending (request_id, occurred_at, action, target_type, target_id, summary_json, state) VALUES ('PENDING15', ?, 'room_create', 'room', 'PENDING-ROOM', '{}', 'applied')",
+        "INSERT INTO admin_audit_pending (request_id, occurred_at, action, target_type, target_id, summary_json, state) VALUES ('PENDING15', ?, 'room_create', 'room', 'PENDING-ROOM', '{\"room_name\":\"Pending\"}', 'applied')",
+    )
+    .bind(now)
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO admin_audit_pending (request_id, occurred_at, action, target_type, target_id, summary_json, state) VALUES ('PREPARED15', ?, 'room_create', 'room', 'PREPARED-ROOM', '{\"room_name\":\"Prepared\"}', 'prepared')",
     )
     .bind(now)
     .execute(storage.pool())
@@ -653,6 +737,24 @@ async fn storage_startup_retries_applied_admin_audits() {
         .await
         .unwrap(),
         0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE request_id = 'PREPARED15'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE request_id = 'PREPARED15' AND state = 'prepared'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        1
     );
     reopened.close().await;
     let _ = fs::remove_dir_all(root);
@@ -1214,6 +1316,66 @@ async fn admin_fill_noop_does_not_write_audit() {
         1
     );
     storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn late_audit_flush_failure_does_not_recover_a_rolled_back_logout() {
+    let (app, storage, root) = app_fixture("late-logout-audit-failure").await;
+    let cookie = admin_cookie(&app).await;
+    sqlx::query(
+        "CREATE TRIGGER task15_fail_late_logout_audit BEFORE INSERT ON audit_logs WHEN NEW.action = 'logout' AND EXISTS (SELECT 1 FROM admin_audit_pending WHERE request_id = NEW.request_id AND state = 'applied') BEGIN SELECT RAISE(ABORT, 'forced late audit failure'); END",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+
+    let failed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/logout")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), 500);
+    sqlx::query("DROP TRIGGER task15_fail_late_logout_audit")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_logs WHERE action = 'logout'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    storage.close().await;
+    drop(storage);
+
+    let reopened = Storage::connect(&root).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_logs WHERE action = 'logout'")
+            .fetch_one(reopened.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE state = 'applied'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    reopened.close().await;
     let _ = fs::remove_dir_all(root);
 }
 

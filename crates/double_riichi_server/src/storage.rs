@@ -56,6 +56,26 @@ pub enum StorageError {
     AuditPending,
 }
 
+impl StorageError {
+    pub(crate) fn replay_failure_kind(&self) -> &'static str {
+        match self {
+            Self::ReplayTooLarge => "too_large",
+            Self::ReplayCorrupt => "corrupt",
+            Self::ReplayUnavailable => "unavailable",
+            Self::UnsafeReplayPath => "unsafe_path",
+            Self::ReplayNotFound => "not_found",
+            Self::ReplayMetadata => "metadata",
+            Self::Io(_) => "filesystem",
+            Self::Sqlx(_) => "database",
+            Self::Migration(_) => "migration",
+            Self::InvalidAuditSummary => "audit_summary",
+            Self::InvalidTokenRecord => "token_record",
+            Self::ReplayCleanup(_) => "cleanup",
+            Self::AuditPending => "audit_pending",
+        }
+    }
+}
+
 impl From<sqlx::Error> for StorageError {
     fn from(error: sqlx::Error) -> Self {
         Self::Sqlx(error)
@@ -280,26 +300,25 @@ impl Storage {
         if !candidate.starts_with(&self.replay_root) {
             return Err(StorageError::UnsafeReplayPath);
         }
-        if fs::symlink_metadata(&candidate)
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            return Err(StorageError::UnsafeReplayPath);
-        }
         let canonical_root = fs::canonicalize(&self.replay_root).map_err(StorageError::Io)?;
-        let canonical_candidate = if candidate.exists() {
-            fs::canonicalize(&candidate).map_err(StorageError::Io)?
-        } else {
-            let parent = candidate.parent().ok_or(StorageError::UnsafeReplayPath)?;
-            let canonical_parent = fs::canonicalize(parent).map_err(StorageError::Io)?;
-            canonical_parent.join(
-                candidate
-                    .file_name()
-                    .ok_or(StorageError::UnsafeReplayPath)?,
-            )
-        };
-        if !canonical_candidate.starts_with(&canonical_root) {
-            return Err(StorageError::UnsafeReplayPath);
+        let mut current = canonical_root;
+        let components: Vec<_> = relative_path.components().collect();
+        for (index, component) in components.iter().enumerate() {
+            let Component::Normal(name) = component else {
+                continue;
+            };
+            current.push(name);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    if metadata.file_type().is_symlink()
+                        || (index + 1 < components.len() && !metadata.is_dir())
+                    {
+                        return Err(StorageError::UnsafeReplayPath);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(StorageError::Io(error)),
+            }
         }
         Ok(candidate)
     }
@@ -601,6 +620,21 @@ impl Storage {
         Ok(())
     }
 
+    pub(crate) async fn rollback_admin_audit(&self, request_id: &str) -> Result<(), StorageError> {
+        let updated = sqlx::query(
+            "UPDATE admin_audit_pending SET state = 'rolled_back'
+             WHERE request_id = ? AND state IN ('prepared', 'applied')",
+        )
+        .bind(request_id)
+        .execute(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::AuditPending);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn complete_admin_audit(&self, request_id: &str) -> Result<(), StorageError> {
         let updated = sqlx::query(
             "UPDATE admin_audit_pending SET state = 'applied' WHERE request_id = ? AND state = 'prepared'",
@@ -696,7 +730,21 @@ impl Storage {
             let replay_path = row
                 .try_get::<String, _>("replay_path")
                 .map_err(StorageError::Sqlx)?;
-            let availability = self.replay_availability(&summary, &replay_path).await;
+            let availability = match self.replay_availability(&summary, &replay_path).await {
+                Ok(availability) => availability,
+                Err(error) => {
+                    self.mark_replay_degraded();
+                    tracing::warn!(
+                        match_id = %summary.match_id,
+                        error_kind = error.replay_failure_kind(),
+                        "completed replay failed list-time validation"
+                    );
+                    match error {
+                        StorageError::ReplayTooLarge => "too_large",
+                        _ => "unavailable",
+                    }
+                }
+            };
             summaries.push(ReplaySummary {
                 availability,
                 ..summary
@@ -737,7 +785,12 @@ impl Storage {
         replay_path: &str,
     ) -> Result<ReplayView, StorageError> {
         let frames = self
-            .reconstruct_replay(&summary.match_id, replay_path, summary.file_size)
+            .reconstruct_replay(
+                &summary.match_id,
+                &summary.game_mode,
+                replay_path,
+                summary.file_size,
+            )
             .await?;
         let players = self.load_players(&summary.match_id).await?;
         Ok(ReplayView {
@@ -828,6 +881,7 @@ impl Storage {
     async fn reconstruct_replay(
         &self,
         match_id: &str,
+        game_mode: &str,
         replay_path: &str,
         file_size: i64,
     ) -> Result<Vec<ReplayFrame>, StorageError> {
@@ -852,6 +906,9 @@ impl Storage {
             self.mark_replay_degraded();
             return Err(StorageError::ReplayTooLarge);
         }
+        let mode = game_mode
+            .parse::<GameMode>()
+            .map_err(|_| StorageError::ReplayCorrupt)?;
         let reader = ReplayReader::open(&path).map_err(|error| {
             self.mark_replay_degraded();
             match error {
@@ -865,13 +922,15 @@ impl Storage {
         let auxiliary = self.load_auxiliary(match_id).await.inspect_err(|_error| {
             self.mark_replay_degraded();
         })?;
-        reader.frames_with_auxiliary(&auxiliary).map_err(|error| {
-            self.mark_replay_degraded();
-            match error {
-                ReplayError::ReplayTooLarge { .. } => StorageError::ReplayTooLarge,
-                _ => StorageError::ReplayCorrupt,
-            }
-        })
+        reader
+            .frames_with_auxiliary_for_mode(&auxiliary, mode)
+            .map_err(|error| {
+                self.mark_replay_degraded();
+                match error {
+                    ReplayError::ReplayTooLarge { .. } => StorageError::ReplayTooLarge,
+                    _ => StorageError::ReplayCorrupt,
+                }
+            })
     }
 
     async fn load_auxiliary(&self, match_id: &str) -> Result<Vec<AuxiliaryRecord>, StorageError> {
@@ -935,22 +994,10 @@ impl Storage {
         &self,
         summary: &ReplaySummary,
         replay_path: &str,
-    ) -> &'static str {
-        match self.load_replay_view(summary.clone(), replay_path).await {
-            Ok(replay) => match self.encode_replay_view(&replay) {
-                Ok(_) => "available",
-                Err(StorageError::ReplayTooLarge) => {
-                    self.mark_replay_degraded();
-                    "too_large"
-                }
-                Err(_) => {
-                    self.mark_replay_degraded();
-                    "unavailable"
-                }
-            },
-            Err(StorageError::ReplayTooLarge) => "too_large",
-            Err(_) => "unavailable",
-        }
+    ) -> Result<&'static str, StorageError> {
+        let replay = self.load_replay_view(summary.clone(), replay_path).await?;
+        self.encode_replay_view(&replay)?;
+        Ok("available")
     }
 
     pub(crate) async fn delete_replay(
@@ -1227,7 +1274,7 @@ fn participant_kind(participant: &Participant) -> &'static str {
     }
 }
 
-fn string_contains_raw_token(value: &str) -> bool {
+pub(crate) fn string_contains_raw_token(value: &str) -> bool {
     const PREFIX: &[u8] = b"driichi_";
     const SECRET_LENGTH: usize = 43;
     let bytes = value.as_bytes();

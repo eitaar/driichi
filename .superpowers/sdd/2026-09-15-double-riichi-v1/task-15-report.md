@@ -59,12 +59,13 @@ unclaimed.
 - `cargo fmt --all -- --check` — passed.
 - `cargo check --workspace` — passed; changed server tests also pass
   `cargo check -p double_riichi_server --tests`.
-- `cargo test -p double_riichi_server --test task15_replay` — 15 passed,
+- `cargo test -p double_riichi_server --test task15_replay` — 18 passed,
   including bounded frame/list parity, fresh-startup corruption health, orphan
   `.part` cleanup, applied-audit recovery, gzip negotiation/decompression,
   authenticated route and Admin audit coverage, no-op fill suppression,
   logout rollback, concurrent deletion, path containment, oversize/corrupt
-  handling, auxiliary persistence, and file-first delete retryability.
+  handling, auxiliary persistence, file-first delete retryability, half-game
+  mode reconstruction, missing-ancestor handling, and late audit recovery.
 - `cargo test --workspace` — passed all workspace unit, integration, and doc
   tests, including Task 15.
 - `cd frontend && npm run typecheck` — passed.
@@ -75,10 +76,17 @@ unclaimed.
 - `cd frontend && npx playwright test tests/task15.spec.ts` — focused library /
   viewer and review-fix flows passed at 1024x600 and 1440x900; screenshots
   were written under `frontend/test-results/task-15/`.
-- `cargo test -p double_riichi_replay` — 16 passed, including incremental
-  reconstruction expansion limits.
-- `cargo test -p double_riichi_server --lib` — 36 passed, including retained
-  writing metadata when finalized-replay cleanup cannot unlink its artifact.
+- `cargo test -p double_riichi_replay --test task5_replay` — 18 passed,
+  including incremental reconstruction expansion limits and semantic discard /
+  meld validation.
+- `cargo test -p double_riichi_server --lib` — 39 passed, including retained
+  writing metadata when finalized-replay cleanup cannot unlink its artifact,
+  credential revalidation, command-specific no-op detection, and token-target
+  redaction.
+- `cargo test -p double_riichi_server --test task6_config_auth_storage` — 10
+  passed, including migration and durable audit storage coverage.
+- `cargo test -p double_riichi_server --test task9_http` — 10 passed,
+  including Bot Token lifecycle audit-count assertions.
 - `cargo test -p double_riichi_core --lib` — 11 passed.
 - `cargo clippy -p double_riichi_server --all-targets -- -D warnings` — blocked
   by the same five pre-existing `double_riichi_core` lints; no changed-file
@@ -99,6 +107,31 @@ renderer or API design.
   remains blocked by five documented pre-existing Clippy lints in
   `double_riichi_core`; no changed-file lint was reported before that baseline
   failure.
+
+## Review-fix implementation evidence
+
+The Task 15 replay/admin review fixes are implemented without frontend or API
+architecture changes:
+
+- Replay reconstruction now validates state-dependent discards, meld shapes,
+  consumed tiles, active-kyoku ordering, and persisted East/Half mode. List,
+  View, and startup validation use the same bounded reconstruction path.
+- Registered replay paths tolerate missing ancestors as unavailable while
+  preserving traversal and symlink defenses; View reports the failure and
+  Delete remains idempotent. List-time failures log only `match_id` and a
+  typed failure kind.
+- Admin mutations revalidate credentials after waiting for the mutation lock.
+  Durable pending-audit rows now distinguish `prepared`, `applied`, and
+  `rolled_back`; recovery audits only applied rows. Command-specific no-op
+  comparisons ignore unrelated public joins.
+- Audit-failure diagnostics redact token-shaped target IDs while retaining safe
+  IDs. Task 9 Bot Token lifecycle coverage asserts exactly one audit per
+  successful state-changing operation.
+
+Validation for this pass also included `cargo check --workspace`,
+`cargo fmt --all -- --check`, `git diff --check`, and the full
+`cargo test --workspace` suite. Frontend checks were not rerun because this
+pass changed no frontend files.
 
 ## Scope and residual risks
 
