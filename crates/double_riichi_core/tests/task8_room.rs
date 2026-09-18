@@ -131,6 +131,48 @@ async fn mjai_join_and_mode_change_are_serialized_by_the_room_actor() {
 }
 
 #[tokio::test]
+async fn deselecting_an_unselected_participant_preserves_other_humans_ready_state() {
+    let (handle, _effects) = RoomActor::spawn_with_effect_channel(config());
+    for (id, character) in [
+        ("h0", "player-red"),
+        ("h1", "player-blue"),
+        ("h2", "tsumogiri-bot"),
+    ] {
+        handle
+            .send(RoomCommand::join(human(id, character)))
+            .await
+            .unwrap();
+    }
+    for id in ["h0", "h1"] {
+        handle.send(RoomCommand::select(id)).await.unwrap();
+    }
+    for id in ["h0", "h1"] {
+        handle
+            .send(RoomCommand::set_ready(
+                id,
+                vec!["player-red".to_owned(), "player-blue".to_owned()],
+            ))
+            .await
+            .unwrap();
+    }
+    let before = handle.snapshot().await.unwrap();
+    handle.send(RoomCommand::deselect("h2")).await.unwrap();
+    let after = handle.snapshot().await.unwrap();
+
+    assert_eq!(after.revision, before.revision);
+    for id in ["h0", "h1"] {
+        assert!(
+            after
+                .participants
+                .iter()
+                .find(|participant| participant.id.as_str() == id)
+                .unwrap()
+                .ready
+        );
+    }
+}
+
+#[tokio::test]
 async fn fill_with_bots_respects_participant_capacity() {
     let mut cfg = config();
     cfg.max_participants = 1;

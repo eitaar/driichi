@@ -1506,6 +1506,9 @@ impl RoomState {
             .participants
             .get_mut(participant_id)
             .ok_or_else(|| RoomError::ParticipantNotFound(participant_id.clone()))?;
+        if !participant.selected {
+            return Ok(());
+        }
         participant.selected = false;
         participant.ready = false;
         participant.role = MatchRole::None;

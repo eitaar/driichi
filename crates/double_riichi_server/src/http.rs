@@ -1118,11 +1118,7 @@ fn audit_failure(
 }
 
 fn redact_audit_target_id(_target_type: &str, target_id: &str) -> String {
-    if crate::storage::string_contains_raw_token(target_id) {
-        "[REDACTED]".to_owned()
-    } else {
-        target_id.to_owned()
-    }
+    crate::storage::redact_audit_target_id(target_id)
 }
 
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -1732,7 +1728,12 @@ async fn admin_view_replay(
                     | crate::storage::StorageError::ReplayCorrupt
                     | crate::storage::StorageError::UnsafeReplayPath
             ) {
-                tracing::warn!(match_id = %match_id, error = ?error, "admin replay view unavailable");
+                let safe_match_id = redact_audit_target_id("replay", &match_id);
+                tracing::warn!(
+                    match_id = %safe_match_id,
+                    error_kind = error.replay_failure_kind(),
+                    "admin replay view unavailable"
+                );
             }
             replay_error_response(error, &request_id)
         }
@@ -4138,6 +4139,14 @@ mod tests {
             redact_audit_target_id(
                 "bot_token",
                 "driichi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ),
+            "[REDACTED]"
+        );
+        assert_eq!(redact_audit_target_id("replay", "MATCH15"), "MATCH15");
+        assert_eq!(
+            redact_audit_target_id(
+                "replay",
+                "replay-driichi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
             ),
             "[REDACTED]"
         );
