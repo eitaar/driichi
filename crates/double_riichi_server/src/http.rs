@@ -1076,17 +1076,14 @@ async fn complete_admin_audit(
     storage.complete_admin_audit(&request_id.0).await
 }
 
-async fn cancel_admin_audit(state: &ServerState, request_id: &RequestId) {
+async fn cancel_admin_audit(
+    state: &ServerState,
+    request_id: &RequestId,
+) -> Result<(), StorageError> {
     let Some(storage) = state.replay_storage() else {
-        return;
+        return Ok(());
     };
-    if let Err(error) = storage.cancel_admin_audit(&request_id.0).await {
-        tracing::error!(
-            request_id = %request_id.0,
-            error_kind = error.replay_failure_kind(),
-            "failed to discard pending Admin audit"
-        );
-    }
+    storage.cancel_admin_audit(&request_id.0).await
 }
 
 async fn rollback_admin_audit(
@@ -1602,10 +1599,26 @@ async fn admin_create_room(
         {
             Ok(handle) => break (target.to_string(), handle),
             Err(RoomRegistryError::CodeUnavailable) => {
-                cancel_admin_audit(&state, &request_id).await;
+                if let Err(error) = cancel_admin_audit(&state, &request_id).await {
+                    return audit_failure(
+                        &request_id,
+                        "room_create",
+                        "room",
+                        target.as_str(),
+                        &error,
+                    );
+                }
             }
             Err(error) => {
-                cancel_admin_audit(&state, &request_id).await;
+                if let Err(audit_error) = cancel_admin_audit(&state, &request_id).await {
+                    return audit_failure(
+                        &request_id,
+                        "room_create",
+                        "room",
+                        target.as_str(),
+                        &audit_error,
+                    );
+                }
                 return registry_error_response(error, &request_id);
             }
         }
@@ -1961,16 +1974,28 @@ async fn admin_patch_room(
     let snapshot = match handle.send(command).await {
         Ok(RoomResponse::Accepted(snapshot)) => snapshot,
         Ok(_) => {
-            cancel_admin_audit(&state, &request_id).await;
+            if let Err(error) = cancel_admin_audit(&state, &request_id).await {
+                return audit_failure(&request_id, "room_configure", "room", &join_code, &error);
+            }
             return internal_error(&request_id);
         }
         Err(error) => {
-            cancel_admin_audit(&state, &request_id).await;
+            if let Err(audit_error) = cancel_admin_audit(&state, &request_id).await {
+                return audit_failure(
+                    &request_id,
+                    "room_configure",
+                    "room",
+                    &join_code,
+                    &audit_error,
+                );
+            }
             return room_error_response(error, &request_id);
         }
     };
     if !room_configuration_changed(&before, &snapshot, &payload) {
-        cancel_admin_audit(&state, &request_id).await;
+        if let Err(error) = cancel_admin_audit(&state, &request_id).await {
+            return audit_failure(&request_id, "room_configure", "room", &join_code, &error);
+        }
         return room_detail_response(StatusCode::OK, &snapshot);
     }
     if let Err(error) = complete_admin_audit(&state, &request_id).await {
@@ -2034,11 +2059,15 @@ async fn admin_delete_room(
                 .unwrap()
         }
         Ok(RoomRemoval::AlreadyGone) => {
-            cancel_admin_audit(&state, &request_id).await;
+            if let Err(error) = cancel_admin_audit(&state, &request_id).await {
+                return audit_failure(&request_id, "room_delete", "room", &join_code, &error);
+            }
             room_not_found(&request_id)
         }
         Err(error) => {
-            cancel_admin_audit(&state, &request_id).await;
+            if let Err(audit_error) = cancel_admin_audit(&state, &request_id).await {
+                return audit_failure(&request_id, "room_delete", "room", &join_code, &audit_error);
+            }
             registry_error_response(error, &request_id)
         }
     }
@@ -2166,16 +2195,40 @@ async fn admin_participant_command(
     let snapshot = match handle.send(command).await {
         Ok(RoomResponse::Accepted(snapshot)) => snapshot,
         Ok(_) => {
-            cancel_admin_audit(state, &request_id).await;
+            if let Err(error) = cancel_admin_audit(state, &request_id).await {
+                return audit_failure(
+                    &request_id,
+                    action,
+                    "participant",
+                    participant_id.as_str(),
+                    &error,
+                );
+            }
             return internal_error(&request_id);
         }
         Err(error) => {
-            cancel_admin_audit(state, &request_id).await;
+            if let Err(audit_error) = cancel_admin_audit(state, &request_id).await {
+                return audit_failure(
+                    &request_id,
+                    action,
+                    "participant",
+                    participant_id.as_str(),
+                    &audit_error,
+                );
+            }
             return room_error_response(error, &request_id);
         }
     };
     if !participant_command_changed(&before, &snapshot, &participant_id) {
-        cancel_admin_audit(state, &request_id).await;
+        if let Err(error) = cancel_admin_audit(state, &request_id).await {
+            return audit_failure(
+                &request_id,
+                action,
+                "participant",
+                participant_id.as_str(),
+                &error,
+            );
+        }
         return room_detail_response(StatusCode::OK, &snapshot);
     }
     if is_leave {
@@ -2308,17 +2361,23 @@ async fn admin_room_command(
         Ok(response @ RoomResponse::Started(_)) => response,
         Ok(RoomResponse::Accepted(snapshot)) => {
             if !room_command_changed(action, &before, &snapshot) {
-                cancel_admin_audit(state, &request_id).await;
+                if let Err(error) = cancel_admin_audit(state, &request_id).await {
+                    return audit_failure(&request_id, action, "room", join_code, &error);
+                }
                 return room_detail_response(StatusCode::OK, &snapshot);
             }
             RoomResponse::Accepted(snapshot)
         }
         Ok(_) => {
-            cancel_admin_audit(state, &request_id).await;
+            if let Err(error) = cancel_admin_audit(state, &request_id).await {
+                return audit_failure(&request_id, action, "room", join_code, &error);
+            }
             return internal_error(&request_id);
         }
         Err(error) => {
-            cancel_admin_audit(state, &request_id).await;
+            if let Err(audit_error) = cancel_admin_audit(state, &request_id).await {
+                return audit_failure(&request_id, action, "room", join_code, &audit_error);
+            }
             return room_error_response(error, &request_id);
         }
     };

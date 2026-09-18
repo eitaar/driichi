@@ -25,3 +25,11 @@
   exact-count coverage.
 - Replay View, startup, and list corruption logs now redact token-shaped IDs
   and emit typed failure kinds.
+
+## 2026-09-15 — Task 15 final cancellation fix
+
+- `cancel_admin_audit` now falls back from DELETE to a durable `rolled_back`
+  state, verifies cancellation, and propagates inability to guarantee it to
+  Admin routes.
+- Recovery excludes rolled-back rows; a true Room no-op with injected
+  cancellation DELETE failure remains unaudited across close/reopen.

@@ -1561,6 +1561,129 @@ async fn admin_deselect_noop_does_not_write_audit() {
 }
 
 #[tokio::test]
+async fn canceled_noop_survives_audit_pending_delete_failure_without_recovery_audit() {
+    let (app, storage, root) = app_fixture("cancel-delete-failure").await;
+    let cookie = admin_cookie(&app).await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/rooms")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"room_name":"Cancel Delete Failure","game_mode":"4p-red-east"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let join_code = json_body(created).await["join_code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/rooms/{join_code}/fill-with-bots"))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    sqlx::query(
+        "CREATE TRIGGER task15_fail_cancel_delete BEFORE DELETE ON admin_audit_pending WHEN OLD.action = 'fill_with_bots' AND OLD.state = 'prepared' BEGIN SELECT RAISE(ABORT, 'forced cancellation delete failure'); END",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+
+    let noop = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/rooms/{join_code}/fill-with-bots"))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(noop.status(), 200);
+    sqlx::query("DROP TRIGGER task15_fail_cancel_delete")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+    let canceled_request: String = sqlx::query_scalar(
+        "SELECT request_id FROM admin_audit_pending WHERE action = 'fill_with_bots' AND state = 'rolled_back'",
+    )
+    .fetch_one(storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_logs WHERE request_id = ?",)
+            .bind(&canceled_request)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    storage.close().await;
+    drop(storage);
+
+    let reopened = Storage::connect(&root).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_logs WHERE request_id = ?",)
+            .bind(&canceled_request)
+            .fetch_one(reopened.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE request_id = ? AND state = 'rolled_back'",
+        )
+        .bind(&canceled_request)
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    reopened.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn admin_fill_noop_does_not_write_audit() {
     let (app, storage, root) = app_fixture("fill-noop").await;
     let cookie = admin_cookie(&app).await;
