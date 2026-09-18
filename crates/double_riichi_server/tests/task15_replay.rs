@@ -695,7 +695,7 @@ async fn corrupt_completed_replay_degrades_health_during_storage_startup() {
 }
 
 #[tokio::test]
-async fn storage_startup_retries_applied_admin_audits() {
+async fn storage_startup_retries_pending_admin_audits() {
     let root = temp_root("pending-audit");
     let storage = Storage::connect(&root).await.unwrap();
     let now = std::time::SystemTime::now()
@@ -711,6 +711,13 @@ async fn storage_startup_retries_applied_admin_audits() {
     .unwrap();
     sqlx::query(
         "INSERT INTO admin_audit_pending (request_id, occurred_at, action, target_type, target_id, summary_json, state) VALUES ('PREPARED15', ?, 'room_create', 'room', 'PREPARED-ROOM', '{\"room_name\":\"Prepared\"}', 'prepared')",
+    )
+    .bind(now)
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO admin_audit_pending (request_id, occurred_at, action, target_type, target_id, summary_json, state) VALUES ('ROLLEDBACK15', ?, 'room_create', 'room', 'ROLLEDBACK-ROOM', '{\"room_name\":\"Rolled back\"}', 'rolled_back')",
     )
     .bind(now)
     .execute(storage.pool())
@@ -745,11 +752,29 @@ async fn storage_startup_retries_applied_admin_audits() {
         .fetch_one(reopened.pool())
         .await
         .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE request_id = 'PREPARED15'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
         0
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM admin_audit_pending WHERE request_id = 'PREPARED15' AND state = 'prepared'",
+            "SELECT count(*) FROM audit_logs WHERE request_id = 'ROLLEDBACK15'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE request_id = 'ROLLEDBACK15' AND state = 'rolled_back'",
         )
         .fetch_one(reopened.pool())
         .await
@@ -1267,6 +1292,275 @@ async fn admin_room_mutation_is_not_applied_when_audit_insert_fails() {
 }
 
 #[tokio::test]
+async fn accepted_room_audit_does_not_depend_on_pending_state_update() {
+    let (app, storage, root) = app_fixture("pending-state-update").await;
+    let cookie = admin_cookie(&app).await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/rooms")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"room_name":"Pending State Update","game_mode":"4p-red-east"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let join_code = json_body(created).await["join_code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    sqlx::query(
+        "CREATE TRIGGER task15_fail_pending_state_update BEFORE UPDATE ON admin_audit_pending WHEN NEW.state = 'applied' BEGIN SELECT RAISE(ABORT, 'forced pending state update failure'); END",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/rooms/{join_code}/fill-with-bots"))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    sqlx::query("DROP TRIGGER task15_fail_pending_state_update")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    storage.close().await;
+    drop(storage);
+
+    let reopened = Storage::connect(&root).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    reopened.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn accepted_room_audit_recovers_a_prepared_row_after_flush_failure() {
+    let (app, storage, root) = app_fixture("prepared-room-recovery").await;
+    let cookie = admin_cookie(&app).await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/rooms")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"room_name":"Prepared Recovery","game_mode":"4p-red-east"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let join_code = json_body(created).await["join_code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    sqlx::query(
+        "CREATE TRIGGER task15_fail_prepared_room_flush BEFORE INSERT ON audit_logs WHEN NEW.action = 'fill_with_bots' AND EXISTS (SELECT 1 FROM admin_audit_pending WHERE request_id = NEW.request_id AND state = 'prepared') BEGIN SELECT RAISE(ABORT, 'forced prepared audit flush failure'); END",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/rooms/{join_code}/fill-with-bots"))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 500);
+    let room = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/admin/rooms/{join_code}"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        json_body(room).await["participants"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE action = 'fill_with_bots' AND state = 'prepared'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    sqlx::query("DROP TRIGGER task15_fail_prepared_room_flush")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    storage.close().await;
+    drop(storage);
+
+    let reopened = Storage::connect(&root).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM admin_audit_pending WHERE action = 'fill_with_bots'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    reopened.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn admin_deselect_noop_does_not_write_audit() {
+    let (app, storage, root) = app_fixture("deselect-noop").await;
+    let cookie = admin_cookie(&app).await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/rooms")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"room_name":"Deselect No-op","game_mode":"4p-red-east"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let join_code = json_body(created).await["join_code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let joined = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/rooms/{join_code}/join"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"nickname":"Unselected","character_id":"player-red"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(joined.status(), 201);
+    let participant_id = json_body(joined).await["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/admin/rooms/{join_code}/participants/{participant_id}/deselect"
+                ))
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'participant_deselect'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn admin_fill_noop_does_not_write_audit() {
     let (app, storage, root) = app_fixture("fill-noop").await;
     let cookie = admin_cookie(&app).await;
@@ -1324,7 +1618,7 @@ async fn late_audit_flush_failure_does_not_recover_a_rolled_back_logout() {
     let (app, storage, root) = app_fixture("late-logout-audit-failure").await;
     let cookie = admin_cookie(&app).await;
     sqlx::query(
-        "CREATE TRIGGER task15_fail_late_logout_audit BEFORE INSERT ON audit_logs WHEN NEW.action = 'logout' AND EXISTS (SELECT 1 FROM admin_audit_pending WHERE request_id = NEW.request_id AND state = 'applied') BEGIN SELECT RAISE(ABORT, 'forced late audit failure'); END",
+        "CREATE TRIGGER task15_fail_late_logout_audit BEFORE INSERT ON audit_logs WHEN NEW.action = 'logout' AND EXISTS (SELECT 1 FROM admin_audit_pending WHERE request_id = NEW.request_id AND state IN ('prepared', 'applied')) BEGIN SELECT RAISE(ABORT, 'forced late audit failure'); END",
     )
     .execute(storage.pool())
     .await

@@ -394,9 +394,10 @@ impl Storage {
                 .and_then(|replay| self.encode_replay_view(&replay).map(|_| replay));
             if let Err(error) = result {
                 self.mark_replay_degraded();
+                let safe_match_id = redact_audit_target_id(&match_id);
                 tracing::warn!(
-                    match_id = %match_id,
-                    error = ?error,
+                    match_id = %safe_match_id,
+                    error_kind = error.replay_failure_kind(),
                     "completed replay failed startup validation"
                 );
             }
@@ -636,16 +637,9 @@ impl Storage {
     }
 
     pub(crate) async fn complete_admin_audit(&self, request_id: &str) -> Result<(), StorageError> {
-        let updated = sqlx::query(
-            "UPDATE admin_audit_pending SET state = 'applied' WHERE request_id = ? AND state = 'prepared'",
-        )
-        .bind(request_id)
-        .execute(&self.pool)
-        .await
-        .map_err(StorageError::Sqlx)?;
-        if updated.rows_affected() != 1 {
-            return Err(StorageError::AuditPending);
-        }
+        // The mutation has already been accepted when this is called. Flush the
+        // prepared row directly so a separate prepared->applied update cannot
+        // strand a successful mutation outside startup recovery.
         self.flush_pending_audit(request_id).await
     }
 
@@ -655,7 +649,7 @@ impl Storage {
             "INSERT INTO audit_logs (occurred_at, request_id, action, target_type, target_id, summary_json)
              SELECT occurred_at, request_id, action, target_type, target_id, summary_json
              FROM admin_audit_pending
-             WHERE request_id = ? AND state = 'applied'
+             WHERE request_id = ? AND state IN ('prepared', 'applied')
                AND NOT EXISTS (SELECT 1 FROM audit_logs WHERE request_id = ?)",
         )
         .bind(request_id)
@@ -675,17 +669,19 @@ impl Storage {
                 return Err(StorageError::AuditPending);
             }
         }
-        sqlx::query("DELETE FROM admin_audit_pending WHERE request_id = ? AND state = 'applied'")
-            .bind(request_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(StorageError::Sqlx)?;
+        sqlx::query(
+            "DELETE FROM admin_audit_pending WHERE request_id = ? AND state IN ('prepared', 'applied')",
+        )
+        .bind(request_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(StorageError::Sqlx)?;
         transaction.commit().await.map_err(StorageError::Sqlx)
     }
 
     pub(crate) async fn retry_pending_audits(&self) -> Result<(), StorageError> {
         let request_ids = sqlx::query_scalar::<_, String>(
-            "SELECT request_id FROM admin_audit_pending WHERE state = 'applied' ORDER BY occurred_at, request_id",
+            "SELECT request_id FROM admin_audit_pending WHERE state IN ('prepared', 'applied') ORDER BY occurred_at, request_id",
         )
         .fetch_all(&self.pool)
         .await
@@ -734,8 +730,9 @@ impl Storage {
                 Ok(availability) => availability,
                 Err(error) => {
                     self.mark_replay_degraded();
+                    let safe_match_id = redact_audit_target_id(&summary.match_id);
                     tracing::warn!(
-                        match_id = %summary.match_id,
+                        match_id = %safe_match_id,
                         error_kind = error.replay_failure_kind(),
                         "completed replay failed list-time validation"
                     );
@@ -1271,6 +1268,14 @@ fn participant_kind(participant: &Participant) -> &'static str {
         double_riichi_core::ParticipantKind::MJAI => "mjai",
         double_riichi_core::ParticipantKind::MCP => "mcp",
         double_riichi_core::ParticipantKind::BuiltInBot => "builtin_bot",
+    }
+}
+
+pub(crate) fn redact_audit_target_id(target_id: &str) -> String {
+    if string_contains_raw_token(target_id) {
+        "[REDACTED]".to_owned()
+    } else {
+        target_id.to_owned()
     }
 }
 

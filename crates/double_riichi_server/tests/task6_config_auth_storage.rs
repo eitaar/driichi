@@ -382,6 +382,127 @@ async fn bot_tokens_are_presented_once_hashed_cached_and_globally_revoked_after_
 }
 
 #[tokio::test]
+async fn bot_token_audit_insert_failures_are_atomic_and_reopen_counts_once() {
+    let root = temp_root("token-audit-failures");
+    let storage = std::sync::Arc::new(Storage::connect(&root).await.unwrap());
+    let authority = std::sync::Arc::new(BotTokenAuthority::empty());
+    let service = BotTokenService::new(storage.clone(), authority.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    sqlx::query(
+        "CREATE TRIGGER task6_fail_token_create_audit BEFORE INSERT ON audit_logs WHEN NEW.action = 'token_create' BEGIN SELECT RAISE(ABORT, 'forced token create audit failure'); END",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    assert!(matches!(
+        service
+            .create("create-fails", now, "req-create-fails")
+            .await,
+        Err(CredentialError::Storage)
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM bot_tokens")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'token_create'"
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    sqlx::query("DROP TRIGGER task6_fail_token_create_audit")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+    let created = service
+        .create("runner", now + 1, "req-create")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER task6_fail_token_revoke_audit BEFORE INSERT ON audit_logs WHEN NEW.action = 'token_revoke' BEGIN SELECT RAISE(ABORT, 'forced token revoke audit failure'); END",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    assert!(matches!(
+        service
+            .revoke(created.record().token_id(), now + 2, "req-revoke-fails")
+            .await,
+        Err(CredentialError::Storage)
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT state FROM bot_tokens WHERE token_id = ?")
+            .bind(created.record().token_id())
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        "active"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'token_revoke'"
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    sqlx::query("DROP TRIGGER task6_fail_token_revoke_audit")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+    service
+        .revoke(created.record().token_id(), now + 3, "req-revoke")
+        .await
+        .unwrap();
+    storage.close().await;
+    drop(service);
+    drop(authority);
+    drop(storage);
+
+    let reopened = Storage::connect(&root).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'token_create'"
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_logs WHERE action = 'token_revoke'"
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_logs")
+            .fetch_one(reopened.pool())
+            .await
+            .unwrap(),
+        2
+    );
+    reopened.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn audit_summaries_are_allowlisted_and_ninety_day_cleanup_is_retryable() {
     let root = temp_root("audit");
     let storage = Storage::connect(&root).await.unwrap();

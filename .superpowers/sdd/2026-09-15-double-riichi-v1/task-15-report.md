@@ -59,13 +59,14 @@ unclaimed.
 - `cargo fmt --all -- --check` — passed.
 - `cargo check --workspace` — passed; changed server tests also pass
   `cargo check -p double_riichi_server --tests`.
-- `cargo test -p double_riichi_server --test task15_replay` — 18 passed,
+- `cargo test -p double_riichi_server --test task15_replay` — 21 passed,
   including bounded frame/list parity, fresh-startup corruption health, orphan
-  `.part` cleanup, applied-audit recovery, gzip negotiation/decompression,
-  authenticated route and Admin audit coverage, no-op fill suppression,
-  logout rollback, concurrent deletion, path containment, oversize/corrupt
-  handling, auxiliary persistence, file-first delete retryability, half-game
-  mode reconstruction, missing-ancestor handling, and late audit recovery.
+  `.part` cleanup, prepared/applied audit recovery, gzip
+  negotiation/decompression, authenticated route and Admin audit coverage,
+  no-op fill/deselect suppression, logout rollback, concurrent deletion, path
+  containment, oversize/corrupt handling, auxiliary persistence, file-first
+  delete retryability, half-game mode reconstruction, missing-ancestor
+  handling, pending-state-update resilience, and late audit recovery.
 - `cargo test --workspace` — passed all workspace unit, integration, and doc
   tests, including Task 15.
 - `cd frontend && npm run typecheck` — passed.
@@ -83,11 +84,14 @@ unclaimed.
   writing metadata when finalized-replay cleanup cannot unlink its artifact,
   credential revalidation, command-specific no-op detection, and token-target
   redaction.
-- `cargo test -p double_riichi_server --test task6_config_auth_storage` — 10
-  passed, including migration and durable audit storage coverage.
+- `cargo test -p double_riichi_server --test task6_config_auth_storage` — 11
+  passed, including migration, durable audit storage, and Bot Token audit
+  failure/reopen exact-count coverage.
 - `cargo test -p double_riichi_server --test task9_http` — 10 passed,
   including Bot Token lifecycle audit-count assertions.
 - `cargo test -p double_riichi_core --lib` — 11 passed.
+- `cargo test -p double_riichi_core --test task8_room` — 19 passed,
+  including the unselected-deselect Ready regression.
 - `cargo clippy -p double_riichi_server --all-targets -- -D warnings` — blocked
   by the same five pre-existing `double_riichi_core` lints; no changed-file
   lint was reported before that baseline failure.
@@ -122,8 +126,9 @@ architecture changes:
   typed failure kind.
 - Admin mutations revalidate credentials after waiting for the mutation lock.
   Durable pending-audit rows now distinguish `prepared`, `applied`, and
-  `rolled_back`; recovery audits only applied rows. Command-specific no-op
-  comparisons ignore unrelated public joins.
+  `rolled_back`; accepted `prepared`/`applied` rows recover on restart while
+  rolled-back outcomes remain excluded. Command-specific no-op comparisons
+  ignore unrelated public joins.
 - Audit-failure diagnostics redact token-shaped target IDs while retaining safe
   IDs. Task 9 Bot Token lifecycle coverage asserts exactly one audit per
   successful state-changing operation.
@@ -133,16 +138,42 @@ Validation for this pass also included `cargo check --workspace`,
 `cargo test --workspace` suite. Frontend checks were not rerun because this
 pass changed no frontend files.
 
+## Audit follow-up evidence
+
+The follow-up closes the remaining Admin-audit findings without changing the
+approved Replay behavior:
+
+- Accepted Room mutations flush their durable prepared outbox row directly;
+  there is no fragile prepared-to-applied state update between the actor
+  mutation and audit insertion. Startup and the maintenance retry process
+  recover both unresolved `prepared` and legacy `applied` rows exactly once.
+  Explicit `rolled_back` rows remain excluded. Regression coverage exercises a
+  pending-state-update failure trigger and a post-mutation flush failure across
+  close/reopen.
+- Room deselect now returns before clearing unrelated selected Human Ready state
+  when the target is already unselected. Core and HTTP regressions prove the
+  state and audit no-op behavior.
+- Bot Token create/revoke audit-insert failures remain atomic, and successful
+  create/revoke rows retain exactly one audit each after close/reopen.
+- Replay View, startup, and list corruption logs now use the shared token-safe
+  identifier redaction and typed failure classification. The helper regression
+  covers token-shaped replay IDs.
+
+Follow-up validation passed focused Task 6/8/9/15 tests, `cargo fmt --all
+-- --check`, `cargo check --workspace`, `cargo test --workspace --
+--test-threads=1`, and `git diff --check`. Frontend checks were not rerun
+because this follow-up changed no frontend files.
+
 ## Scope and residual risks
 
 - Internal test-only `FailureInjection`/`ServerState::for_tests` and the
   pre-existing `Storage::pool` remain non-blocking API-surface notes; they are
   not network-reachable production capabilities and this is not a security
   claim.
-- Pending audit recovery is durable across process interruption after the
-  mutation's applied marker; the actor mutation and database audit cannot be
-  committed in one SQL transaction, so the serialized outbox is the recovery
-  boundary.
+- Pending audit recovery is durable across process interruption after an
+  accepted mutation's prepared marker; the actor mutation and database audit
+  cannot be committed in one SQL transaction, so the serialized outbox is the
+  recovery boundary. Explicitly canceled/rolled-back rows remain excluded.
 - Room Replay metadata remains dependent on the existing persistence producer;
   this slice does not add a new Room persistence pipeline.
 - External yamai/riichi.dev/Conditional Design Freeze/release gates remain
