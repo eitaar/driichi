@@ -33,3 +33,14 @@
   Admin routes.
 - Recovery excludes rolled-back rows; a true Room no-op with injected
   cancellation DELETE failure remains unaudited across close/reopen.
+
+## 2026-09-15 — Task 15 provisional acceptance
+
+- Independent final reviews approved Replay and Admin audit with no P0/P1
+  findings; one same-request-ID retry edge remains a non-blocking P2 note.
+- Fresh parent verification passed all Rust workspace tests serially, focused
+  Replay/Task 6/9/15 tests, frontend typecheck/41 Vitest/build, Task 15
+  Playwright 4/4 in isolation at both required viewports, changed-file LSP,
+  screenshot inspection, formatting, diff checks, and clean-tree verification.
+- External yamai, authenticated riichi.dev, Conditional Design Freeze, strict
+  compatibility, and release acceptance remain blocked and unclaimed.
