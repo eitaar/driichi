@@ -22,5 +22,7 @@ archive's `VERSION`, `RELEASE-METADATA.json`, and `SHA256SUMS` are generated
 from the same build. Verify the adjacent `.sha256` file before extraction.
 
 The bundled `character-packs/` directory contains project-generated CC0
-Starter Packs only. Real Characters and their trademarks are not included.
-See `THIRD_PARTY_NOTICES` for vendored asset attribution and license scope.
+Starter Packs only. The release workflow also publishes a versioned standalone
+`character-packs-<starter-version>.zip` beside each platform archive. Real
+Characters and their trademarks are not included. See `THIRD_PARTY_NOTICES` for
+vendored asset attribution and license scope.

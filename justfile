@@ -6,10 +6,10 @@ check: fmt-check test-rust test-frontend test-spec test-contract test-smoke test
 test-all: fmt-check test-rust test-frontend test-spec test-contract test-smoke test-release-scripts test-e2e
 
 fmt-check:
-    cargo fmt --all -- --check
+    cargo --locked fmt --all -- --check
 
 test-rust:
-    cargo test --workspace
+    cargo --locked test --workspace
 
 test-frontend:
     npm ci --prefix frontend
@@ -21,7 +21,7 @@ contracts-install:
 
 test-contract: contracts-install
     python scripts/validate_contracts.py
-    cargo test -p double_riichi_server --test task16_contracts -- --test-threads=1
+    cargo --locked test -p double_riichi_server --test task16_contracts -- --test-threads=1
 
 test-spec:
     grep -Fq 'Basic accessibility is a v1 requirement.' spec/implementation-v1.md

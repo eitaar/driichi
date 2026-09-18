@@ -29,7 +29,12 @@ jobs:
       - name: Run the explicitly scheduled live gate
         env:
           RUN_LIVE_TESTS: "1"
+          RIICHI_LOCAL_BASE_URL: ${{ secrets.RIICHI_LOCAL_BASE_URL }}
+          RIICHI_LOCAL_AUTH_KEY: ${{ secrets.RIICHI_LOCAL_AUTH_KEY }}
           RIICHI_DEV_BASE_URL: ${{ secrets.RIICHI_DEV_BASE_URL }}
           RIICHI_DEV_AUTH_KEY: ${{ secrets.RIICHI_DEV_AUTH_KEY }}
+          RIICHI_PRODUCTION_BOT_COMMAND: >-
+            ${{ secrets.RIICHI_PRODUCTION_BOT_COMMAND }}
         shell: bash
+        # Missing local/external Bot evidence fails closed as unclaimed.
         run: just test-live

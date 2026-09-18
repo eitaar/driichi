@@ -13,15 +13,15 @@ frontend build, `cargo build --release --locked`, and the release-only Starter
 Pack generator in that order. Generated Starter media is created in a
 temporary directory and is never written to or staged from repository
 `character-packs/`. The package command then creates a fixed-metadata ZIP with
-POSIX-sorted entries, normalized timestamps and permissions, an archive
-`SHA256SUMS`, and an adjacent `.sha256` file.
+POSIX-sorted entries, normalized timestamps, regular-file types, and
+permissions, an archive `SHA256SUMS`, and an adjacent `.sha256` file.
 
 Each archive contains `driichi`, `driichi-mcp`, the embedded production
 frontend, example config and environment files, README, MIT and Apache
 licenses, third-party notices, version/release metadata, and generated CC0
 Starter Packs. It excludes runtime config, secrets, databases, and replays.
-The standalone Starter Pack ZIP is staged beside each platform archive and
-has its own checksum.
+The standalone Starter Pack ZIP is staged beside each platform archive as
+`character-packs-<starter-version>.zip` and has its own checksum.
 
 The supported CI matrix is:
 
@@ -29,12 +29,13 @@ The supported CI matrix is:
 | --- | --- | --- |
 | `linux-x86_64` | Ubuntu 22.04 | `x86_64-unknown-linux-gnu` |
 | `windows-x86_64` | Windows 2022 | `x86_64-pc-windows-msvc` |
-| `macos-arm64` | macOS 14 arm64 | `aarch64-apple-darwin` |
+| `linux-arm64` | Ubuntu 24.04 arm64 | `aarch64-unknown-linux-gnu` |
 
 Every archive is verified on the build host. `smoke.py --dry-run` verifies
-member safety, metadata, notices, and nested SHA-256 manifests and prints the
-version/start argv without trying to execute a foreign binary. Native jobs
-also have the option to run the full version/start smoke.
+member safety, metadata, notices, ZIP timestamps/modes/regular-file types, and
+nested SHA-256 manifests and prints the version/start argv without trying to
+execute a foreign binary. Native jobs run the full version/start smoke and
+probe the launched server's root status and bundled static asset over HTTP.
 
 ## Gates
 
@@ -43,7 +44,8 @@ also have the option to run the full version/start smoke.
 - `just build-release` delegates to the temporary-staging package command.
 - `just release-smoke-dry-run` verifies a selected archive without execution.
 - `just test-live` fails unless `RUN_LIVE_TESTS=1`; only the schedule workflow
-  supplies that opt-in and the two `RIICHI_DEV_*` secrets.
+  supplies that opt-in and local/riichi.dev Bot credentials plus the unchanged
+  production-Bot command. Missing external evidence is reported unclaimed.
 - GitHub Actions references use full commit SHAs. Release and CI action pins
   are intentionally immutable; toolchain and npm/Cargo lock versions are
   explicit in the workflow and repository.
@@ -60,8 +62,10 @@ workspace Rust suite is intentionally not run by the recovery worker; CI's
 
 ## CI-only residual risks
 
-- Windows and macOS native builds, ffmpeg availability, and executable startup
-  remain CI-host checks; the recovery host cannot certify foreign binaries.
-- The scheduled compatibility check requires configured riichi.dev secrets and
-  reports external drift without changing local pins.
+- Windows and Linux ARM native builds, ffmpeg availability, and executable
+  startup remain CI-host checks; the recovery host cannot certify foreign
+  binaries.
+- The scheduled compatibility check requires configured local/riichi.dev Bot
+  credentials and production-Bot command, and reports external drift without
+  changing local pins.
 - v1 publishes no Windows code-signing or Sigstore signature.
