@@ -44,3 +44,16 @@
   screenshot inspection, formatting, diff checks, and clean-tree verification.
 - External yamai, authenticated riichi.dev, Conditional Design Freeze, strict
   compatibility, and release acceptance remain blocked and unclaimed.
+
+## 2026-09-19 — Task 16 provisional local acceptance
+
+- Integrated and independently approved contracts/operations, real-server
+  E2E/persistence, and Release/CI lanes.
+- Fresh verification passed all Rust workspace tests, contract/release checks,
+  frontend typecheck/41 Vitest/build, browser 23/23 including real 3p/4p Match
+  completion, embedded frontend proof, and Windows release/native smoke.
+- Final residual review returned Spec PASS, Quality APPROVED, Merge OK, and no
+  P0/P1/P2 findings.
+- External yamai, authenticated immutable riichi.dev evidence, foreign-platform
+  CI execution, Conditional Design Freeze, strict compatibility, and final
+  release acceptance remain blocked and unclaimed.
