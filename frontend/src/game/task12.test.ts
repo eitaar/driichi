@@ -8,6 +8,7 @@ import { useGameStore } from "./store";
 import { tileAssetUrl, tileFileName, tileLabel } from "./tiles";
 import { portraitFromEvents } from "./gameplay";
 import { displayPlayerName } from "./table-art";
+import { effectDuration } from "./table-effects";
 
 beforeEach(() => {
   useGameStore.getState().reset();
@@ -31,6 +32,13 @@ describe("Task 12 table invariants", () => {
     expect(tileFileName(88)).toBe("Sou5-Dora.svg");
     expect(tileAssetUrl(16)).toContain("Regular/Man5-Dora.svg");
     expect(tileLabel(16)).toContain("5m");
+  });
+
+  it("removes transition time under Reduced Motion", () => {
+    expect(effectDuration("discard", true)).toBe(0);
+    expect(effectDuration("win", true)).toBe(0);
+    expect(effectDuration("discard", false)).toBe(240);
+    expect(effectDuration("win", false)).toBe(520);
   });
 
   it("keeps exactly 64 animations and cancels on the next item", () => {
