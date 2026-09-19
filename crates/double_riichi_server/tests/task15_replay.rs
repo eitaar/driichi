@@ -2,9 +2,9 @@ use std::{fs, io::Read, path::PathBuf, sync::Arc};
 
 use axum::{body::Body, http::Request};
 use double_riichi_core::{
-    GameEvent, GameMode, MatchPlayerSnapshot, Participant, ParticipantKind, RoomCommand,
-    RoomController, RoomEffect, RoomPhase, RoomRegistry, Seat, ShutdownMode, Tile, TimeControl,
-    Wind,
+    GameEvent, GameMode, MatchPlayerSnapshot, Participant, ParticipantKind, RoomActor, RoomCommand,
+    RoomConfig, RoomController, RoomEffect, RoomPhase, RoomRegistry, RoomResponse, Seat,
+    ShutdownMode, Tile, TimeControl, Wind,
 };
 use double_riichi_replay::{MAX_DECOMPRESSED_REPLAY_BYTES, ReplayWriter};
 use double_riichi_server::{
@@ -793,6 +793,40 @@ async fn corrupt_completed_replay_degrades_health_during_storage_startup() {
 }
 
 #[tokio::test]
+async fn replay_storage_degradation_is_exposed_by_health_contract() {
+    let root = temp_root("health-replay-degraded");
+    let initial = Storage::connect(&root).await.unwrap();
+    fs::write(root.join("replays/4p/health-corrupt.mjson"), b"not-json\n").unwrap();
+    sqlx::query(
+        "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, completed_at, status, replay_path, file_size) VALUES ('HEALTHBAD', 'ranked', NULL, '4p-red-east', 1, 2, 'completed', '4p/health-corrupt.mjson', 9)",
+    )
+    .execute(initial.pool())
+    .await
+    .unwrap();
+    initial.close().await;
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    assert!(storage.replay_degraded());
+    let app = app_for_storage(storage.clone()).await;
+    let cookie = admin_cookie(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    let health = json_body(response).await;
+    assert_eq!(health["database"], "ok");
+    assert_eq!(health["replay_storage"], "degraded");
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn storage_startup_retries_pending_admin_audits() {
     let root = temp_root("pending-audit");
     let storage = Storage::connect(&root).await.unwrap();
@@ -981,6 +1015,185 @@ async fn room_worker_failure_notifies_owner_and_cleanup_removes_failed_metadata(
 }
 
 #[tokio::test]
+async fn sqlite_delayed_finalize_has_one_terminal_outcome() {
+    let root = temp_root("delayed-finalize");
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    let (room_effects, mut room_receiver) =
+        tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let (worker_effects, worker_receiver) =
+        tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let worker = spawn_room_effect_worker(storage.clone(), worker_receiver);
+    let (finalize_seen, finalize_ready) = tokio::sync::oneshot::channel();
+    let (release_finalize, release) = tokio::sync::oneshot::channel();
+    let bridge = tokio::spawn(async move {
+        let mut finalize_seen = Some(finalize_seen);
+        let mut release = Some(release);
+        while let Some(effect) = room_receiver.recv().await {
+            if matches!(&effect, RoomEffect::FinalizeMatch { .. }) {
+                if let Some(sender) = finalize_seen.take() {
+                    let _ = sender.send(());
+                }
+                if let Some(receiver) = release.take() {
+                    let _ = receiver.await;
+                }
+            }
+            if worker_effects.send(effect).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut config = RoomConfig::new(
+        "Delayed Finalize",
+        GameMode::ThreePlayerRedEast,
+        double_riichi_core::CharacterCatalog::starter(),
+    );
+    config.time_control = TimeControl::Unlimited;
+    let room = RoomActor::spawn_with_effect_sender(config, room_effects);
+    room.send(RoomCommand::fill_with_bots()).await.unwrap();
+    let start = tokio::spawn({
+        let room = room.clone();
+        async move { room.send(RoomCommand::start()).await }
+    });
+    finalize_ready.await.unwrap();
+
+    let mut lock = storage.pool().acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let _ = release_finalize.send(());
+    tokio::time::sleep(std::time::Duration::from_millis(5_500)).await;
+    sqlx::query("ROLLBACK").execute(&mut *lock).await.unwrap();
+    drop(lock);
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(8), start)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        response,
+        double_riichi_core::RoomResponse::Started(_)
+    ));
+    let snapshot = room.snapshot().await.unwrap();
+    assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+    assert!(!snapshot.persistence_degraded);
+    assert!(snapshot.replay_available);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE status = 'completed'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        1
+    );
+    room.send(RoomCommand::shutdown(ShutdownMode::Graceful))
+        .await
+        .unwrap();
+    drop(room);
+    bridge.await.unwrap();
+    worker.await.unwrap();
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn room_shutdown_acknowledges_incomplete_cleanup_without_degrading_storage() {
+    let root = temp_root("room-shutdown-cleanup");
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    let (effects, receiver) = tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let worker = spawn_room_effect_worker(storage.clone(), receiver);
+    let mut config = RoomConfig::new(
+        "Shutdown Cleanup",
+        GameMode::ThreePlayerRedEast,
+        double_riichi_core::CharacterCatalog::starter(),
+    );
+    config.time_control = TimeControl::Unlimited;
+    let room = RoomActor::spawn_with_effect_sender(config, effects);
+    room.send(RoomCommand::join(Participant::new(
+        "shutdown-human",
+        "Shutdown Human",
+        ParticipantKind::Human,
+    )))
+    .await
+    .unwrap();
+    room.send(RoomCommand::select("shutdown-human"))
+        .await
+        .unwrap();
+    room.send(RoomCommand::fill_with_bots()).await.unwrap();
+    room.send(RoomCommand::set_ready(
+        "shutdown-human",
+        vec![
+            "player-red".to_owned(),
+            "player-blue".to_owned(),
+            "tsumogiri-bot".to_owned(),
+        ],
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        room.send(RoomCommand::start()).await.unwrap(),
+        RoomResponse::Started(_)
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE status = 'writing'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(matches!(
+        room.send(RoomCommand::shutdown(ShutdownMode::Graceful))
+            .await
+            .unwrap(),
+        RoomResponse::Shutdown
+    ));
+    assert!(!storage.replay_degraded());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM matches WHERE status IN ('writing', 'failed')"
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    drop(room);
+    worker.await.unwrap();
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn acknowledged_incomplete_cleanup_does_not_degrade_storage() {
+    let root = temp_root("acknowledged-cleanup");
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    let (effects, receiver) = tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let worker = spawn_room_effect_worker(storage.clone(), receiver);
+    let match_id = double_riichi_core::MatchId::new("CLEANUP15").unwrap();
+    effects
+        .send(RoomEffect::DeleteIncomplete {
+            match_id: match_id.clone(),
+        })
+        .await
+        .unwrap();
+    let (completion, result) = tokio::sync::oneshot::channel();
+    effects
+        .send(RoomEffect::CleanupIncomplete {
+            match_id,
+            completion,
+        })
+        .await
+        .unwrap();
+    assert!(result.await.unwrap().is_ok());
+    assert!(!storage.replay_degraded());
+    drop(effects);
+    worker.await.unwrap();
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn storage_startup_cleanup_removes_orphan_replay_parts_and_failed_matches() {
     let root = temp_root("orphan-part");
     let incomplete = root.join("replays/.incomplete");
@@ -1017,6 +1230,48 @@ async fn storage_startup_cleanup_removes_orphan_replay_parts_and_failed_matches(
 }
 
 #[tokio::test]
+async fn mixed_safe_and_unsafe_startup_cleanup_isolated_and_health_visible() {
+    let root = temp_root("mixed-startup-cleanup");
+    let outside = root.with_extension("sentinel");
+    fs::write(&outside, b"do not delete").unwrap();
+    let storage = Storage::connect(&root).await.unwrap();
+    let safe_path = storage
+        .replay_root()
+        .join("4p/20260915T000000Z_4p-red-east_SAFE15.mjson");
+    fs::write(&safe_path, b"safe replay").unwrap();
+    sqlx::query(
+        "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status, replay_path) VALUES ('SAFE15', 'room', 'safe', '4p-red-east', 0, 'writing', '4p/20260915T000000Z_4p-red-east_SAFE15.mjson')",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status, replay_path) VALUES ('UNSAFE15', 'room', 'unsafe', '4p-red-east', 0, 'writing', ?)",
+    )
+    .bind(outside.to_string_lossy().as_ref())
+    .execute(storage.pool())
+    .await
+    .unwrap();
+
+    storage.startup_cleanup().await.unwrap();
+    assert!(!safe_path.exists());
+    assert!(outside.exists());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM matches WHERE status IN ('writing', 'failed')"
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        0
+    );
+    assert!(storage.replay_degraded());
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_file(outside);
+}
+
+#[tokio::test]
 async fn failed_match_cleanup_preserves_retryability_when_metadata_delete_fails() {
     let root = temp_root("failed-cleanup-retry");
     let storage = Storage::connect(&root).await.unwrap();
@@ -1032,7 +1287,8 @@ async fn failed_match_cleanup_preserves_retryability_when_metadata_delete_fails(
     .execute(storage.pool())
     .await
     .unwrap();
-    assert!(storage.startup_cleanup().await.is_err());
+    assert!(storage.startup_cleanup().await.is_ok());
+    assert!(storage.replay_degraded());
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM matches WHERE match_id = 'FAILED-RETRY15' AND status = 'failed'",

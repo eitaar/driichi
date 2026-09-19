@@ -1,10 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -34,6 +31,9 @@ const DEFAULT_MAX_ROOMS: usize = 32;
 const DEFAULT_MAX_PARTICIPANTS: usize = 32;
 const ROOM_CODE_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
 const PERSISTENCE_ACK_TIMEOUT: Duration = Duration::from_secs(1);
+// SQLite uses a five-second busy timeout; wait beyond it before declaring a
+// finalization outcome so the worker cannot commit after the Room degrades.
+const FINALIZE_ACK_TIMEOUT: Duration = Duration::from_secs(6);
 
 fn now_unix_seconds() -> i64 {
     std::time::SystemTime::now()
@@ -716,33 +716,6 @@ pub struct RoomPersistenceFailure {
 }
 
 #[derive(Debug)]
-pub struct FinalizeControl {
-    cancelled: AtomicBool,
-}
-
-impl FinalizeControl {
-    pub fn new() -> Self {
-        Self {
-            cancelled: AtomicBool::new(false),
-        }
-    }
-
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
-    }
-}
-
-impl Default for FinalizeControl {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug)]
 pub enum RoomEffect {
     OpenMatch {
         match_id: MatchId,
@@ -772,11 +745,14 @@ pub enum RoomEffect {
         match_id: MatchId,
         result: MatchResult,
         completed_at: i64,
-        control: Arc<FinalizeControl>,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
     DeleteIncomplete {
         match_id: MatchId,
+    },
+    CleanupIncomplete {
+        match_id: MatchId,
+        completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
 }
 
@@ -791,6 +767,9 @@ impl RoomEffect {
             Self::AppendEvents { .. }
             | Self::RecordAuxiliary { .. }
             | Self::DeleteIncomplete { .. } => {}
+            Self::CleanupIncomplete { completion, .. } => {
+                let _ = completion.send(result);
+            }
         }
     }
 }
@@ -2789,27 +2768,24 @@ impl Actor {
         &mut self,
         effect: RoomEffect,
         mut completion: oneshot::Receiver<Result<(), RoomEffectError>>,
-        control: Arc<FinalizeControl>,
     ) -> Result<(), RoomError> {
-        match time::timeout(PERSISTENCE_ACK_TIMEOUT, self.effects.send(effect)).await {
+        match time::timeout(FINALIZE_ACK_TIMEOUT, self.effects.send(effect)).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) | Err(_) => return Err(RoomError::Persistence),
         }
-        match time::timeout(PERSISTENCE_ACK_TIMEOUT, &mut completion).await {
+        match time::timeout(FINALIZE_ACK_TIMEOUT, &mut completion).await {
             Ok(Ok(Ok(()))) => Ok(()),
-            Ok(Ok(Err(_))) | Ok(Err(_)) => Err(RoomError::Persistence),
-            Err(_) => {
-                control.cancel();
-                match time::timeout(PERSISTENCE_ACK_TIMEOUT, &mut completion).await {
-                    Ok(Ok(Ok(()))) => Ok(()),
-                    Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => Err(RoomError::Persistence),
-                }
-            }
+            Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => Err(RoomError::Persistence),
         }
     }
 
-    fn send_delete_incomplete(&mut self, match_id: MatchId) {
-        self.fail_replay(match_id, "incomplete replay cleanup requested".to_owned());
+    async fn cleanup_incomplete(&mut self, match_id: MatchId) -> Result<(), RoomError> {
+        let (completion, receiver) = oneshot::channel();
+        let effect = RoomEffect::CleanupIncomplete {
+            match_id,
+            completion,
+        };
+        self.send_ack_effect(effect, receiver).await
     }
 
     async fn submit_action(
@@ -3058,19 +3034,13 @@ impl Actor {
         };
         if self.state.config.replay_save && self.state.replay_available {
             let (completion, receiver) = oneshot::channel();
-            let control = Arc::new(FinalizeControl::new());
             let effect = RoomEffect::FinalizeMatch {
                 match_id: match_id.clone(),
                 result: result.clone(),
                 completed_at: now_unix_seconds(),
-                control: control.clone(),
                 completion,
             };
-            if self
-                .send_finalize_effect(effect, receiver, control)
-                .await
-                .is_err()
-            {
+            if self.send_finalize_effect(effect, receiver).await.is_err() {
                 self.fail_replay(match_id.clone(), "replay finalization failed".to_owned());
             }
         }
@@ -3089,8 +3059,9 @@ impl Actor {
             RoomPhase::Playing(ref id) => id.clone(),
             _ => return Ok(RoomResponse::Accepted(self.state.snapshot())),
         };
-        if self.state.config.replay_save {
-            self.send_delete_incomplete(match_id.clone());
+        if self.state.config.replay_save && self.cleanup_incomplete(match_id.clone()).await.is_err()
+        {
+            self.mark_persistence_degraded();
         }
         self.state.phase = RoomPhase::Lobby;
         self.state.match_machine = None;
@@ -3147,7 +3118,11 @@ impl Actor {
         if matches!(mode, ShutdownMode::Graceful | ShutdownMode::Forced)
             && let RoomPhase::Playing(match_id) = self.state.phase.clone()
         {
-            self.send_delete_incomplete(match_id.clone());
+            if self.state.config.replay_save
+                && self.cleanup_incomplete(match_id.clone()).await.is_err()
+            {
+                self.mark_persistence_degraded();
+            }
             self.publish(RoomEvent::MatchAborted {
                 match_id,
                 reason: "server shutdown".to_owned(),

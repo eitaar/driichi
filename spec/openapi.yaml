@@ -412,6 +412,8 @@ paths:
                 $ref: '#/components/schemas/RoomDetail'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/admin/rooms/{join_code}/rematch:
     post:
       operationId: rematchRoom
@@ -429,6 +431,8 @@ paths:
                 $ref: '#/components/schemas/RoomDetail'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/admin/rooms/{join_code}/back-to-lobby:
     post:
       operationId: backToLobby
@@ -641,6 +645,12 @@ components:
             $ref: '#/components/schemas/Problem'
     Unauthorized:
       description: Authentication is required.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: A bounded persistence component is unavailable.
       content:
         application/problem+json:
           schema:

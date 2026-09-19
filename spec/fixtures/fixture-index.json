@@ -25,6 +25,13 @@
       "auth": "admin-cookie"
     },
     {
+      "file": "health-503-replay.json",
+      "method": "GET",
+      "path": "/api/v1/health",
+      "status": 503,
+      "auth": "admin-cookie"
+    },
+    {
       "file": "public-status.json",
       "method": "GET",
       "path": "/status",

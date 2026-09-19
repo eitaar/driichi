@@ -12,8 +12,8 @@ use std::{
 };
 
 use double_riichi_core::{
-    FinalizeControl, GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind,
-    RoomAuxiliaryEvent, RoomAuxiliaryPhase, RoomEffect, RoomEffectError, RoomPersistenceFailure,
+    GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind, RoomAuxiliaryEvent,
+    RoomAuxiliaryPhase, RoomEffect, RoomEffectError, RoomPersistenceFailure,
 };
 use double_riichi_replay::{
     AuxiliaryPhase, AuxiliaryRecord, MAX_DECOMPRESSED_REPLAY_BYTES, MAX_REPLAY_EVENTS,
@@ -349,34 +349,75 @@ impl Storage {
             ));
         }
 
-        cleanup_replay_root(
-            &self.replay_root,
-            unfinished.iter().map(|(match_id, _)| match_id.as_str()),
-        )
-        .map_err(StorageError::ReplayCleanup)?;
-
-        for (match_id, replay_path) in &unfinished {
-            if let Some(replay_path) = replay_path {
-                let path = self.resolve_replay_path(replay_path)?;
-                remove_if_exists(&path)?;
-            }
-            remove_match_files(&self.replay_root, match_id)?;
+        // Orphan parts are safe to remove by construction: this helper only
+        // visits the replay root and refuses symlinked entries. A failure here
+        // must not prevent independent metadata cleanup below.
+        if let Err(error) = cleanup_replay_root(&self.replay_root, std::iter::empty::<&str>()) {
+            let error = StorageError::ReplayCleanup(error);
+            self.log_startup_cleanup_failure(None, &error);
         }
 
-        if !unfinished.is_empty() {
-            let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
-            for (match_id, _) in &unfinished {
-                sqlx::query(
-                    "DELETE FROM matches WHERE match_id = ? AND status IN ('writing', 'failed')",
-                )
-                .bind(match_id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(StorageError::Sqlx)?;
+        for (match_id, replay_path) in unfinished {
+            let mut artifacts_clean = true;
+            if let Some(replay_path) = replay_path {
+                match self.resolve_replay_path(&replay_path) {
+                    Ok(path) => {
+                        if let Err(error) = remove_if_exists(&path) {
+                            artifacts_clean = false;
+                            self.log_startup_cleanup_failure(Some(&match_id), &error);
+                        }
+                    }
+                    Err(StorageError::UnsafeReplayPath) => {
+                        // Never touch a path rejected by the root/symlink
+                        // checks. The row itself is still safe to repair.
+                        self.mark_replay_degraded();
+                        tracing::warn!(
+                            match_id = %redact_audit_target_id(&match_id),
+                            error_kind = "unsafe_path",
+                            "unsafe incomplete replay path ignored during startup cleanup"
+                        );
+                    }
+                    Err(error) => {
+                        artifacts_clean = false;
+                        self.log_startup_cleanup_failure(Some(&match_id), &error);
+                    }
+                }
             }
-            transaction.commit().await.map_err(StorageError::Sqlx)?;
+            if let Err(error) = remove_match_files(&self.replay_root, &match_id) {
+                artifacts_clean = false;
+                self.log_startup_cleanup_failure(Some(&match_id), &error);
+            }
+            if !artifacts_clean {
+                continue;
+            }
+            if let Err(error) = sqlx::query(
+                "DELETE FROM matches WHERE match_id = ? AND status IN ('writing', 'failed')",
+            )
+            .bind(&match_id)
+            .execute(&self.pool)
+            .await
+            .map_err(StorageError::Sqlx)
+            {
+                self.log_startup_cleanup_failure(Some(&match_id), &error);
+            }
         }
         Ok(())
+    }
+
+    fn log_startup_cleanup_failure(&self, match_id: Option<&str>, error: &StorageError) {
+        self.mark_replay_degraded();
+        if let Some(match_id) = match_id {
+            tracing::warn!(
+                match_id = %redact_audit_target_id(match_id),
+                error_kind = error.replay_failure_kind(),
+                "incomplete replay startup cleanup deferred"
+            );
+        } else {
+            tracing::warn!(
+                error_kind = error.replay_failure_kind(),
+                "incomplete replay startup cleanup deferred"
+            );
+        }
     }
 
     async fn validate_completed_replays(&self) -> Result<(), StorageError> {
@@ -1420,34 +1461,25 @@ pub fn spawn_room_effect_worker(
                     match_id,
                     result,
                     completed_at,
-                    control,
                     completion,
                 } => {
                     let id = match_id.to_string();
                     let replay = replays.remove(&id);
-                    let persisted = finalize_room_replay(
-                        &storage,
-                        &id,
-                        replay,
-                        &result,
-                        completed_at,
-                        &control,
-                    )
-                    .await;
+                    let persisted =
+                        finalize_room_replay(&storage, &id, replay, &result, completed_at).await;
                     let _ = completion.send(persisted);
                 }
                 RoomEffect::DeleteIncomplete { match_id } => {
-                    storage.mark_replay_degraded();
                     let id = match_id.to_string();
-                    if let Some(replay) = replays.remove(&id)
-                        && let RoomReplay::Writing(writer) = replay
-                    {
-                        writer.abort();
-                    }
-                    if let Err(error) = storage.delete_incomplete_match(&id).await {
-                        storage.mark_replay_degraded();
-                        tracing::warn!(error = ?error, "room replay cleanup deferred");
-                    }
+                    let _ = cleanup_room_replay(&storage, &mut replays, &id).await;
+                }
+                RoomEffect::CleanupIncomplete {
+                    match_id,
+                    completion,
+                } => {
+                    let id = match_id.to_string();
+                    let result = cleanup_room_replay(&storage, &mut replays, &id).await;
+                    let _ = completion.send(result);
                 }
             }
         }
@@ -1469,7 +1501,6 @@ async fn finalize_room_replay(
     replay: Option<RoomReplay>,
     result: &double_riichi_core::MatchResult,
     completed_at: i64,
-    control: &FinalizeControl,
 ) -> Result<(), RoomEffectError> {
     let replay = match replay {
         Some(replay) => replay,
@@ -1487,11 +1518,6 @@ async fn finalize_room_replay(
             return Err(room_effect_error(error));
         }
     };
-    if control.is_cancelled() {
-        writer.abort();
-        cleanup_incomplete_after_failure(storage, match_id).await;
-        return Err(room_effect_error("replay finalization cancelled"));
-    }
     let artifact = match writer.finalize() {
         Ok(artifact) => artifact,
         Err(error) => {
@@ -1501,10 +1527,6 @@ async fn finalize_room_replay(
             return Err(room_effect_error(error.to_string()));
         }
     };
-    if control.is_cancelled() {
-        cleanup_incomplete_after_failure(storage, match_id).await;
-        return Err(room_effect_error("replay finalization cancelled"));
-    }
     match storage
         .complete_room_match(match_id, &artifact, result, completed_at)
         .await
@@ -1523,6 +1545,29 @@ async fn cleanup_incomplete_after_failure(storage: &Storage, match_id: &str) {
     if let Err(error) = storage.delete_incomplete_match(match_id).await {
         storage.mark_replay_degraded();
         tracing::warn!(error = ?error, "room replay cleanup deferred after persistence failure");
+    }
+}
+
+async fn cleanup_room_replay(
+    storage: &Storage,
+    replays: &mut HashMap<String, RoomReplay>,
+    match_id: &str,
+) -> Result<(), RoomEffectError> {
+    if let Some(replay) = replays.remove(match_id)
+        && let RoomReplay::Writing(writer) = replay
+    {
+        writer.abort();
+    }
+    match storage.delete_incomplete_match(match_id).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            storage.mark_replay_degraded();
+            tracing::warn!(
+                error_kind = error.replay_failure_kind(),
+                "room replay cleanup deferred"
+            );
+            Err(room_effect_error(error.to_string()))
+        }
     }
 }
 
