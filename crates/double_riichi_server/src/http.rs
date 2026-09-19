@@ -913,14 +913,156 @@ fn authenticated_record_id(state: &ServerState, headers: &HeaderMap) -> Option<S
         .map(|record| record.token_id().to_owned())
 }
 
-async fn not_found(Extension(request_id): Extension<RequestId>) -> Response {
+fn not_found_response(request_id: &RequestId) -> Response {
     ApiError::new(
         StatusCode::NOT_FOUND,
         "Not found",
         "The requested resource does not exist.",
         "not_found",
     )
-    .response(&request_id)
+    .response(request_id)
+}
+
+#[cfg(frontend_dist)]
+fn frontend_asset_mime(path: &str) -> Option<&'static str> {
+    let extension = path.rsplit_once('.')?.1;
+    Some(match extension {
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" | "webmanifest" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "wasm" => "application/wasm",
+        _ => return None,
+    })
+}
+
+#[cfg(frontend_dist)]
+fn frontend_hashed_asset(path: &str) -> bool {
+    let Some(file_name) = path.rsplit('/').next() else {
+        return false;
+    };
+    let Some(stem) = file_name.rsplit_once('.').map(|(stem, _)| stem) else {
+        return false;
+    };
+    let Some((_, hash)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    (8..=64).contains(&hash.len())
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+#[cfg(frontend_dist)]
+fn frontend_path_is_safe(path: &str) -> bool {
+    if !path.starts_with('/')
+        || !path.is_ascii()
+        || path.contains('%')
+        || path.contains('\\')
+        || path.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+        || path.contains("//")
+    {
+        return false;
+    }
+    let path = path.strip_suffix('/').unwrap_or(path);
+    path.split('/').skip(1).all(|segment| {
+        !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with('.')
+    })
+}
+
+#[cfg(frontend_dist)]
+fn frontend_spa_route(path: &str) -> bool {
+    let segments = path.split('/').skip(1).collect::<Vec<_>>();
+    let valid_room_code =
+        |value: &str| value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_digit());
+    let valid_match_id = |value: &str| {
+        (1..=128).contains(&value.len())
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    };
+    match segments.as_slice() {
+        ["admin"] | ["admin", "login"] | ["admin", "replays"] => true,
+        ["admin", "rooms", room] if valid_room_code(room) => true,
+        ["admin", "replays", match_id] if valid_match_id(match_id) => true,
+        ["room", room] | ["room", room, "lobby"] if valid_room_code(room) => true,
+        _ => false,
+    }
+}
+
+#[cfg(frontend_dist)]
+fn frontend_asset_key(path: &str) -> Option<&str> {
+    if !frontend_path_is_safe(path) {
+        return None;
+    }
+    let route_path = if path.len() > 1 {
+        path.strip_suffix('/').unwrap_or(path)
+    } else {
+        path
+    };
+    if route_path == "/" || route_path == "/index.html" || frontend_spa_route(route_path) {
+        return Some("index.html");
+    }
+    if path.ends_with('/') {
+        return None;
+    }
+    let asset = route_path.strip_prefix('/')?;
+    let asset_name = asset.strip_prefix("assets/")?;
+    (!asset_name.is_empty() && frontend_asset_mime(asset_name).is_some()).then_some(asset)
+}
+
+#[cfg(frontend_dist)]
+fn frontend_response(path: &str, request_id: &RequestId) -> Response {
+    let Some(asset_key) = frontend_asset_key(path) else {
+        return not_found_response(request_id);
+    };
+    let Some(asset) = crate::FrontendAssets::get(asset_key) else {
+        return not_found_response(request_id);
+    };
+    let (content_type, cache_control) = if asset_key == "index.html" {
+        ("text/html; charset=utf-8", "no-store")
+    } else {
+        (
+            frontend_asset_mime(asset_key).expect("frontend asset MIME was validated"),
+            if frontend_hashed_asset(asset_key) {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-store"
+            },
+        )
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, cache_control)
+        .body(Body::from(asset.data.into_owned()))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+#[cfg(frontend_dist)]
+async fn frontend_fallback(
+    Extension(request_id): Extension<RequestId>,
+    request: Request<Body>,
+) -> Response {
+    if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
+        return not_found_response(&request_id);
+    }
+    frontend_response(request.uri().path(), &request_id)
+}
+
+#[cfg(not(frontend_dist))]
+async fn frontend_fallback(
+    Extension(request_id): Extension<RequestId>,
+    _request: Request<Body>,
+) -> Response {
+    not_found_response(&request_id)
 }
 
 pub fn server_router(state: Arc<ServerState>) -> Router {
@@ -1011,7 +1153,7 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
         .route("/ws/validate", any(crate::compat::validate_upgrade))
         .route("/status", get(crate::compat::status))
         .route("/mcp", any(crate::mcp::mcp_endpoint))
-        .fallback(not_found)
+        .fallback(frontend_fallback)
         .layer(DefaultBodyLimit::max(state.limits.http_json_limit))
         .layer(middleware::from_fn(request_context))
         .layer(Extension(mcp_runtime))

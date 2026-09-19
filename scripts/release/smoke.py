@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover - supports ``python -m scripts.release.s
 
 VERSION_LINE = re.compile(r"^driichi ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?) \(([0-9a-f]{7,64})\)$")
 ARCHIVE_CHECKSUM = re.compile(r"^([0-9a-f]{64})  ([^\r\n]+)$")
+STATIC_REFERENCE = re.compile(r'''(?:src|href)=[\"'](/assets/[^\"']+)[\"']''')
 
 
 def _binary_names(platform_name: str) -> tuple[str, str]:
@@ -136,8 +137,20 @@ def _http_get(url: str, timeout: float = 1.0) -> tuple[int, bytes]:
         return error.code, error.read(1024 * 1024)
 
 
+def _referenced_static_asset(body: bytes) -> str:
+    try:
+        html = body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ReleaseError("HTTP root response is not UTF-8 HTML") from error
+    match = STATIC_REFERENCE.search(html)
+    _require(match is not None, "HTTP root HTML does not reference a bundled static asset")
+    if match is None:  # keeps the type narrowed for static checkers
+        raise ReleaseError("HTTP root HTML does not reference a bundled static asset")
+    return match.group(1)
+
+
 def _probe_root_static(base_url: str, process: subprocess.Popen[str]) -> None:
-    """Wait for the launched server's root status and bundled static asset."""
+    """Wait for the launched server's root HTML and a referenced asset."""
 
     deadline = time.monotonic() + 15
     last_error = "server did not become ready"
@@ -146,17 +159,20 @@ def _probe_root_static(base_url: str, process: subprocess.Popen[str]) -> None:
             stderr = process.stderr.read() if process.stderr is not None else ""
             raise ReleaseError(f"start smoke exited {process.returncode}: {stderr.strip()}")
         try:
-            status_code, status_body = _http_get(f"{base_url}/status")
-            static_code, static_body = _http_get(f"{base_url}/assets/characters/player-red/icon.webp")
-            status = json.loads(status_body.decode("utf-8"))
-            _require(status_code == 200 and isinstance(status, dict) and status.get("status") == "ok", "HTTP root status probe failed")
-            _require(static_code == 200 and static_body[:4] == b"RIFF" and static_body[8:12] == b"WEBP", "HTTP static asset probe failed")
-            print("HTTP root/static smoke passed")
+            root_code, root_body = _http_get(f"{base_url}/")
+            _require(
+                root_code == 200 and b"<html" in root_body.lower(),
+                "HTTP root HTML probe failed",
+            )
+            asset_path = _referenced_static_asset(root_body)
+            static_code, static_body = _http_get(f"{base_url}{asset_path}")
+            _require(static_code == 200 and bool(static_body), "HTTP referenced static asset probe failed")
+            print("HTTP root HTML/static smoke passed")
             return
         except (OSError, UnicodeError, ValueError, URLError, ReleaseError) as error:
             last_error = str(error)
             time.sleep(0.1)
-    raise ReleaseError(f"HTTP root/static smoke timed out: {last_error}")
+    raise ReleaseError(f"HTTP root HTML/static smoke timed out: {last_error}")
 
 
 def _prepare_secret(directory: Path, server: Path) -> None:
