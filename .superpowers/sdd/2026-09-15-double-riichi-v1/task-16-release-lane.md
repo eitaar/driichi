@@ -35,7 +35,7 @@ Every archive is verified on the build host. `smoke.py --dry-run` verifies
 member safety, metadata, notices, ZIP timestamps/modes/regular-file types, and
 nested SHA-256 manifests and prints the version/start argv without trying to
 execute a foreign binary. Native jobs run the full version/start smoke and
-probe the launched server's root status and bundled static asset over HTTP.
+probe the launched server's root HTML and a static asset referenced by that HTML over HTTP.
 
 ## Gates
 

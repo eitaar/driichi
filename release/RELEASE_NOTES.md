@@ -18,8 +18,9 @@ have been verified by the release workflow.
 For each target, run `driichi --version`, then run
 `scripts/release/smoke.py <archive> --platform <target> --version <semver>
 --commit <sha>`. The smoke command verifies archive paths, notices, metadata,
-and SHA-256 manifests before its version/start check. Cross-platform archives
-may use `--dry-run` on a host that cannot execute the target binary.
+and SHA-256 manifests before its version/start check, including the root HTML
+and a referenced embedded static asset over HTTP. Cross-platform archives may
+use `--dry-run` on a host that cannot execute the target binary.
 
 ## Known release limitations
 
