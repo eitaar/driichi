@@ -7,6 +7,7 @@ import { seatPositions } from "./orientation";
 import { useGameStore } from "./store";
 import { tileAssetUrl, tileFileName, tileLabel } from "./tiles";
 import { portraitFromEvents } from "./gameplay";
+import { displayPlayerName } from "./table-art";
 
 beforeEach(() => {
   useGameStore.getState().reset();
@@ -100,6 +101,12 @@ describe("Task 12 table invariants", () => {
     const storage = { getItem: () => stored, setItem: (_key: string, value: string) => { stored = value; } } as unknown as Storage;
     saveAudioSettings({ master: 0.5, sfx: 0.4, voice: 0.3, voiceEnabled: false }, storage);
     expect(loadAudioSettings(storage)).toEqual({ master: 0.5, sfx: 0.4, voice: 0.3, voiceEnabled: false });
+  });
+
+  it("bounds long table labels without changing the source Display Name", () => {
+    const name = "A very long participant display name";
+    expect(displayPlayerName(name)).toBe("A very long partic…");
+    expect(name).toBe("A very long participant display name");
   });
 
   it("derives a visible Mangan result from the projected resolution event", () => {
