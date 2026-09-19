@@ -327,6 +327,18 @@ async function waitForAcceptedRevision(page: Page, beforeRevision: number) {
   await expect(shell).not.toHaveAttribute("data-human-controller", /temporary_auto/i);
 }
 
+async function clickCapturedAction(page: Page, actionId: string): Promise<boolean> {
+  const action = page.locator(`[data-action-id="${actionId}"]`).first();
+  try {
+    await action.click({ timeout: 5_000 });
+    return true;
+  } catch {
+    // The realtime decision may have advanced while Playwright was waiting for
+    // actionability. Do not let a generic locator click a newer action.
+    return false;
+  }
+}
+
 async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; multiCandidate: boolean; actionId?: string }> {
   const shell = page.getByTestId("gameplay-shell");
   const deck = page.getByTestId("action-deck");
@@ -341,8 +353,12 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
   expect(decisionId, "open Decision must expose its decision_id").toBeTruthy();
   const multiTrigger = deck.getByRole("button", { name: /^(chi|pon|kan|kita) \(\d+\)$/i }).first();
   if (await multiTrigger.isVisible().catch(() => false)) {
-    await multiTrigger.focus();
-    await multiTrigger.click();
+    try {
+      await multiTrigger.focus({ timeout: 5_000 });
+      await multiTrigger.click({ timeout: 5_000 });
+    } catch {
+      return { submitted: false, multiCandidate: false };
+    }
     const dialog = page.getByRole("dialog", { name: /choose a legal candidate/i });
     await expect(dialog).toBeVisible();
     await expect.poll(
@@ -354,7 +370,9 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
     expect(concreteLabel).not.toMatch(/^(chi|pon|kan|kita)$/i);
     const actionId = await dialog.locator(".candidate-list button").first().getAttribute("data-action-id");
     expect(actionId, "candidate action must expose its concrete action_id").toBeTruthy();
-    await dialog.locator(".candidate-list button").first().click();
+    if (!(await clickCapturedAction(page, actionId!))) {
+      return { submitted: false, multiCandidate: false };
+    }
     const outcome = await waitForActionResult(page, actionId!, decisionId!);
     if (outcome !== "accepted") return { submitted: false, multiCandidate: false };
     observedMultiCandidateAction = true;
@@ -376,7 +394,9 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
   if (!(await action.isVisible().catch(() => false))) return { submitted: false, multiCandidate: false };
   const actionId = await action.getAttribute("data-action-id");
   expect(actionId, "submitted action must expose its concrete action_id").toBeTruthy();
-  await action.click();
+  if (!(await clickCapturedAction(page, actionId!))) {
+    return { submitted: false, multiCandidate: false };
+  }
   const outcome = await waitForActionResult(page, actionId!, decisionId!);
   if (outcome !== "accepted") return { submitted: false, multiCandidate: false };
   await waitForAcceptedRevision(page, beforeRevision);
