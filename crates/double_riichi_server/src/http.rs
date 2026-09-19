@@ -2225,7 +2225,7 @@ async fn admin_kick(
         headers,
         request_id,
         "participant_kick",
-        RoomCommand::leave(ParticipantId::new("placeholder")),
+        RoomCommand::kick(ParticipantId::new("placeholder")),
     )
     .await
 }
@@ -2264,7 +2264,10 @@ async fn admin_participant_command(
         Err(_) => return room_not_found(&request_id),
     };
     let participant_id = ParticipantId::new(participant_id);
-    let is_leave = matches!(command, RoomCommand::Leave { .. });
+    let is_leave = matches!(
+        command,
+        RoomCommand::Leave { .. } | RoomCommand::Kick { .. }
+    );
     let _operation = if is_leave {
         Some(state.connections.operation_lock(&participant_id).await)
     } else {
@@ -2293,6 +2296,7 @@ async fn admin_participant_command(
         RoomCommand::Select { .. } => RoomCommand::select(participant_id.clone()),
         RoomCommand::Deselect { .. } => RoomCommand::deselect(participant_id.clone()),
         RoomCommand::Leave { .. } => RoomCommand::leave(participant_id.clone()),
+        RoomCommand::Kick { .. } => RoomCommand::kick(participant_id.clone()),
         _ => unreachable!(),
     };
     let snapshot = match handle.send(command).await {
@@ -3115,38 +3119,43 @@ async fn handle_human_message(
         HumanInput::SubmitAction {
             decision_id,
             action_id,
-        } => match room
-            .send(RoomCommand::submit_action(
-                participant_id.clone(),
-                decision_id.clone(),
-                action_id,
-            ))
-            .await
-        {
-            Ok(RoomResponse::Action(result)) => {
-                let response = json!({
-                    "type": "action_result",
-                    "decision_id": decision_result_id(&result),
-                    "status": "accepted",
-                });
-                let _ = enqueue(outbound, Message::text(response.to_string()));
-                let _ = send_snapshot(outbound, room, participant_id).await;
-                HumanMessageOutcome::Continue
+        } => {
+            let submitted_action_id = action_id.clone();
+            match room
+                .send(RoomCommand::submit_action(
+                    participant_id.clone(),
+                    decision_id.clone(),
+                    action_id,
+                ))
+                .await
+            {
+                Ok(RoomResponse::Action(result)) => {
+                    let response = json!({
+                        "type": "action_result",
+                        "decision_id": decision_result_id(&result),
+                        "action_id": submitted_action_id,
+                        "status": "accepted",
+                    });
+                    let _ = enqueue(outbound, Message::text(response.to_string()));
+                    let _ = send_snapshot(outbound, room, participant_id).await;
+                    HumanMessageOutcome::Continue
+                }
+                Err(error) => {
+                    let code = action_error_code(&error);
+                    let response = json!({
+                        "type": "action_result",
+                        "decision_id": decision_id,
+                        "action_id": submitted_action_id,
+                        "status": "rejected",
+                        "code": code,
+                    });
+                    let _ = enqueue(outbound, Message::text(response.to_string()));
+                    let _ = send_snapshot(outbound, room, participant_id).await;
+                    HumanMessageOutcome::Continue
+                }
+                Ok(_) => HumanMessageOutcome::Invalid,
             }
-            Err(error) => {
-                let code = action_error_code(&error);
-                let response = json!({
-                    "type": "action_result",
-                    "decision_id": decision_id,
-                    "status": "rejected",
-                    "code": code,
-                });
-                let _ = enqueue(outbound, Message::text(response.to_string()));
-                let _ = send_snapshot(outbound, room, participant_id).await;
-                HumanMessageOutcome::Continue
-            }
-            Ok(_) => HumanMessageOutcome::Invalid,
-        },
+        }
         HumanInput::Leave => {
             let operation = state.connections.operation_lock(participant_id).await;
             let result = room.send(RoomCommand::leave(participant_id.clone())).await;
@@ -3753,6 +3762,12 @@ pub(crate) fn room_error_response(error: RoomError, request_id: &RequestId) -> R
             "Room is playing",
             "The Room cannot be deleted while a Match is active.",
             "delete_while_playing",
+        ),
+        RoomError::Persistence => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Replay persistence unavailable",
+            "The Room could not persist the Match start or replay.",
+            "persistence_failure",
         ),
         RoomError::Deleted | RoomError::Closed => (
             StatusCode::NOT_FOUND,

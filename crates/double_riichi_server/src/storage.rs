@@ -12,8 +12,8 @@ use std::{
 };
 
 use double_riichi_core::{
-    GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind, RoomAuxiliaryEvent,
-    RoomAuxiliaryPhase, RoomEffect, RoomEffectError,
+    FinalizeControl, GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind,
+    RoomAuxiliaryEvent, RoomAuxiliaryPhase, RoomEffect, RoomEffectError, RoomPersistenceFailure,
 };
 use double_riichi_replay::{
     AuxiliaryPhase, AuxiliaryRecord, MAX_DECOMPRESSED_REPLAY_BYTES, MAX_REPLAY_EVENTS,
@@ -333,11 +333,12 @@ impl Storage {
     }
 
     pub async fn startup_cleanup(&self) -> Result<(), StorageError> {
-        let rows =
-            sqlx::query("SELECT match_id, replay_path FROM matches WHERE status = 'writing'")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(StorageError::Sqlx)?;
+        let rows = sqlx::query(
+            "SELECT match_id, replay_path FROM matches WHERE status IN ('writing', 'failed')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
         let mut unfinished = Vec::with_capacity(rows.len());
         for row in rows {
             unfinished.push((
@@ -365,11 +366,13 @@ impl Storage {
         if !unfinished.is_empty() {
             let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
             for (match_id, _) in &unfinished {
-                sqlx::query("DELETE FROM matches WHERE match_id = ? AND status = 'writing'")
-                    .bind(match_id)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(StorageError::Sqlx)?;
+                sqlx::query(
+                    "DELETE FROM matches WHERE match_id = ? AND status IN ('writing', 'failed')",
+                )
+                .bind(match_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(StorageError::Sqlx)?;
             }
             transaction.commit().await.map_err(StorageError::Sqlx)?;
         }
@@ -1242,13 +1245,29 @@ impl Storage {
         transaction.commit().await.map_err(StorageError::Sqlx)
     }
 
-    pub(crate) async fn delete_writing_match(&self, match_id: &str) -> Result<(), StorageError> {
-        sqlx::query("DELETE FROM matches WHERE match_id = ? AND status = 'writing'")
+    pub(crate) async fn mark_match_failed(&self, match_id: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE matches SET status = 'failed' WHERE match_id = ? AND status = 'writing'",
+        )
+        .bind(match_id)
+        .execute(&self.pool)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_incomplete_match(&self, match_id: &str) -> Result<(), StorageError> {
+        remove_match_files(&self.replay_root, match_id)?;
+        sqlx::query("DELETE FROM matches WHERE match_id = ? AND status IN ('writing', 'failed')")
             .bind(match_id)
             .execute(&self.pool)
             .await
             .map_err(StorageError::Sqlx)?;
         Ok(())
+    }
+
+    pub(crate) async fn delete_writing_match(&self, match_id: &str) -> Result<(), StorageError> {
+        self.delete_incomplete_match(match_id).await
     }
 
     pub(crate) fn remove_replay_file(&self, relative_path: &str) -> Result<(), StorageError> {
@@ -1305,7 +1324,11 @@ pub fn spawn_room_effect_worker(
                         }
                     }
                 }
-                RoomEffect::AppendEvents { match_id, events } => {
+                RoomEffect::AppendEvents {
+                    match_id,
+                    events,
+                    failure_sender,
+                } => {
                     let id = match_id.to_string();
                     let failure = match replays.get_mut(&id) {
                         Some(RoomReplay::Writing(writer)) => {
@@ -1323,13 +1346,24 @@ pub fn spawn_room_effect_worker(
                     };
                     if let Some(error) = failure {
                         storage.mark_replay_degraded();
-                        mark_room_replay_failed(&mut replays, &id, error);
+                        let newly_failed =
+                            mark_room_replay_failed(&mut replays, &id, error.clone());
+                        if newly_failed
+                            && let Err(mark_error) = storage.mark_match_failed(&id).await
+                        {
+                            tracing::warn!(error = ?mark_error, "room replay failure metadata update deferred");
+                        }
+                        notify_room_failure(
+                            failure_sender,
+                            RoomPersistenceFailure { match_id, error },
+                        );
                     }
                 }
                 RoomEffect::RecordAuxiliary {
                     match_id,
                     event,
                     phase,
+                    failure_sender,
                 } => {
                     let id = match_id.to_string();
                     let result = match replays.get_mut(&id) {
@@ -1345,7 +1379,17 @@ pub fn spawn_room_effect_worker(
                     };
                     if let Err(error) = result {
                         storage.mark_replay_degraded();
-                        mark_room_replay_failed(&mut replays, &id, error);
+                        let newly_failed =
+                            mark_room_replay_failed(&mut replays, &id, error.clone());
+                        if newly_failed
+                            && let Err(mark_error) = storage.mark_match_failed(&id).await
+                        {
+                            tracing::warn!(error = ?mark_error, "room replay failure metadata update deferred");
+                        }
+                        notify_room_failure(
+                            failure_sender,
+                            RoomPersistenceFailure { match_id, error },
+                        );
                     }
                 }
                 RoomEffect::FlushKyoku {
@@ -1362,7 +1406,13 @@ pub fn spawn_room_effect_worker(
                     };
                     if let Err(error) = &result {
                         storage.mark_replay_degraded();
-                        mark_room_replay_failed(&mut replays, &id, error.to_string());
+                        let newly_failed =
+                            mark_room_replay_failed(&mut replays, &id, error.to_string());
+                        if newly_failed
+                            && let Err(mark_error) = storage.mark_match_failed(&id).await
+                        {
+                            tracing::warn!(error = ?mark_error, "room replay failure metadata update deferred");
+                        }
                     }
                     let _ = completion.send(result);
                 }
@@ -1370,81 +1420,110 @@ pub fn spawn_room_effect_worker(
                     match_id,
                     result,
                     completed_at,
+                    control,
                     completion,
                 } => {
                     let id = match_id.to_string();
                     let replay = replays.remove(&id);
-                    let persisted = match replay {
-                        Some(RoomReplay::Writing(writer)) => match writer.finalize() {
-                            Ok(artifact) => {
-                                let relative_path = artifact.relative_path_string();
-                                match storage
-                                    .complete_room_match(&id, &artifact, &result, completed_at)
-                                    .await
-                                {
-                                    Ok(()) => Ok(()),
-                                    Err(error) => {
-                                        storage.mark_replay_degraded();
-                                        if let Err(cleanup_error) =
-                                            storage.remove_replay_file(&relative_path)
-                                        {
-                                            tracing::warn!(
-                                                error = ?cleanup_error,
-                                                "room replay cleanup deferred after metadata failure"
-                                            );
-                                        } else if let Err(delete_error) =
-                                            storage.delete_writing_match(&id).await
-                                        {
-                                            tracing::warn!(
-                                                error = ?delete_error,
-                                                "room replay metadata cleanup deferred"
-                                            );
-                                        }
-                                        Err(room_effect_error(error.to_string()))
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                storage.mark_replay_degraded();
-                                Err(room_effect_error(error.to_string()))
-                            }
-                        },
-                        Some(RoomReplay::Failed(error)) => {
-                            storage.mark_replay_degraded();
-                            Err(room_effect_error(error))
-                        }
-                        None => {
-                            storage.mark_replay_degraded();
-                            Err(room_effect_error("replay was not opened"))
-                        }
-                    };
+                    let persisted = finalize_room_replay(
+                        &storage,
+                        &id,
+                        replay,
+                        &result,
+                        completed_at,
+                        &control,
+                    )
+                    .await;
                     let _ = completion.send(persisted);
                 }
                 RoomEffect::DeleteIncomplete { match_id } => {
+                    storage.mark_replay_degraded();
                     let id = match_id.to_string();
-                    if let Some(RoomReplay::Writing(writer)) = replays.remove(&id) {
-                        let part_path = writer.part_path().to_path_buf();
+                    if let Some(replay) = replays.remove(&id)
+                        && let RoomReplay::Writing(writer) = replay
+                    {
                         writer.abort();
-                        if part_path.exists() {
-                            storage.mark_replay_degraded();
-                        } else if let Err(error) = storage.delete_writing_match(&id).await {
-                            storage.mark_replay_degraded();
-                            tracing::warn!(error = ?error, "room replay metadata cleanup deferred");
-                        }
+                    }
+                    if let Err(error) = storage.delete_incomplete_match(&id).await {
+                        storage.mark_replay_degraded();
+                        tracing::warn!(error = ?error, "room replay cleanup deferred");
                     }
                 }
             }
         }
-        for replay in replays.into_values() {
+        for (id, replay) in replays {
             if let RoomReplay::Writing(writer) = replay {
-                let part_path = writer.part_path().to_path_buf();
                 writer.abort();
-                if part_path.exists() {
-                    storage.mark_replay_degraded();
-                }
+            }
+            if let Err(error) = storage.delete_incomplete_match(&id).await {
+                storage.mark_replay_degraded();
+                tracing::warn!(error = ?error, "room replay shutdown cleanup deferred");
             }
         }
     })
+}
+
+async fn finalize_room_replay(
+    storage: &Storage,
+    match_id: &str,
+    replay: Option<RoomReplay>,
+    result: &double_riichi_core::MatchResult,
+    completed_at: i64,
+    control: &FinalizeControl,
+) -> Result<(), RoomEffectError> {
+    let replay = match replay {
+        Some(replay) => replay,
+        None => {
+            storage.mark_replay_degraded();
+            return Err(room_effect_error("replay was not opened"));
+        }
+    };
+    let writer = match replay {
+        RoomReplay::Writing(writer) => writer,
+        RoomReplay::Failed(error) => {
+            storage.mark_replay_degraded();
+            let _ = storage.mark_match_failed(match_id).await;
+            cleanup_incomplete_after_failure(storage, match_id).await;
+            return Err(room_effect_error(error));
+        }
+    };
+    if control.is_cancelled() {
+        writer.abort();
+        cleanup_incomplete_after_failure(storage, match_id).await;
+        return Err(room_effect_error("replay finalization cancelled"));
+    }
+    let artifact = match writer.finalize() {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            storage.mark_replay_degraded();
+            let _ = storage.mark_match_failed(match_id).await;
+            cleanup_incomplete_after_failure(storage, match_id).await;
+            return Err(room_effect_error(error.to_string()));
+        }
+    };
+    if control.is_cancelled() {
+        cleanup_incomplete_after_failure(storage, match_id).await;
+        return Err(room_effect_error("replay finalization cancelled"));
+    }
+    match storage
+        .complete_room_match(match_id, &artifact, result, completed_at)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            storage.mark_replay_degraded();
+            let _ = storage.mark_match_failed(match_id).await;
+            cleanup_incomplete_after_failure(storage, match_id).await;
+            Err(room_effect_error(error.to_string()))
+        }
+    }
+}
+
+async fn cleanup_incomplete_after_failure(storage: &Storage, match_id: &str) {
+    if let Err(error) = storage.delete_incomplete_match(match_id).await {
+        storage.mark_replay_degraded();
+        tracing::warn!(error = ?error, "room replay cleanup deferred after persistence failure");
+    }
 }
 
 async fn open_room_replay(
@@ -1509,6 +1588,20 @@ fn to_replay_auxiliary_phase(phase: RoomAuxiliaryPhase) -> AuxiliaryPhase {
     }
 }
 
+fn notify_room_failure(
+    sender: mpsc::Sender<RoomPersistenceFailure>,
+    failure: RoomPersistenceFailure,
+) {
+    match sender.try_send(failure) {
+        Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+        Err(mpsc::error::TrySendError::Full(failure)) => {
+            tokio::spawn(async move {
+                let _ = sender.send(failure).await;
+            });
+        }
+    }
+}
+
 fn mark_room_replay_failed(
     replays: &mut HashMap<String, RoomReplay>,
     match_id: &str,
@@ -1517,6 +1610,9 @@ fn mark_room_replay_failed(
     let Some(replay) = replays.get_mut(match_id) else {
         return false;
     };
+    if matches!(replay, RoomReplay::Failed(_)) {
+        return false;
+    }
     let previous = std::mem::replace(replay, RoomReplay::Failed(error));
     if let RoomReplay::Writing(writer) = previous {
         writer.abort();
@@ -1722,7 +1818,8 @@ fn now_unix_seconds() -> i64 {
 mod tests {
     use super::*;
     use double_riichi_core::{
-        GameEvent, MatchPlayerResult, Participant, ParticipantKind, Seat, Tile, Wind,
+        GameEvent, MatchPlayerResult, Participant, ParticipantKind, RoomAuxiliaryEvent, Seat, Tile,
+        Wind,
     };
     use double_riichi_replay::{AuxiliaryEvent, AuxiliaryPhase, ReplayWriter};
 
@@ -1772,6 +1869,18 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn kicked_room_auxiliary_event_maps_to_kicked_replay_event() {
+        assert_eq!(
+            to_replay_auxiliary_event(RoomAuxiliaryEvent::Kicked {
+                seat: Seat::new(2).unwrap(),
+            }),
+            AuxiliaryEvent::Kicked {
+                seat: Seat::new(2).unwrap(),
+            }
+        );
     }
 
     #[tokio::test]

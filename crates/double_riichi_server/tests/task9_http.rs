@@ -516,6 +516,8 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
     .await
     .unwrap();
     assert_eq!(accepted_result["status"], "accepted");
+    assert_eq!(accepted_result["decision_id"], decision_id);
+    assert_eq!(accepted_result["action_id"], action_id);
     let game_update = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             match second.next().await {
@@ -556,6 +558,7 @@ async fn live_human_upgrade_authenticates_cookie_sends_snapshot_and_replaces_con
     .await
     .unwrap();
     assert_eq!(stale_result["status"], "rejected");
+    assert_eq!(stale_result["action_id"], "stale");
     second
         .send(WsMessage::Text(r#"{"type":"leave"}"#.into()))
         .await

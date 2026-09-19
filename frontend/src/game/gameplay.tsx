@@ -410,6 +410,7 @@ function TileHitLayer({
           key={`${hand[index]}-${index}`}
           type="button"
           className={`table-tile-hit${action ? " is-legal" : ""}`}
+          data-action-id={action?.action_id ?? ""}
           style={
             {
               "--tile-index": index,
@@ -482,6 +483,7 @@ function CandidatePopup({
             type="button"
             className="button button-secondary"
             key={action.action_id}
+            data-action-id={action.action_id}
             onClick={() => onAction(action)}
           >
             {describeAction(action)}
@@ -552,6 +554,7 @@ function ActionDeck({
                 key={kind}
                 type="button"
                 className={`button ${kind === "pass" ? "button-secondary" : "button-primary"}`}
+                data-action-id={action.action_id}
                 disabled={disabled}
                 onClick={() => onAction(action)}
               >
@@ -565,6 +568,7 @@ function ActionDeck({
             key={kind}
             type="button"
             className="button button-secondary"
+            data-action-id={candidates.length === 1 ? candidates[0].action_id : ""}
             disabled={disabled}
             onClick={() =>
               candidates.length === 1
@@ -733,6 +737,7 @@ export function GameplaySurface({
   const animations = useGameStore((state) => state.animationQueue);
   const pending = useGameStore((state) => state.pendingAction);
   const actionError = useGameStore((state) => state.actionError);
+  const lastActionResult = useGameStore((state) => state.lastActionResult);
   const assets = useRosterPreload(room, connectionGeneration);
   const manager = useVoiceManager(storeEvents, eventToken, room, assets);
   const decision = projection?.decision;
@@ -796,6 +801,8 @@ export function GameplaySurface({
       data-motion={reducedMotion ? "static" : "cinematic"}
       data-room-revision={room?.revision ?? ""}
       data-human-controller={ownController}
+      data-last-action-result-status={lastActionResult?.status ?? ""}
+      data-last-action-result-action-id={lastActionResult?.action_id ?? ""}
     >
       <header className="gameplay-topbar">
         <div>

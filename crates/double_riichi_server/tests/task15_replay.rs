@@ -2,8 +2,9 @@ use std::{fs, io::Read, path::PathBuf, sync::Arc};
 
 use axum::{body::Body, http::Request};
 use double_riichi_core::{
-    GameEvent, GameMode, Participant, ParticipantKind, RoomCommand, RoomPhase, RoomRegistry, Seat,
-    ShutdownMode, Tile, TimeControl, Wind,
+    GameEvent, GameMode, MatchPlayerSnapshot, Participant, ParticipantKind, RoomCommand,
+    RoomController, RoomEffect, RoomPhase, RoomRegistry, Seat, ShutdownMode, Tile, TimeControl,
+    Wind,
 };
 use double_riichi_replay::{MAX_DECOMPRESSED_REPLAY_BYTES, ReplayWriter};
 use double_riichi_server::{
@@ -883,15 +884,178 @@ async fn storage_startup_retries_pending_admin_audits() {
 }
 
 #[tokio::test]
-async fn storage_startup_cleanup_removes_orphan_replay_parts() {
+async fn room_worker_failure_notifies_owner_and_cleanup_removes_failed_metadata() {
+    let root = temp_root("worker-failure");
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    let (effects, receiver) = tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let worker = spawn_room_effect_worker(storage.clone(), receiver);
+    let match_id = double_riichi_core::MatchId::new("WORKERFAIL15").unwrap();
+    let roster = (0..4)
+        .map(|seat| MatchPlayerSnapshot {
+            participant_id: double_riichi_core::ParticipantId::new(format!("worker-{seat}")),
+            display_name: format!("Worker {seat}"),
+            kind: ParticipantKind::BuiltInBot,
+            seat: Seat::new(seat).unwrap(),
+            character_id: Some("tsumogiri-bot".to_owned()),
+            controller: RoomController::PermanentAuto(
+                double_riichi_core::PermanentAutoReason::BuiltInBot,
+            ),
+        })
+        .collect::<Vec<_>>();
+    let (completion, opened) = tokio::sync::oneshot::channel();
+    effects
+        .send(RoomEffect::OpenMatch {
+            match_id: match_id.clone(),
+            mode: GameMode::FourPlayerRedEast,
+            room_name: "Worker failure".to_owned(),
+            roster,
+            initial_events: replay_events(),
+            started_at: 0,
+            completion,
+        })
+        .await
+        .unwrap();
+    opened.await.unwrap().unwrap();
+    let (failure_sender, mut failures) = tokio::sync::mpsc::channel(1);
+    effects
+        .send(RoomEffect::AppendEvents {
+            match_id: match_id.clone(),
+            events: vec![GameEvent::StartKyoku {
+                bakaze: Wind::East,
+                kyoku: 1,
+                honba: 0,
+                kyotaku: 0,
+                oya: Seat::new(0).unwrap(),
+                scores: vec![25_000; 3],
+                dora_marker: Tile::from_id(0).unwrap(),
+                tehais: vec![vec![Tile::from_id(0).unwrap(); 13]; 3],
+            }],
+            failure_sender,
+        })
+        .await
+        .unwrap();
+    let failure = tokio::time::timeout(std::time::Duration::from_secs(2), failures.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failure.match_id, match_id);
+    assert!(storage.replay_degraded());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM matches WHERE match_id = ?")
+            .bind(match_id.as_str())
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        "failed"
+    );
+    effects
+        .send(RoomEffect::DeleteIncomplete {
+            match_id: match_id.clone(),
+        })
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE match_id = ?")
+            .bind(match_id.as_str())
+            .fetch_one(storage.pool())
+            .await
+            .unwrap()
+            == 0
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE match_id = ?")
+            .bind(match_id.as_str())
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    drop(effects);
+    worker.await.unwrap();
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn storage_startup_cleanup_removes_orphan_replay_parts_and_failed_matches() {
     let root = temp_root("orphan-part");
     let incomplete = root.join("replays/.incomplete");
+    let completed = root.join("replays/4p");
     fs::create_dir_all(&incomplete).unwrap();
+    fs::create_dir_all(&completed).unwrap();
     let orphan = incomplete.join("ORPHAN.mjson.part");
+    let failed_part = incomplete.join("FAILED15.mjson.part");
+    let failed_replay = completed.join("20260101T000000Z_4p-red-east_FAILED15.mjson");
     fs::write(&orphan, "partial").unwrap();
+    fs::write(&failed_part, "partial").unwrap();
+    fs::write(&failed_replay, "renamed").unwrap();
 
     let storage = Storage::connect(&root).await.unwrap();
+    sqlx::query(
+        "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status, replay_path) VALUES ('FAILED15', 'room', 'failed', '4p-red-east', 0, 'failed', '4p/20260101T000000Z_4p-red-east_FAILED15.mjson')",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    storage.startup_cleanup().await.unwrap();
     assert!(!orphan.exists());
+    assert!(!failed_part.exists());
+    assert!(!failed_replay.exists());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE match_id = 'FAILED15'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn failed_match_cleanup_preserves_retryability_when_metadata_delete_fails() {
+    let root = temp_root("failed-cleanup-retry");
+    let storage = Storage::connect(&root).await.unwrap();
+    sqlx::query(
+        "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status, replay_path) VALUES ('FAILED-RETRY15', 'room', 'failed', '4p-red-east', 0, 'failed', NULL)",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER task15_fail_failed_cleanup BEFORE DELETE ON matches WHEN OLD.match_id = 'FAILED-RETRY15' BEGIN SELECT RAISE(ABORT, 'forced failed cleanup failure'); END",
+    )
+    .execute(storage.pool())
+    .await
+    .unwrap();
+    assert!(storage.startup_cleanup().await.is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM matches WHERE match_id = 'FAILED-RETRY15' AND status = 'failed'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        1
+    );
+    sqlx::query("DROP TRIGGER task15_fail_failed_cleanup")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    storage.startup_cleanup().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM matches WHERE match_id = 'FAILED-RETRY15'"
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap(),
+        0
+    );
     storage.close().await;
     let _ = fs::remove_dir_all(root);
 }

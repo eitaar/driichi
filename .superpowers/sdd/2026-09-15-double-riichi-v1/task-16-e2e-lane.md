@@ -76,3 +76,45 @@ Screenshots remain only under `frontend/test-results/task-16-review/`.
 Generated Vitest and Playwright report debris was removed. External
 Yamai/riichi.dev, release, and Conditional Design Freeze gates remain outside
 this lane and are not claimed here.
+
+## Round 3 — persistence failure semantics and action correlation
+
+The round-three fix replaces the initial and Rematch open-failure paths with
+transactional rollback: the initial Room remains in Lobby and Rematch remains
+Post-Match, both return `persistence` without starting gameplay. Per-Room
+append and auxiliary saturation now marks only the owning Room unavailable,
+queues ordered incomplete cleanup, and uses a dedicated worker-to-actor
+failure channel; production storage marks failed metadata, cleans Failed and
+Writing artifacts on DeleteIncomplete/shutdown/startup, and retains failed
+rows when metadata deletion itself fails so retry remains possible. Admin kick
+now has its own Room command/controller reason and persists `kicked`, while
+voluntary leave remains `left`. Finalization has a cancellation control so a
+late worker cannot commit after the Room becomes unavailable. Human
+`action_result` echoes the concrete submitted `action_id`; the browser lane
+asserts that correlation for both 3p and 4p.
+
+Round-three focused verification:
+
+- `cargo test -p double_riichi_core --test task8_room --no-fail-fast` — **24 passed**;
+  rollback, Rematch rollback, per-Room isolation, append/auxiliary saturation,
+  kick ordering, and delayed-finalize cancellation are covered.
+- `cargo test -p double_riichi_server --lib storage::tests --no-fail-fast` —
+  **2 passed**; Kicked auxiliary mapping and frame ordering pass.
+- `cargo test -p double_riichi_server --test task15_replay --no-fail-fast` —
+  **25 passed**; worker failure notification, Failed cleanup/retryability,
+  startup cleanup, and Room Replay persistence pass.
+- `cargo test -p double_riichi_server --test task9_http --no-fail-fast` —
+  **10 passed**; Human accepted/rejected action results echo action IDs.
+- `python scripts/validate_contracts.py` — passed; checksum validation now
+  normalizes Windows CRLF checkout bytes without changing the pinned schema.
+- `cd frontend && npm test -- --run src/app.test.tsx src/game/task12.test.ts src/replay.test.tsx`
+  — **41 passed**; `npm run typecheck` and `npm run build` passed.
+- `cd frontend && timeout 600s npm run test:browser:real -- tests/task16-real-server.spec.ts`
+  — **2 passed** (3p 41.2s, 4p 1.7m), including concrete accepted Human
+  action-result correlation.
+- `cargo check --workspace`, `cargo fmt --all -- --check`, and `git diff --check`
+  — passed.
+
+Ignored screenshots remain only under `frontend/test-results/task-16-review/`;
+Playwright report, Vitest, root node_modules, and other generated debris were
+removed after verification.

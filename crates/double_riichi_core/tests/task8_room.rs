@@ -1,6 +1,7 @@
 use double_riichi_core::room::{
-    CharacterCatalog, CharacterUsage, RoomActor, RoomCommand, RoomConfig, RoomController,
-    RoomError, RoomEvent, RoomPhase, RoomRegistry, RoomResponse, ShutdownMode,
+    CharacterCatalog, CharacterUsage, RoomActor, RoomAuxiliaryEvent, RoomCommand, RoomConfig,
+    RoomController, RoomEffect, RoomError, RoomEvent, RoomPhase, RoomRegistry, RoomResponse,
+    ShutdownMode,
 };
 use double_riichi_core::{GameMode, Participant, ParticipantKind, TimeControl};
 
@@ -365,6 +366,7 @@ async fn persistence_backpressure_does_not_prevent_match_start() {
         .try_send(double_riichi_core::RoomEffect::AppendEvents {
             match_id: double_riichi_core::MatchId::generate(),
             events: Vec::new(),
+            failure_sender: tokio::sync::mpsc::channel(1).0,
         })
         .unwrap();
     let handle = RoomActor::spawn_with_effect_sender(config(), effects);
@@ -396,14 +398,11 @@ async fn persistence_ack_failure_marks_replay_unavailable() {
     effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
         "disk full".to_owned(),
     )));
-    assert!(matches!(start.await.unwrap(), Ok(RoomResponse::Started(_))));
+    assert!(matches!(start.await.unwrap(), Err(RoomError::Persistence)));
     let snapshot = handle.snapshot().await.unwrap();
     assert!(snapshot.persistence_degraded);
     assert!(!snapshot.replay_available);
-    assert!(matches!(
-        snapshot.phase,
-        RoomPhase::Playing(_) | RoomPhase::PostMatch(_)
-    ));
+    assert!(matches!(snapshot.phase, RoomPhase::Lobby));
 }
 
 #[tokio::test]
@@ -439,8 +438,12 @@ async fn persistence_ack_delivery_survives_full_command_queue() {
     effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
         "queue pressure".to_owned(),
     )));
-    let response = start.await.unwrap().unwrap();
-    assert!(matches!(response, RoomResponse::Started(_)));
+    let response = start.await.unwrap();
+    assert!(matches!(response, Err(RoomError::Persistence)));
+    assert!(matches!(
+        handle.snapshot().await.unwrap().phase,
+        RoomPhase::Lobby
+    ));
     for task in pending {
         let _ = task.await;
     }
@@ -569,4 +572,291 @@ async fn room_history_keeps_player_visibility_and_survives_match_machine_clear()
     assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
     let retained = handle.public_history_projection().await.unwrap();
     assert!(retained.current_kyoku.is_some());
+}
+
+#[tokio::test]
+async fn rematch_open_failure_preserves_post_match_without_starting_a_new_match() {
+    let mut cfg = config();
+    cfg.mode = GameMode::ThreePlayerRedEast;
+    cfg.time_control = TimeControl::Unlimited;
+    let (effects, mut receiver) =
+        tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let handle = RoomActor::spawn_with_effect_sender(cfg, effects);
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    let worker = tokio::spawn(async move {
+        let mut opens = 0;
+        while let Some(effect) = receiver.recv().await {
+            let is_open = matches!(&effect, RoomEffect::OpenMatch { .. });
+            let is_ack = matches!(
+                &effect,
+                RoomEffect::OpenMatch { .. }
+                    | RoomEffect::FlushKyoku { .. }
+                    | RoomEffect::FinalizeMatch { .. }
+            );
+            if is_open {
+                opens += 1;
+                if opens == 2 {
+                    effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
+                        "second open failed".to_owned(),
+                    )));
+                    continue;
+                }
+            }
+            if is_ack {
+                effect.acknowledge(Ok(()));
+            }
+        }
+    });
+    assert!(matches!(
+        handle.send(RoomCommand::start()).await,
+        Ok(RoomResponse::Started(_))
+    ));
+    assert!(matches!(
+        handle.snapshot().await.unwrap().phase,
+        RoomPhase::PostMatch(_)
+    ));
+    let before = handle.snapshot().await.unwrap();
+    assert!(matches!(
+        handle.send(RoomCommand::rematch()).await,
+        Err(RoomError::Persistence)
+    ));
+    let after = handle.snapshot().await.unwrap();
+    assert!(matches!(after.phase, RoomPhase::PostMatch(_)));
+    assert_eq!(after.phase, before.phase);
+    assert!(after.persistence_degraded);
+    assert!(!after.replay_available);
+    worker.abort();
+}
+
+#[tokio::test]
+async fn kick_is_distinct_from_voluntary_leave_and_records_the_kicked_event() {
+    let mut cfg = config();
+    cfg.replay_save = true;
+    cfg.time_control = TimeControl::Unlimited;
+    let (handle, mut effects) = RoomActor::spawn_with_effect_channel(cfg);
+    handle
+        .send(RoomCommand::join(human("h", "player-red")))
+        .await
+        .unwrap();
+    handle.send(RoomCommand::select("h")).await.unwrap();
+    handle.send(RoomCommand::fill_with_bots()).await.unwrap();
+    handle
+        .send(RoomCommand::set_ready(
+            "h",
+            vec![
+                "player-red".to_owned(),
+                "player-blue".to_owned(),
+                "tsumogiri-bot".to_owned(),
+            ],
+        ))
+        .await
+        .unwrap();
+    let start = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.send(RoomCommand::start()).await }
+    });
+    let open = effects.recv().await.unwrap();
+    let match_id = match &open {
+        RoomEffect::OpenMatch { match_id, .. } => match_id.clone(),
+        _ => panic!("expected open effect"),
+    };
+    open.acknowledge(Ok(()));
+    assert!(matches!(start.await.unwrap(), Ok(RoomResponse::Started(_))));
+    handle.send(RoomCommand::kick("h")).await.unwrap();
+    let participant = handle
+        .snapshot()
+        .await
+        .unwrap()
+        .participants
+        .into_iter()
+        .find(|participant| participant.id.as_str() == "h")
+        .unwrap();
+    assert_eq!(
+        participant.controller,
+        RoomController::PermanentAuto(double_riichi_core::PermanentAutoReason::Kicked)
+    );
+    let mut saw_kicked = false;
+    for _ in 0..32 {
+        let Some(effect) = effects.recv().await else {
+            break;
+        };
+        match &effect {
+            RoomEffect::RecordAuxiliary {
+                match_id: effect_match_id,
+                event: RoomAuxiliaryEvent::Kicked { .. },
+                ..
+            } if *effect_match_id == match_id => saw_kicked = true,
+            _ => {}
+        }
+        effect.acknowledge(Ok(()));
+        if saw_kicked {
+            break;
+        }
+    }
+    assert!(saw_kicked);
+}
+
+#[tokio::test]
+async fn append_and_auxiliary_backpressure_degrades_only_the_owning_room() {
+    let mut cfg = config();
+    cfg.mode = GameMode::ThreePlayerRedEast;
+    cfg.time_control = TimeControl::Unlimited;
+    let (effects_a, mut receiver_a) =
+        tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let filler_a = effects_a.clone();
+    let room_a = RoomActor::spawn_with_effect_sender(cfg.clone(), effects_a);
+    room_a
+        .send(RoomCommand::join(human("owner", "player-red")))
+        .await
+        .unwrap();
+    room_a.send(RoomCommand::select("owner")).await.unwrap();
+    room_a.send(RoomCommand::fill_with_bots()).await.unwrap();
+    room_a
+        .send(RoomCommand::set_ready(
+            "owner",
+            vec![
+                "player-red".to_owned(),
+                "player-blue".to_owned(),
+                "tsumogiri-bot".to_owned(),
+            ],
+        ))
+        .await
+        .unwrap();
+    let start_a = tokio::spawn({
+        let room_a = room_a.clone();
+        async move { room_a.send(RoomCommand::start()).await }
+    });
+    let open_a = receiver_a.recv().await.unwrap();
+    for _ in 0..double_riichi_core::ROOM_EFFECT_CAPACITY {
+        filler_a
+            .try_send(RoomEffect::AppendEvents {
+                match_id: double_riichi_core::MatchId::generate(),
+                events: Vec::new(),
+                failure_sender: tokio::sync::mpsc::channel(1).0,
+            })
+            .unwrap();
+    }
+    open_a.acknowledge(Ok(()));
+    assert!(matches!(
+        start_a.await.unwrap(),
+        Ok(RoomResponse::Started(_))
+    ));
+    room_a.send(RoomCommand::kick("owner")).await.unwrap();
+    let snapshot_a = room_a.snapshot().await.unwrap();
+    assert!(snapshot_a.persistence_degraded);
+    assert!(!snapshot_a.replay_available);
+
+    let (effects_b, mut receiver_b) =
+        tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let room_b = RoomActor::spawn_with_effect_sender(cfg, effects_b);
+    room_b.send(RoomCommand::fill_with_bots()).await.unwrap();
+    let worker_b = tokio::spawn(async move {
+        while let Some(effect) = receiver_b.recv().await {
+            if matches!(
+                &effect,
+                RoomEffect::OpenMatch { .. }
+                    | RoomEffect::FlushKyoku { .. }
+                    | RoomEffect::FinalizeMatch { .. }
+            ) {
+                effect.acknowledge(Ok(()));
+            }
+        }
+    });
+    assert!(matches!(
+        room_b.send(RoomCommand::start()).await,
+        Ok(RoomResponse::Started(_))
+    ));
+    let snapshot_b = room_b.snapshot().await.unwrap();
+    assert!(!snapshot_b.persistence_degraded);
+    assert!(snapshot_b.replay_available);
+    drop(filler_a);
+    drop(receiver_a);
+    worker_b.abort();
+}
+
+#[tokio::test]
+async fn append_backpressure_fails_replay_but_allows_match_progress() {
+    let mut cfg = config();
+    cfg.mode = GameMode::ThreePlayerRedEast;
+    cfg.time_control = TimeControl::Unlimited;
+    let (effects, mut receiver) =
+        tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let filler = effects.clone();
+    let room = RoomActor::spawn_with_effect_sender(cfg, effects);
+    room.send(RoomCommand::fill_with_bots()).await.unwrap();
+    let start = tokio::spawn({
+        let room = room.clone();
+        async move { room.send(RoomCommand::start()).await }
+    });
+    let open = receiver.recv().await.unwrap();
+    for _ in 0..double_riichi_core::ROOM_EFFECT_CAPACITY {
+        filler
+            .try_send(RoomEffect::AppendEvents {
+                match_id: double_riichi_core::MatchId::generate(),
+                events: Vec::new(),
+                failure_sender: tokio::sync::mpsc::channel(1).0,
+            })
+            .unwrap();
+    }
+    open.acknowledge(Ok(()));
+    let response = tokio::time::timeout(std::time::Duration::from_secs(3), start)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(response, RoomResponse::Started(_)));
+    let snapshot = room.snapshot().await.unwrap();
+    assert!(snapshot.persistence_degraded);
+    assert!(!snapshot.replay_available);
+    assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+    drop(filler);
+    drop(receiver);
+}
+
+#[tokio::test]
+async fn delayed_finalize_is_cancelled_before_a_late_worker_can_commit() {
+    let mut cfg = config();
+    cfg.mode = GameMode::ThreePlayerRedEast;
+    cfg.time_control = TimeControl::Unlimited;
+    let (effects, mut receiver) =
+        tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let room = RoomActor::spawn_with_effect_sender(cfg, effects);
+    room.send(RoomCommand::fill_with_bots()).await.unwrap();
+    let (cancelled, cancelled_seen) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(async move {
+        let mut cancelled = Some(cancelled);
+        while let Some(effect) = receiver.recv().await {
+            match &effect {
+                RoomEffect::OpenMatch { .. } | RoomEffect::FlushKyoku { .. } => {
+                    effect.acknowledge(Ok(()));
+                }
+                RoomEffect::FinalizeMatch { control, .. } => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+                    assert!(control.is_cancelled());
+                    if let Some(sender) = cancelled.take() {
+                        let _ = sender.send(());
+                    }
+                    effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
+                        "finalize cancelled".to_owned(),
+                    )));
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+    let start = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        room.send(RoomCommand::start()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(matches!(start, RoomResponse::Started(_)));
+    cancelled_seen.await.unwrap();
+    let snapshot = room.snapshot().await.unwrap();
+    assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+    assert!(snapshot.persistence_degraded);
+    assert!(!snapshot.replay_available);
+    worker.await.unwrap();
 }
