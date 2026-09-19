@@ -1,0 +1,10 @@
+[yamai]
+repository = "https://github.com/eitaar/yamai.git"
+revision = "226cb84d917376d7513fbfdf987cc6a2294767cc"
+replay_processor = "src/yamai/game_state/replay_processor.py"
+replay_processor_sha256 = "b8b99cc8fcc17f09330d640801e7575bea7686a4d3d5f553b50d708402d184e3"
+python = ">=3.14"
+numpy = "2.5.3"
+riichienv = "0.4.10"
+license = "UNSPECIFIED"
+license_note = "No repository-level license file or project license metadata exists at the pinned revision; do not vendor or redistribute yamai."

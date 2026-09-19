@@ -54,6 +54,15 @@
   completion, embedded frontend proof, and Windows release/native smoke.
 - Final residual review returned Spec PASS, Quality APPROVED, Merge OK, and no
   P0/P1/P2 findings.
-- External yamai, authenticated immutable riichi.dev evidence, foreign-platform
-  CI execution, Conditional Design Freeze, strict compatibility, and final
-  release acceptance remain blocked and unclaimed.
+- Authenticated immutable riichi.dev evidence, foreign-platform CI execution,
+  Conditional Design Freeze, strict compatibility, and final release acceptance
+  remain blocked and unclaimed.
+
+## 2026-09-19 — yamai ReplayProcessor gate
+
+- Pinned owner-supplied `eitaar/yamai` revision
+  `226cb84d917376d7513fbfdf987cc6a2294767cc` and exact ReplayProcessor hash.
+- Generated a complete four-player East Match; upstream yamai accepted all 1,146
+  events and emitted 8 round and 560 discard samples.
+- Added fail-closed `test-yamai` and CI coverage without vendoring or
+  redistributing the upstream repository, whose project license is unspecified.

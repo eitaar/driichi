@@ -523,6 +523,9 @@ fn generated_four_player_match_events_are_valid_canonical_mjson_and_reconstructa
         .unwrap()
         .join("\n")
         + "\n";
+    if let Ok(path) = std::env::var("DRIICHI_YAMAI_REPLAY_OUTPUT") {
+        std::fs::write(path, &text).unwrap();
+    }
     let parsed = parse_mjson(&text).unwrap();
     let frames = build_replay_frames(&parsed).unwrap();
     assert_eq!(frames.len(), parsed.len());

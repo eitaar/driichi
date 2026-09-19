@@ -3,7 +3,7 @@ set shell := ["bash", "-cu"]
 # Deterministic local checks; external credentials are never required.
 check: fmt-check test-rust test-frontend test-spec test-contract test-smoke test-release-scripts
 
-test-all: fmt-check test-rust test-frontend test-spec test-contract test-smoke test-release-scripts test-e2e
+test-all: fmt-check test-rust test-frontend test-spec test-contract test-yamai test-smoke test-release-scripts test-e2e
 
 fmt-check:
     cargo --locked fmt --all -- --check
@@ -22,6 +22,9 @@ contracts-install:
 test-contract: contracts-install test-release-frontend
     python scripts/validate_contracts.py
     cargo --locked test -p double_riichi_server --test task16_contracts -- --test-threads=1
+
+test-yamai:
+    python scripts/test_yamai.py
 
 test-release-frontend:
     python scripts/release/production_frontend.py
