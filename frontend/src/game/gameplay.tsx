@@ -362,6 +362,55 @@ function AudioSettingsPanel({ manager }: { manager: AudioManager }) {
   );
 }
 
+function GameplayControls({
+  status,
+  manager,
+}: {
+  status: GameplayProps["status"];
+  manager: AudioManager;
+}) {
+  return (
+    <div className="gameplay-controls">
+      <div className={`connection-state connection-${status}`}>
+        <span className="state-dot" aria-hidden="true" />
+        <span>{status}</span>
+      </div>
+      <AudioSettingsPanel manager={manager} />
+    </div>
+  );
+}
+
+function GameplayToast({
+  status,
+  commandError,
+  actionError,
+}: {
+  status: GameplayProps["status"];
+  commandError: string;
+  actionError: string;
+}) {
+  return (
+    <div className="gameplay-toast-stack" aria-live="polite">
+      {status === "reconnecting" && (
+        <p className="gameplay-toast" role="status">
+          Reconnecting… The last authoritative table state remains visible.
+        </p>
+      )}
+      {commandError && (
+        <p className="gameplay-toast" role="alert">
+          Action rejected: {commandError}
+        </p>
+      )}
+      {actionError && (
+        <p className="gameplay-toast" role="alert">
+          Action rejected: {actionError}. Retry while this Decision remains
+          open.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function actionTileForHand(action: VisibleAction): number | undefined {
   const actionValue = action.action;
   if (!actionValue || typeof actionValue !== "object") return undefined;
@@ -496,11 +545,13 @@ function CandidatePopup({
 
 function ActionDeck({
   decision,
+  remaining,
   pending,
   disabled,
   onAction,
 }: {
   decision: ProjectedDecision | null | undefined;
+  remaining: number | null;
   pending: boolean;
   disabled: boolean;
   onAction: (action: VisibleAction) => void;
@@ -512,16 +563,7 @@ function ActionDeck({
   useEffect(() => {
     setPopupKind(null);
   }, [decision?.decision_id]);
-  if (!decision)
-    return (
-      <div
-        className="action-deck"
-        data-testid="action-deck"
-        aria-label="No action available"
-      >
-        <span className="action-deck-empty">Waiting for the next Decision</span>
-      </div>
-    );
+  if (!decision) return null;
   const simpleByKind = new Map<ActionKind, VisibleAction>();
   grouped.simple.forEach((action) => {
     const kind = actionKind(action.action);
@@ -544,6 +586,12 @@ function ActionDeck({
       <div className="action-deck-label">
         <span className="eyebrow">DECISION / {decision.kind}</span>
         <strong>{pending ? "Sending action" : "Choose one"}</strong>
+        <span
+          data-testid="decision-timer"
+          aria-label={`Decision timer: ${formatSeconds(remaining)} seconds`}
+        >
+          {remaining === null ? "TIMER —" : `${formatSeconds(remaining)}s`}
+        </span>
       </div>
       <div className="action-buttons">
         {(["ron", "tsumo", "pass", "abortive_draw"] as ActionKind[]).map(
@@ -721,6 +769,37 @@ function ResultsPanel({
   );
 }
 
+function GameplayPlayerStatus({
+  players,
+  mode,
+  viewerSeat,
+}: {
+  players: ProjectedPlayer[];
+  mode: string;
+  viewerSeat?: number;
+}) {
+  if (!players.length) return null;
+  return (
+    <ul className="visually-hidden" aria-label="Player status">
+      {players
+        .slice()
+        .sort((left, right) => left.seat - right.seat)
+        .map((player) => (
+          <li key={player.participant_id}>
+            <span>{player.display_name}</span>
+            <span>
+              Score {typeof player.score === "number" ? player.score.toLocaleString() : "—"}
+            </span>
+            <span>
+              Seat position: {seatPositionFor(mode, player.seat, viewerSeat) ?? `seat ${player.seat + 1}`}
+            </span>
+            <span>{player.riichi ? "Riichi" : "Not riichi"}</span>
+          </li>
+        ))}
+    </ul>
+  );
+}
+
 export function GameplaySurface({
   room,
   projection,
@@ -804,35 +883,12 @@ export function GameplaySurface({
       data-last-action-result-status={lastActionResult?.status ?? ""}
       data-last-action-result-action-id={lastActionResult?.action_id ?? ""}
     >
-      <header className="gameplay-topbar">
-        <div>
-          <p className="eyebrow">ROOM / {room?.join_code ?? "LIVE"}</p>
-          <h1>{room?.room_name ?? "Live Table"}</h1>
-        </div>
-        <div className="gameplay-top-actions">
-          <div className={`connection-state connection-${status}`}>
-            <span className="state-dot" aria-hidden="true" />
-            {status}
-          </div>
-          <AudioSettingsPanel manager={manager} />
-        </div>
-      </header>
-      {closeMessage && (
-        <section className="inline-notice gameplay-notice" role="alert">
-          {closeMessage}
-        </section>
-      )}
-      {commandError && (
-        <p className="form-error gameplay-error" role="alert">
-          Action rejected: {commandError}
-        </p>
-      )}
-      {actionError && (
-        <p className="form-error gameplay-error" role="alert">
-          Action rejected: {actionError}. Retry while this Decision remains
-          open.
-        </p>
-      )}
+      <GameplayControls status={status} manager={manager} />
+      <GameplayToast
+        status={status}
+        commandError={commandError}
+        actionError={actionError}
+      />
       {!supported ? (
         <main className="gameplay-guidance">
           <p className="eyebrow">DESKTOP TABLE REQUIRED</p>
@@ -842,78 +898,53 @@ export function GameplaySurface({
             will appear when the window is large enough.
           </p>
         </main>
+      ) : closeMessage ? (
+        <main className="gameplay-main">
+          <section className="gameplay-blocking-state" role="alert">
+            <p className="eyebrow">TABLE UNAVAILABLE</p>
+            <h1>Live table paused</h1>
+            <p>{closeMessage}</p>
+          </section>
+        </main>
       ) : (
         <main className="gameplay-main">
-          <section className="gameplay-stage">
-            <div className="table-letterbox">
-              <PixiTable
-                projection={projection}
-                room={room}
-                animations={animations}
-                reducedMotion={reducedMotion}
-                portraitEffect={portraitEffect}
-                onAnimationConsumed={(id: number) =>
-                  useGameStore.getState().consumeAnimations([id])
-                }
-              />
-              <TileHitLayer
-                hand={ownPlayer?.hand ?? []}
-                actions={legalDiscardActions}
-                disabled={inputDisabled}
-                onAction={submit}
-              />
-            </div>
-            <div className="table-caption">
-              <span>
-                {projection?.audience === "player"
-                  ? `Seat ${viewer + 1} / YOUR VIEW`
-                  : "SPECTATOR / SEAT 1 DOWN"}
-              </span>
-              <span
-                data-testid="decision-timer"
-                aria-label={`Decision timer: ${formatSeconds(timer)} seconds`}
-              >
-                {timer === null ? "TIMER —" : `TIMER ${formatSeconds(timer)}s`}
-              </span>
-            </div>
-          </section>
-          <aside className="gameplay-rail">
-            <div className="score-rail">
-              <p className="eyebrow">SCOREBOARD</p>
-              {(projection?.players ?? [])
-                .slice()
-                .sort((left, right) => left.seat - right.seat)
-                .map((player) => (
-                  <div
-                    className={`score-row${player.seat === viewer ? " is-own" : ""}`}
-                    key={player.participant_id}
-                  >
-                    <span>{player.display_name}</span>
-                    <strong>
-                      {typeof player.score === "number"
-                        ? player.score.toLocaleString()
-                        : "—"}
-                    </strong>
-                    <small>
-                      {seatPositionFor(
-                        mode,
-                        player.seat,
-                        projection?.audience === "player" ? viewer : undefined,
-                      )}
-                    </small>
-                  </div>
-                ))}
-            </div>
-            <ActionDeck
-              decision={decision}
-              pending={Boolean(pending)}
+          <div className="table-letterbox">
+            <PixiTable
+              projection={projection}
+              room={room}
+              animations={animations}
+              reducedMotion={reducedMotion}
+              portraitEffect={portraitEffect}
+              onAnimationConsumed={(id: number) =>
+                useGameStore.getState().consumeAnimations([id])
+              }
+            />
+            <TileHitLayer
+              hand={ownPlayer?.hand ?? []}
+              actions={legalDiscardActions}
               disabled={inputDisabled}
               onAction={submit}
             />
-            {room?.phase === "post_match" && (
-              <ResultsPanel room={room} assets={assets} />
+            {room?.phase !== "post_match" && (
+              <ActionDeck
+                decision={decision}
+                remaining={timer}
+                pending={Boolean(pending)}
+                disabled={inputDisabled}
+                onAction={submit}
+              />
             )}
-          </aside>
+            {room?.phase === "post_match" && (
+              <div className="results-overlay">
+                <ResultsPanel room={room} assets={assets} />
+              </div>
+            )}
+          </div>
+          <GameplayPlayerStatus
+            players={projection?.players ?? []}
+            mode={mode}
+            viewerSeat={projection?.audience === "player" ? viewer : undefined}
+          />
         </main>
       )}
     </div>
