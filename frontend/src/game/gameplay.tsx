@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { HumanCharacter } from "../api";
 import {
   actionCandidates,
   actionGroupLabel,
@@ -31,6 +30,7 @@ export interface GameplayProps {
   connectionGeneration: number;
   send: Transport;
   reducedMotion: boolean;
+  participantId?: string | null;
 }
 
 interface AssetState {
@@ -63,10 +63,6 @@ function characterForSeat(
   return (
     roster(room).find((player) => player.seat === seat)?.character_id ?? null
   );
-}
-
-function findCharacterName(characters: HumanCharacter[], id: string): string {
-  return characters.find((character) => character.id === id)?.name ?? id;
 }
 
 function uniqueCharacterIds(room: RoomSnapshot | null): string[] {
@@ -694,10 +690,13 @@ function ResultsPanel({
                   typeof result?.final_scores[index] === "number"
                 ? (result.final_scores[index] as number)
                 : "—";
-          const permanent =
-            roster(room)
-              .find((entry) => entry.participant_id === id)
-              ?.controller.includes("permanent_auto") ?? false;
+          const controller =
+            roster(room).find((entry) => entry.participant_id === id)?.controller ?? "";
+          const autoLabel = controller.includes("permanent_auto")
+            ? "Permanent Auto"
+            : controller.includes("temporary_auto")
+              ? "Temporary Auto"
+              : undefined;
           return (
             <li key={id}>
               <span className="result-rank">
@@ -705,7 +704,7 @@ function ResultsPanel({
               </span>
               <span className="result-name">
                 {name}
-                {permanent && <small>Permanent Auto</small>}
+                {autoLabel && <small>{autoLabel}</small>}
               </span>
               <strong>
                 {typeof score === "number" ? score.toLocaleString() : score}
@@ -727,6 +726,7 @@ export function GameplaySurface({
   connectionGeneration,
   send,
   reducedMotion,
+  participantId,
 }: GameplayProps) {
   const storeEvents = useGameStore((state) => state.lastEvents);
   const eventToken = useGameStore((state) => state.lastEventToken);
@@ -783,12 +783,19 @@ export function GameplaySurface({
     typeof window === "undefined" ||
     (window.innerWidth >= 1024 && window.innerHeight >= 600);
   const mode = projection?.mode ?? room?.game_mode ?? "4p-red-east";
+  const ownController = room?.participants.find((participant) => participant.participant_id === participantId)?.controller
+    ?? roster(room).find((player) => player.seat === viewer)?.controller
+    ?? "";
   const inputDisabled = Boolean(pending) || status !== "connected" || !decision;
   return (
     <div
       className="app-shell gameplay-shell"
+      data-testid="gameplay-shell"
       data-gameplay-mode={mode}
       data-orientation-seat={viewer}
+      data-motion={reducedMotion ? "static" : "cinematic"}
+      data-room-revision={room?.revision ?? ""}
+      data-human-controller={ownController}
     >
       <header className="gameplay-topbar">
         <div>

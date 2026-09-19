@@ -44,7 +44,7 @@ use tower_http::compression::CompressionLayer;
 use url::Url;
 
 use crate::compat::CompatState;
-use crate::storage::{ReplaySummary, StorageError};
+use crate::storage::{ReplaySummary, StorageError, spawn_room_effect_worker};
 use crate::{
     AdminAuthenticator, AdminSecrets, BotTokenAuthority, BotTokenService, CharacterAsset,
     CharacterRegistry, CharacterRegistryError, CredentialError, RuntimeConfig, Storage,
@@ -440,10 +440,12 @@ impl ServerState {
                 .load_character_registry()
                 .map_err(ServerInitError::Characters)?,
         );
+        let (room_effects, room_effect_receiver) =
+            mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
         let mut state = Self::with_registry(
             config.public_origin.clone(),
             admin,
-            RoomRegistry::new(),
+            RoomRegistry::new().with_effect_sender(room_effects),
             registry,
         );
         state
@@ -455,7 +457,8 @@ impl ServerState {
         state.mcp_session_idle_seconds = config.mcp_session_idle_seconds;
         state.mcp_character = config.characters.mcp.clone();
         state.mcp_provider_characters = config.characters.mcp_providers.clone();
-        state.storage = Some(storage);
+        state.storage = Some(Arc::clone(&storage));
+        spawn_room_effect_worker(storage, room_effect_receiver);
         state.compat.watch_revocations(
             token_service.subscribe_revocations(),
             token_service.clone(),

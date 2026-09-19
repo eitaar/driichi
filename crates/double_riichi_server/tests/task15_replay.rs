@@ -3,12 +3,12 @@ use std::{fs, io::Read, path::PathBuf, sync::Arc};
 use axum::{body::Body, http::Request};
 use double_riichi_core::{
     GameEvent, GameMode, Participant, ParticipantKind, RoomCommand, RoomPhase, RoomRegistry, Seat,
-    Tile, Wind,
+    Tile, TimeControl, Wind,
 };
 use double_riichi_replay::{MAX_DECOMPRESSED_REPLAY_BYTES, ReplayWriter};
 use double_riichi_server::{
     AdminAuthenticator, BotTokenAuthority, BotTokenService, ServerState, Storage, StorageError,
-    hash_password, server_router,
+    hash_password, server_router, spawn_room_effect_worker,
 };
 use flate2::read::GzDecoder;
 use serde_json::{Value, json};
@@ -96,6 +96,102 @@ async fn json_body(response: axum::response::Response) -> Value {
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_room_match_is_visible_through_admin_replay_api() {
+    let root = temp_root("room-persistence");
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    let (effects, receiver) = tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    spawn_room_effect_worker(storage.clone(), receiver);
+    let registry = RoomRegistry::with_max_rooms(8).with_effect_sender(effects);
+    let app = ServerState::for_tests(
+        "http://127.0.0.1:3000",
+        Arc::new(
+            AdminAuthenticator::new(
+                "admin",
+                hash_password("correct horse battery staple").unwrap(),
+            )
+            .unwrap(),
+        ),
+        registry.clone(),
+    )
+    .with_bot_token_service(Arc::new(BotTokenService::new(
+        storage.clone(),
+        Arc::new(BotTokenAuthority::from_records(vec![])),
+    )));
+    let app = server_router(Arc::new(app));
+    let room = registry
+        .create(
+            double_riichi_core::RoomConfig::new(
+                "Persistence Room",
+                GameMode::ThreePlayerRedEast,
+                double_riichi_core::CharacterCatalog::starter(),
+            )
+            .with_time_control(TimeControl::Unlimited),
+        )
+        .await
+        .unwrap();
+    room.send(RoomCommand::fill_with_bots()).await.unwrap();
+    let match_id = match room.send(RoomCommand::start()).await.unwrap() {
+        double_riichi_core::RoomResponse::Started(match_id) => match_id.to_string(),
+        response => panic!("unexpected start response: {response:?}"),
+    };
+    assert!(matches!(
+        room.snapshot().await.unwrap().phase,
+        RoomPhase::PostMatch(_)
+    ));
+
+    let cookie = admin_cookie(&app).await;
+    let mut replay = None;
+    for _ in 0..1000 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/admin/replays?offset=0&limit=50")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = json_body(response).await;
+        replay = body["replays"]
+            .as_array()
+            .and_then(|entries| entries.iter().find(|entry| entry["match_id"] == match_id))
+            .cloned();
+        if replay.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let replay = replay.expect("room replay should be persisted");
+    assert_eq!(replay["source"], "room");
+    assert_eq!(replay["room_name"], "Persistence Room");
+    assert_eq!(replay["game_mode"], "3p-red-east");
+    assert_eq!(replay["availability"], "available");
+
+    let view = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/admin/replays/{match_id}"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(view.status(), 200);
+    let view_body = json_body(view).await;
+    assert_eq!(view_body["match_id"], match_id);
+    assert_eq!(view_body["source"], "room");
+    assert_eq!(view_body["room_name"], "Persistence Room");
+    assert_eq!(view_body["players"].as_array().map(Vec::len), Some(3));
+    assert!(!view_body["frames"].as_array().unwrap().is_empty());
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]

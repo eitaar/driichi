@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, type WriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -20,6 +20,8 @@ export interface RealServerHarness {
 
 interface RunningProcess {
   child: ChildProcess;
+  log: WriteStream;
+  closed: Promise<void>;
 }
 
 async function freePort(): Promise<number> {
@@ -60,6 +62,7 @@ async function runCommand(
   args: string[],
   cwd: string,
   input?: string,
+  timeoutMilliseconds = 180_000,
 ): Promise<{ stdout: string; stderr: string }> {
   const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "";
@@ -68,10 +71,27 @@ async function runCommand(
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => { stdout += chunk; });
   child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-  if (input !== undefined) child.stdin.end(input);
+  child.stdin.end(input);
   const exit = await new Promise<number>((resolvePromise, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolvePromise(code ?? 1));
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error(`${command} ${args.join(" ")} exceeded ${timeoutMilliseconds}ms`));
+    }, timeoutMilliseconds);
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(code ?? 1);
+    });
   });
   if (exit !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed with exit ${exit}: ${stderr.slice(-2_000)}`);
@@ -83,10 +103,13 @@ async function ensureServerBinary(): Promise<string> {
   if (!existsSync(resolve(frontendRoot, "dist"))) {
     await runCommand(npmCommand(), npmArgs(["run", "build"]), frontendRoot);
   }
+  await runCommand(
+    cargoCommand(),
+    ["build", "--locked", "-p", "double_riichi_server"],
+    repositoryRoot,
+  );
   const binary = serverBinary();
-  if (!existsSync(binary)) {
-    await runCommand(cargoCommand(), ["build", "-p", "double_riichi_server"], repositoryRoot);
-  }
+  if (!existsSync(binary)) throw new Error(`server binary was not produced: ${binary}`);
   return binary;
 }
 
@@ -123,24 +146,45 @@ async function waitForHttp(url: string, timeoutMilliseconds = 60_000): Promise<v
   throw new Error(`local test server did not become ready: ${url}`);
 }
 
-async function stopProcess(running: RunningProcess | undefined): Promise<void> {
-  if (!running || running.child.exitCode !== null) return;
-  const pid = running.child.pid;
-  if (!pid) return;
-  if (process.platform === "win32") {
-    try {
-      await runCommand("taskkill.exe", ["/pid", String(pid), "/t", "/f"], repositoryRoot);
-    } catch {
-      // The process may have exited between the check and taskkill.
-    }
-    return;
+const PROCESS_STOP_TIMEOUT_MS = 8_000;
+
+async function waitForProcessExit(running: RunningProcess): Promise<boolean> {
+  if (running.child.exitCode !== null) {
+    await running.closed;
+    return true;
   }
-  running.child.kill("SIGTERM");
-  await Promise.race([
-    new Promise<void>((resolvePromise) => running.child.once("close", () => resolvePromise())),
-    wait(3_000),
+  return Promise.race([
+    running.closed.then(() => true),
+    wait(PROCESS_STOP_TIMEOUT_MS).then(() => false),
   ]);
-  if (running.child.exitCode === null) running.child.kill("SIGKILL");
+}
+
+async function stopProcess(running: RunningProcess | undefined): Promise<void> {
+  if (!running) return;
+  if (running.child.exitCode === null) {
+    const pid = running.child.pid;
+    if (pid && process.platform === "win32") {
+      try {
+        await runCommand(
+          "taskkill.exe",
+          ["/pid", String(pid), "/t", "/f"],
+          repositoryRoot,
+          undefined,
+          PROCESS_STOP_TIMEOUT_MS,
+        );
+      } catch {
+        if (running.child.exitCode === null) running.child.kill("SIGKILL");
+      }
+    } else if (pid) {
+      running.child.kill("SIGTERM");
+      if (!(await waitForProcessExit(running)) && running.child.exitCode === null) {
+        running.child.kill("SIGKILL");
+      }
+    }
+  }
+  if (!(await waitForProcessExit(running))) {
+    throw new Error(`process ${running.child.pid ?? "unknown"} did not exit within ${PROCESS_STOP_TIMEOUT_MS}ms`);
+  }
 }
 
 function startProcess(
@@ -161,99 +205,117 @@ function startProcess(
   child.on("error", () => {
     // Readiness polling reports the bounded startup failure to the test.
   });
-  return { child };
+  const closed = new Promise<void>((resolvePromise) => {
+    child.once("close", () => {
+      child.stdout?.unpipe(log);
+      child.stderr?.unpipe(log);
+      if (log.writableEnded) resolvePromise();
+      else log.end(() => resolvePromise());
+    });
+  });
+  return { child, log, closed };
 }
 
 export async function startRealServer(): Promise<RealServerHarness> {
   const binary = await ensureServerBinary();
   const root = await mkdtemp(join(tmpdir(), "driichi-task16-e2e-"));
-  const characterRoot = join(root, "character-packs");
-  mkdirSync(characterRoot, { recursive: true });
-  const fixtureRoot = resolve(frontendRoot, "tests", "fixtures", "task12-characters");
-  const humanIcon = readFileSync(join(fixtureRoot, "player-red", "icon.webp"));
-  const humanPortrait = readFileSync(join(fixtureRoot, "player-red", "portrait.webp"));
-  const botIcon = readFileSync(join(fixtureRoot, "tsumogiri-bot", "icon.webp"));
-  const botPortrait = readFileSync(join(fixtureRoot, "tsumogiri-bot", "portrait.webp"));
-  writePack(characterRoot, "player-red", "human", "Player Red", humanIcon, humanPortrait);
-  writePack(characterRoot, "mjai-bot", "mjai", "MJAI Bot", botIcon, botPortrait);
-  writePack(characterRoot, "tsumogiri-bot", "builtin", "Tsumogiri Bot", botIcon, botPortrait);
-  writePack(characterRoot, "mcp-agent", "mcp", "MCP Agent", botIcon, botPortrait);
-
-  const rustPort = await freePort();
-  const frontendPort = await freePort();
-  const rustOrigin = `http://127.0.0.1:${rustPort}`;
-  const frontendOrigin = `http://127.0.0.1:${frontendPort}`;
-  const configPath = join(root, "config.toml");
-  const envPath = join(root, ".env");
-  writeFileSync(
-    configPath,
-    [
-      `bind = "127.0.0.1:${rustPort}"`,
-      `public_origin = "${frontendOrigin}"`,
-      "tracing_format = \"text\"",
-      "unlimited_watchdog_seconds = 60",
-      "empty_room_cleanup_seconds = 60",
-      "shutdown_seconds = 3",
-      "",
-      "[characters]",
-      'mjai = "mjai-bot"',
-      'builtin = "tsumogiri-bot"',
-      'mcp = "mcp-agent"',
-      "",
-      "[time_controls.casual]",
-      "turn_seconds = 1",
-      "response_seconds = 1",
-      "",
-    ].join("\n"),
-  );
-  const hashOutput = await runCommand(
-    binary,
-    ["hash-password"],
-    repositoryRoot,
-    `${password}\n${password}\n`,
-  );
-  const passwordHash = hashOutput.stdout.trim().split(/\r?\n/).at(-1);
-  if (!passwordHash?.startsWith("$argon2")) throw new Error("server password hash was not generated");
-  writeFileSync(envPath, `ADMIN_USERNAME=admin\nADMIN_PASSWORD_HASH=${passwordHash}\n`);
-
-  const serverLog = join(root, "server.log");
-  const viteLog = join(root, "vite.log");
-  const server = startProcess(binary, ["--config", configPath], repositoryRoot, { ...process.env }, serverLog);
+  let server: RunningProcess | undefined;
+  let vite: RunningProcess | undefined;
   try {
+    const characterRoot = join(root, "character-packs");
+    mkdirSync(characterRoot, { recursive: true });
+    const fixtureRoot = resolve(frontendRoot, "tests", "fixtures", "task12-characters");
+    const humanIcon = readFileSync(join(fixtureRoot, "player-red", "icon.webp"));
+    const humanPortrait = readFileSync(join(fixtureRoot, "player-red", "portrait.webp"));
+    const botIcon = readFileSync(join(fixtureRoot, "tsumogiri-bot", "icon.webp"));
+    const botPortrait = readFileSync(join(fixtureRoot, "tsumogiri-bot", "portrait.webp"));
+    writePack(characterRoot, "player-red", "human", "Player Red", humanIcon, humanPortrait);
+    writePack(characterRoot, "mjai-bot", "mjai", "MJAI Bot", botIcon, botPortrait);
+    writePack(characterRoot, "tsumogiri-bot", "builtin", "Tsumogiri Bot", botIcon, botPortrait);
+    writePack(characterRoot, "mcp-agent", "mcp", "MCP Agent", botIcon, botPortrait);
+
+    const rustPort = await freePort();
+    const frontendPort = await freePort();
+    const rustOrigin = `http://127.0.0.1:${rustPort}`;
+    const frontendOrigin = `http://127.0.0.1:${frontendPort}`;
+    const configPath = join(root, "config.toml");
+    const envPath = join(root, ".env");
+    writeFileSync(
+      configPath,
+      [
+        `bind = "127.0.0.1:${rustPort}"`,
+        `public_origin = "${frontendOrigin}"`,
+        "tracing_format = \"text\"",
+        "unlimited_watchdog_seconds = 60",
+        "empty_room_cleanup_seconds = 60",
+        "shutdown_seconds = 3",
+        "",
+        "[characters]",
+        'mjai = "mjai-bot"',
+        'builtin = "tsumogiri-bot"',
+        'mcp = "mcp-agent"',
+        "",
+        "[time_controls.casual]",
+        "turn_seconds = 1",
+        "response_seconds = 1",
+        "",
+      ].join("\n"),
+    );
+    const hashOutput = await runCommand(
+      binary,
+      ["hash-password"],
+      repositoryRoot,
+      `${password}\n${password}\n`,
+    );
+    const passwordHash = hashOutput.stdout.trim().split(/\r?\n/).at(-1);
+    if (!passwordHash?.startsWith("$argon2")) throw new Error("server password hash was not generated");
+    writeFileSync(envPath, `ADMIN_USERNAME=admin\nADMIN_PASSWORD_HASH=${passwordHash}\n`);
+
+    const serverLog = join(root, "server.log");
+    const viteLog = join(root, "vite.log");
+    server = startProcess(binary, ["--config", configPath], repositoryRoot, { ...process.env }, serverLog);
     await waitForHttp(`${rustOrigin}/status`);
-    const vite = startProcess(
+    vite = startProcess(
       npmCommand(),
       npmArgs(["run", "dev", "--", "--host", "127.0.0.1", "--port", String(frontendPort)]),
       frontendRoot,
       { ...process.env, DRIICHI_E2E_SERVER_ORIGIN: rustOrigin },
       viteLog,
     );
-    try {
-      await waitForHttp(frontendOrigin);
-      return {
-        frontendOrigin,
-        rustOrigin,
-        adminUsername: "admin",
-        adminPassword: password,
-        async stop() {
-          await stopProcess(vite);
-          await stopProcess(server);
+    await waitForHttp(frontendOrigin);
+
+    let stopped = false;
+    return {
+      frontendOrigin,
+      rustOrigin,
+      adminUsername: "admin",
+      adminPassword: password,
+      async stop() {
+        if (stopped) return;
+        stopped = true;
+        let firstError: unknown;
+        for (const process of [vite, server]) {
+          try { await stopProcess(process); }
+          catch (error) { firstError ??= error; }
+        }
+        try {
           await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-        },
-      };
-    } catch (error) {
-      await stopProcess(vite);
-      throw error;
-    }
+        } catch (error) {
+          firstError ??= error;
+        }
+        if (firstError) throw firstError;
+      },
+    };
   } catch (error) {
-    await stopProcess(server);
+    try { await stopProcess(vite); } catch { /* preserve the startup failure */ }
+    try { await stopProcess(server); } catch { /* preserve the startup failure */ }
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     throw error;
   }
 }
 
 export function ensureScreenshotDirectory(): string {
-  const directory = resolve(frontendRoot, "test-results", "task-16");
+  const directory = resolve(frontendRoot, "test-results", "task-16-review");
   mkdirSync(directory, { recursive: true });
   return directory;
 }

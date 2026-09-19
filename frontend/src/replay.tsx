@@ -255,6 +255,17 @@ function useReplayAssetStatus(replay: ReplayView): ReplayAssetStatus {
   return status;
 }
 
+function firstRenderableFrame(frames: ReplayFrame[]): number {
+  const index = frames.findIndex((entry) =>
+    (entry.visible_state.players ?? []).some((player) =>
+      (Array.isArray(player.hand) && player.hand.length > 0)
+      || (typeof player.concealed_count === "number" && player.concealed_count > 0)
+      || (Array.isArray(player.discards) && player.discards.length > 0),
+    ),
+  );
+  return index >= 0 ? index : 0;
+}
+
 function useReplayAudio(frame: ReplayFrame | undefined, room: RoomSnapshot, position: number, enabled: boolean): void {
   const managerRef = useRef<AudioManager | null>(null);
   if (!managerRef.current) managerRef.current = new AudioManager();
@@ -293,7 +304,7 @@ function useReducedMotionPreference(): boolean {
 }
 
 function ReplayViewer({ replay }: { replay: ReplayView }) {
-  const [position, setPosition] = useState(0);
+  const [position, setPosition] = useState(() => firstRenderableFrame(replay.frames));
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   const reducedMotion = useReducedMotionPreference();
@@ -324,7 +335,12 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
   const selectPosition = (next: number) => { setPlaying(false); setPosition(Math.max(0, Math.min(frames.length - 1, next))); };
   return (
     <>
-      <section className="replay-viewer" aria-label="Replay viewer">
+      <section
+        className="replay-viewer"
+        aria-label="Replay viewer"
+        data-testid="replay-viewer"
+        data-motion={reducedMotion ? "static" : "cinematic"}
+      >
         <div className="replay-viewer-head"><div><span className="state-label">EVENT {position + 1} / {frames.length}</span><h2>{readableKind(eventKind(frame.visible_event))}</h2></div><span className="replay-live-state">{presentationLabel}</span></div>
         <div className="replay-table-wrap"><PixiTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion} portraitEffect={portraitEffect} /></div>
         <div className="replay-status-toast" role="status" aria-live="polite"><span className="state-label">EVENT SIGNAL</span><strong>{statusText}</strong></div>

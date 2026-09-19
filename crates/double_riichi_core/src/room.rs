@@ -687,6 +687,7 @@ pub enum RoomEffect {
     OpenMatch {
         match_id: MatchId,
         mode: GameMode,
+        room_name: String,
         roster: Vec<MatchPlayerSnapshot>,
         initial_events: Vec<GameEvent>,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
@@ -2293,24 +2294,7 @@ impl RoomActor {
         effects: mpsc::Sender<RoomEffect>,
     ) -> RoomHandle {
         let state = RoomState::new(config).expect("RoomConfig must be valid");
-        let (sender, receiver) = mpsc::channel(ROOM_COMMAND_CAPACITY);
-        let handle = RoomHandle {
-            sender: sender.clone(),
-            id: state.id.clone(),
-            join_code: state.join_code.clone(),
-        };
-        tokio::spawn(
-            Actor {
-                state,
-                commands: sender,
-                receiver,
-                effects,
-                subscriptions: HashMap::new(),
-                next_subscription: 1,
-            }
-            .run(),
-        );
-        handle
+        Self::spawn_actor(state, effects)
     }
 
     fn spawn_actor(state: RoomState, effects: mpsc::Sender<RoomEffect>) -> RoomHandle {
@@ -2502,6 +2486,7 @@ impl Actor {
             RoomEffect::OpenMatch {
                 match_id: match_id.clone(),
                 mode,
+                room_name: self.state.config.room_name.clone(),
                 roster: roster.to_vec(),
                 initial_events,
                 completion,
@@ -2884,6 +2869,7 @@ impl Actor {
 pub struct RoomRegistry {
     rooms: Arc<RwLock<BTreeMap<RoomJoinCode, RoomHandle>>>,
     cooldowns: Arc<RwLock<BTreeMap<RoomJoinCode, Instant>>>,
+    effects: Option<mpsc::Sender<RoomEffect>>,
     max_rooms: usize,
 }
 
@@ -2914,8 +2900,14 @@ impl RoomRegistry {
         Self {
             rooms: Arc::new(RwLock::new(BTreeMap::new())),
             cooldowns: Arc::new(RwLock::new(BTreeMap::new())),
+            effects: None,
             max_rooms,
         }
+    }
+
+    pub fn with_effect_sender(mut self, effects: mpsc::Sender<RoomEffect>) -> Self {
+        self.effects = Some(effects);
+        self
     }
 
     async fn purge_closed(&self) {
@@ -2980,7 +2972,10 @@ impl RoomRegistry {
             return Err(RoomRegistryError::CodeUnavailable);
         }
         let state = RoomState::with_ids(RoomId::generate(), join_code.clone(), config)?;
-        let handle = RoomActor::spawn_with_state(state);
+        let handle = match &self.effects {
+            Some(effects) => RoomActor::spawn_actor(state, effects.clone()),
+            None => RoomActor::spawn_with_state(state),
+        };
         let mut rooms = self.rooms.write().await;
         if rooms.len() >= self.max_rooms {
             return Err(RoomRegistryError::Full);

@@ -1,16 +1,24 @@
 use std::{
+    collections::HashMap,
     fs,
     fs::OpenOptions,
     io::{self, Write},
     path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use double_riichi_core::{GameMode, MatchResult, Participant};
+use double_riichi_core::{
+    GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind, RoomEffect,
+    RoomEffectError,
+};
 use double_riichi_replay::{
     AuxiliaryPhase, AuxiliaryRecord, MAX_DECOMPRESSED_REPLAY_BYTES, MAX_REPLAY_EVENTS,
-    ReplayArtifact, ReplayError, ReplayFrame, ReplayReader, startup_cleanup as cleanup_replay_root,
+    ReplayArtifact, ReplayError, ReplayFrame, ReplayReader, ReplayWriter,
+    startup_cleanup as cleanup_replay_root,
 };
 use futures_util::TryStreamExt;
 use serde::Serialize;
@@ -20,6 +28,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use crate::auth::validate_audit_summary;
 use crate::{BotTokenRecord, TokenState};
@@ -1110,8 +1119,73 @@ impl Storage {
         transaction.commit().await.map_err(StorageError::Sqlx)
     }
 
+    pub(crate) async fn open_room_match(
+        &self,
+        match_id: &str,
+        mode: GameMode,
+        room_name: &str,
+        started_at: i64,
+        replay_path: &str,
+        roster: &[MatchPlayerSnapshot],
+    ) -> Result<(), StorageError> {
+        self.resolve_replay_path(replay_path)?;
+        if roster.len() != mode.seat_count() {
+            return Err(StorageError::ReplayMetadata);
+        }
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        sqlx::query(
+            "INSERT INTO matches (match_id, source, room_name, game_mode, started_at, status, replay_path) VALUES (?, 'room', ?, ?, ?, 'writing', ?)",
+        )
+        .bind(match_id)
+        .bind(room_name)
+        .bind(mode.as_str())
+        .bind(started_at)
+        .bind(replay_path)
+        .execute(&mut *transaction)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        for player in roster {
+            sqlx::query(
+                "INSERT INTO match_players (match_id, participant_id, display_name, participant_kind, seat, character_id) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(match_id)
+            .bind(player.participant_id.as_str())
+            .bind(&player.display_name)
+            .bind(participant_kind_kind(player.kind))
+            .bind(i64::from(player.seat.index()))
+            .bind(&player.character_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        }
+        transaction.commit().await.map_err(StorageError::Sqlx)
+    }
+
     pub(crate) async fn complete_ranked_match(
         &self,
+        match_id: &str,
+        artifact: &ReplayArtifact,
+        result: &MatchResult,
+        completed_at: i64,
+    ) -> Result<(), StorageError> {
+        self.complete_match("ranked", match_id, artifact, result, completed_at)
+            .await
+    }
+
+    pub(crate) async fn complete_room_match(
+        &self,
+        match_id: &str,
+        artifact: &ReplayArtifact,
+        result: &MatchResult,
+        completed_at: i64,
+    ) -> Result<(), StorageError> {
+        self.complete_match("room", match_id, artifact, result, completed_at)
+            .await
+    }
+
+    async fn complete_match(
+        &self,
+        source: &str,
         match_id: &str,
         artifact: &ReplayArtifact,
         result: &MatchResult,
@@ -1122,12 +1196,13 @@ impl Storage {
             i64::try_from(artifact.file_size).map_err(|_| StorageError::ReplayMetadata)?;
         let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
         let updated = sqlx::query(
-            "UPDATE matches SET completed_at = ?, status = 'completed', replay_path = ?, file_size = ? WHERE match_id = ? AND source = 'ranked' AND status = 'writing'",
+            "UPDATE matches SET completed_at = ?, status = 'completed', replay_path = ?, file_size = ? WHERE match_id = ? AND source = ? AND status = 'writing'",
         )
         .bind(completed_at)
         .bind(artifact.relative_path_string())
         .bind(file_size)
         .bind(match_id)
+        .bind(source)
         .execute(&mut *transaction)
         .await
         .map_err(StorageError::Sqlx)?;
@@ -1184,6 +1259,186 @@ impl Storage {
     pub async fn close(&self) {
         self.pool.close().await;
     }
+}
+
+enum RoomReplay {
+    Writing(ReplayWriter),
+    Failed(String),
+}
+
+pub fn spawn_room_effect_worker(storage: Arc<Storage>, mut effects: mpsc::Receiver<RoomEffect>) {
+    tokio::spawn(async move {
+        let mut replays = HashMap::<String, RoomReplay>::new();
+        while let Some(effect) = effects.recv().await {
+            match effect {
+                RoomEffect::OpenMatch {
+                    match_id,
+                    mode,
+                    room_name,
+                    roster,
+                    initial_events,
+                    completion,
+                } => {
+                    let id = match_id.to_string();
+                    match open_room_replay(&storage, &id, mode, &room_name, &roster, initial_events)
+                        .await
+                    {
+                        Ok(writer) => {
+                            replays.insert(id, RoomReplay::Writing(writer));
+                            let _ = completion.send(Ok(()));
+                        }
+                        Err(error) => {
+                            let _ = completion.send(Err(error));
+                        }
+                    }
+                }
+                RoomEffect::AppendEvents { match_id, events } => {
+                    let id = match_id.to_string();
+                    let failure = match replays.get_mut(&id) {
+                        Some(RoomReplay::Writing(writer)) => {
+                            let mut failure = None;
+                            for event in events {
+                                if let Err(error) = writer.append(event) {
+                                    failure = Some(error.to_string());
+                                    break;
+                                }
+                            }
+                            failure
+                        }
+                        Some(RoomReplay::Failed(error)) => Some(error.clone()),
+                        None => Some("replay was not opened".to_owned()),
+                    };
+                    if let Some(error) = failure
+                        && mark_room_replay_failed(&mut replays, &id, error)
+                    {
+                        let _ = storage.delete_writing_match(&id).await;
+                    }
+                }
+                RoomEffect::FlushKyoku {
+                    match_id,
+                    completion,
+                } => {
+                    let id = match_id.to_string();
+                    let result = match replays.get_mut(&id) {
+                        Some(RoomReplay::Writing(writer)) => writer
+                            .flush_kyoku()
+                            .map_err(|error| room_effect_error(error.to_string())),
+                        Some(RoomReplay::Failed(error)) => Err(room_effect_error(error.clone())),
+                        None => Err(room_effect_error("replay was not opened")),
+                    };
+                    if let Err(error) = &result
+                        && mark_room_replay_failed(&mut replays, &id, error.to_string())
+                    {
+                        let _ = storage.delete_writing_match(&id).await;
+                    }
+                    let _ = completion.send(result);
+                }
+                RoomEffect::FinalizeMatch {
+                    match_id,
+                    result,
+                    completion,
+                } => {
+                    let id = match_id.to_string();
+                    let replay = replays.remove(&id);
+                    let persisted = match replay {
+                        Some(RoomReplay::Writing(writer)) => match writer.finalize() {
+                            Ok(artifact) => {
+                                let relative_path = artifact.relative_path_string();
+                                match storage
+                                    .complete_room_match(
+                                        &id,
+                                        &artifact,
+                                        &result,
+                                        now_unix_seconds(),
+                                    )
+                                    .await
+                                {
+                                    Ok(()) => Ok(()),
+                                    Err(error) => {
+                                        let _ = storage.remove_replay_file(&relative_path);
+                                        let _ = storage.delete_writing_match(&id).await;
+                                        Err(room_effect_error(error.to_string()))
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let _ = storage.delete_writing_match(&id).await;
+                                Err(room_effect_error(error.to_string()))
+                            }
+                        },
+                        Some(RoomReplay::Failed(error)) => {
+                            let _ = storage.delete_writing_match(&id).await;
+                            Err(room_effect_error(error))
+                        }
+                        None => {
+                            let _ = storage.delete_writing_match(&id).await;
+                            Err(room_effect_error("replay was not opened"))
+                        }
+                    };
+                    let _ = completion.send(persisted);
+                }
+                RoomEffect::DeleteIncomplete { match_id } => {
+                    let id = match_id.to_string();
+                    if let Some(RoomReplay::Writing(writer)) = replays.remove(&id) {
+                        writer.abort();
+                    }
+                    let _ = storage.delete_writing_match(&id).await;
+                }
+            }
+        }
+    });
+}
+
+async fn open_room_replay(
+    storage: &Storage,
+    match_id: &str,
+    mode: GameMode,
+    room_name: &str,
+    roster: &[MatchPlayerSnapshot],
+    initial_events: Vec<double_riichi_core::GameEvent>,
+) -> Result<ReplayWriter, RoomEffectError> {
+    let mut writer = ReplayWriter::new(storage.replay_root(), match_id, mode)
+        .map_err(|error| room_effect_error(error.to_string()))?;
+    for event in initial_events {
+        if let Err(error) = writer.append(event) {
+            writer.abort();
+            return Err(room_effect_error(error.to_string()));
+        }
+    }
+    if let Err(error) = storage
+        .open_room_match(
+            match_id,
+            mode,
+            room_name,
+            now_unix_seconds(),
+            &writer.relative_path_string(),
+            roster,
+        )
+        .await
+    {
+        writer.abort();
+        return Err(room_effect_error(error.to_string()));
+    }
+    Ok(writer)
+}
+
+fn mark_room_replay_failed(
+    replays: &mut HashMap<String, RoomReplay>,
+    match_id: &str,
+    error: String,
+) -> bool {
+    let Some(replay) = replays.get_mut(match_id) else {
+        return false;
+    };
+    let previous = std::mem::replace(replay, RoomReplay::Failed(error));
+    if let RoomReplay::Writing(writer) = previous {
+        writer.abort();
+    }
+    true
+}
+
+fn room_effect_error(error: impl Into<String>) -> RoomEffectError {
+    RoomEffectError::Failed(error.into())
 }
 
 struct LimitedJsonWriter {
@@ -1295,11 +1550,15 @@ async fn insert_audit_tx(
 }
 
 fn participant_kind(participant: &Participant) -> &'static str {
-    match participant.kind {
-        double_riichi_core::ParticipantKind::Human => "human",
-        double_riichi_core::ParticipantKind::MJAI => "mjai",
-        double_riichi_core::ParticipantKind::MCP => "mcp",
-        double_riichi_core::ParticipantKind::BuiltInBot => "builtin_bot",
+    participant_kind_kind(participant.kind)
+}
+
+fn participant_kind_kind(kind: ParticipantKind) -> &'static str {
+    match kind {
+        ParticipantKind::Human => "human",
+        ParticipantKind::MJAI => "mjai",
+        ParticipantKind::MCP => "mcp",
+        ParticipantKind::BuiltInBot => "builtin_bot",
     }
 }
 
