@@ -271,29 +271,49 @@ async function tabTo(page: Page, target: Locator, limit = 60) {
   throw new Error("keyboard focus did not reach the requested control");
 }
 
-async function waitForAcceptedAction(page: Page, actionId: string, decisionId: string) {
+type ActionOutcome = "accepted" | "rejected";
+
+async function waitForActionResult(
+  page: Page,
+  actionId: string,
+  decisionId: string,
+): Promise<ActionOutcome> {
   const shell = page.getByTestId("gameplay-shell");
+  let outcome: ActionOutcome | null = null;
   await expect.poll(
     async () => {
-      const status = await shell.getAttribute("data-last-action-result-status");
-      const observedActionId = await shell.getAttribute("data-last-action-result-action-id");
-      if (status === "accepted" && observedActionId === actionId) return true;
-      const serializedHistory = await shell.getAttribute("data-accepted-action-results");
+      const serializedHistory = await shell.getAttribute("data-action-result-history");
       try {
         const history = JSON.parse(serializedHistory ?? "[]") as Array<{
           action_id?: string;
           decision_id?: string;
+          status?: ActionOutcome;
         }>;
-        return history.some(
+        const matching = history.find(
           (result) =>
             result.action_id === actionId && result.decision_id === decisionId,
         );
+        if (matching?.status === "accepted" || matching?.status === "rejected") {
+          outcome = matching.status;
+          return outcome;
+        }
       } catch {
-        return false;
+        // Keep polling until the authoritative DOM history is valid.
       }
+      const status = await shell.getAttribute("data-last-action-result-status");
+      const observedActionId = await shell.getAttribute("data-last-action-result-action-id");
+      if (
+        observedActionId === actionId &&
+        (status === "accepted" || status === "rejected")
+      ) {
+        outcome = status;
+        return outcome;
+      }
+      return null;
     },
-    { timeout: 10_000, message: "the submitted action id should be accepted" },
-  ).toBe(true);
+    { timeout: 10_000, message: "the submitted action id should receive an authoritative result" },
+  ).toBeTruthy();
+  return outcome!;
 }
 
 async function waitForAcceptedRevision(page: Page, beforeRevision: number) {
@@ -335,8 +355,9 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
     const actionId = await dialog.locator(".candidate-list button").first().getAttribute("data-action-id");
     expect(actionId, "candidate action must expose its concrete action_id").toBeTruthy();
     await dialog.locator(".candidate-list button").first().click();
+    const outcome = await waitForActionResult(page, actionId!, decisionId!);
+    if (outcome !== "accepted") return { submitted: false, multiCandidate: false };
     observedMultiCandidateAction = true;
-    await waitForAcceptedAction(page, actionId!, decisionId!);
     await waitForAcceptedRevision(page, beforeRevision);
     return { submitted: true, multiCandidate: true, actionId: actionId! };
   }
@@ -356,7 +377,8 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
   const actionId = await action.getAttribute("data-action-id");
   expect(actionId, "submitted action must expose its concrete action_id").toBeTruthy();
   await action.click();
-  await waitForAcceptedAction(page, actionId!, decisionId!);
+  const outcome = await waitForActionResult(page, actionId!, decisionId!);
+  if (outcome !== "accepted") return { submitted: false, multiCandidate: false };
   await waitForAcceptedRevision(page, beforeRevision);
   return { submitted: true, multiCandidate: false, actionId: actionId! };
 }

@@ -36,7 +36,7 @@ export interface GameStoreState {
   lastEventToken: number;
   lastEvents: unknown[];
   lastActionResult: ActionResult | null;
-  acceptedActionResults: Array<Pick<ActionResult, "decision_id" | "action_id">>;
+  actionResultHistory: Array<Pick<ActionResult, "decision_id" | "action_id" | "status">>;
   animationEnqueuedCount: number;
   animationConsumedCount: number;
   transport?: Transport | null;
@@ -67,7 +67,7 @@ const initialState = {
   lastEventToken: 0,
   lastEvents: [] as unknown[],
   lastActionResult: null as ActionResult | null,
-  acceptedActionResults: [] as Array<Pick<ActionResult, "decision_id" | "action_id">>,
+  actionResultHistory: [] as Array<Pick<ActionResult, "decision_id" | "action_id" | "status">>,
   animationEnqueuedCount: 0,
   animationConsumedCount: 0,
   transport: null as Transport | null,
@@ -101,7 +101,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     lastRevision: null,
     lastEvents: [],
     lastActionResult: null,
-    acceptedActionResults: [],
+    actionResultHistory: [],
     animationEnqueuedCount: 0,
     animationConsumedCount: 0,
     lastEventToken: state.lastEventToken + 1,
@@ -166,30 +166,46 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
         : (!result.decision_id || result.decision_id === state.pendingAction.decisionId));
     if (!matching) return state;
     if (result.status === "accepted") {
-      const acceptedActionResults = result.action_id
+      const actionResultHistory = result.action_id
         ? [
-            ...state.acceptedActionResults.filter(
+            ...state.actionResultHistory.filter(
               (entry) => entry.action_id !== result.action_id,
             ),
             {
               decision_id: state.pendingAction?.decisionId ?? result.decision_id,
               action_id: result.action_id,
+              status: result.status,
             },
           ].slice(-64)
-        : state.acceptedActionResults;
+        : state.actionResultHistory;
       return {
         pendingAction: null,
         actionError: "",
         commandError: "",
         lastActionResult: result,
-        acceptedActionResults,
+        actionResultHistory,
       };
     }
-    if (result.status === "rejected") return {
-      pendingAction: null,
-      actionError: result.code ?? "action_rejected",
-      lastActionResult: result,
-    };
+    if (result.status === "rejected") {
+      const actionResultHistory = result.action_id
+        ? [
+            ...state.actionResultHistory.filter(
+              (entry) => entry.action_id !== result.action_id,
+            ),
+            {
+              decision_id: state.pendingAction?.decisionId ?? result.decision_id,
+              action_id: result.action_id,
+              status: result.status,
+            },
+          ].slice(-64)
+        : state.actionResultHistory;
+      return {
+        pendingAction: null,
+        actionError: result.code ?? "action_rejected",
+        lastActionResult: result,
+        actionResultHistory,
+      };
+    }
     return state;
   }),
   setCommandError: (error) => set({ commandError: error }),
