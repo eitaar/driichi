@@ -19,9 +19,12 @@ test-frontend:
 contracts-install:
     python -m pip install --disable-pip-version-check --no-input --requirement scripts/requirements-contracts.txt
 
-test-contract: contracts-install
+test-contract: contracts-install test-release-frontend
     python scripts/validate_contracts.py
     cargo --locked test -p double_riichi_server --test task16_contracts -- --test-threads=1
+
+test-release-frontend:
+    python scripts/release/production_frontend.py
 
 test-spec:
     grep -Fq 'Basic accessibility is a v1 requirement.' spec/implementation-v1.md

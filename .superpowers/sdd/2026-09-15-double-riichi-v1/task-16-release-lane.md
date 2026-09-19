@@ -3,8 +3,9 @@
 ## Scope
 
 This lane owns the release staging scripts, release notices and templates,
-`justfile`, and GitHub Actions workflows. It does not change frontend, Rust,
-Cargo, specification, progress, or the Task 16 report sources.
+`justfile`, and GitHub Actions workflows, plus release-facing server HTTP
+contracts and focused tests. It does not change frontend, Cargo, specification,
+progress, or the Task 16 report sources.
 
 ## Deterministic release contract
 
@@ -37,10 +38,16 @@ nested SHA-256 manifests and prints the version/start argv without trying to
 execute a foreign binary. Native jobs run the full version/start smoke and
 probe the launched server's root HTML and a static asset referenced by that HTML over HTTP.
 
+The production frontend gate runs `npm ci`, builds a fresh `frontend/dist`,
+and then runs the focused `task16_contracts` test with Cargo's release profile.
+It uses a fresh temporary Cargo target directory so no stale binary can satisfy
+the gate, and restores or removes the ignored dist tree on every normal exit.
+
 ## Gates
 
 - `just test-all` runs deterministic Rust, frontend, contract, spec, smoke,
-  release-script, and browser gates. It has no live credential dependency.
+  release-script, and browser gates. Its `test-contract` dependency first runs
+  the production frontend embedding gate; it has no live credential dependency.
 - `just build-release` delegates to the temporary-staging package command.
 - `just release-smoke-dry-run` verifies a selected archive without execution.
 - `just test-live` fails unless `RUN_LIVE_TESTS=1`; only the schedule workflow
@@ -54,11 +61,14 @@ probe the launched server's root HTML and a static asset referenced by that HTML
 
 The native dependency-free script suite is `python scripts/release/test_release.py`.
 It proves deterministic archive bytes, nested checksums, path safety, generated
-media rejection, platform executable naming, and scheduled endpoint validation.
-The recovery worker must run `python scripts/release/test_release.py` and the
-release smoke dry-run against a staged archive before committing. A full
-workspace Rust suite is intentionally not run by the recovery worker; CI's
-`test-all` job remains the authoritative broad gate.
+media rejection, platform executable naming, scheduled endpoint validation, and
+safe production-dist cleanup. The production gate is
+`python scripts/release/production_frontend.py`; it proves release-mode root HTML
+and one referenced static asset after a fresh frontend build. The recovery worker
+must run both release-script tests and the production gate, plus the release
+smoke dry-run against a staged archive, before committing. A full workspace Rust
+suite is intentionally not run by the recovery worker; CI's `test-all` job remains
+the authoritative broad gate.
 
 ## CI-only residual risks
 

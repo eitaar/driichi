@@ -1027,7 +1027,7 @@ fn frontend_response(path: &str, request_id: &RequestId) -> Response {
         return not_found_response(request_id);
     };
     let (content_type, cache_control) = if asset_key == "index.html" {
-        ("text/html; charset=utf-8", "no-store")
+        ("text/html; charset=utf-8", "no-cache")
     } else {
         (
             frontend_asset_mime(asset_key).expect("frontend asset MIME was validated"),
