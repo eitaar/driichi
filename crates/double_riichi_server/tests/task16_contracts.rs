@@ -332,6 +332,8 @@ async fn admin_room_contract_fields_are_accepted_by_runtime() {
     let created = response_json(created).await;
     assert_eq!(created["time_control"], "unlimited");
     assert_eq!(created["participant_limit"], 4);
+    assert!(created["persistence_degraded"].is_boolean());
+    assert!(created["replay_available"].is_boolean());
     let join_code = created["join_code"].as_str().unwrap().to_owned();
 
     let patched = router
@@ -351,6 +353,8 @@ async fn admin_room_contract_fields_are_accepted_by_runtime() {
     let patched = response_json(patched).await;
     assert_eq!(patched["time_control"], "riichi_dev");
     assert_eq!(patched["participant_limit"], 4);
+    assert!(patched["persistence_degraded"].is_boolean());
+    assert!(patched["replay_available"].is_boolean());
     state.shutdown().await;
 }
 

@@ -264,6 +264,15 @@ def validate_dto_contracts(openapi: dict[str, Any]) -> None:
         if responses["503"].get("$ref") != "#/components/responses/ServiceUnavailable":
             fail(f"{path} must use the bounded ServiceUnavailable response")
 
+    room_detail = schemas["RoomDetail"]
+    room_detail_required = set(room_detail.get("required", []))
+    room_detail_properties = room_detail.get("properties", {})
+    for field in ("persistence_degraded", "replay_available"):
+        if field not in room_detail_required:
+            fail(f"RoomDetail.{field} must be required")
+        if room_detail_properties.get(field, {}).get("type") != "boolean":
+            fail(f"RoomDetail.{field} must be a boolean")
+
     for name in ("CreateRoomRequest", "PatchRoomRequest"):
         properties = schemas[name]["properties"]
         if set(properties) != {
