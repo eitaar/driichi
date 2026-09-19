@@ -2,6 +2,7 @@
 
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test as base, type BrowserContext, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   ensureScreenshotDirectory,
@@ -34,6 +35,12 @@ const viewports: Viewport[] = [
   { width: 1440, height: 900, label: "1440x900" },
 ];
 const screenshotDirectory = resolve(ensureScreenshotDirectory());
+const projectionFixture = JSON.parse(
+  readFileSync(resolve(process.cwd(), "tests/fixtures/task12-projection.json"), "utf8"),
+) as {
+  room_envelopes: Record<string, Record<string, unknown>>;
+  projections: Record<string, Record<string, unknown>>;
+};
 const replayByteLimit = 8 * 1024 * 1024;
 const replayFrameLimit = 100_000;
 let observedMultiCandidateAction = false;
@@ -173,6 +180,64 @@ async function fillWithBotsAndStart(
   await adminPage.getByRole("button", { name: /start match/i }).click();
 }
 
+async function installEmbeddedProjection(page: Page) {
+  const room = projectionFixture.room_envelopes["4p-red-east"];
+  const state = JSON.parse(
+    JSON.stringify(projectionFixture.projections["4p-red-east"]),
+  ) as Record<string, unknown>;
+  state.decision = {
+    decision_id: "response-1",
+    kind: "Response",
+    actions: [
+      {
+        action_id: "chi-1",
+        action: { Chi: { target: 1, called: 1, consumed: [0, 4] } },
+      },
+      { action_id: "pass-1", action: "Pass" },
+    ],
+  };
+  await page.addInitScript(
+    ({ room: initialRoom, state: initialState }) => {
+      const browser = window as unknown as {
+        __room: unknown;
+        __state: unknown;
+      };
+      browser.__room = initialRoom;
+      browser.__state = initialState;
+      class GameplaySocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen: (() => void) | null = null;
+        onmessage: ((event: { data: string }) => void) | null = null;
+        onclose: ((event: { code: number; reason: string }) => void) | null = null;
+        onerror: (() => void) | null = null;
+        constructor() {
+          setTimeout(() => {
+            this.onopen?.();
+            this.onmessage?.({
+              data: JSON.stringify({
+                type: "snapshot",
+                room: browser.__room,
+                state: browser.__state,
+              }),
+            });
+          }, 0);
+        }
+        send(_value: string) {}
+        close() {
+          this.onclose?.({ code: 1000, reason: "client_closed" });
+        }
+      }
+      Object.defineProperty(window, "WebSocket", {
+        configurable: true,
+        value: GameplaySocket,
+      });
+      sessionStorage.setItem("driichi:participant:123456", "P1");
+    },
+    { room, state },
+  );
+}
+
 async function waitForDecision(page: Page, seats: number) {
   await expect(page.getByTestId("gameplay-shell")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("pixi-table")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
@@ -278,6 +343,39 @@ async function completeMatch(page: Page, mode: MatchMode, seats: number) {
   await expectAccessible(page, "results");
   await captureAtBothViewports(page, `${mode}-results`);
 }
+
+test("serves the embedded gameplay with visible tiles under its CSP", async ({ page, harness }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const tileResponses: Array<{ status: number; contentType: string }> = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname.endsWith(".svg")) {
+      tileResponses.push({
+        status: response.status(),
+        contentType: response.headers()["content-type"] ?? "",
+      });
+    }
+  });
+  await installEmbeddedProjection(page);
+  const documentResponse = await page.goto(
+    `${harness.rustOrigin}/room/123456/lobby`,
+  );
+  expect(documentResponse?.headers()["content-security-policy"]).toContain(
+    "script-src 'self'",
+  );
+  const table = page.getByTestId("pixi-table");
+  await expect(table).toHaveAttribute("data-render-ready", "true", {
+    timeout: 30_000,
+  });
+  await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
+  expect(
+    tileResponses.some(
+      ({ status, contentType }) =>
+        status === 200 && contentType.startsWith("image/svg+xml"),
+    ),
+  ).toBe(true);
+  await expect(page.getByRole("button", { name: "Chi" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Pass" })).toBeEnabled();
+});
 
 type JsonResponse = { status: number; body: unknown };
 
