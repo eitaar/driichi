@@ -12,8 +12,8 @@ use std::{
 };
 
 use double_riichi_core::{
-    GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind, RoomEffect,
-    RoomEffectError,
+    GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind, RoomAuxiliaryEvent,
+    RoomAuxiliaryPhase, RoomEffect, RoomEffectError,
 };
 use double_riichi_replay::{
     AuxiliaryPhase, AuxiliaryRecord, MAX_DECOMPRESSED_REPLAY_BYTES, MAX_REPLAY_EVENTS,
@@ -1266,7 +1266,10 @@ enum RoomReplay {
     Failed(String),
 }
 
-pub fn spawn_room_effect_worker(storage: Arc<Storage>, mut effects: mpsc::Receiver<RoomEffect>) {
+pub fn spawn_room_effect_worker(
+    storage: Arc<Storage>,
+    mut effects: mpsc::Receiver<RoomEffect>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut replays = HashMap::<String, RoomReplay>::new();
         while let Some(effect) = effects.recv().await {
@@ -1277,17 +1280,27 @@ pub fn spawn_room_effect_worker(storage: Arc<Storage>, mut effects: mpsc::Receiv
                     room_name,
                     roster,
                     initial_events,
+                    started_at,
                     completion,
                 } => {
                     let id = match_id.to_string();
-                    match open_room_replay(&storage, &id, mode, &room_name, &roster, initial_events)
-                        .await
+                    match open_room_replay(
+                        &storage,
+                        &id,
+                        mode,
+                        &room_name,
+                        &roster,
+                        initial_events,
+                        started_at,
+                    )
+                    .await
                     {
                         Ok(writer) => {
                             replays.insert(id, RoomReplay::Writing(writer));
                             let _ = completion.send(Ok(()));
                         }
                         Err(error) => {
+                            storage.mark_replay_degraded();
                             let _ = completion.send(Err(error));
                         }
                     }
@@ -1308,10 +1321,31 @@ pub fn spawn_room_effect_worker(storage: Arc<Storage>, mut effects: mpsc::Receiv
                         Some(RoomReplay::Failed(error)) => Some(error.clone()),
                         None => Some("replay was not opened".to_owned()),
                     };
-                    if let Some(error) = failure
-                        && mark_room_replay_failed(&mut replays, &id, error)
-                    {
-                        let _ = storage.delete_writing_match(&id).await;
+                    if let Some(error) = failure {
+                        storage.mark_replay_degraded();
+                        mark_room_replay_failed(&mut replays, &id, error);
+                    }
+                }
+                RoomEffect::RecordAuxiliary {
+                    match_id,
+                    event,
+                    phase,
+                } => {
+                    let id = match_id.to_string();
+                    let result = match replays.get_mut(&id) {
+                        Some(RoomReplay::Writing(writer)) => writer
+                            .record_auxiliary(
+                                to_replay_auxiliary_event(event),
+                                to_replay_auxiliary_phase(phase),
+                            )
+                            .map(|_| ())
+                            .map_err(|error| error.to_string()),
+                        Some(RoomReplay::Failed(error)) => Err(error.clone()),
+                        None => Err("replay was not opened".to_owned()),
+                    };
+                    if let Err(error) = result {
+                        storage.mark_replay_degraded();
+                        mark_room_replay_failed(&mut replays, &id, error);
                     }
                 }
                 RoomEffect::FlushKyoku {
@@ -1326,16 +1360,16 @@ pub fn spawn_room_effect_worker(storage: Arc<Storage>, mut effects: mpsc::Receiv
                         Some(RoomReplay::Failed(error)) => Err(room_effect_error(error.clone())),
                         None => Err(room_effect_error("replay was not opened")),
                     };
-                    if let Err(error) = &result
-                        && mark_room_replay_failed(&mut replays, &id, error.to_string())
-                    {
-                        let _ = storage.delete_writing_match(&id).await;
+                    if let Err(error) = &result {
+                        storage.mark_replay_degraded();
+                        mark_room_replay_failed(&mut replays, &id, error.to_string());
                     }
                     let _ = completion.send(result);
                 }
                 RoomEffect::FinalizeMatch {
                     match_id,
                     result,
+                    completed_at,
                     completion,
                 } => {
                     let id = match_id.to_string();
@@ -1345,33 +1379,42 @@ pub fn spawn_room_effect_worker(storage: Arc<Storage>, mut effects: mpsc::Receiv
                             Ok(artifact) => {
                                 let relative_path = artifact.relative_path_string();
                                 match storage
-                                    .complete_room_match(
-                                        &id,
-                                        &artifact,
-                                        &result,
-                                        now_unix_seconds(),
-                                    )
+                                    .complete_room_match(&id, &artifact, &result, completed_at)
                                     .await
                                 {
                                     Ok(()) => Ok(()),
                                     Err(error) => {
-                                        let _ = storage.remove_replay_file(&relative_path);
-                                        let _ = storage.delete_writing_match(&id).await;
+                                        storage.mark_replay_degraded();
+                                        if let Err(cleanup_error) =
+                                            storage.remove_replay_file(&relative_path)
+                                        {
+                                            tracing::warn!(
+                                                error = ?cleanup_error,
+                                                "room replay cleanup deferred after metadata failure"
+                                            );
+                                        } else if let Err(delete_error) =
+                                            storage.delete_writing_match(&id).await
+                                        {
+                                            tracing::warn!(
+                                                error = ?delete_error,
+                                                "room replay metadata cleanup deferred"
+                                            );
+                                        }
                                         Err(room_effect_error(error.to_string()))
                                     }
                                 }
                             }
                             Err(error) => {
-                                let _ = storage.delete_writing_match(&id).await;
+                                storage.mark_replay_degraded();
                                 Err(room_effect_error(error.to_string()))
                             }
                         },
                         Some(RoomReplay::Failed(error)) => {
-                            let _ = storage.delete_writing_match(&id).await;
+                            storage.mark_replay_degraded();
                             Err(room_effect_error(error))
                         }
                         None => {
-                            let _ = storage.delete_writing_match(&id).await;
+                            storage.mark_replay_degraded();
                             Err(room_effect_error("replay was not opened"))
                         }
                     };
@@ -1380,13 +1423,28 @@ pub fn spawn_room_effect_worker(storage: Arc<Storage>, mut effects: mpsc::Receiv
                 RoomEffect::DeleteIncomplete { match_id } => {
                     let id = match_id.to_string();
                     if let Some(RoomReplay::Writing(writer)) = replays.remove(&id) {
+                        let part_path = writer.part_path().to_path_buf();
                         writer.abort();
+                        if part_path.exists() {
+                            storage.mark_replay_degraded();
+                        } else if let Err(error) = storage.delete_writing_match(&id).await {
+                            storage.mark_replay_degraded();
+                            tracing::warn!(error = ?error, "room replay metadata cleanup deferred");
+                        }
                     }
-                    let _ = storage.delete_writing_match(&id).await;
                 }
             }
         }
-    });
+        for replay in replays.into_values() {
+            if let RoomReplay::Writing(writer) = replay {
+                let part_path = writer.part_path().to_path_buf();
+                writer.abort();
+                if part_path.exists() {
+                    storage.mark_replay_degraded();
+                }
+            }
+        }
+    })
 }
 
 async fn open_room_replay(
@@ -1396,6 +1454,7 @@ async fn open_room_replay(
     room_name: &str,
     roster: &[MatchPlayerSnapshot],
     initial_events: Vec<double_riichi_core::GameEvent>,
+    started_at: i64,
 ) -> Result<ReplayWriter, RoomEffectError> {
     let mut writer = ReplayWriter::new(storage.replay_root(), match_id, mode)
         .map_err(|error| room_effect_error(error.to_string()))?;
@@ -1410,7 +1469,7 @@ async fn open_room_replay(
             match_id,
             mode,
             room_name,
-            now_unix_seconds(),
+            started_at,
             &writer.relative_path_string(),
             roster,
         )
@@ -1420,6 +1479,34 @@ async fn open_room_replay(
         return Err(room_effect_error(error.to_string()));
     }
     Ok(writer)
+}
+
+fn to_replay_auxiliary_event(event: RoomAuxiliaryEvent) -> double_riichi_replay::AuxiliaryEvent {
+    match event {
+        RoomAuxiliaryEvent::Disconnected { seat } => {
+            double_riichi_replay::AuxiliaryEvent::Disconnected { seat }
+        }
+        RoomAuxiliaryEvent::Reconnected { seat } => {
+            double_riichi_replay::AuxiliaryEvent::Reconnected { seat }
+        }
+        RoomAuxiliaryEvent::AutoStarted { seat } => {
+            double_riichi_replay::AuxiliaryEvent::AutoStarted { seat }
+        }
+        RoomAuxiliaryEvent::Left { seat } => double_riichi_replay::AuxiliaryEvent::Left { seat },
+        RoomAuxiliaryEvent::TokenRevoked { seat } => {
+            double_riichi_replay::AuxiliaryEvent::TokenRevoked { seat }
+        }
+        RoomAuxiliaryEvent::Kicked { seat } => {
+            double_riichi_replay::AuxiliaryEvent::Kicked { seat }
+        }
+    }
+}
+
+fn to_replay_auxiliary_phase(phase: RoomAuxiliaryPhase) -> AuxiliaryPhase {
+    match phase {
+        RoomAuxiliaryPhase::Before => AuxiliaryPhase::Before,
+        RoomAuxiliaryPhase::After => AuxiliaryPhase::After,
+    }
 }
 
 fn mark_room_replay_failed(

@@ -62,7 +62,13 @@ async fn actor_lifecycle_selects_fills_readies_and_starts_atomically() {
             .unwrap();
     }
 
-    let response = handle.send(RoomCommand::start()).await.unwrap();
+    let start = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.send(RoomCommand::start()).await }
+    });
+    let effect = effects.recv().await.expect("open effect");
+    effect.acknowledge(Ok(()));
+    let response = start.await.unwrap().unwrap();
     assert!(matches!(response, RoomResponse::Started(_)));
     assert!(matches!(
         handle.snapshot().await.unwrap().phase,
@@ -363,28 +369,41 @@ async fn persistence_backpressure_does_not_prevent_match_start() {
         .unwrap();
     let handle = RoomActor::spawn_with_effect_sender(config(), effects);
     handle.send(RoomCommand::fill_with_bots()).await.unwrap();
-    let response = handle.send(RoomCommand::start()).await.unwrap();
+    let start = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.send(RoomCommand::start()).await }
+    });
+    let _queued = receiver.recv().await.expect("queued append effect");
+    let open = receiver.recv().await.expect("open effect");
+    open.acknowledge(Ok(()));
+    let response = start.await.unwrap().unwrap();
     assert!(matches!(response, RoomResponse::Started(_)));
     assert!(matches!(
         handle.snapshot().await.unwrap().phase,
         RoomPhase::Playing(_) | RoomPhase::PostMatch(_)
     ));
-    let _ = receiver.try_recv();
 }
 
 #[tokio::test]
 async fn persistence_ack_failure_marks_replay_unavailable() {
     let (handle, mut effects) = RoomActor::spawn_with_effect_channel(config());
     handle.send(RoomCommand::fill_with_bots()).await.unwrap();
-    handle.send(RoomCommand::start()).await.unwrap();
+    let start = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.send(RoomCommand::start()).await }
+    });
     let effect = effects.recv().await.expect("open effect");
     effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
         "disk full".to_owned(),
     )));
-    tokio::task::yield_now().await;
+    assert!(matches!(start.await.unwrap(), Ok(RoomResponse::Started(_))));
     let snapshot = handle.snapshot().await.unwrap();
     assert!(snapshot.persistence_degraded);
     assert!(!snapshot.replay_available);
+    assert!(matches!(
+        snapshot.phase,
+        RoomPhase::Playing(_) | RoomPhase::PostMatch(_)
+    ));
 }
 
 #[tokio::test]

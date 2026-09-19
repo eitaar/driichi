@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -31,6 +31,13 @@ const DEFAULT_MAX_ROOMS: usize = 32;
 const DEFAULT_MAX_PARTICIPANTS: usize = 32;
 const ROOM_CODE_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
 const PERSISTENCE_ACK_TIMEOUT: Duration = Duration::from_secs(1);
+
+fn now_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
 
 fn normalize_name(value: &str) -> Option<String> {
     let value = value.trim_matches(char::is_whitespace);
@@ -682,6 +689,22 @@ pub enum RoomEffectError {
     Closed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomAuxiliaryPhase {
+    Before,
+    After,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomAuxiliaryEvent {
+    Disconnected { seat: Seat },
+    Reconnected { seat: Seat },
+    AutoStarted { seat: Seat },
+    Left { seat: Seat },
+    TokenRevoked { seat: Seat },
+    Kicked { seat: Seat },
+}
+
 #[derive(Debug)]
 pub enum RoomEffect {
     OpenMatch {
@@ -690,11 +713,17 @@ pub enum RoomEffect {
         room_name: String,
         roster: Vec<MatchPlayerSnapshot>,
         initial_events: Vec<GameEvent>,
+        started_at: i64,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
     AppendEvents {
         match_id: MatchId,
         events: Vec<GameEvent>,
+    },
+    RecordAuxiliary {
+        match_id: MatchId,
+        event: RoomAuxiliaryEvent,
+        phase: RoomAuxiliaryPhase,
     },
     FlushKyoku {
         match_id: MatchId,
@@ -703,6 +732,7 @@ pub enum RoomEffect {
     FinalizeMatch {
         match_id: MatchId,
         result: MatchResult,
+        completed_at: i64,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
     DeleteIncomplete {
@@ -718,7 +748,9 @@ impl RoomEffect {
             | Self::FinalizeMatch { completion, .. } => {
                 let _ = completion.send(result);
             }
-            Self::AppendEvents { .. } | Self::DeleteIncomplete { .. } => {}
+            Self::AppendEvents { .. }
+            | Self::RecordAuxiliary { .. }
+            | Self::DeleteIncomplete { .. } => {}
         }
     }
 }
@@ -2243,7 +2275,6 @@ impl RoomState {
 #[derive(Debug)]
 struct Actor {
     state: RoomState,
-    commands: mpsc::Sender<Envelope>,
     receiver: mpsc::Receiver<Envelope>,
     effects: mpsc::Sender<RoomEffect>,
     subscriptions: HashMap<u64, mpsc::Sender<RoomEvent>>,
@@ -2307,7 +2338,6 @@ impl RoomActor {
         tokio::spawn(
             Actor {
                 state,
-                commands: sender,
                 receiver,
                 effects,
                 subscriptions: HashMap::new(),
@@ -2416,8 +2446,15 @@ impl Actor {
             RoomCommand::Shutdown { mode } => self.shutdown(mode).await,
             RoomCommand::Tick => self.tick(now).await,
             command => {
+                let auxiliary = self.auxiliary_for_command(&command);
                 let response = self.state.apply_simple(command.clone(), now)?;
                 self.emit_for_command(&command);
+                for (event, phase) in auxiliary {
+                    self.record_auxiliary(event, phase).await;
+                }
+                if matches!(command, RoomCommand::Disconnect { .. }) {
+                    self.sync_machine_controllers().await;
+                }
                 if self.state.is_empty_expired(now) {
                     self.state.deleted = true;
                     self.publish(RoomEvent::RoomDeleted);
@@ -2425,6 +2462,85 @@ impl Actor {
                 Ok(response)
             }
         }
+    }
+
+    fn auxiliary_for_command(
+        &self,
+        command: &RoomCommand,
+    ) -> Vec<(RoomAuxiliaryEvent, RoomAuxiliaryPhase)> {
+        if !self.state.config.replay_save || !self.state.replay_available {
+            return Vec::new();
+        }
+        let phase = RoomAuxiliaryPhase::After;
+        let seat_for = |participant_id: &ParticipantId| {
+            self.state
+                .participants
+                .get(participant_id)
+                .and_then(|participant| match participant.role {
+                    MatchRole::Player(seat) => Some(seat),
+                    MatchRole::None | MatchRole::Spectator => None,
+                })
+        };
+        match command {
+            RoomCommand::Disconnect { participant_id } => seat_for(participant_id)
+                .map(|seat| (RoomAuxiliaryEvent::Disconnected { seat }, phase))
+                .into_iter()
+                .collect(),
+            RoomCommand::Reconnect { participant_id }
+            | RoomCommand::ReconnectAgent { participant_id, .. } => seat_for(participant_id)
+                .map(|seat| (RoomAuxiliaryEvent::Reconnected { seat }, phase))
+                .into_iter()
+                .collect(),
+            RoomCommand::Leave { participant_id } => seat_for(participant_id)
+                .map(|seat| (RoomAuxiliaryEvent::Left { seat }, phase))
+                .into_iter()
+                .collect(),
+            RoomCommand::RevokeToken { token_id } => self
+                .state
+                .participants
+                .values()
+                .filter_map(|participant| {
+                    (participant.token_id.as_deref() == Some(token_id)
+                        && matches!(participant.role, MatchRole::Player(_)))
+                    .then_some(participant.role)
+                })
+                .filter_map(|role| match role {
+                    MatchRole::Player(seat) => {
+                        Some((RoomAuxiliaryEvent::TokenRevoked { seat }, phase))
+                    }
+                    MatchRole::None | MatchRole::Spectator => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    async fn record_auxiliary(&mut self, event: RoomAuxiliaryEvent, phase: RoomAuxiliaryPhase) {
+        if !self.state.config.replay_save || !self.state.replay_available {
+            return;
+        }
+        let RoomPhase::Playing(match_id) = self.state.phase.clone() else {
+            return;
+        };
+        if self
+            .effects
+            .try_send(RoomEffect::RecordAuxiliary {
+                match_id,
+                event,
+                phase,
+            })
+            .is_err()
+        {
+            self.mark_persistence_degraded();
+        }
+    }
+
+    async fn record_auto_started(&mut self, seat: Seat) {
+        self.record_auxiliary(
+            RoomAuxiliaryEvent::AutoStarted { seat },
+            RoomAuxiliaryPhase::Before,
+        )
+        .await;
     }
 
     fn emit_for_command(&mut self, command: &RoomCommand) {
@@ -2451,6 +2567,16 @@ impl Actor {
         self.publish(RoomEvent::Snapshot(self.state.snapshot()));
     }
 
+    fn mark_persistence_degraded(&mut self) {
+        let was_degraded = self.state.persistence_degraded;
+        self.state.persistence_degraded = true;
+        self.state.replay_available = false;
+        if !was_degraded {
+            self.state.bump_revision();
+            self.publish(RoomEvent::StorageDegraded);
+        }
+    }
+
     async fn start_match(&mut self) -> Result<RoomResponse, RoomError> {
         if !matches!(self.state.phase, RoomPhase::Lobby) {
             return Err(RoomError::NotLobby);
@@ -2458,12 +2584,16 @@ impl Actor {
         let (match_id, machine, roster) = self.state.build_match()?;
         if self.state.config.replay_save {
             let initial_events = machine.events().to_vec();
-            let (effect, completion) =
-                self.open_effect(&match_id, machine.mode(), &roster, initial_events);
+            let (effect, completion) = self.open_effect(
+                &match_id,
+                machine.mode(),
+                &roster,
+                initial_events,
+                now_unix_seconds(),
+            );
             if self.send_ack_effect(effect, completion).await.is_err() {
-                self.state.persistence_degraded = true;
-                self.state.replay_available = false;
-                self.publish(RoomEvent::StorageDegraded);
+                self.mark_persistence_degraded();
+                self.send_delete_incomplete(match_id.clone()).await;
             }
         }
         self.state.commit_match(match_id.clone(), machine, roster);
@@ -2480,6 +2610,7 @@ impl Actor {
         mode: GameMode,
         roster: &[MatchPlayerSnapshot],
         initial_events: Vec<GameEvent>,
+        started_at: i64,
     ) -> (RoomEffect, oneshot::Receiver<Result<(), RoomEffectError>>) {
         let (completion, receiver) = oneshot::channel();
         (
@@ -2489,6 +2620,7 @@ impl Actor {
                 room_name: self.state.config.room_name.clone(),
                 roster: roster.to_vec(),
                 initial_events,
+                started_at,
                 completion,
             },
             receiver,
@@ -2501,27 +2633,24 @@ impl Actor {
         completion: oneshot::Receiver<Result<(), RoomEffectError>>,
     ) -> Result<(), RoomError> {
         self.effects
-            .try_send(effect)
+            .send(effect)
+            .await
             .map_err(|_| RoomError::Persistence)?;
-        let commands = self.commands.clone();
-        tokio::spawn(async move {
-            let success = matches!(
-                time::timeout(PERSISTENCE_ACK_TIMEOUT, completion).await,
-                Ok(Ok(Ok(())))
-            );
-            let (reply, _receiver) = oneshot::channel();
-            if commands
-                .send(Envelope {
-                    request: ActorRequest::Command {
-                        command: RoomCommand::PersistenceCompleted { success },
-                        reply,
-                    },
-                })
-                .await
-                .is_err()
-            {}
-        });
-        Ok(())
+        match time::timeout(PERSISTENCE_ACK_TIMEOUT, completion).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => Err(RoomError::Persistence),
+        }
+    }
+
+    async fn send_delete_incomplete(&mut self, match_id: MatchId) {
+        if self
+            .effects
+            .send(RoomEffect::DeleteIncomplete { match_id })
+            .await
+            .is_err()
+        {
+            self.mark_persistence_degraded();
+        }
     }
 
     async fn submit_action(
@@ -2551,7 +2680,7 @@ impl Actor {
             .submit_action(seat, decision_id, action_id)
             .map_err(|error| RoomError::Match(error.to_string()))?;
         self.handle_decision_result(result.clone()).await?;
-        self.sync_machine_controllers();
+        self.sync_machine_controllers().await;
         self.advance_match().await?;
         Ok(RoomResponse::Action(result))
     }
@@ -2575,7 +2704,7 @@ impl Actor {
                     self.abort_match(error.to_string()).await?;
                 }
             }
-            self.sync_machine_controllers();
+            self.sync_machine_controllers().await;
             self.advance_match().await?;
         }
         if self.state.is_empty_expired(now) {
@@ -2585,7 +2714,7 @@ impl Actor {
         Ok(RoomResponse::Accepted(self.state.snapshot()))
     }
 
-    fn sync_machine_controllers(&mut self) {
+    async fn sync_machine_controllers(&mut self) {
         let updates: Vec<_> = {
             let Some(machine) = self.state.match_machine.as_ref() else {
                 return;
@@ -2610,11 +2739,26 @@ impl Actor {
                 .collect()
         };
         for (participant_id, controller) in updates {
+            let previous = self
+                .state
+                .participants
+                .get(&participant_id)
+                .map(|participant| participant.controller);
             if let Some(participant) = self.state.participants.get_mut(&participant_id) {
                 participant.controller = controller;
             }
             self.state
                 .update_roster_controller(&participant_id, controller);
+            if previous != Some(controller)
+                && matches!(controller, RoomController::TemporaryAuto)
+                && let Some(entry) = self
+                    .state
+                    .match_roster
+                    .iter()
+                    .find(|entry| entry.participant_id == participant_id)
+            {
+                self.record_auto_started(entry.seat).await;
+            }
         }
     }
 
@@ -2725,9 +2869,7 @@ impl Actor {
             .try_send(RoomEffect::AppendEvents { match_id, events })
             .is_err()
         {
-            self.state.persistence_degraded = true;
-            self.state.replay_available = false;
-            self.publish(RoomEvent::StorageDegraded);
+            self.mark_persistence_degraded();
         }
     }
 
@@ -2740,40 +2882,36 @@ impl Actor {
             match_id,
             completion,
         };
-        if let Err(error) = self.send_ack_effect(effect, receiver).await {
-            self.state.persistence_degraded = true;
-            self.state.replay_available = false;
-            self.publish(RoomEvent::StorageDegraded);
-            let _ = error;
+        if self.send_ack_effect(effect, receiver).await.is_err() {
+            self.mark_persistence_degraded();
         }
         Ok(())
     }
 
     async fn complete_match(&mut self, result: MatchResult) -> Result<(), RoomError> {
-        let match_id = self
-            .state
+        let match_id = match self.state.phase.clone() {
+            RoomPhase::Playing(match_id) => match_id,
+            _ => return Err(RoomError::Playing),
+        };
+        if self.state.config.replay_save && self.state.replay_available {
+            let (completion, receiver) = oneshot::channel();
+            let effect = RoomEffect::FinalizeMatch {
+                match_id: match_id.clone(),
+                result: result.clone(),
+                completed_at: now_unix_seconds(),
+                completion,
+            };
+            if self.send_ack_effect(effect, receiver).await.is_err() {
+                self.mark_persistence_degraded();
+            }
+        }
+        self.state
             .finish_match(result.clone())
             .ok_or(RoomError::Playing)?;
         self.state.bump_revision();
         self.publish(RoomEvent::PhaseChanged(self.state.phase.clone()));
-        self.publish(RoomEvent::MatchCompleted {
-            match_id: match_id.clone(),
-            result: result.clone(),
-        });
+        self.publish(RoomEvent::MatchCompleted { match_id, result });
         self.publish(RoomEvent::Snapshot(self.state.snapshot()));
-        if self.state.config.replay_save && self.state.replay_available {
-            let (completion, receiver) = oneshot::channel();
-            let effect = RoomEffect::FinalizeMatch {
-                match_id,
-                result,
-                completion,
-            };
-            if self.send_ack_effect(effect, receiver).await.is_err() {
-                self.state.persistence_degraded = true;
-                self.state.replay_available = false;
-                self.publish(RoomEvent::StorageDegraded);
-            }
-        }
         Ok(())
     }
 
@@ -2783,9 +2921,7 @@ impl Actor {
             _ => return Ok(RoomResponse::Accepted(self.state.snapshot())),
         };
         if self.state.config.replay_save {
-            let _ = self.effects.try_send(RoomEffect::DeleteIncomplete {
-                match_id: match_id.clone(),
-            });
+            self.send_delete_incomplete(match_id.clone()).await;
         }
         self.state.phase = RoomPhase::Lobby;
         self.state.match_machine = None;
@@ -2815,11 +2951,11 @@ impl Actor {
                 machine.mode(),
                 &roster,
                 machine.events().to_vec(),
+                now_unix_seconds(),
             );
             if self.send_ack_effect(effect, completion).await.is_err() {
-                self.state.persistence_degraded = true;
-                self.state.replay_available = false;
-                self.publish(RoomEvent::StorageDegraded);
+                self.mark_persistence_degraded();
+                self.send_delete_incomplete(match_id.clone()).await;
             }
         }
         self.state.commit_match(match_id.clone(), machine, roster);
@@ -2839,9 +2975,7 @@ impl Actor {
         if matches!(mode, ShutdownMode::Graceful | ShutdownMode::Forced)
             && let RoomPhase::Playing(match_id) = self.state.phase.clone()
         {
-            let _ = self.effects.try_send(RoomEffect::DeleteIncomplete {
-                match_id: match_id.clone(),
-            });
+            self.send_delete_incomplete(match_id.clone()).await;
             self.publish(RoomEvent::MatchAborted {
                 match_id,
                 reason: "server shutdown".to_owned(),
@@ -2865,12 +2999,25 @@ impl Actor {
     }
 }
 
-#[derive(Clone, Debug)]
+type RoomEffectSpawner =
+    Arc<dyn Fn(mpsc::Receiver<RoomEffect>) -> tokio::task::JoinHandle<()> + Send + Sync>;
+
+#[derive(Clone)]
 pub struct RoomRegistry {
     rooms: Arc<RwLock<BTreeMap<RoomJoinCode, RoomHandle>>>,
     cooldowns: Arc<RwLock<BTreeMap<RoomJoinCode, Instant>>>,
-    effects: Option<mpsc::Sender<RoomEffect>>,
+    effect_spawner: Option<RoomEffectSpawner>,
+    workers: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     max_rooms: usize,
+}
+
+impl fmt::Debug for RoomRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomRegistry")
+            .field("max_rooms", &self.max_rooms)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -2900,13 +3047,31 @@ impl RoomRegistry {
         Self {
             rooms: Arc::new(RwLock::new(BTreeMap::new())),
             cooldowns: Arc::new(RwLock::new(BTreeMap::new())),
-            effects: None,
+            effect_spawner: None,
+            workers: Arc::new(Mutex::new(Vec::new())),
             max_rooms,
         }
     }
 
+    pub fn with_effect_spawner<F>(mut self, spawner: F) -> Self
+    where
+        F: Fn(mpsc::Receiver<RoomEffect>) -> tokio::task::JoinHandle<()> + Send + Sync + 'static,
+    {
+        self.effect_spawner = Some(Arc::new(spawner));
+        self
+    }
+
     pub fn with_effect_sender(mut self, effects: mpsc::Sender<RoomEffect>) -> Self {
-        self.effects = Some(effects);
+        self.effect_spawner = Some(Arc::new(move |mut receiver| {
+            let effects = effects.clone();
+            tokio::spawn(async move {
+                while let Some(effect) = receiver.recv().await {
+                    if effects.send(effect).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        }));
         self
     }
 
@@ -2956,26 +3121,15 @@ impl RoomRegistry {
         join_code: RoomJoinCode,
     ) -> Result<RoomHandle, RoomRegistryError> {
         self.purge_closed().await;
-        {
-            let rooms = self.rooms.read().await;
-            if rooms.len() >= self.max_rooms {
-                return Err(RoomRegistryError::Full);
-            }
-        }
         let now = Instant::now();
         let on_cooldown = {
             let mut cooldowns = self.cooldowns.write().await;
             cooldowns.retain(|_, expires| *expires > now);
             cooldowns.contains_key(&join_code)
         };
-        if on_cooldown || self.rooms.read().await.contains_key(&join_code) {
+        if on_cooldown {
             return Err(RoomRegistryError::CodeUnavailable);
         }
-        let state = RoomState::with_ids(RoomId::generate(), join_code.clone(), config)?;
-        let handle = match &self.effects {
-            Some(effects) => RoomActor::spawn_actor(state, effects.clone()),
-            None => RoomActor::spawn_with_state(state),
-        };
         let mut rooms = self.rooms.write().await;
         if rooms.len() >= self.max_rooms {
             return Err(RoomRegistryError::Full);
@@ -2983,7 +3137,22 @@ impl RoomRegistry {
         if rooms.contains_key(&join_code) {
             return Err(RoomRegistryError::CodeUnavailable);
         }
+        let state = RoomState::with_ids(RoomId::generate(), join_code.clone(), config)?;
+        let (handle, receiver) = RoomActor::spawn_state_with_effect_channel(state);
+        let worker = match &self.effect_spawner {
+            Some(spawner) => spawner(receiver),
+            None => tokio::spawn(async move {
+                let mut receiver = receiver;
+                while let Some(effect) = receiver.recv().await {
+                    effect.acknowledge(Ok(()));
+                }
+            }),
+        };
         rooms.insert(join_code, handle.clone());
+        self.workers
+            .lock()
+            .expect("room worker lock poisoned")
+            .push(worker);
         Ok(handle)
     }
 
@@ -3077,9 +3246,20 @@ impl RoomRegistry {
         self.rooms.read().await.len()
     }
 
+    pub async fn is_empty(&self) -> bool {
+        self.len().await == 0
+    }
+
+    async fn join_effect_workers(&self) {
+        let workers = std::mem::take(&mut *self.workers.lock().expect("room worker lock poisoned"));
+        for worker in workers {
+            let _ = worker.await;
+        }
+    }
+
     pub async fn shutdown(&self, mode: ShutdownMode) {
         let handles: Vec<_> = self.rooms.read().await.values().cloned().collect();
-        for handle in handles {
+        for handle in &handles {
             loop {
                 match handle.send(RoomCommand::shutdown(mode)).await {
                     Ok(_) | Err(RoomError::Closed | RoomError::Deleted) => break,
@@ -3088,7 +3268,9 @@ impl RoomRegistry {
                 }
             }
         }
+        drop(handles);
         self.rooms.write().await.clear();
+        self.join_effect_workers().await;
     }
 }
 

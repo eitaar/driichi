@@ -50,7 +50,29 @@ Results, Replay library, Replay viewer, and Post-Match Admin at `1024x600` and
 Generated `.vitest/`, root `node_modules/`, Playwright reports/results, and
 `NUL` were removed; the ignored `frontend/node_modules/` installation remains.
 
-The commit contains the coherent owned frontend/E2E changes, necessary Room
-persistence/backend changes and regression proof, plus this report. External
+The round-two implementation now awaits OpenMatch, FlushKyoku, and
+FinalizeMatch acknowledgements in the Room actor; production rooms use one
+ordered bounded effect worker per Room, and registry shutdown drains and joins
+those workers before storage cleanup. Replay-worker failures set the shared
+storage degradation signal, lifecycle auxiliary events are ordered on the Room
+queue, and Room start/completion timestamps are carried into persistence.
+POSIX real-server teardown now terminates detached process groups and Windows
+continues to use taskkill tree termination.
+
+Round-two focused verification:
+
+- `timeout 360s npm run test:browser:real -- --grep '3p-red-east' tests/task16-real-server.spec.ts`
+  — **1 passed (1.9m)**.
+- `timeout 360s npm run test:browser:real -- --grep '4p-red-east' tests/task16-real-server.spec.ts`
+  — **1 passed (1.9m)**.
+- `cargo test -p double_riichi_core --no-fail-fast` — **all core tests passed**;
+  persistence acknowledgement and bounded-room regressions are included.
+- `cargo test -p double_riichi_server --test task15_replay --no-fail-fast` —
+  **23 passed**, including Room replay persistence and cleanup recovery.
+- `timeout 180s npm run typecheck` — passed; focused Vitest remains **41 passed**.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+
+Screenshots remain only under `frontend/test-results/task-16-review/`.
+Generated Vitest and Playwright report debris was removed. External
 Yamai/riichi.dev, release, and Conditional Design Freeze gates remain outside
 this lane and are not claimed here.
