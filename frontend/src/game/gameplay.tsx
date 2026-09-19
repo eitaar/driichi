@@ -889,6 +889,11 @@ export function GameplaySurface({
         commandError={commandError}
         actionError={actionError}
       />
+      <GameplayPlayerStatus
+        players={projection?.players ?? []}
+        mode={mode}
+        viewerSeat={projection?.audience === "player" ? viewer : undefined}
+      />
       {!supported ? (
         <main className="gameplay-guidance">
           <p className="eyebrow">DESKTOP TABLE REQUIRED</p>
@@ -940,11 +945,6 @@ export function GameplaySurface({
               </div>
             )}
           </div>
-          <GameplayPlayerStatus
-            players={projection?.players ?? []}
-            mode={mode}
-            viewerSeat={projection?.audience === "player" ? viewer : undefined}
-          />
         </main>
       )}
     </div>
