@@ -8,7 +8,7 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{Request, header},
+    http::{Request, StatusCode, header},
 };
 use double_riichi_core::{CharacterCatalog, GameMode, RoomConfig, RoomJoinCode, RoomRegistry};
 use double_riichi_server::{
@@ -126,6 +126,30 @@ async fn response_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
+async fn response_bytes(
+    response: axum::response::Response,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (status, headers, body.to_vec())
+}
+
+fn referenced_asset(index: &[u8]) -> String {
+    let index = String::from_utf8(index.to_vec()).unwrap();
+    let marker = "/assets/";
+    let start = index
+        .find(marker)
+        .expect("index should reference a static asset");
+    let value = &index[start..];
+    let end = value
+        .find(|character: char| character == char::from(34) || character == char::from(39))
+        .expect("static asset reference should be quoted");
+    value[..end].to_owned()
+}
+
 async fn admin_cookie(app: &axum::Router) -> String {
     let response = app
         .clone()
@@ -151,6 +175,179 @@ async fn admin_cookie(app: &axum::Router) -> String {
         .to_str()
         .unwrap()
         .to_owned()
+}
+
+#[tokio::test]
+async fn embedded_frontend_serves_root_and_referenced_static_asset() {
+    let router = server_router(app(false));
+    let root = router
+        .clone()
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let (status, headers, body) = response_bytes(root).await;
+    if cfg!(debug_assertions) {
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        return;
+    }
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+    assert!(String::from_utf8_lossy(&body).contains("<html"));
+    let asset_path = referenced_asset(&body);
+    let asset = router
+        .oneshot(Request::get(&asset_path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let (status, headers, body) = response_bytes(asset).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body.is_empty());
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript")
+    );
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+}
+
+#[tokio::test]
+async fn embedded_frontend_serves_only_required_spa_routes() {
+    let router = server_router(app(false));
+    for path in [
+        "/",
+        "/room/123456",
+        "/room/123456/lobby",
+        "/admin",
+        "/admin/login",
+        "/admin/rooms/123456",
+        "/admin/replays",
+        "/admin/replays/01MATCH",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if cfg!(debug_assertions) {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::OK
+            },
+            "SPA route {path}"
+        );
+        if !cfg!(debug_assertions) {
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "no-cache",
+                "SPA route {path} cache policy"
+            );
+        }
+    }
+    for path in [
+        "/missing",
+        "/room/12345",
+        "/room/123456/unknown",
+        "/admin/private",
+        "/admin/replays/01MATCH/extra",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "path {path}");
+    }
+}
+
+#[tokio::test]
+async fn frontend_rejects_missing_traversal_and_encoded_paths() {
+    let router = server_router(app(false));
+    for path in [
+        "/assets/missing.js",
+        "/assets/../index.html",
+        "/assets/%2e%2e/index.html",
+        "/assets/%252e%252e/index.html",
+        "/assets\\\\index.js",
+        "/.env",
+        "/.vite/manifest.json",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "path {path}");
+    }
+}
+
+#[tokio::test]
+async fn api_routes_keep_precedence_over_frontend_fallback() {
+    let router = server_router(app(false));
+    let health = router
+        .clone()
+        .oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::UNAUTHORIZED);
+    let missing = router
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/not-a-frontend-route")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing.headers()[header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+    let ws = router
+        .oneshot(
+            Request::get("/ws/not-a-frontend-route")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ws.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        ws.headers()[header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+}
+
+#[tokio::test]
+async fn frontend_responses_include_security_headers() {
+    let router = server_router(app(false));
+    let response = router
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    for (name, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "no-referrer"),
+        ("x-frame-options", "DENY"),
+        (
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=()",
+        ),
+    ] {
+        assert_eq!(response.headers()[name], value, "header {name}");
+    }
+    assert!(
+        response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("default-src 'self'")
+    );
 }
 
 #[tokio::test]
