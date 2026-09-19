@@ -257,6 +257,13 @@ def validate_dto_contracts(openapi: dict[str, Any]) -> None:
     if "token" not in schemas["CreatedBotToken"]["required"]:
         fail("CreatedBotToken.token is missing")
 
+    for path in ("/api/v1/admin/rooms/{join_code}/start", "/api/v1/admin/rooms/{join_code}/rematch"):
+        responses = openapi["paths"][path]["post"]["responses"]
+        if "503" not in responses:
+            fail(f"{path} must declare persistence failure status 503")
+        if responses["503"].get("$ref") != "#/components/responses/ServiceUnavailable":
+            fail(f"{path} must use the bounded ServiceUnavailable response")
+
     for name in ("CreateRoomRequest", "PatchRoomRequest"):
         properties = schemas[name]["properties"]
         if set(properties) != {
@@ -306,6 +313,13 @@ def expected_fixture_metadata() -> dict[str, dict[str, Any]]:
         },
         "health-503.json": {
             "file": "health-503.json",
+            "method": "GET",
+            "path": "/api/v1/health",
+            "status": 503,
+            "auth": "admin-cookie",
+        },
+        "health-503-replay.json": {
+            "file": "health-503-replay.json",
             "method": "GET",
             "path": "/api/v1/health",
             "status": 503,
@@ -364,6 +378,7 @@ def validate_fixtures(openapi: dict[str, Any], asyncapi: dict[str, Any]) -> None
     for name, schema, document in [
         ("health-200.json", health_schema, openapi),
         ("health-503.json", health_schema, openapi),
+        ("health-503-replay.json", health_schema, openapi),
         ("public-status.json", status_schema, openapi),
         ("public-room-lookup.json", room_schema, openapi),
         ("human-snapshot.json", snapshot_schema, asyncapi),
@@ -374,6 +389,9 @@ def validate_fixtures(openapi: dict[str, Any], asyncapi: dict[str, Any]) -> None
         fail("health-200 fixture does not represent database ok")
     if load_fixture("health-503.json")["database"] != "degraded":
         fail("health-503 fixture does not represent database degraded")
+    replay_health = load_fixture("health-503-replay.json")
+    if replay_health["database"] != "ok" or replay_health["replay_storage"] != "degraded":
+        fail("health-503-replay fixture does not represent replay storage degraded")
     human_message = asyncapi["components"]["messages"]["humanServerMessage"]["payload"]
     if not any(
         reference.get("$ref") == "#/components/schemas/snapshotMessage"

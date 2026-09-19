@@ -88,8 +88,9 @@ failure channel; production storage marks failed metadata, cleans Failed and
 Writing artifacts on DeleteIncomplete/shutdown/startup, and retains failed
 rows when metadata deletion itself fails so retry remains possible. Admin kick
 now has its own Room command/controller reason and persists `kicked`, while
-voluntary leave remains `left`. Finalization has a cancellation control so a
-late worker cannot commit after the Room becomes unavailable. Human
+voluntary leave remains `left`. Finalization waits for the bounded SQLite
+operation to reach one terminal acknowledgement before changing Room health, so
+a late worker cannot commit after the Room becomes unavailable. Human
 `action_result` echoes the concrete submitted `action_id`; the browser lane
 asserts that correlation for both 3p and 4p.
 
@@ -97,7 +98,7 @@ Round-three focused verification:
 
 - `cargo test -p double_riichi_core --test task8_room --no-fail-fast` — **24 passed**;
   rollback, Rematch rollback, per-Room isolation, append/auxiliary saturation,
-  kick ordering, and delayed-finalize cancellation are covered.
+  kick ordering, and delayed-finalize failure behavior are covered.
 - `cargo test -p double_riichi_server --lib storage::tests --no-fail-fast` —
   **2 passed**; Kicked auxiliary mapping and frame ordering pass.
 - `cargo test -p double_riichi_server --test task15_replay --no-fail-fast` —
@@ -118,3 +119,25 @@ Round-three focused verification:
 Ignored screenshots remain only under `frontend/test-results/task-16-review/`;
 Playwright report, Vitest, root node_modules, and other generated debris were
 removed after verification.
+
+## Round 4 — cleanup isolation, terminal finalization, and contract drift
+
+The Room shutdown/abort path now sends an acknowledged cleanup-only effect;
+it does not reuse the failure path or degrade a healthy Room. Worker cleanup
+failures still mark storage degraded, while unrelated Rooms retain healthy
+replay state. Startup cleanup processes each unfinished row independently,
+repairs safe metadata beside unsafe registered paths, never touches an external
+path, and exposes replay-only degradation through the health contract. Finalize
+workers no longer use a cancellable atomic flag; the Room waits beyond SQLite's
+busy timeout for the authoritative result.
+
+Round-four focused verification:
+
+- `cargo test -p double_riichi_core --test task8_room` — **24 passed**.
+- `cargo test -p double_riichi_server --test task15_replay` — **30 passed**;
+  acknowledged shutdown cleanup, two-terminal SQLite delayed finalization,
+  replay health degradation, and mixed safe/unsafe startup cleanup pass.
+- `cargo test -p double_riichi_server --test task16_contracts` — **12 passed**.
+- `python scripts/validate_contracts.py` — passed; OpenAPI start/rematch 503
+  responses and replay-degraded health fixture are validated.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.

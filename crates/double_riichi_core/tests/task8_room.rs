@@ -814,7 +814,7 @@ async fn append_backpressure_fails_replay_but_allows_match_progress() {
 }
 
 #[tokio::test]
-async fn delayed_finalize_is_cancelled_before_a_late_worker_can_commit() {
+async fn delayed_finalize_failure_keeps_room_playable() {
     let mut cfg = config();
     cfg.mode = GameMode::ThreePlayerRedEast;
     cfg.time_control = TimeControl::Unlimited;
@@ -822,22 +822,16 @@ async fn delayed_finalize_is_cancelled_before_a_late_worker_can_commit() {
         tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
     let room = RoomActor::spawn_with_effect_sender(cfg, effects);
     room.send(RoomCommand::fill_with_bots()).await.unwrap();
-    let (cancelled, cancelled_seen) = tokio::sync::oneshot::channel();
     let worker = tokio::spawn(async move {
-        let mut cancelled = Some(cancelled);
         while let Some(effect) = receiver.recv().await {
             match &effect {
                 RoomEffect::OpenMatch { .. } | RoomEffect::FlushKyoku { .. } => {
                     effect.acknowledge(Ok(()));
                 }
-                RoomEffect::FinalizeMatch { control, .. } => {
+                RoomEffect::FinalizeMatch { .. } => {
                     tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
-                    assert!(control.is_cancelled());
-                    if let Some(sender) = cancelled.take() {
-                        let _ = sender.send(());
-                    }
                     effect.acknowledge(Err(double_riichi_core::RoomEffectError::Failed(
-                        "finalize cancelled".to_owned(),
+                        "finalize failed".to_owned(),
                     )));
                     break;
                 }
@@ -853,7 +847,6 @@ async fn delayed_finalize_is_cancelled_before_a_late_worker_can_commit() {
     .unwrap()
     .unwrap();
     assert!(matches!(start, RoomResponse::Started(_)));
-    cancelled_seen.await.unwrap();
     let snapshot = room.snapshot().await.unwrap();
     assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
     assert!(snapshot.persistence_degraded);
