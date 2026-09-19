@@ -817,6 +817,9 @@ export function GameplaySurface({
   const pending = useGameStore((state) => state.pendingAction);
   const actionError = useGameStore((state) => state.actionError);
   const lastActionResult = useGameStore((state) => state.lastActionResult);
+  const acceptedActionResults = useGameStore((state) => state.acceptedActionResults);
+  const animationEnqueuedCount = useGameStore((state) => state.animationEnqueuedCount);
+  const animationConsumedCount = useGameStore((state) => state.animationConsumedCount);
   const assets = useRosterPreload(room, connectionGeneration);
   const manager = useVoiceManager(storeEvents, eventToken, room, assets);
   const decision = projection?.decision;
@@ -880,8 +883,12 @@ export function GameplaySurface({
       data-motion={reducedMotion ? "static" : "cinematic"}
       data-room-revision={room?.revision ?? ""}
       data-human-controller={ownController}
+      data-current-decision-id={decision?.decision_id ?? ""}
       data-last-action-result-status={lastActionResult?.status ?? ""}
       data-last-action-result-action-id={lastActionResult?.action_id ?? ""}
+      data-accepted-action-results={JSON.stringify(acceptedActionResults)}
+      data-animation-enqueued-count={animationEnqueuedCount}
+      data-animation-consumed-count={animationConsumedCount}
     >
       <GameplayControls status={status} manager={manager} />
       <GameplayToast

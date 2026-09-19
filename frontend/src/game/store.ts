@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import { animationEvents, enqueueAnimationEvents, type AnimationItem } from "./animation";
+import {
+  animationEvents,
+  animationKindForEvent,
+  enqueueAnimationEvents,
+  type AnimationItem,
+} from "./animation";
 import type {
   GameEventEnvelope,
   PendingAction,
@@ -9,6 +14,13 @@ import type {
 } from "./types";
 
 export type Transport = (message: unknown) => void;
+
+type ActionResult = {
+  decision_id?: string;
+  action_id?: string;
+  status?: string;
+  code?: string;
+};
 
 export interface GameStoreState {
   status: WebSocketStatus;
@@ -23,7 +35,10 @@ export interface GameStoreState {
   lastRevision: number | null;
   lastEventToken: number;
   lastEvents: unknown[];
-  lastActionResult: { decision_id?: string; action_id?: string; status?: string; code?: string } | null;
+  lastActionResult: ActionResult | null;
+  acceptedActionResults: Array<Pick<ActionResult, "decision_id" | "action_id">>;
+  animationEnqueuedCount: number;
+  animationConsumedCount: number;
   transport?: Transport | null;
   setStatus: (status: WebSocketStatus, reason?: string) => void;
   reset: () => void;
@@ -32,7 +47,7 @@ export interface GameStoreState {
   submitAction: (decisionId: string, actionId: string, transport?: Transport) => boolean;
   receiveSnapshot: (room: RoomSnapshot | null, projection: unknown) => void;
   receiveUpdate: (room: RoomSnapshot | null, projection: unknown, envelope?: GameEventEnvelope | unknown) => void;
-  receiveActionResult: (result: { decision_id?: string; action_id?: string; status?: string; code?: string }) => void;
+  receiveActionResult: (result: ActionResult) => void;
   setCommandError: (error: string) => void;
   clearPendingAction: () => void;
   consumeAnimations: (ids?: number[]) => void;
@@ -51,7 +66,10 @@ const initialState = {
   lastRevision: null,
   lastEventToken: 0,
   lastEvents: [] as unknown[],
-  lastActionResult: null as { decision_id?: string; action_id?: string; status?: string; code?: string } | null,
+  lastActionResult: null as ActionResult | null,
+  acceptedActionResults: [] as Array<Pick<ActionResult, "decision_id" | "action_id">>,
+  animationEnqueuedCount: 0,
+  animationConsumedCount: 0,
   transport: null as Transport | null,
 };
 
@@ -83,6 +101,9 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     lastRevision: null,
     lastEvents: [],
     lastActionResult: null,
+    acceptedActionResults: [],
+    animationEnqueuedCount: 0,
+    animationConsumedCount: 0,
     lastEventToken: state.lastEventToken + 1,
   })),
   setTransport: (transport) => set({ transport }),
@@ -116,6 +137,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     const nextRevision = numericRevision(room);
     const discontinuity = isDiscontinuous(state.lastRevision, nextRevision);
     const events = animationEvents(envelope);
+    const enqueuedEvents = events.filter((event) => animationKindForEvent(event)).length;
     const result = discontinuity
       ? { queue: [], overflow: false }
       : enqueueAnimationEvents(state.animationQueue, events);
@@ -131,6 +153,9 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       actionError: pending ? state.actionError : "",
       lastRevision: nextRevision ?? state.lastRevision,
       lastEvents: events,
+      animationEnqueuedCount:
+        state.animationEnqueuedCount +
+        (!discontinuity && !result.overflow ? enqueuedEvents : 0),
       lastEventToken: state.lastEventToken + 1,
     };
   }),
@@ -139,12 +164,26 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       || ((!result.decision_id || result.decision_id === state.pendingAction.decisionId)
         && (!result.action_id || result.action_id === state.pendingAction.actionId));
     if (!matching) return state;
-    if (result.status === "accepted") return {
-      pendingAction: null,
-      actionError: "",
-      commandError: "",
-      lastActionResult: result,
-    };
+    if (result.status === "accepted") {
+      const acceptedActionResults = result.action_id
+        ? [
+            ...state.acceptedActionResults.filter(
+              (entry) => entry.action_id !== result.action_id,
+            ),
+            {
+              decision_id: result.decision_id,
+              action_id: result.action_id,
+            },
+          ].slice(-64)
+        : state.acceptedActionResults;
+      return {
+        pendingAction: null,
+        actionError: "",
+        commandError: "",
+        lastActionResult: result,
+        acceptedActionResults,
+      };
+    }
     if (result.status === "rejected") return {
       pendingAction: null,
       actionError: result.code ?? "action_rejected",
@@ -155,9 +194,19 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   setCommandError: (error) => set({ commandError: error }),
   clearPendingAction: () => set({ pendingAction: null }),
   consumeAnimations: (ids) => set((state) => {
-    if (!ids || ids.length === 0) return { animationQueue: [] };
+    if (!ids || ids.length === 0) {
+      return {
+        animationQueue: [],
+        animationConsumedCount:
+          state.animationConsumedCount + state.animationQueue.length,
+      };
+    }
     const remove = new Set(ids);
-    return { animationQueue: state.animationQueue.filter((item) => !remove.has(item.id)) };
+    const consumed = state.animationQueue.filter((item) => remove.has(item.id)).length;
+    return {
+      animationQueue: state.animationQueue.filter((item) => !remove.has(item.id)),
+      animationConsumedCount: state.animationConsumedCount + consumed,
+    };
   }),
 }));
 

@@ -36,8 +36,12 @@ test("supports keyboard focus, reduced motion, loading, and Problem Details stat
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
   await expect(page.getByTestId("entry-shell")).toHaveAttribute("data-motion", "static");
+  let releaseRoomLookup!: () => void;
+  const roomLookupReleased = new Promise<void>((resolve) => {
+    releaseRoomLookup = resolve;
+  });
   await page.route("**/api/v1/rooms/123456", async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await roomLookupReleased;
     await route.fulfill({
       status: 404,
       contentType: "application/problem+json",
@@ -55,6 +59,7 @@ test("supports keyboard focus, reduced motion, loading, and Problem Details stat
   await page.getByRole("button", { name: /open room/i }).click();
   await expect(page).toHaveURL(/\/room\/123456$/);
   await expect(page.getByText(/loading room/i)).toBeVisible();
+  releaseRoomLookup();
   await expect(page.getByRole("heading", { name: /room unavailable/i })).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("The requested Room does not exist.");
 });
