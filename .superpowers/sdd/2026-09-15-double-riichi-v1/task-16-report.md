@@ -7,9 +7,9 @@
 and **Merge OK**, with no remaining P0/P1/P2 findings.
 
 This is not Design Frozen and is not final compatibility/release acceptance.
-Authoritative yamai `ReplayProcessor` evidence, authenticated immutable
-riichi.dev parity evidence, and successful foreign-platform CI executions remain
-external gates.
+The owner-supplied pinned yamai `ReplayProcessor` gate now passes; authenticated
+immutable riichi.dev parity evidence and successful foreign-platform CI
+executions remain external gates.
 
 ## Implemented
 
@@ -87,8 +87,10 @@ acquisition/operations are bounded internally.
 
 ## Parked external gates
 
-- No authoritative yamai repository/package, immutable revision, license, or
-  `ReplayProcessor` API is available; no real yamai acceptance run occurred.
+- Pinned `eitaar/yamai` revision `226cb84d917376d7513fbfdf987cc6a2294767cc`
+  accepted the complete generated four-player Replay (1,146 events, 8 rounds,
+  560 discard samples). The unlicensed source is fetched only for the gate and
+  is not vendored or redistributed.
 - Authenticated riichi.dev ranked/validate transcripts and immutable Protocol v2
   evidence remain unavailable without the external Bot Token/source.
 - Linux x86_64 and Linux ARM64 artifacts require successful GitHub Actions runs;
@@ -96,5 +98,5 @@ acquisition/operations are bounded internally.
 - `test-live` remains manual/scheduled and credential-gated; it was not replaced
   by a permissive status probe.
 
-Therefore strict compatibility, Design Frozen, and final release acceptance
-remain unclaimed.
+Therefore strict riichi.dev compatibility, Design Frozen, and final release
+acceptance remain unclaimed.

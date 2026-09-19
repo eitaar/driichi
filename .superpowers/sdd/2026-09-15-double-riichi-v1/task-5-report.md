@@ -1,6 +1,6 @@
 # Task 5 report — MJSON persistence and Replay reconstruction
 
-Status: `DONE_WITH_CONCERNS`
+Status: `DONE` — authoritative yamai gate passed after owner supplied `eitaar/yamai`.
 
 ## Implemented
 
@@ -329,3 +329,13 @@ git diff --check
 ```
 
 Round 5 is verification/report-only by the explicit owner-deferred gate ruling; no local code change is warranted.
+
+## Owner-supplied yamai gate closure
+
+The owner subsequently identified <https://github.com/eitaar/yamai> as the authoritative source. Revision `226cb84d917376d7513fbfdf987cc6a2294767cc` is now pinned in `spec/external-contracts.toml` together with the exact `ReplayProcessor` SHA-256, Python requirement, and upstream-locked NumPy/riichienv versions.
+
+`python scripts/test_yamai.py` generated a complete four-player East Match from the real `MatchMachine`, fetched and verified the pinned source under `.cache/yamai/<sha>`, and processed the resulting 1,146 MJSON events through the exact upstream `ReplayProcessor`. yamai completed without exception and emitted eight round signals and 560 discard samples. The same command passed from both a fresh fetch and the pinned cache.
+
+The repository has no project-level license file or package license metadata at the pinned revision, so yamai is not vendored, modified, packaged, or redistributed. Full primary-source and execution evidence is in `task-5-yamai-evidence.md`.
+
+This closes the Task 5 executable yamai acceptance gate. Authenticated immutable riichi.dev compatibility evidence remains a separate external gate.
