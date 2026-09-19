@@ -85,6 +85,12 @@ for (const viewport of [
 
     await page.getByRole("link", { name: /view replay match15/i }).click();
     await expect(page.getByRole("heading", { name: /night market replay/i })).toBeVisible();
+    const stage = page.locator(".replay-table-stage");
+    await expect(stage).toBeVisible();
+    await expect(stage.locator(".replay-controls-overlay")).toBeVisible();
+    await expect(stage.locator(".replay-status-toast")).toBeVisible();
+    await expect(page.locator(".replay-event-log")).toBeVisible();
+    await expect(page.locator(".replay-table-wrap + .replay-controls")).toHaveCount(0);
     await expect(page.getByTestId("pixi-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await expect(page.getByRole("status")).toContainText(/disconnected/i);
