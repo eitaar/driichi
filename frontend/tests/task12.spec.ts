@@ -113,6 +113,7 @@ async function expectRenderedTable(page: Page) {
   await expect(table).toHaveAttribute("data-skin-ready", "true", {
     timeout: 20000,
   });
+  await expect(table).toHaveAttribute("data-skin-fallback", "false");
   await expect(table).toHaveAttribute("data-player-frame-count", /^[34]$/);
   await expect(table).toHaveAttribute("data-wall-tile-count", /^\d+$/);
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
