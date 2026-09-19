@@ -182,6 +182,20 @@ class ReleaseScriptTests(unittest.TestCase):
             self.assertFalse((frontend / "dist").exists())
             (frontend / "saved-dist").rename(dist)
 
+    def test_tagged_release_publishes_matching_versioned_artifacts(self) -> None:
+        workflow = (package.ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if: github.ref_type == \'tag\'', workflow)
+        self.assertIn('contents: write', workflow)
+        self.assertIn(
+            'uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
+            workflow,
+        )
+        self.assertIn('gh release create "$GITHUB_REF_NAME"', workflow)
+        self.assertIn('actual = os.environ["GITHUB_REF_NAME"]', workflow)
+        self.assertIn('expected = f"v{version}"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

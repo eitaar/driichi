@@ -3232,7 +3232,15 @@ impl RoomRegistry {
         self
     }
 
+    fn reap_effect_workers(&self) {
+        self.workers
+            .lock()
+            .expect("room worker lock poisoned")
+            .retain(|worker| !worker.is_finished());
+    }
+
     async fn purge_closed(&self) {
+        self.reap_effect_workers();
         let entries: Vec<_> = self
             .rooms
             .read()
@@ -3446,5 +3454,58 @@ fn _audience_for_role(role: MatchRole) -> Option<Audience> {
     match role {
         MatchRole::Player(seat) => Some(Audience::Player(seat)),
         MatchRole::Spectator | MatchRole::None => Some(Audience::Public),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn registry_reaps_finished_effect_workers_during_room_churn() {
+        let registry = RoomRegistry::new();
+        let code = RoomJoinCode::new("123456").unwrap();
+        registry
+            .create_with_join_code(
+                RoomConfig::new(
+                    "worker cleanup",
+                    GameMode::FourPlayerRedEast,
+                    CharacterCatalog::starter(),
+                ),
+                code.clone(),
+            )
+            .await
+            .unwrap();
+        registry.remove(code.as_str()).await.unwrap();
+
+        for _ in 0..100 {
+            if registry
+                .workers
+                .lock()
+                .expect("room worker lock poisoned")
+                .iter()
+                .all(tokio::task::JoinHandle::is_finished)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            registry
+                .workers
+                .lock()
+                .expect("room worker lock poisoned")
+                .iter()
+                .all(tokio::task::JoinHandle::is_finished)
+        );
+
+        registry.purge_closed().await;
+        assert!(
+            registry
+                .workers
+                .lock()
+                .expect("room worker lock poisoned")
+                .is_empty()
+        );
     }
 }

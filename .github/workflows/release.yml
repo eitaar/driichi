@@ -38,6 +38,23 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          text = Path("Cargo.toml").read_text(encoding="utf-8")
+          version = re.search(r'^version = "([^"]+)"$', text, re.M).group(1)
+          actual = os.environ["GITHUB_REF_NAME"]
+          expected = f"v{version}"
+          if actual != expected:
+              raise SystemExit(f"release tag {actual!r} does not match Cargo version {expected!r}")
+          PY
+
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -149,11 +166,50 @@ jobs:
             --version "$version" \
             --commit "$GIT_COMMIT"
 
-      - name: Upload release artifacts
+      - name: Upload platform release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: double-riichi-${{ matrix.platform }}
           if-no-files-found: error
           path: |
-            target/release-artifacts/*.zip
-            target/release-artifacts/*.sha256
+            target/release-artifacts/double-riichi-*-${{ matrix.platform }}.zip
+            target/release-artifacts/double-riichi-*-${{ matrix.platform }}.zip.sha256
+
+      - name: Upload standalone Starter Pack
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: double-riichi-starter
+          if-no-files-found: error
+          path: |
+            target/release-artifacts/character-packs-*.zip
+            target/release-artifacts/character-packs-*.zip.sha256
+
+  publish:
+    name: Publish GitHub release
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: double-riichi-*
+          path: target/release-artifacts
+          merge-multiple: true
+
+      - name: Publish tagged release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          artifacts=(target/release-artifacts/*.zip target/release-artifacts/*.sha256)
+          test "${#artifacts[@]}" -eq 8
+          gh release create "$GITHUB_REF_NAME" "${artifacts[@]}" \
+            --verify-tag \
+            --generate-notes \
+            --title "Double Riichi ${GITHUB_REF_NAME}"
