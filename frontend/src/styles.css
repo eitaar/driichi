@@ -85,15 +85,277 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
 @media (max-width:1080px){.participant-row,.lobby-participant{grid-template-columns:45px minmax(100px,1fr) minmax(250px,1.5fr);}.participant-actions{grid-column:2 / -1;justify-content:flex-start}.lobby-participant>.ready-mark{grid-column:2 / -1}.participant-axes,.lobby-axes{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:10px}.detail-layout{grid-template-columns:minmax(0,1fr) 230px}}
 @media (max-width:760px){.workspace-actions{gap:12px}.admin-workspace{display:block}.workspace-rail{border-right:0;border-bottom:1px solid var(--line);padding:25px 20px}.workspace-rail h1{font-size:2.5rem}.room-list{display:flex;overflow:auto;margin-top:20px}.room-list-item{min-width:190px}.workspace-main{overflow:visible}.room-detail{padding:28px 20px 45px}.detail-heading,.lobby-heading{display:block}.detail-phase{justify-items:start;margin-top:22px}.detail-layout,.lobby-grid{display:block}.roster-rail,.character-panel{border-left:0;border-top:1px solid var(--line);padding:25px 0;margin-top:25px}.settings-grid{grid-template-columns:1fr}.participant-row,.lobby-participant{grid-template-columns:45px minmax(0,1fr);align-items:start}.participant-axes,.lobby-axes{grid-column:1 / -1;grid-template-columns:repeat(2,minmax(0,1fr))}.participant-actions{grid-column:1 / -1}.lobby-participant>.ready-mark{grid-column:1 / -1}.token-panel{padding:25px 20px 35px}.token-row{grid-template-columns:1fr auto}.token-row code,.token-row time{grid-column:1 / -1}.token-row .text-button{grid-column:2;grid-row:1}.lobby-workspace{padding:28px 20px 50px}.lobby-heading h1{font-size:clamp(2.8rem,13vw,5rem)}.connection-state{margin-top:24px}.ready-block{display:block}.ready-block .button{width:100%;margin-top:18px}.lobby-notice{display:block}.lobby-notice .button{margin:14px 0 0}.action-row .button{flex:1}.site-footer{display:none}}
 
-/* Task 12: the broadcast control table keeps the shell quiet and gives the field all the room. */
-.gameplay-shell{background:#070d0c;color:var(--paper);min-height:100dvh;overflow:hidden}
-.gameplay-topbar{height:74px;min-height:74px;padding:12px clamp(20px,4vw,56px);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #273934;background:#0a1110}
-.gameplay-topbar .eyebrow{margin:0 0 4px;font-size:9px}.gameplay-topbar h1{margin:0;font-size:18px;line-height:1;letter-spacing:-.03em;font-weight:600}.gameplay-top-actions{display:flex;align-items:center;gap:24px}.gameplay-top-actions .connection-state{align-self:auto;margin:0}
-.audio-settings{position:relative;color:var(--muted-strong);font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.11em;text-transform:uppercase}.audio-settings summary{cursor:pointer;padding:9px 11px;border:1px solid #3a4b45;list-style:none}.audio-settings summary::-webkit-details-marker{display:none}.audio-settings[open] summary{border-color:var(--accent-bright);color:var(--paper)}.audio-settings-body{position:absolute;z-index:4;right:0;top:calc(100% + 8px);width:235px;padding:16px;border:1px solid #3a4b45;background:#0c1613;box-shadow:0 18px 40px rgba(0,0,0,.45);display:grid;grid-template-columns:72px 1fr;gap:12px 10px;color:var(--muted)}.audio-settings-body input[type=range]{height:24px;padding:0;accent-color:var(--accent);background:transparent;border:0}.audio-toggle{grid-column:1 / -1;display:flex;align-items:center;gap:9px;color:var(--muted-strong)}.audio-toggle input{width:16px;height:16px;accent-color:var(--accent)}
-.gameplay-main{width:min(1780px,100%);margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:22px;align-items:start;padding:22px clamp(18px,3vw,48px) 34px}.gameplay-stage{min-width:0}.table-letterbox{position:relative;width:min(100%,calc((100dvh - 142px) * 1.7778));aspect-ratio:16 / 9;margin:0 auto;background:#071711;border:1px solid #28433a;overflow:hidden}.pixi-table{position:absolute;inset:0}.table-canvas{display:block;width:100%;height:100%}.table-caption{display:flex;justify-content:space-between;gap:15px;padding:9px 2px 0;color:#81938a;font:9px 'Geist Mono',monospace;letter-spacing:.13em;text-transform:uppercase}.table-hit-layer{position:absolute;z-index:2;left:16%;right:16%;bottom:1%;height:20%;display:flex;align-items:stretch;gap:2px;pointer-events:none}.table-tile-hit{position:relative;flex:1;min-width:0;border:1px solid transparent;background:transparent;color:transparent;pointer-events:auto;padding:0;outline-offset:2px;border-radius:2px;transition:background-color .16s ease,border-color .16s ease,transform .16s ease}.table-tile-hit.is-legal{border-color:rgba(234,194,123,.72);background:rgba(185,58,53,.08);box-shadow:inset 0 -2px 0 rgba(234,194,123,.35)}.table-tile-hit.is-legal:hover:not(:disabled),.table-tile-hit.is-legal:focus-visible{border-color:var(--accent-bright);background:rgba(185,58,53,.22);box-shadow:0 0 0 1px rgba(234,194,123,.35),inset 0 -2px 0 var(--accent-bright);transform:translateY(-2px)}.table-tile-hit:disabled{cursor:not-allowed}.gameplay-rail{min-width:0;display:grid;gap:17px}.score-rail,.action-deck,.results-panel{border-top:1px solid #30463e;padding-top:16px}.score-rail .eyebrow,.action-deck .eyebrow,.results-panel .eyebrow{margin:0 0 11px;font-size:9px}.score-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;gap:2px 8px;padding:10px 9px;border-bottom:1px solid #243831;color:#a9b8af}.score-row.is-own{border-left:2px solid var(--accent);background:#131a17;color:var(--paper)}.score-row strong{font:600 14px 'Geist Mono',monospace;color:#d8ddd5}.score-row small{grid-column:1 / -1;color:var(--muted);font:9px 'Geist Mono',monospace;text-transform:uppercase;letter-spacing:.1em}.action-deck{position:relative}.action-deck-label{display:flex;justify-content:space-between;align-items:baseline;gap:12px}.action-deck-label strong{font-size:13px;color:var(--muted-strong)}.action-buttons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:13px}.action-buttons .button{height:42px;padding:0 10px;font-size:11px}.action-deck-empty{display:block;color:#6e8177;font:11px 'Geist Mono',monospace}.candidate-popup{position:absolute;z-index:5;right:0;top:75px;width:min(265px,100%);padding:13px;border:1px solid #50645b;background:#0b1512;box-shadow:0 18px 42px rgba(0,0,0,.55)}.candidate-popup-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;color:var(--muted-strong);font:10px 'Geist Mono',monospace;text-transform:uppercase;letter-spacing:.12em}.candidate-popup-head .text-button{font:10px 'Geist Mono',monospace;text-transform:uppercase}.candidate-list{display:grid;gap:7px}.candidate-list .button{justify-content:flex-start;height:39px;font-size:11px}.gameplay-notice{margin:0 22px 0;padding:10px 13px}.gameplay-error{margin:8px 22px 0}.gameplay-guidance{width:min(650px,100%);margin:auto;padding:clamp(44px,10vw,120px) 24px}.gameplay-guidance h2{margin:0 0 18px;font-size:clamp(2.5rem,6vw,5rem);letter-spacing:-.07em;line-height:.95}.gameplay-guidance p:not(.eyebrow){color:var(--muted);line-height:1.6}.results-panel h2{margin:0 0 12px;font-size:24px;letter-spacing:-.045em}.results-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.results-winner-portrait{width:76px;height:96px;object-fit:cover;border:1px solid #53645d;background:#15221d}.results-winner-portrait.asset-fallback{display:flex;align-items:center;justify-content:center;color:#b6c3ba;font:600 28px 'Geist Mono',monospace}.results-list{display:grid;gap:0;margin:15px 0 0;padding:0;list-style:none}.results-list li{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:11px 0;border-bottom:1px solid #243831}.results-list li strong{font:600 13px 'Geist Mono',monospace;color:#d8ddd5}.result-rank{font:10px 'Geist Mono',monospace;color:var(--accent-bright)}.result-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-strong);font-size:12px}.result-name small{display:block;margin-top:3px;color:#8fac99;font:8px 'Geist Mono',monospace;letter-spacing:.08em;text-transform:uppercase}
-@media (max-width:1180px) and (min-width:1024px){.gameplay-main{grid-template-columns:minmax(0,1fr) 240px;gap:14px;padding-left:14px;padding-right:14px}.gameplay-top-actions{gap:12px}.gameplay-topbar{padding-left:20px;padding-right:20px}}
-@media (max-width:1023px),(max-height:599px){.gameplay-shell .gameplay-main{display:none}.gameplay-shell{overflow:auto}.gameplay-topbar{height:64px;min-height:64px}.gameplay-topbar h1{font-size:16px}.gameplay-top-actions{gap:10px}.gameplay-top-actions .connection-state{font-size:8px}.gameplay-guidance{display:block}}
-@media (prefers-reduced-motion:reduce){.table-tile-hit{transition:none}.gameplay-shell .connection-reconnecting .state-dot{animation:none}}
+/* Task 12: the table is the surface; controls and notices float in its safe areas. */
+.gameplay-shell {
+  position: relative;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: #070b1d;
+  color: var(--paper);
+}
+.gameplay-main {
+  width: 100%;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  position: relative;
+}
+.table-letterbox {
+  width: min(100%, calc(100dvh * 1.7778));
+  max-height: 100dvh;
+  aspect-ratio: 16 / 9;
+  position: relative;
+  overflow: hidden;
+  background: #11193a;
+  border: 1px solid rgba(183, 141, 76, .72);
+  box-shadow: 0 22px 70px rgba(2, 5, 20, .48), inset 0 1px 0 rgba(255, 239, 195, .12);
+}
+.gameplay-controls {
+  position: absolute;
+  z-index: 6;
+  inset-block-start: max(14px, env(safe-area-inset-top));
+  inset-inline-end: max(16px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #f5eddb;
+}
+.gameplay-controls .connection-state {
+  align-self: auto;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(183, 141, 76, .55);
+  background: #0d1530;
+  color: #e7dfcd;
+  font-size: 9px;
+}
+.audio-settings {
+  position: relative;
+  color: #ded6c5;
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+.audio-settings summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  border: 1px solid rgba(183, 141, 76, .7);
+  background: #0d1530;
+  list-style: none;
+}
+.audio-settings summary::-webkit-details-marker { display: none; }
+.audio-settings[open] summary { border-color: #f0c76c; color: #fff4d7; }
+.audio-settings-body {
+  position: absolute;
+  z-index: 7;
+  inset-inline-end: 0;
+  inset-block-start: calc(100% + 8px);
+  width: 235px;
+  padding: 16px;
+  border: 1px solid rgba(183, 141, 76, .7);
+  background: #0d1530;
+  box-shadow: 0 18px 40px rgba(2, 5, 20, .52);
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 12px 10px;
+  color: #c6c5c2;
+}
+.audio-settings-body input[type=range] { height: 24px; padding: 0; accent-color: #d0a24f; background: transparent; border: 0; }
+.audio-toggle { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px; color: #e3dccd; }
+.audio-toggle input { width: 16px; height: 16px; accent-color: #d0a24f; }
+.gameplay-toast-stack {
+  position: absolute;
+  z-index: 7;
+  inset-block-start: max(14px, env(safe-area-inset-top));
+  inset-inline-start: max(16px, env(safe-area-inset-left));
+  width: min(430px, calc(100% - 280px));
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+.gameplay-toast {
+  margin: 0;
+  padding: 9px 12px;
+  border-inline-start: 2px solid #d0a24f;
+  background: #0d1530;
+  color: #f2ead8;
+  box-shadow: 0 14px 34px rgba(2, 5, 20, .38);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.gameplay-toast[role=alert] { border-inline-start-color: #ef8d84; }
+.pixi-table { position: absolute; inset: 0; }
+.table-canvas { display: block; width: 100%; height: 100%; }
+.table-hit-layer {
+  position: absolute;
+  z-index: 2;
+  inset-inline: 16%;
+  inset-block-end: 1%;
+  block-size: 20%;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  pointer-events: none;
+}
+.table-tile-hit {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: transparent;
+  pointer-events: auto;
+  padding: 0;
+  outline-offset: 3px;
+  border-radius: 2px;
+  transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
+}
+.table-tile-hit.is-legal { border-color: rgba(234, 194, 123, .72); background: rgba(185, 58, 53, .08); box-shadow: inset 0 -2px 0 rgba(234, 194, 123, .35); }
+.table-tile-hit.is-legal:hover:not(:disabled),
+.table-tile-hit.is-legal:focus-visible {
+  border-color: #f0c76c;
+  background: rgba(185, 58, 53, .22);
+  box-shadow: 0 0 0 1px rgba(255, 226, 151, .55), inset 0 -2px 0 #f0c76c;
+  transform: translateY(-2px);
+}
+.table-tile-hit:disabled { cursor: not-allowed; }
+.action-deck {
+  position: absolute;
+  z-index: 5;
+  inset-inline: 18%;
+  inset-block-end: 18%;
+  padding: 10px 14px;
+  border: 1px solid rgba(208, 162, 79, .86);
+  background: #0d1530;
+  color: #f4ecd9;
+  box-shadow: 0 14px 32px rgba(2, 5, 20, .44), inset 0 1px 0 rgba(255, 239, 195, .12);
+}
+.action-deck-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.action-deck .eyebrow { margin: 0; font-size: 9px; }
+.action-deck-label strong { color: #ede4d1; font-size: 13px; }
+.action-deck-label [data-testid=decision-timer] {
+  margin-inline-start: auto;
+  color: #f0c76c;
+  font: 600 12px 'Geist Mono', monospace;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-block-start: 11px;
+}
+.action-buttons .button,
+.candidate-list .button {
+  min-height: 40px;
+  height: 40px;
+  padding: 0 13px;
+  border: 1px solid #c59a51;
+  background: #101d42;
+  color: #fff4d7;
+  font-size: 11px;
+  box-shadow: inset 0 1px 0 rgba(255, 239, 195, .1);
+}
+.action-buttons .button:hover:not(:disabled),
+.action-buttons .button:focus-visible,
+.candidate-list .button:hover:not(:disabled),
+.candidate-list .button:focus-visible {
+  border-color: #ffe19a;
+  background: #182a57;
+  color: #fff8e9;
+}
+.action-buttons .button:focus-visible,
+.candidate-list .button:focus-visible { outline: 3px solid #ffe19a; outline-offset: 3px; }
+.action-buttons .button:disabled,
+.candidate-list .button:disabled { border-color: #6a5d48; background: #18203a; color: #aaa18f; }
+.candidate-popup {
+  position: absolute;
+  z-index: 7;
+  inset-inline-end: 0;
+  inset-block-end: calc(100% + 10px);
+  width: min(265px, 100%);
+  padding: 13px;
+  border: 1px solid #c59a51;
+  background: #0d1530;
+  box-shadow: 0 18px 42px rgba(2, 5, 20, .58);
+}
+.candidate-popup-head { display: flex; align-items: center; justify-content: space-between; margin-block-end: 10px; color: #ded6c5; font: 10px 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: .12em; }
+.candidate-popup-head .text-button { font: 10px 'Geist Mono', monospace; text-transform: uppercase; color: #f0c76c; }
+.candidate-list { display: grid; gap: 7px; }
+.candidate-list .button { justify-content: flex-start; }
+.gameplay-blocking-state {
+  width: min(600px, 100%);
+  padding: clamp(34px, 7vw, 80px);
+  border: 1px solid rgba(239, 141, 132, .7);
+  background: #0d1530;
+  box-shadow: 0 24px 70px rgba(2, 5, 20, .46);
+}
+.gameplay-blocking-state h1 { margin: 0 0 15px; font-size: clamp(2.4rem, 6vw, 5rem); letter-spacing: -.07em; line-height: .95; }
+.gameplay-blocking-state p:not(.eyebrow) { margin: 0; color: #d2cbbb; line-height: 1.6; }
+.gameplay-guidance { width: min(650px, 100%); margin: auto; padding: clamp(44px, 10vw, 120px) 24px; }
+.gameplay-guidance h2 { margin: 0 0 18px; font-size: clamp(2.5rem, 6vw, 5rem); letter-spacing: -.07em; line-height: .95; }
+.gameplay-guidance p:not(.eyebrow) { color: var(--muted); line-height: 1.6; }
+.results-overlay {
+  position: absolute;
+  z-index: 6;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  width: min(430px, calc(100% - 32px));
+  max-block-size: calc(100% - 32px);
+  overflow: auto;
+  transform: translate(-50%, -50%);
+}
+.results-overlay .results-panel {
+  padding: 18px;
+  border: 1px solid rgba(208, 162, 79, .9);
+  background: #0d1530;
+  box-shadow: 0 24px 70px rgba(2, 5, 20, .58);
+}
+.results-panel h2 { margin: 0 0 12px; font-size: 24px; letter-spacing: -.045em; }
+.results-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.results-winner-portrait { width: 76px; height: 96px; object-fit: cover; border: 1px solid #c59a51; background: #18254b; }
+.results-winner-portrait.asset-fallback { display: flex; align-items: center; justify-content: center; color: #e4d8bd; font: 600 28px 'Geist Mono', monospace; }
+.results-list { display: grid; gap: 0; margin: 15px 0 0; padding: 0; list-style: none; }
+.results-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 11px 0; border-bottom: 1px solid rgba(208, 162, 79, .28); }
+.results-list li strong { color: #f4ecd9; font: 600 13px 'Geist Mono', monospace; }
+.result-rank { color: #f0c76c; font: 10px 'Geist Mono', monospace; }
+.result-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ded6c5; font-size: 12px; }
+.result-name small { display: block; margin-block-start: 3px; color: #c5b58f; font: 8px 'Geist Mono', monospace; letter-spacing: .08em; text-transform: uppercase; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 1180px) and (min-width: 1024px) {
+  .action-buttons { gap: 6px; }
+  .action-buttons .button,
+  .candidate-list .button { min-height: 36px; height: 36px; padding-inline: 10px; }
+  .table-hit-layer { block-size: 18%; }
+}
+@media (max-width: 1023px), (max-height: 599px) {
+  .gameplay-shell .gameplay-main { display: none; }
+  .gameplay-shell { overflow: auto; }
+  .gameplay-guidance { display: block; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .table-tile-hit { transition: none; }
+  .gameplay-shell .connection-reconnecting .state-dot { animation: none; }
+}
 
 /* Task 15: the Replay archive is an operator surface, not a download shelf. */
 .replay-shell{min-height:100dvh;background:var(--ink);overflow:auto}

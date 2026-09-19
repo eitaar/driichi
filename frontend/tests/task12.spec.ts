@@ -166,6 +166,10 @@ for (const viewport of [
       await installSocket(page, mode);
       await page.goto("/room/123456/lobby");
       const table = await expectRenderedTable(page);
+      await expect(page.locator(".gameplay-topbar")).toHaveCount(0);
+      await expect(page.locator(".gameplay-rail")).toHaveCount(0);
+      await expect(page.locator(".gameplay-controls")).toBeVisible();
+      await expect(page.getByTestId("action-deck")).toBeVisible();
       await expect(table).toHaveAttribute(
         "data-wall-tile-count",
         mode === "3p-red-east" ? "54" : "69",
@@ -190,12 +194,33 @@ for (const viewport of [
       );
       await expect(page.locator(".table-tile-hit")).toHaveCount(14);
       await expect(legalTiles).toHaveCount(14);
+      await page.evaluate(() => {
+        (
+          window as unknown as { __socket: { emit: (value: unknown) => void } }
+        ).__socket.emit({
+          type: "action_result",
+          decision_id: "d1",
+          action_id: "a1",
+          status: "rejected",
+          code: "illegal_action",
+        });
+      });
+      await expect(page.getByRole("alert")).toContainText("illegal_action");
+      await expect(page.getByTestId("action-deck")).toHaveAttribute(
+        "aria-busy",
+        "false",
+      );
+      await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
+      await legalTiles.first().click();
+      await legalTiles.first().dispatchEvent("click");
       const sent = await page.evaluate(() =>
         (
           window as unknown as { __socket: { sent: string[] } }
         ).__socket.sent.map((value) => JSON.parse(value)),
       );
+      expect(sent).toHaveLength(2);
       expect(sent).toEqual([
+        { type: "submit_action", decision_id: "d1", action_id: "a1" },
         { type: "submit_action", decision_id: "d1", action_id: "a1" },
       ]);
       await page.screenshot({
@@ -205,6 +230,17 @@ for (const viewport of [
     });
   }
 }
+
+test("omits the Action row when no Decision is open", async ({ page }) => {
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  state.decision = null;
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  await expectRenderedTable(page);
+  await expect(page.getByTestId("action-deck")).toHaveCount(0);
+});
 
 test("candidate popup transfers focus and closes on Escape", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
