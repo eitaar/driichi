@@ -25,6 +25,8 @@ export function TileVignette() {
 
     async function mount() {
       try {
+        // @ts-expect-error pixi.js/unsafe-eval does not publish declarations.
+        await import("pixi.js/unsafe-eval");
         const { Application, Assets, Sprite } = await import("pixi.js");
         if (disposed) return;
         app = new Application();

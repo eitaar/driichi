@@ -64,7 +64,7 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 function serverBinary(): string {
-  return join(repositoryRoot, "target", "debug", process.platform === "win32" ? "driichi.exe" : "driichi");
+  return join(repositoryRoot, "target", "release", process.platform === "win32" ? "driichi.exe" : "driichi");
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -123,7 +123,7 @@ async function ensureServerBinary(): Promise<string> {
   }
   await runCommand(
     cargoCommand(),
-    ["build", "--locked", "-p", "double_riichi_server"],
+    ["build", "--release", "--locked", "-p", "double_riichi_server"],
     repositoryRoot,
   );
   const binary = serverBinary();

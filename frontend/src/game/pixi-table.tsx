@@ -358,6 +358,9 @@ export function PixiTable({
 
     const mount = async () => {
       try {
+        // Pixi's no-eval renderer is required by the embedded server CSP.
+        // @ts-expect-error pixi.js/unsafe-eval does not publish declarations.
+        await import("pixi.js/unsafe-eval");
         const {
           Application,
           Assets,

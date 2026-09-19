@@ -412,7 +412,7 @@ describe("admin mutation coverage", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/start", expect.objectContaining({ method: "POST" })));
   });
 
-  it("confirms participant kick and room creation mutations", async () => {
+  it("confirms participant kick and creates rooms with the server participant default", async () => {
     const fetchMock = vi.fn().mockImplementation((input, init) => {
       const path = String(input);
       if (path.endsWith("/admin/rooms") && init?.method === "POST") return Promise.resolve(response(room, 201));
@@ -432,6 +432,13 @@ describe("admin mutation coverage", () => {
     fireEvent.change(within(dialog).getByLabelText(/room name/i), { target: { value: "Second Room" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /^create room$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms", expect.objectContaining({ method: "POST" })));
+    const createCall = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/admin/rooms") && init?.method === "POST");
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      room_name: "Second Room",
+      game_mode: "4p-red-east",
+      time_control: "casual",
+      replay_save: true,
+    });
   });
 });
 
