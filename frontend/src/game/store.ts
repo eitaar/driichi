@@ -161,8 +161,9 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   }),
   receiveActionResult: (result) => set((state) => {
     const matching = !state.pendingAction
-      || ((!result.decision_id || result.decision_id === state.pendingAction.decisionId)
-        && (!result.action_id || result.action_id === state.pendingAction.actionId));
+      || (result.action_id
+        ? result.action_id === state.pendingAction.actionId
+        : (!result.decision_id || result.decision_id === state.pendingAction.decisionId));
     if (!matching) return state;
     if (result.status === "accepted") {
       const acceptedActionResults = result.action_id
@@ -171,7 +172,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
               (entry) => entry.action_id !== result.action_id,
             ),
             {
-              decision_id: result.decision_id,
+              decision_id: state.pendingAction?.decisionId ?? result.decision_id,
               action_id: result.action_id,
             },
           ].slice(-64)
