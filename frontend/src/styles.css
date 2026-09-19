@@ -98,12 +98,12 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 12px;
+  padding: 42px 12px 12px;
   position: relative;
 }
 .table-letterbox {
-  width: min(100%, calc(100dvh * 1.7778));
-  max-height: 100dvh;
+  width: min(100%, calc((100dvh - 54px) * 1.7778));
+  max-height: calc(100dvh - 54px);
   aspect-ratio: 16 / 9;
   position: relative;
   overflow: hidden;
@@ -188,6 +188,25 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
 .gameplay-toast[role=alert] { border-inline-start-color: #ef8d84; }
 .pixi-table { position: absolute; inset: 0; }
 .table-canvas { display: block; width: 100%; height: 100%; }
+.gameplay-sync-state {
+  position: absolute;
+  z-index: 4;
+  inset: 25% 12%;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 9px;
+  padding: 28px;
+  border: 1px solid rgba(208, 162, 79, .58);
+  background: rgba(13, 21, 48, .9);
+  color: #f4ecd9;
+  text-align: center;
+  box-shadow: 0 18px 42px rgba(2, 5, 20, .38);
+  pointer-events: none;
+}
+.gameplay-sync-state .eyebrow { margin: 0; color: #f0c76c; }
+.gameplay-sync-state strong { font: 600 18px 'Geist Mono', monospace; }
+.gameplay-sync-state span { color: #c6c5c2; font-size: 12px; line-height: 1.5; }
 .table-hit-layer {
   position: absolute;
   z-index: 2;

@@ -1,4 +1,10 @@
 {
+  "acceptance": {
+    "wall_tile_counts": {
+      "3p-red-east": 54,
+      "4p-red-east": 69
+    }
+  },
   "room_envelopes": {
     "3p-red-east": {
       "join_code": "123456", "room_name": "Night Market", "game_mode": "3p-red-east", "phase": "playing", "revision": 12,

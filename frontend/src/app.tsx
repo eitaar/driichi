@@ -241,10 +241,8 @@ function useHumanSocket(joinCode: string) {
         if (semanticReason && [4001, 4002, 4006].includes(event.code)) {
           useGameStore.getState().reset();
           useGameStore.getState().setStatus("closed", semanticReason);
-          if ([4002, 4006].includes(event.code)) {
+          if ([4002, 4006].includes(event.code))
             sessionStorage.removeItem(participantKey);
-            navigate(`/room/${joinCode}`);
-          }
           return;
         }
         attemptRef.current += 1;

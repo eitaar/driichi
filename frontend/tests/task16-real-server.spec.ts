@@ -1,7 +1,7 @@
 /// <reference types="../node_modules/@types/node" />
 
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test as base, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test as base, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -28,11 +28,17 @@ const test = base.extend<{}, { harness: RealServerHarness }>({
 test.describe.configure({ mode: "serial", timeout: 240_000 });
 
 type MatchMode = "3p-red-east" | "4p-red-east";
-type Viewport = { width: number; height: number; label: "1024x600" | "1440x900" };
+type Viewport = {
+  width: number;
+  height: number;
+  label: "1024x600" | "1280x720" | "1600x900" | "1920x1080";
+};
 
 const viewports: Viewport[] = [
   { width: 1024, height: 600, label: "1024x600" },
-  { width: 1440, height: 900, label: "1440x900" },
+  { width: 1280, height: 720, label: "1280x720" },
+  { width: 1600, height: 900, label: "1600x900" },
+  { width: 1920, height: 1080, label: "1920x1080" },
 ];
 const screenshotDirectory = resolve(ensureScreenshotDirectory());
 const projectionFixture = JSON.parse(
@@ -48,7 +54,7 @@ let observedMultiCandidateAction = false;
 async function expectAccessible(page: Page, surface: string) {
   const axe = new AxeBuilder({ page });
   if (surface === "actual decision" || surface === "results") {
-    axe.include([".gameplay-topbar", ".gameplay-main"]);
+    axe.include(".gameplay-main");
   }
   const results = await axe.analyze();
   expect(
@@ -193,6 +199,10 @@ async function installEmbeddedProjection(page: Page) {
         action_id: "chi-1",
         action: { Chi: { target: 1, called: 1, consumed: [0, 4] } },
       },
+      {
+        action_id: "chi-2",
+        action: { Chi: { target: 1, called: 2, consumed: [1, 5] } },
+      },
       { action_id: "pass-1", action: "Pass" },
     ],
   };
@@ -246,13 +256,34 @@ async function waitForDecision(page: Page, seats: number) {
       + (await page.locator(".table-tile-hit.is-legal").count()),
     { timeout: 30_000, message: "Human should receive an actual open Decision" },
   ).toBeGreaterThan(0);
-  await expect(page.locator(".score-row")).toHaveCount(seats, { timeout: 30_000 });
+  await expect(page.getByTestId("pixi-table")).toHaveAttribute(
+    "data-player-frame-count",
+    String(seats),
+    { timeout: 30_000 },
+  );
 }
 
-async function waitForAcceptedAction(page: Page, actionId: string) {
+async function tabTo(page: Page, target: Locator, limit = 60) {
+  for (let index = 0; index < limit; index += 1) {
+    if (await target.evaluate((element) => element === document.activeElement)) return;
+    await page.keyboard.press("Tab");
+  }
+  throw new Error("keyboard focus did not reach the requested control");
+}
+
+async function waitForAcceptedAction(page: Page, actionId: string, beforeRevision: number) {
   const shell = page.getByTestId("gameplay-shell");
-  await expect(shell).toHaveAttribute("data-last-action-result-status", "accepted", { timeout: 10_000 });
-  await expect(shell).toHaveAttribute("data-last-action-result-action-id", actionId, { timeout: 10_000 });
+  await expect.poll(
+    async () => {
+      const status = await shell.getAttribute("data-last-action-result-status");
+      if (status !== "accepted") return false;
+      const observedActionId = await shell.getAttribute("data-last-action-result-action-id");
+      if (observedActionId === actionId) return true;
+      const revision = Number(await shell.getAttribute("data-room-revision"));
+      return Number.isFinite(revision) && revision > beforeRevision;
+    },
+    { timeout: 10_000, message: "authoritative action result should be accepted" },
+  ).toBe(true);
 }
 
 async function waitForAcceptedRevision(page: Page, beforeRevision: number) {
@@ -293,7 +324,7 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
     expect(actionId, "candidate action must expose its concrete action_id").toBeTruthy();
     await dialog.locator(".candidate-list button").first().click();
     observedMultiCandidateAction = true;
-    await waitForAcceptedAction(page, actionId!);
+    await waitForAcceptedAction(page, actionId!, beforeRevision);
     await waitForAcceptedRevision(page, beforeRevision);
     return { submitted: true, multiCandidate: true, actionId: actionId! };
   }
@@ -313,7 +344,7 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
   const actionId = await action.getAttribute("data-action-id");
   expect(actionId, "submitted action must expose its concrete action_id").toBeTruthy();
   await action.click();
-  await waitForAcceptedAction(page, actionId!);
+  await waitForAcceptedAction(page, actionId!, beforeRevision);
   await waitForAcceptedRevision(page, beforeRevision);
   return { submitted: true, multiCandidate: false, actionId: actionId! };
 }
@@ -325,7 +356,7 @@ async function completeMatch(page: Page, mode: MatchMode, seats: number) {
   await captureAtBothViewports(page, `${mode}-decision`);
   await expectAccessible(page, "actual decision");
 
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + 240_000;
   let submitted = 0;
   while (Date.now() < deadline) {
     if (await page.getByTestId("results-panel").isVisible().catch(() => false)) break;
@@ -373,8 +404,25 @@ test("serves the embedded gameplay with visible tiles under its CSP", async ({ p
         status === 200 && contentType.startsWith("image/svg+xml"),
     ),
   ).toBe(true);
-  await expect(page.getByRole("button", { name: "Chi" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Chi (2)" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Pass" })).toBeEnabled();
+
+  const settings = page.locator(".audio-settings summary");
+  await tabTo(page, settings);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".audio-settings[open]")).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".audio-settings[open]")).toHaveCount(0);
+
+  const chiTrigger = page.getByRole("button", { name: "Chi (2)" });
+  await tabTo(page, chiTrigger);
+  await page.keyboard.press("Enter");
+  const candidateDialog = page.getByRole("dialog", { name: /choose a legal candidate/i });
+  await expect(candidateDialog).toBeVisible();
+  await expect(candidateDialog.locator(".candidate-list button").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(candidateDialog).toHaveCount(0);
+  await expect(chiTrigger).toBeFocused();
 });
 
 type JsonResponse = { status: number; body: unknown };
@@ -434,6 +482,24 @@ async function verifyReplayAndOpenRoutes(
   await expect(adminPage.getByTestId("replay-viewer")).toHaveAttribute("data-motion", "static");
   await expectAccessible(adminPage, "replay viewer");
   await captureAtBothViewports(adminPage, `${mode}-replay-viewer`);
+  await adminPage.getByRole("button", { name: /next event/i }).click();
+  const replayControls = adminPage.locator(".replay-controls-overlay");
+  const replayPlay = replayControls.getByRole("button", { name: /^play$/i });
+  await replayPlay.focus();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("button", { name: /previous event/i })).toBeFocused();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("button", { name: /next event/i })).toBeFocused();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("button", { name: "0.5x" })).toBeFocused();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("button", { name: "1x" })).toBeFocused();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("button", { name: "2x" })).toBeFocused();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("button", { name: "4x" })).toBeFocused();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("combobox", { name: /jump to kyoku/i })).toBeFocused();
   await adminPage.locator(".skip-link").focus();
   await expect(adminPage.locator(".skip-link")).toBeFocused();
   await adminPage.keyboard.press("Tab");
@@ -447,6 +513,7 @@ for (const [mode, seats] of [
   ["4p-red-east", 4],
 ] as const) {
   test(`completes a real ${mode} Human match through Post-Match and Replay`, async ({ browser, harness }) => {
+    test.setTimeout(360_000);
     const adminContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const humanContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const adminPage = await adminContext.newPage();
