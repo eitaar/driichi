@@ -157,7 +157,7 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
 .replay-event-log ol{display:grid;gap:3px;margin:0;padding:0;list-style:none;border-top:1px solid var(--line)}
 .replay-event-log li{border-bottom:1px solid var(--line)}
 .replay-event-log li button{display:grid;grid-template-columns:45px minmax(0,1fr);gap:12px;width:100%;border:0;background:transparent;color:var(--muted);padding:11px 9px;text-align:left;font:11px 'Geist Mono',monospace;letter-spacing:.02em}
-.replay-event-log li button>span:first-child{color:#6d787c}
+.replay-event-log li button>span:first-child{color:var(--muted-strong)}
 .replay-event-log li button:hover,.replay-event-log li.is-current button{background:#181214;color:var(--paper)}
 .replay-event-log li.is-current button>span:first-child{color:var(--accent-bright)}
 .replay-delete-dialog{max-width:500px}

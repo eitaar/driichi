@@ -27,7 +27,7 @@ pub use config::{
     TracingFormat,
 };
 pub use http::{IpCidr, ServerInitError, ServerLimits, ServerState, server_router};
-pub use storage::{Storage, StorageError};
+pub use storage::{Storage, StorageError, spawn_room_effect_worker};
 
 #[cfg(frontend_dist)]
 use rust_embed::RustEmbed;
