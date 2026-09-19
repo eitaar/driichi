@@ -143,7 +143,8 @@ def validate_official_documents(openapi: dict[str, Any], asyncapi: dict[str, Any
     source = ASYNCAPI_SCHEMA_SOURCE.read_text(encoding="utf-8")
     if "source_package = @asyncapi/specs" not in source or "source_version = 6.11.1" not in source:
         fail("AsyncAPI schema source metadata is not pinned")
-    if hashlib.sha256(ASYNCAPI_SCHEMA.read_bytes()).hexdigest() != ASYNCAPI_SCHEMA_SHA256:
+    schema_bytes = ASYNCAPI_SCHEMA.read_bytes().replace(b"\r\n", b"\n")
+    if hashlib.sha256(schema_bytes).hexdigest() != ASYNCAPI_SCHEMA_SHA256:
         fail("vendored AsyncAPI schema checksum does not match its pinned source")
     schema = load_json(ASYNCAPI_SCHEMA)
     if not isinstance(schema, dict):

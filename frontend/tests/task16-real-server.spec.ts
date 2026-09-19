@@ -184,6 +184,12 @@ async function waitForDecision(page: Page, seats: number) {
   await expect(page.locator(".score-row")).toHaveCount(seats, { timeout: 30_000 });
 }
 
+async function waitForAcceptedAction(page: Page, actionId: string) {
+  const shell = page.getByTestId("gameplay-shell");
+  await expect(shell).toHaveAttribute("data-last-action-result-status", "accepted", { timeout: 10_000 });
+  await expect(shell).toHaveAttribute("data-last-action-result-action-id", actionId, { timeout: 10_000 });
+}
+
 async function waitForAcceptedRevision(page: Page, beforeRevision: number) {
   const shell = page.getByTestId("gameplay-shell");
   await expect.poll(
@@ -195,7 +201,7 @@ async function waitForAcceptedRevision(page: Page, beforeRevision: number) {
   await expect(shell).not.toHaveAttribute("data-human-controller", /temporary_auto/i);
 }
 
-async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; multiCandidate: boolean }> {
+async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; multiCandidate: boolean; actionId?: string }> {
   const shell = page.getByTestId("gameplay-shell");
   const deck = page.getByTestId("action-deck");
   if (await page.getByTestId("results-panel").isVisible().catch(() => false)) return { submitted: false, multiCandidate: false };
@@ -218,10 +224,13 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
     await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
     const concreteLabel = (await dialog.locator(".candidate-list button").first().innerText()).trim();
     expect(concreteLabel).not.toMatch(/^(chi|pon|kan|kita)$/i);
+    const actionId = await dialog.locator(".candidate-list button").first().getAttribute("data-action-id");
+    expect(actionId, "candidate action must expose its concrete action_id").toBeTruthy();
     await dialog.locator(".candidate-list button").first().click();
     observedMultiCandidateAction = true;
+    await waitForAcceptedAction(page, actionId!);
     await waitForAcceptedRevision(page, beforeRevision);
-    return { submitted: true, multiCandidate: true };
+    return { submitted: true, multiCandidate: true, actionId: actionId! };
   }
 
   const winningAction = deck.getByRole("button", { name: /^(ron|tsumo)$/i }).first();
@@ -236,9 +245,12 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
         ? legalTile
         : candidateAction;
   if (!(await action.isVisible().catch(() => false))) return { submitted: false, multiCandidate: false };
+  const actionId = await action.getAttribute("data-action-id");
+  expect(actionId, "submitted action must expose its concrete action_id").toBeTruthy();
   await action.click();
+  await waitForAcceptedAction(page, actionId!);
   await waitForAcceptedRevision(page, beforeRevision);
-  return { submitted: true, multiCandidate: false };
+  return { submitted: true, multiCandidate: false, actionId: actionId! };
 }
 
 async function completeMatch(page: Page, mode: MatchMode, seats: number) {

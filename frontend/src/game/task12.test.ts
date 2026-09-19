@@ -74,7 +74,16 @@ describe("Task 12 table invariants", () => {
     expect(sent).toEqual([{ type: "submit_action", decision_id: "d1", action_id: "a1" }]);
     expect(useGameStore.getState().projection?.decision?.decision_id).toBe("d1");
     expect(useGameStore.getState().submitAction("d1", "a1", (value) => sent.push(value))).toBe(false);
-    useGameStore.getState().receiveActionResult({ decision_id: "d1", status: "rejected", code: "illegal_action" });
+    useGameStore.getState().receiveActionResult({ decision_id: "d1", action_id: "a1", status: "rejected", code: "illegal_action" });
+    expect(useGameStore.getState().pendingAction).toBeNull();
+    useGameStore.getState().receiveSnapshot(null, {
+      audience: "player", viewer_seat: 0, mode: "4p-red-east", players: [],
+      decision: { decision_id: "d2", kind: "turn", actions: [{ action_id: "a2", action: { discard: { tile: 16, tsumogiri: false } } }] },
+    });
+    expect(useGameStore.getState().submitAction("d2", "a2", (value) => sent.push(value))).toBe(true);
+    useGameStore.getState().receiveActionResult({ decision_id: "d2", action_id: "other", status: "accepted" });
+    expect(useGameStore.getState().pendingAction).toEqual({ decisionId: "d2", actionId: "a2" });
+    useGameStore.getState().receiveActionResult({ decision_id: "d2", action_id: "a2", status: "accepted" });
     expect(useGameStore.getState().pendingAction).toBeNull();
   });
 

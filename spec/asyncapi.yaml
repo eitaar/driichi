@@ -183,13 +183,16 @@ components:
     actionResultMessage:
       type: object
       additionalProperties: false
-      required: [type, decision_id, status]
+      required: [type, decision_id, action_id, status]
       properties:
         type:
           type: string
           const: action_result
         decision_id:
           type: string
+        action_id:
+          type: string
+          description: Ephemeral echo of the submitted legal action identifier.
         status:
           type: string
           enum: [accepted, rejected]

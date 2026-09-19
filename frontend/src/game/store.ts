@@ -23,6 +23,7 @@ export interface GameStoreState {
   lastRevision: number | null;
   lastEventToken: number;
   lastEvents: unknown[];
+  lastActionResult: { decision_id?: string; action_id?: string; status?: string; code?: string } | null;
   transport?: Transport | null;
   setStatus: (status: WebSocketStatus, reason?: string) => void;
   reset: () => void;
@@ -31,7 +32,7 @@ export interface GameStoreState {
   submitAction: (decisionId: string, actionId: string, transport?: Transport) => boolean;
   receiveSnapshot: (room: RoomSnapshot | null, projection: unknown) => void;
   receiveUpdate: (room: RoomSnapshot | null, projection: unknown, envelope?: GameEventEnvelope | unknown) => void;
-  receiveActionResult: (result: { decision_id?: string; status?: string; code?: string }) => void;
+  receiveActionResult: (result: { decision_id?: string; action_id?: string; status?: string; code?: string }) => void;
   setCommandError: (error: string) => void;
   clearPendingAction: () => void;
   consumeAnimations: (ids?: number[]) => void;
@@ -50,6 +51,7 @@ const initialState = {
   lastRevision: null,
   lastEventToken: 0,
   lastEvents: [] as unknown[],
+  lastActionResult: null as { decision_id?: string; action_id?: string; status?: string; code?: string } | null,
   transport: null as Transport | null,
 };
 
@@ -80,6 +82,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     animationQueue: [],
     lastRevision: null,
     lastEvents: [],
+    lastActionResult: null,
     lastEventToken: state.lastEventToken + 1,
   })),
   setTransport: (transport) => set({ transport }),
@@ -132,12 +135,20 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     };
   }),
   receiveActionResult: (result) => set((state) => {
-    const matching = !state.pendingAction || !result.decision_id || result.decision_id === state.pendingAction.decisionId;
+    const matching = !state.pendingAction
+      || ((!result.decision_id || result.decision_id === state.pendingAction.decisionId)
+        && (!result.action_id || result.action_id === state.pendingAction.actionId));
     if (!matching) return state;
-    if (result.status === "accepted") return { pendingAction: null, actionError: "", commandError: "" };
+    if (result.status === "accepted") return {
+      pendingAction: null,
+      actionError: "",
+      commandError: "",
+      lastActionResult: result,
+    };
     if (result.status === "rejected") return {
       pendingAction: null,
       actionError: result.code ?? "action_rejected",
+      lastActionResult: result,
     };
     return state;
   }),
