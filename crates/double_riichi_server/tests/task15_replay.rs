@@ -1015,8 +1015,8 @@ async fn room_worker_failure_notifies_owner_and_cleanup_removes_failed_metadata(
 }
 
 #[tokio::test]
-async fn sqlite_delayed_finalize_has_one_terminal_outcome() {
-    let root = temp_root("delayed-finalize");
+async fn sqlite_pool_starvation_waits_for_one_terminal_outcome() {
+    let root = temp_root("pool-starvation");
     let storage = Arc::new(Storage::connect(&root).await.unwrap());
     let (room_effects, mut room_receiver) =
         tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
@@ -1044,7 +1044,7 @@ async fn sqlite_delayed_finalize_has_one_terminal_outcome() {
     });
 
     let mut config = RoomConfig::new(
-        "Delayed Finalize",
+        "Pool Starvation",
         GameMode::ThreePlayerRedEast,
         double_riichi_core::CharacterCatalog::starter(),
     );
@@ -1057,21 +1057,26 @@ async fn sqlite_delayed_finalize_has_one_terminal_outcome() {
     });
     finalize_ready.await.unwrap();
 
-    let mut lock = storage.pool().acquire().await.unwrap();
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *lock)
-        .await
-        .unwrap();
+    let started = std::time::Instant::now();
+    let mut blockers = Vec::new();
+    for _ in 0..storage.max_connections() {
+        blockers.push(storage.pool().acquire().await.unwrap());
+    }
     let _ = release_finalize.send(());
-    tokio::time::sleep(std::time::Duration::from_millis(5_500)).await;
-    sqlx::query("ROLLBACK").execute(&mut *lock).await.unwrap();
-    drop(lock);
+    tokio::time::sleep(std::time::Duration::from_millis(6_500)).await;
+    assert!(
+        !start.is_finished(),
+        "Room finalization returned before the storage acquisition window"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+    drop(blockers);
 
-    let response = tokio::time::timeout(std::time::Duration::from_secs(8), start)
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), start)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_secs(7));
     assert!(matches!(
         response,
         double_riichi_core::RoomResponse::Started(_)
@@ -1080,13 +1085,13 @@ async fn sqlite_delayed_finalize_has_one_terminal_outcome() {
     assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
     assert!(!snapshot.persistence_degraded);
     assert!(snapshot.replay_available);
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE status = 'completed'")
-            .fetch_one(storage.pool())
-            .await
-            .unwrap(),
-        1
-    );
+    let row = sqlx::query("SELECT status, replay_path FROM matches WHERE status = 'completed'")
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    assert_eq!(row.try_get::<String, _>("status").unwrap(), "completed");
+    let replay_path = row.try_get::<String, _>("replay_path").unwrap();
+    assert!(storage.resolve_replay_path(&replay_path).unwrap().is_file());
     room.send(RoomCommand::shutdown(ShutdownMode::Graceful))
         .await
         .unwrap();

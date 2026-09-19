@@ -839,7 +839,13 @@ components:
     RoomDetail:
       type: object
       additionalProperties: true
-      required: [join_code, room_name, game_mode, phase]
+      required:
+        - join_code
+        - room_name
+        - game_mode
+        - phase
+        - persistence_degraded
+        - replay_available
       properties:
         join_code:
           type: string
@@ -849,6 +855,10 @@ components:
           type: string
         phase:
           type: string
+        persistence_degraded:
+          type: boolean
+        replay_available:
+          type: boolean
     PublicRoomLookup:
       type: object
       additionalProperties: false

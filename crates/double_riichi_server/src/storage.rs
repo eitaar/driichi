@@ -34,6 +34,11 @@ use crate::auth::validate_audit_summary;
 use crate::{BotTokenRecord, TokenState};
 
 const AUDIT_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+// Finalization is acknowledged by the Room after this acquisition window;
+// keep it longer than the former Room-side six-second deadline so the worker
+// owns the terminal outcome instead of racing cleanup.
+const STORAGE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -181,9 +186,10 @@ impl Storage {
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true)
             .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(Duration::from_secs(5));
+            .busy_timeout(SQLITE_BUSY_TIMEOUT);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
+            .acquire_timeout(STORAGE_ACQUIRE_TIMEOUT)
             .connect_with(options)
             .await
             .map_err(StorageError::Sqlx)?;
@@ -1298,13 +1304,31 @@ impl Storage {
     }
 
     pub(crate) async fn delete_incomplete_match(&self, match_id: &str) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        // Claim the incomplete row with a write before touching the files.
+        // This serializes cleanup against a concurrent finalization: whichever
+        // operation claims the row first owns the terminal outcome.
+        let claimed = sqlx::query(
+            "UPDATE matches SET status = 'failed' WHERE match_id = ? AND status IN ('writing', 'failed')",
+        )
+        .bind(match_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        if claimed.rows_affected() == 0 {
+            transaction.commit().await.map_err(StorageError::Sqlx)?;
+            return Ok(());
+        }
+
+        // Hold the transaction while removing artifacts so a failed removal
+        // rolls back the claim and leaves metadata retryable.
         remove_match_files(&self.replay_root, match_id)?;
         sqlx::query("DELETE FROM matches WHERE match_id = ? AND status IN ('writing', 'failed')")
             .bind(match_id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await
             .map_err(StorageError::Sqlx)?;
-        Ok(())
+        transaction.commit().await.map_err(StorageError::Sqlx)
     }
 
     pub(crate) async fn delete_writing_match(&self, match_id: &str) -> Result<(), StorageError> {
@@ -1926,6 +1950,52 @@ mod tests {
                 seat: Seat::new(2).unwrap(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn incomplete_cleanup_never_removes_completed_replay() {
+        let root = test_root("completed-cleanup");
+        let storage = Storage::connect(&root).await.unwrap();
+        let mut writer = ReplayWriter::new(
+            storage.replay_root(),
+            "completed-cleanup",
+            GameMode::FourPlayerRedEast,
+        )
+        .unwrap();
+        for event in events() {
+            writer.append(event).unwrap();
+        }
+        let artifact = writer.finalize().unwrap();
+        let replay_path = artifact.relative_path_string();
+        sqlx::query(
+            "INSERT INTO matches (match_id, source, game_mode, started_at, completed_at, status, replay_path, file_size) VALUES (?, 'room', ?, ?, ?, 'completed', ?, ?)",
+        )
+        .bind("completed-cleanup")
+        .bind("4p-red-east")
+        .bind(1_i64)
+        .bind(2_i64)
+        .bind(&replay_path)
+        .bind(i64::try_from(artifact.file_size).unwrap())
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        storage
+            .delete_incomplete_match("completed-cleanup")
+            .await
+            .unwrap();
+        assert!(storage.resolve_replay_path(&replay_path).unwrap().is_file());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM matches WHERE match_id = 'completed-cleanup'",
+            )
+            .fetch_one(storage.pool())
+            .await
+            .unwrap(),
+            1
+        );
+        storage.close().await;
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

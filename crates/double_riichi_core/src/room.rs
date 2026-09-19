@@ -31,9 +31,6 @@ const DEFAULT_MAX_ROOMS: usize = 32;
 const DEFAULT_MAX_PARTICIPANTS: usize = 32;
 const ROOM_CODE_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
 const PERSISTENCE_ACK_TIMEOUT: Duration = Duration::from_secs(1);
-// SQLite uses a five-second busy timeout; wait beyond it before declaring a
-// finalization outcome so the worker cannot commit after the Room degrades.
-const FINALIZE_ACK_TIMEOUT: Duration = Duration::from_secs(6);
 
 fn now_unix_seconds() -> i64 {
     std::time::SystemTime::now()
@@ -2767,15 +2764,14 @@ impl Actor {
     async fn send_finalize_effect(
         &mut self,
         effect: RoomEffect,
-        mut completion: oneshot::Receiver<Result<(), RoomEffectError>>,
+        completion: oneshot::Receiver<Result<(), RoomEffectError>>,
     ) -> Result<(), RoomError> {
-        match time::timeout(FINALIZE_ACK_TIMEOUT, self.effects.send(effect)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => return Err(RoomError::Persistence),
+        if self.effects.send(effect).await.is_err() {
+            return Err(RoomError::Persistence);
         }
-        match time::timeout(FINALIZE_ACK_TIMEOUT, &mut completion).await {
-            Ok(Ok(Ok(()))) => Ok(()),
-            Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => Err(RoomError::Persistence),
+        match completion.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) | Err(_) => Err(RoomError::Persistence),
         }
     }
 

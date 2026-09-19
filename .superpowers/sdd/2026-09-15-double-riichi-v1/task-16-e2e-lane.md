@@ -141,3 +141,36 @@ Round-four focused verification:
 - `python scripts/validate_contracts.py` — passed; OpenAPI start/rematch 503
   responses and replay-degraded health fixture are validated.
 - `cargo fmt --all -- --check` and `git diff --check` — passed.
+
+## Round 5 — authoritative finalization and contract drift closure
+
+Room finalization now waits for the ordered worker acknowledgement without a
+Room-side cancellation deadline. Storage explicitly uses SQLite's five-second
+busy timeout and a ten-second pool acquisition timeout, so a starved pool has
+one bounded worker-owned outcome. Incomplete cleanup claims its writing/failed
+row before removing files and leaves completed replay artifacts untouched. The
+RoomDetail OpenAPI schema and validator now require runtime
+`persistence_degraded` and `replay_available` booleans; runtime contract tests
+assert both fields.
+
+Round-five focused verification:
+
+- `cargo test -p double_riichi_core --test task8_room --no-fail-fast` — **24
+  passed**.
+- `cargo test -p double_riichi_server --lib storage::tests --no-fail-fast` —
+  **3 passed**, including completed-replay cleanup protection.
+- `cargo test -p double_riichi_server --test task15_replay --no-fail-fast` —
+  **30 passed**, including pool starvation held beyond the former six-second
+  Room deadline.
+- `cargo test -p double_riichi_server --test task16_contracts --no-fail-fast` —
+  **12 passed**.
+- `cargo test -p double_riichi_server --test task9_http --no-fail-fast` — **10
+  passed**.
+- `python scripts/validate_contracts.py` — passed; RoomDetail booleans and
+  requiredness are checked alongside the existing OpenAPI/AsyncAPI contracts.
+- `cargo check --workspace`, `cargo fmt --all -- --check`, and `git diff
+  --check` — passed.
+- `cargo test --workspace --no-fail-fast -- --test-threads=1` — failed only
+  at the pre-existing Windows CRLF-sensitive
+  `task7_characters::starter_generator_is_deterministic_and_covers_every_required_pack_asset`
+  fixture test; all Task 16-focused binaries passed in that serial run.
