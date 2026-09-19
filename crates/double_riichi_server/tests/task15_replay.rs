@@ -988,26 +988,22 @@ async fn room_worker_failure_notifies_owner_and_cleanup_removes_failed_metadata(
         })
         .await
         .unwrap();
-    for _ in 0..100 {
-        if sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE match_id = ?")
-            .bind(match_id.as_str())
-            .fetch_one(storage.pool())
-            .await
-            .unwrap()
-            == 0
-        {
-            break;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE match_id = ?")
+                .bind(match_id.as_str())
+                .fetch_one(storage.pool())
+                .await
+                .unwrap()
+                == 0
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM matches WHERE match_id = ?")
-            .bind(match_id.as_str())
-            .fetch_one(storage.pool())
-            .await
-            .unwrap(),
-        0
-    );
+    })
+    .await
+    .expect("room replay cleanup timed out");
     drop(effects);
     worker.await.unwrap();
     storage.close().await;

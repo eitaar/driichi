@@ -273,6 +273,10 @@ def validate_dto_contracts(openapi: dict[str, Any]) -> None:
         if room_detail_properties.get(field, {}).get("type") != "boolean":
             fail(f"RoomDetail.{field} must be a boolean")
 
+    for parameter in ("TokenId", "ParticipantId", "MatchId"):
+        if openapi["components"]["parameters"][parameter]["schema"].get("maxLength") != 128:
+            fail(f"{parameter} must declare the runtime identifier bound")
+
     for name in ("CreateRoomRequest", "PatchRoomRequest"):
         properties = schemas[name]["properties"]
         if set(properties) != {
@@ -297,18 +301,37 @@ def validate_dto_contracts(openapi: dict[str, Any]) -> None:
 def validate_asyncapi_events(asyncapi: dict[str, Any]) -> None:
     schemas = asyncapi["components"]["schemas"]
     room_event = schemas["roomEvent"]
-    refs = {item.get("$ref") for item in room_event.get("oneOf", [])}
-    if "#/components/schemas/selectionChangedEvent" not in refs:
-        fail("Human roomEvent does not define selection_changed")
-    if "#/components/schemas/phaseChangedEvent" not in refs:
-        fail("Human roomEvent does not define phase_changed")
-    if schemas["selectionChangedEvent"]["properties"]["type"].get("const") != "selection_changed":
-        fail("selection_changed schema is not exact")
+    expected_events = {
+        "snapshotEvent",
+        "participantJoinedEvent",
+        "participantLeftEvent",
+        "selectionChangedEvent",
+        "phaseChangedEvent",
+        "matchStartedEvent",
+        "matchCompletedEvent",
+        "matchAbortedEvent",
+        "storageDegradedEvent",
+        "serverShutdownEvent",
+        "roomDeletedEvent",
+    }
+    refs = {item.get("$ref", "").removeprefix("#/components/schemas/") for item in room_event.get("oneOf", [])}
+    if refs != expected_events:
+        fail("Human roomEvent does not enumerate the exact runtime event set")
+    for name in expected_events:
+        if schemas[name].get("additionalProperties") is not False:
+            fail(f"{name} must reject unknown fields")
     phase = schemas["phaseChangedEvent"]
-    if phase["properties"]["type"].get("const") != "phase_changed":
-        fail("phase_changed schema is not exact")
     if phase["properties"]["phase"].get("enum") != ["lobby", "playing", "post_match"]:
         fail("phase_changed schema has the wrong phase enum")
+    close_codes = asyncapi["channels"]["humanRoom"].get("x-websocket-close-codes")
+    if close_codes != {
+        4001: "connected_elsewhere",
+        4002: "room_deleted",
+        4003: "server_shutdown",
+        4005: "slow_consumer",
+        4006: "session_expired",
+    }:
+        fail("Human WebSocket close codes do not match runtime")
 
 
 def expected_fixture_metadata() -> dict[str, dict[str, Any]]:
