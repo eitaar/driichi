@@ -2,17 +2,16 @@ import { useEffect, useRef } from "react";
 import { animationVisualForKind, type AnimationItem } from "./animation";
 import { ASSET_LOAD_TIMEOUT_MS } from "./assets";
 import {
-  seatPositionFor,
-  seatPositions,
-  type TableSeatPosition,
-} from "./orientation";
+  TABLE_HEIGHT,
+  TABLE_RATIO,
+  TABLE_WIDTH,
+  discardPlacement,
+  tableSeatGeometry,
+} from "./table-geometry";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 import { tileAssetUrl } from "./tiles";
 import { actionTile } from "./actions";
 
-const TABLE_WIDTH = 1600;
-const TABLE_HEIGHT = 900;
-const TABLE_RATIO = TABLE_WIDTH / TABLE_HEIGHT;
 const TILE_FRAMES = {
   hand: { width: 42, height: 56 },
   discard: { width: 31, height: 42 },
@@ -77,76 +76,10 @@ function playerAt(
   return players?.find((player) => player.seat === seat);
 }
 
-function playerCoordinates(position: TableSeatPosition): {
-  x: number;
-  y: number;
-  rotation: number;
-  handRotation: number;
-} {
-  switch (position) {
-    case "bottom":
-      return {
-        x: TABLE_WIDTH / 2,
-        y: TABLE_HEIGHT - 102,
-        rotation: 0,
-        handRotation: 0,
-      };
-    case "right":
-      return {
-        x: TABLE_WIDTH - 120,
-        y: TABLE_HEIGHT / 2,
-        rotation: Math.PI / 2,
-        handRotation: Math.PI / 2,
-      };
-    case "top":
-      return {
-        x: TABLE_WIDTH / 2,
-        y: 90,
-        rotation: Math.PI,
-        handRotation: Math.PI,
-      };
-    case "left":
-      return {
-        x: 120,
-        y: TABLE_HEIGHT / 2,
-        rotation: -Math.PI / 2,
-        handRotation: -Math.PI / 2,
-      };
-  }
-}
-
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : undefined;
-}
-
-function discardPlacement(
-  position: TableSeatPosition,
-  index: number,
-): { x: number; y: number; rotation: number } {
-  const column = index % 6;
-  const row = Math.floor(index / 6);
-  const offset = (column - 2.5) * 48;
-  if (position === "bottom")
-    return { x: TABLE_WIDTH / 2 + offset, y: 548 + row * 58, rotation: 0 };
-  if (position === "top")
-    return {
-      x: TABLE_WIDTH / 2 + offset,
-      y: 244 - row * 58,
-      rotation: Math.PI,
-    };
-  if (position === "right")
-    return {
-      x: 1260 - row * 58,
-      y: TABLE_HEIGHT / 2 + offset,
-      rotation: Math.PI / 2,
-    };
-  return {
-    x: 340 + row * 58,
-    y: TABLE_HEIGHT / 2 + offset,
-    rotation: -Math.PI / 2,
-  };
 }
 
 function optionalVisibleTiles(player: ProjectedPlayer): number[] {
@@ -633,19 +566,15 @@ export function PixiTable({
             nextProjection.audience === "player"
               ? nextProjection.viewer_seat
               : undefined;
-          const seats = seatPositions(mode).length;
-          const seatOrder = Array.from({ length: seats }, (_, seat) => seat);
-          for (const seat of seatOrder) {
+          for (const geometry of tableSeatGeometry(mode, viewerSeat)) {
+            const { seat, position } = geometry;
             const player = playerAt(players, seat);
-            const position =
-              seatPositionFor(mode, seat, viewerSeat) ??
-              ((seats === 3
-                ? ["bottom", "right", "left"][seat]
-                : ["bottom", "right", "top", "left"][
-                    seat
-                  ]) as TableSeatPosition);
             if (!player) continue;
-            const coordinates = playerCoordinates(position);
+            const coordinates = {
+              x: geometry.hand.x,
+              y: geometry.hand.y,
+              handRotation: geometry.hand.rotation,
+            };
             const playerLayer = new Container();
             root.addChild(playerLayer);
             const iconX =
