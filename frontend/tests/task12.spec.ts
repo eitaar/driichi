@@ -104,7 +104,10 @@ async function installSocket(
   );
 }
 
-async function expectRenderedTable(page: Page) {
+async function expectRenderedTable(
+  page: Page,
+  expectedSkinFallback: "true" | "false" = "false",
+) {
   const table = page.getByTestId("pixi-table");
   await expect(table).toBeVisible({ timeout: 20000 });
   await expect(table).toHaveAttribute("data-render-ready", "true", {
@@ -113,7 +116,7 @@ async function expectRenderedTable(page: Page) {
   await expect(table).toHaveAttribute("data-skin-ready", "true", {
     timeout: 20000,
   });
-  await expect(table).toHaveAttribute("data-skin-fallback", "false");
+  await expect(table).toHaveAttribute("data-skin-fallback", expectedSkinFallback);
   await expect(table).toHaveAttribute("data-player-frame-count", /^[34]$/);
   await expect(table).toHaveAttribute("data-wall-tile-count", /^\d+$/);
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
@@ -341,6 +344,17 @@ test("shows the authoritative Mangan post-match results surface", async ({
   });
   await page.waitForTimeout(12100);
   await expect(table).toHaveAttribute("data-portrait-ready", "false");
+});
+
+test("falls back to procedural table art when generated textures fail", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route(/\/(table-felt|table-rail|center-device|tile-back-material)-?.*\.webp$/, (route) => route.abort());
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  const table = await expectRenderedTable(page, "true");
+  await expect(table).toHaveAttribute("data-skin-fallback", "true");
+  await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
 });
 
 test("shows guidance below the supported gameplay viewport", async ({

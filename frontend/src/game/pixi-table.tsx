@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { animationVisualForKind, type AnimationItem } from "./animation";
+import type { AnimationItem } from "./animation";
 import { ASSET_LOAD_TIMEOUT_MS } from "./assets";
 import {
   TABLE_HEIGHT,
@@ -17,6 +17,11 @@ import {
   type TableArtAssets,
   type TextureLoader,
 } from "./table-art";
+import {
+  drawResultPortrait,
+  runTableAnimation,
+  type PortraitEffect,
+} from "./table-effects";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 import { tileAssetUrl } from "./tiles";
 import { actionTile } from "./actions";
@@ -27,17 +32,7 @@ const TILE_FRAMES = {
   meld: { width: 38, height: 50 },
   dora: { width: 36, height: 48 },
 } as const;
-const PORTRAIT_FRAME = { width: 190, height: 220 } as const;
-
-export interface PortraitEffect {
-  characterId: string;
-  displayName: string;
-  result: "Ron" | "Tsumo";
-  han?: number;
-  fu?: number;
-  limit?: string;
-  points?: number;
-}
+export type { PortraitEffect } from "./table-effects";
 
 export interface PixiTableProps {
   projection: ProjectedState | null;
@@ -138,24 +133,6 @@ function usableTexture(
     Number.isFinite(height) &&
     width >= 2 &&
     height >= 2
-  );
-}
-
-function fitSpriteToFrame(
-  sprite: import("pixi.js").Sprite,
-  frame: { width: number; height: number },
-): boolean {
-  if (!usableTexture(sprite.texture)) return false;
-  const width = Number(sprite.texture.width);
-  const height = Number(sprite.texture.height);
-  const scale = Math.min(frame.width / width, frame.height / height);
-  sprite.width = width * scale;
-  sprite.height = height * scale;
-  return (
-    Number.isFinite(sprite.width) &&
-    Number.isFinite(sprite.height) &&
-    sprite.width > 0 &&
-    sprite.height > 0
   );
 }
 
@@ -322,7 +299,7 @@ export function PixiTable({
         app.ticker.stop();
 
         const loadedSources = new Set<string>();
-        let animationStop = () => undefined;
+        let animationStop: () => void = () => undefined;
         let renderVersion = 0;
         let renderedTileCount = 0;
         let renderedTablePrimitives = 0;
@@ -660,98 +637,27 @@ export function PixiTable({
           if (nextPortrait) {
             const portraitLayer = new Container();
             root.addChild(portraitLayer);
-            void (async () => {
-              const source = `/assets/characters/${encodeURIComponent(nextPortrait.characterId)}/portrait.webp`;
-              loadedSources.add(source);
-              const texture = await loadSource(Assets, source, (image) =>
-                Texture.from(image),
-              );
+            void drawResultPortrait({
+              root: portraitLayer,
+              Graphics,
+              Sprite,
+              drawText,
+              textureLoader: loadTexture,
+              portrait: nextPortrait,
+              isCurrent: () => !disposed && version === renderVersion,
+            }).then((ready) => {
               if (disposed || version !== renderVersion) return;
-              const veil = new Graphics();
-              veil.rect(
-                TABLE_WIDTH / 2 - 215,
-                TABLE_HEIGHT / 2 - 195,
-                430,
-                390,
-              );
-              veil.fill({ color: 0x06130f, alpha: 0.94 });
-              veil.stroke({ color: 0x9a3f38, width: 2, alpha: 0.9 });
-              portraitLayer.addChild(veil);
-              const sprite =
-                texture && usableTexture(texture) ? new Sprite(texture) : null;
-              if (sprite && fitSpriteToFrame(sprite, PORTRAIT_FRAME)) {
-                sprite.anchor.set(0.5);
-                sprite.x = TABLE_WIDTH / 2;
-                sprite.y = TABLE_HEIGHT / 2 - 45;
-                portraitLayer.addChild(sprite);
-              } else {
-                host.dataset.portraitLoad = texture ? "unusable" : "failed";
-                const fallback = new Graphics();
-                fallback.roundRect(
-                  TABLE_WIDTH / 2 - PORTRAIT_FRAME.width / 2,
-                  TABLE_HEIGHT / 2 - 155,
-                  PORTRAIT_FRAME.width,
-                  PORTRAIT_FRAME.height,
-                  8,
-                );
-                fallback.fill({ color: 0x1b2b25, alpha: 1 });
-                fallback.stroke({ color: 0x61766a, width: 1, alpha: 1 });
-                portraitLayer.addChild(fallback);
-                drawText(
-                  portraitLayer,
-                  nextPortrait.displayName.trim().slice(0, 1).toUpperCase() ||
-                    "?",
-                  TABLE_WIDTH / 2,
-                  TABLE_HEIGHT / 2 - 45,
-                  54,
-                  0xd5ded4,
-                  "Geist Mono",
-                ).anchor.set(0.5, 0.5);
+              if (!ready) {
+                host.dataset.portraitLoad = "failed";
+                requestRender();
+                return;
               }
-              drawText(
-                portraitLayer,
-                nextPortrait.displayName,
-                TABLE_WIDTH / 2,
-                TABLE_HEIGHT / 2 + 91,
-                19,
-                0xf0e6d9,
-                "Geist Mono",
-              ).anchor.set(0.5, 0.5);
-              drawText(
-                portraitLayer,
-                `${nextPortrait.result}  ${nextPortrait.han ?? "—"} HAN / ${nextPortrait.fu ?? "—"} FU`,
-                TABLE_WIDTH / 2,
-                TABLE_HEIGHT / 2 + 120,
-                13,
-                0xffaa9e,
-                "Geist Mono",
-              ).anchor.set(0.5, 0.5);
-              if (nextPortrait.limit)
-                drawText(
-                  portraitLayer,
-                  nextPortrait.limit,
-                  TABLE_WIDTH / 2,
-                  TABLE_HEIGHT / 2 + 146,
-                  12,
-                  0xe9c2ae,
-                  "Geist Mono",
-                ).anchor.set(0.5, 0.5);
-              if (nextPortrait.points !== undefined)
-                drawText(
-                  portraitLayer,
-                  `+${nextPortrait.points.toLocaleString()}`,
-                  TABLE_WIDTH / 2,
-                  TABLE_HEIGHT / 2 + 171,
-                  15,
-                  0xf0e6d9,
-                  "Geist Mono",
-                ).anchor.set(0.5, 0.5);
               host.dataset.portraitName = nextPortrait.displayName;
               host.dataset.portraitResult = nextPortrait.result;
               host.dataset.portraitEffect = nextPortrait.limit ?? "Mangan";
               host.dataset.portraitReady = "true";
               requestRender();
-            })();
+            });
           }
           requestRender();
         };
@@ -763,80 +669,15 @@ export function PixiTable({
         ) => {
           animationStop();
           if (items.length === 0 || disposed) return;
-          if (reduce) {
-            for (const item of items) onConsumed?.(item.id);
-            return;
-          }
-          const item = items[0];
-          const visual = animationVisualForKind(item.kind);
-          const centerX = TABLE_WIDTH / 2;
-          const centerY = TABLE_HEIGHT / 2;
-          const marker = new Graphics();
-          switch (visual.shape) {
-            case "circle":
-              marker
-                .circle(centerX, centerY, visual.radius)
-                .fill({ color: visual.color, alpha: visual.alpha });
-              break;
-            case "square":
-              marker
-                .roundRect(
-                  centerX - visual.radius,
-                  centerY - visual.radius,
-                  visual.radius * 2,
-                  visual.radius * 2,
-                  5,
-                )
-                .fill({ color: visual.color, alpha: visual.alpha });
-              break;
-            case "diamond":
-              marker
-                .moveTo(centerX, centerY - visual.radius)
-                .lineTo(centerX + visual.radius, centerY)
-                .lineTo(centerX, centerY + visual.radius)
-                .lineTo(centerX - visual.radius, centerY)
-                .lineTo(centerX, centerY - visual.radius)
-                .fill({ color: visual.color, alpha: visual.alpha });
-              break;
-            case "ring":
-              marker
-                .circle(centerX, centerY, visual.radius)
-                .stroke({ color: visual.color, width: 5, alpha: visual.alpha });
-              break;
-            case "line":
-              marker
-                .moveTo(centerX - visual.radius, centerY)
-                .lineTo(centerX + visual.radius, centerY)
-                .stroke({ color: visual.color, width: 6, alpha: visual.alpha });
-              break;
-          }
-          marker.scale.set(visual.scale);
-          app.stage.addChild(marker);
-          let elapsed = 0;
-          let consumed = false;
-          const finish = () => {
-            if (consumed) return;
-            consumed = true;
-            app.ticker.remove(tick);
-            app.ticker.stop();
-            safeDestroy(marker);
-            animationStop = () => undefined;
-            onConsumed?.(item.id);
-          };
-          const tick = (ticker: { deltaMS?: number; deltaTime?: number }) => {
-            elapsed += ticker.deltaMS ?? (ticker.deltaTime ?? 1) * 16.67;
-            const progress = Math.min(1, elapsed / visual.duration);
-            marker.alpha = visual.alpha * (1 - progress);
-            marker.scale.set(visual.scale * (1 + progress * 0.85));
-            if (progress >= 1) finish();
-          };
-          animationStop = () => {
-            app.ticker.remove(tick);
-            app.ticker.stop();
-            safeDestroy(marker);
-          };
-          app.ticker.add(tick);
-          app.ticker.start();
+          animationStop = runTableAnimation({
+            stage: app.stage,
+            Graphics,
+            ticker: app.ticker,
+            item: items[0],
+            reducedMotion: reduce,
+            onConsumed,
+            requestRender,
+          });
         };
 
         const scene: TableScene = {
