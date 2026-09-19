@@ -617,6 +617,7 @@ components:
       required: true
       schema:
         type: string
+        maxLength: 128
     JoinCode:
       name: join_code
       in: path
@@ -630,12 +631,14 @@ components:
       required: true
       schema:
         type: string
+        maxLength: 128
     MatchId:
       name: match_id
       in: path
       required: true
       schema:
         type: string
+        maxLength: 128
   responses:
     Problem:
       description: RFC 9457-style bounded problem details.

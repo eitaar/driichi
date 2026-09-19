@@ -389,13 +389,14 @@ impl ServerState {
         self.rooms
             .shutdown(double_riichi_core::ShutdownMode::Graceful)
             .await;
-        if let Some(storage) = &self.storage
-            && let Err(error) = storage.startup_cleanup().await
-        {
-            tracing::warn!(
-                error_kind = error.replay_failure_kind(),
-                "incomplete storage cleanup failed during shutdown"
-            );
+        if let Some(storage) = &self.storage {
+            if let Err(error) = storage.startup_cleanup().await {
+                tracing::warn!(
+                    error_kind = error.replay_failure_kind(),
+                    "incomplete storage cleanup failed during shutdown"
+                );
+            }
+            storage.close().await;
         }
     }
 
@@ -868,6 +869,9 @@ struct RequestLogIds {
 }
 
 fn request_log_ids(route: &str, path: &str) -> RequestLogIds {
+    const MAX_LOG_ID_CHARS: usize = 128;
+
+    let bounded = |value: &str| value.chars().take(MAX_LOG_ID_CHARS).collect::<String>();
     let segments: Vec<_> = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -877,19 +881,19 @@ fn request_log_ids(route: &str, path: &str) -> RequestLogIds {
         ids.room_id = segments
             .windows(2)
             .find(|window| window[0] == "rooms")
-            .map(|window| window[1].to_owned());
+            .map(|window| bounded(window[1]));
     }
     if route.contains("{match_id}") {
         ids.match_id = segments
             .windows(2)
             .find(|window| window[0] == "replays")
-            .map(|window| window[1].to_owned());
+            .map(|window| bounded(window[1]));
     }
     if route.contains("{participant_id}") {
         ids.participant_id = segments
             .windows(2)
             .find(|window| window[0] == "participants")
-            .map(|window| window[1].to_owned());
+            .map(|window| bounded(window[1]));
     }
     ids
 }
@@ -4444,6 +4448,18 @@ mod tests {
         let rooms = RoomRegistry::with_max_rooms(1);
         sessions.prune_for_rooms(&rooms).await;
         assert!(sessions.authenticate("MISSING", &credential).is_none());
+    }
+
+    #[test]
+    fn request_log_ids_bound_untrusted_path_values() {
+        let participant_id = "A".repeat(512);
+        let path = format!("/api/v1/admin/rooms/123456/participants/{participant_id}/kick");
+        let ids = request_log_ids(
+            "/api/v1/admin/rooms/{join_code}/participants/{participant_id}/kick",
+            &path,
+        );
+        assert_eq!(ids.room_id.as_deref(), Some("123456"));
+        assert_eq!(ids.participant_id.unwrap().len(), 128);
     }
 
     #[test]

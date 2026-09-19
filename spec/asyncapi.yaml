@@ -23,6 +23,12 @@ channels:
       join_code:
         description: Six-character Room join code.
         examples: ["123456"]
+    x-websocket-close-codes:
+      4001: connected_elsewhere
+      4002: room_deleted
+      4003: server_shutdown
+      4005: slow_consumer
+      4006: session_expired
     messages:
       clientMessage:
         $ref: '#/components/messages/humanClientMessage'
@@ -176,8 +182,9 @@ components:
           type: string
           const: game_update
         event:
-          type: object
-          additionalProperties: true
+          oneOf:
+            - $ref: '#/components/schemas/decisionOpenedEvent'
+            - $ref: '#/components/schemas/actionResolvedEvent'
         state:
           $ref: '#/components/schemas/playerProjection'
     actionResultMessage:
@@ -252,47 +259,105 @@ components:
         the authenticated Participant and is never canonical Match state.
     roomEvent:
       oneOf:
+        - $ref: '#/components/schemas/snapshotEvent'
+        - $ref: '#/components/schemas/participantJoinedEvent'
+        - $ref: '#/components/schemas/participantLeftEvent'
         - $ref: '#/components/schemas/selectionChangedEvent'
         - $ref: '#/components/schemas/phaseChangedEvent'
-        - $ref: '#/components/schemas/genericRoomEvent'
+        - $ref: '#/components/schemas/matchStartedEvent'
+        - $ref: '#/components/schemas/matchCompletedEvent'
+        - $ref: '#/components/schemas/matchAbortedEvent'
+        - $ref: '#/components/schemas/storageDegradedEvent'
+        - $ref: '#/components/schemas/serverShutdownEvent'
+        - $ref: '#/components/schemas/roomDeletedEvent'
+    snapshotEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: snapshot}
+    participantJoinedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, participant_id]
+      properties:
+        type: {type: string, const: participant_joined}
+        participant_id: {type: string, maxLength: 128}
+    participantLeftEvent:
+      type: object
+      additionalProperties: false
+      required: [type, participant_id]
+      properties:
+        type: {type: string, const: participant_left}
+        participant_id: {type: string, maxLength: 128}
     selectionChangedEvent:
       type: object
       additionalProperties: false
       required: [type]
       properties:
-        type:
-          type: string
-          const: selection_changed
+        type: {type: string, const: selection_changed}
     phaseChangedEvent:
       type: object
       additionalProperties: false
       required: [type, phase]
       properties:
-        type:
-          type: string
-          const: phase_changed
+        type: {type: string, const: phase_changed}
         phase:
           type: string
           enum: [lobby, playing, post_match]
-    genericRoomEvent:
+    matchStartedEvent:
       type: object
-      additionalProperties: true
+      additionalProperties: false
+      required: [type, match_id]
+      properties:
+        type: {type: string, const: match_started}
+        match_id: {type: string, maxLength: 128}
+    matchCompletedEvent:
+      type: object
+      additionalProperties: false
       required: [type]
       properties:
-        type:
-          type: string
-          not:
-            enum: [selection_changed, phase_changed]
-          enum:
-            - snapshot
-            - participant_joined
-            - participant_left
-            - participant_updated
-            - match_started
-            - match_completed
-            - match_aborted
-            - storage_degraded
-            - server_shutdown
-            - room_deleted
-            - decision_opened
-            - action_resolved
+        type: {type: string, const: match_completed}
+    matchAbortedEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: match_aborted}
+    storageDegradedEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: storage_degraded}
+    serverShutdownEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: server_shutdown}
+    roomDeletedEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: room_deleted}
+    decisionOpenedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, decision_id]
+      properties:
+        type: {type: string, const: decision_opened}
+        decision_id: {type: string, maxLength: 128}
+    actionResolvedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, decision_id, events]
+      properties:
+        type: {type: string, const: action_resolved}
+        decision_id: {type: string, maxLength: 128}
+        events:
+          type: array
+          items:
+            type: object
+            additionalProperties: true

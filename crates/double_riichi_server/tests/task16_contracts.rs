@@ -583,14 +583,8 @@ async fn shutdown_cleans_storage_after_closing_admission() {
     state.shutdown().await;
 
     assert!(!partial.exists());
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM matches WHERE match_id = 'task16-shutdown'")
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
-    assert_eq!(remaining, 0);
+    assert!(storage.pool().is_closed());
     drop(state);
-    storage.close().await;
     drop(storage);
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     fs::remove_dir_all(root).unwrap();
