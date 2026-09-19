@@ -296,6 +296,7 @@ export function PixiTable({
         host.dataset.wallTileCount = "0";
         host.dataset.portraitReady = "false";
         host.dataset.animationState = "idle";
+        host.dataset.animationMarkerState = "none";
         app.stage.eventMode = "none";
         app.ticker.stop();
 
@@ -668,6 +669,9 @@ export function PixiTable({
               host.dataset.animationState = "idle";
               onConsumed?.(id);
             },
+            onMarkerState: (state) => {
+              host.dataset.animationMarkerState = state;
+            },
             requestRender,
           });
         };
@@ -744,6 +748,7 @@ export function PixiTable({
       data-wall-tile-count="0"
       data-portrait-ready="false"
       data-animation-state="idle"
+      data-animation-marker-state="none"
       role="img"
       aria-label="Authoritative mahjong table"
     />

@@ -324,6 +324,15 @@ test("keeps reduced-motion discard effects static", async ({ page }) => {
     "data-motion",
     "static",
   );
+  const shell = page.getByTestId("gameplay-shell");
+  const enqueuedBefore = Number(
+    await shell.getAttribute("data-animation-enqueued-count"),
+  );
+  const consumedBefore = Number(
+    await shell.getAttribute("data-animation-consumed-count"),
+  );
+  expect(Number.isFinite(enqueuedBefore)).toBe(true);
+  expect(Number.isFinite(consumedBefore)).toBe(true);
   await page.evaluate(() => {
     const browser = window as unknown as {
       __socket: { emit: (value: unknown) => void };
@@ -336,10 +345,18 @@ test("keeps reduced-motion discard effects static", async ({ page }) => {
     });
   });
   await expect(table).toHaveAttribute("data-render-ready", "true");
-  await expect(table).toHaveAttribute("data-animation-state", "idle", {
-    timeout: 5_000,
-  });
-  await expect(table.locator("[data-animation-marker]")).toHaveCount(0);
+  await expect.poll(
+    async () => Number(await shell.getAttribute("data-animation-enqueued-count")),
+    { timeout: 5_000, message: "discard event should enqueue an animation" },
+  ).toBeGreaterThan(enqueuedBefore);
+  await expect.poll(
+    async () => Number(await shell.getAttribute("data-animation-consumed-count")),
+    { timeout: 5_000, message: "reduced-motion animation should be consumed" },
+  ).toBeGreaterThan(consumedBefore);
+  await expect(table).toHaveAttribute(
+    "data-animation-marker-state",
+    "suppressed-consumed",
+  );
   await page.screenshot({
     path: "test-results/immersive-table/4p-reduced-motion.png",
     fullPage: false,

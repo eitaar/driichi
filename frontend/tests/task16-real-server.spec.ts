@@ -271,18 +271,28 @@ async function tabTo(page: Page, target: Locator, limit = 60) {
   throw new Error("keyboard focus did not reach the requested control");
 }
 
-async function waitForAcceptedAction(page: Page, actionId: string, beforeRevision: number) {
+async function waitForAcceptedAction(page: Page, actionId: string, decisionId: string) {
   const shell = page.getByTestId("gameplay-shell");
   await expect.poll(
     async () => {
       const status = await shell.getAttribute("data-last-action-result-status");
-      if (status !== "accepted") return false;
       const observedActionId = await shell.getAttribute("data-last-action-result-action-id");
-      if (observedActionId === actionId) return true;
-      const revision = Number(await shell.getAttribute("data-room-revision"));
-      return Number.isFinite(revision) && revision > beforeRevision;
+      if (status === "accepted" && observedActionId === actionId) return true;
+      const serializedHistory = await shell.getAttribute("data-accepted-action-results");
+      try {
+        const history = JSON.parse(serializedHistory ?? "[]") as Array<{
+          action_id?: string;
+          decision_id?: string;
+        }>;
+        return history.some(
+          (result) =>
+            result.action_id === actionId && result.decision_id === decisionId,
+        );
+      } catch {
+        return false;
+      }
     },
-    { timeout: 10_000, message: "authoritative action result should be accepted" },
+    { timeout: 10_000, message: "the submitted action id should be accepted" },
   ).toBe(true);
 }
 
@@ -306,7 +316,9 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
   if (await enabled.count() === 0 && await page.locator(".table-tile-hit.is-legal").count() === 0) return { submitted: false, multiCandidate: false };
 
   const beforeRevision = Number(await shell.getAttribute("data-room-revision"));
+  const decisionId = await shell.getAttribute("data-current-decision-id");
   expect(Number.isFinite(beforeRevision)).toBe(true);
+  expect(decisionId, "open Decision must expose its decision_id").toBeTruthy();
   const multiTrigger = deck.getByRole("button", { name: /^(chi|pon|kan|kita) \(\d+\)$/i }).first();
   if (await multiTrigger.isVisible().catch(() => false)) {
     await multiTrigger.focus();
@@ -324,7 +336,7 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
     expect(actionId, "candidate action must expose its concrete action_id").toBeTruthy();
     await dialog.locator(".candidate-list button").first().click();
     observedMultiCandidateAction = true;
-    await waitForAcceptedAction(page, actionId!, beforeRevision);
+    await waitForAcceptedAction(page, actionId!, decisionId!);
     await waitForAcceptedRevision(page, beforeRevision);
     return { submitted: true, multiCandidate: true, actionId: actionId! };
   }
@@ -344,7 +356,7 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
   const actionId = await action.getAttribute("data-action-id");
   expect(actionId, "submitted action must expose its concrete action_id").toBeTruthy();
   await action.click();
-  await waitForAcceptedAction(page, actionId!, beforeRevision);
+  await waitForAcceptedAction(page, actionId!, decisionId!);
   await waitForAcceptedRevision(page, beforeRevision);
   return { submitted: true, multiCandidate: false, actionId: actionId! };
 }

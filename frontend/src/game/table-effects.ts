@@ -32,6 +32,12 @@ export interface TableAnimationTicker {
   stop(): unknown;
 }
 
+export type TableMarkerState =
+  | "active"
+  | "consumed"
+  | "suppressed"
+  | "suppressed-consumed";
+
 export interface TableAnimationContext {
   stage: import("pixi.js").Container;
   Graphics: typeof import("pixi.js").Graphics;
@@ -39,6 +45,7 @@ export interface TableAnimationContext {
   item: AnimationItem;
   reducedMotion: boolean;
   onConsumed?: (id: number) => void;
+  onMarkerState?: (state: TableMarkerState) => void;
   requestRender?: () => void;
   center?: { x: number; y: number };
 }
@@ -138,10 +145,13 @@ export function runTableAnimation(
     item,
     reducedMotion,
     onConsumed,
+    onMarkerState,
     requestRender,
   } = context;
   if (reducedMotion) {
+    onMarkerState?.("suppressed");
     onConsumed?.(item.id);
+    onMarkerState?.("suppressed-consumed");
     return () => undefined;
   }
 
@@ -153,6 +163,7 @@ export function runTableAnimation(
   marker.scale.set(visual.scale);
   marker.eventMode = "none";
   stage.addChild(marker);
+  onMarkerState?.("active");
   requestRender?.();
 
   let elapsed = 0;
@@ -168,6 +179,7 @@ export function runTableAnimation(
   const finish = () => {
     if (stopped) return;
     stop();
+    onMarkerState?.("consumed");
     onConsumed?.(item.id);
   };
   const tick = (clock: import("pixi.js").Ticker) => {
