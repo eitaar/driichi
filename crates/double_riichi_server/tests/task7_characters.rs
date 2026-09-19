@@ -458,9 +458,12 @@ fn starter_generator_is_deterministic_and_covers_every_required_pack_asset() {
             let manifest: Value =
                 serde_json::from_slice(&fs::read(pack.join("manifest.json")).unwrap()).unwrap();
             assert_eq!(manifest["usage"], usage);
+            let source_license = fs::read_to_string(repo.join("scripts/CC0-1.0.txt"))
+                .unwrap()
+                .replace("\r\n", "\n");
             assert_eq!(
-                fs::read(pack.join("LICENSE")).unwrap(),
-                fs::read(repo.join("scripts/CC0-1.0.txt")).unwrap()
+                fs::read_to_string(pack.join("LICENSE")).unwrap(),
+                source_license
             );
             for file in ["portrait.webp", "icon.webp"] {
                 assert_eq!(&fs::read(pack.join(file)).unwrap()[..4], b"RIFF");
