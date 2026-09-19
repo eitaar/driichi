@@ -74,6 +74,10 @@ jobs:
         shell: bash
         run: python scripts/release/test_release.py
 
+      - name: Prove release-mode frontend embedding
+        shell: bash
+        run: python scripts/release/production_frontend.py
+
       - name: Build and stage release
         shell: bash
         env:

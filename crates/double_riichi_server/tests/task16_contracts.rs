@@ -192,7 +192,7 @@ async fn embedded_frontend_serves_root_and_referenced_static_asset() {
     }
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
-    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
     assert!(String::from_utf8_lossy(&body).contains("<html"));
     let asset_path = referenced_asset(&body);
     let asset = router
@@ -241,6 +241,13 @@ async fn embedded_frontend_serves_only_required_spa_routes() {
             },
             "SPA route {path}"
         );
+        if !cfg!(debug_assertions) {
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "no-cache",
+                "SPA route {path} cache policy"
+            );
+        }
     }
     for path in [
         "/missing",

@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import package  # noqa: E402
+import production_frontend  # type: ignore[import-not-found]  # noqa: E402
 import smoke  # noqa: E402
 import test_live  # noqa: E402
 
@@ -161,6 +162,25 @@ class ReleaseScriptTests(unittest.TestCase):
             (root / "character-packs" / "player-red" / "portrait.webp").write_bytes(b"x")
             with self.assertRaises(package.ReleaseError):
                 package._assert_no_generated_media(root)
+
+    def test_production_frontend_gate_restores_and_cleans_dist_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            frontend = Path(temporary) / "frontend"
+            frontend.mkdir()
+            dist = frontend / "dist"
+            dist.mkdir()
+            (dist / "old.txt").write_text("old\n", encoding="ascii")
+            with production_frontend._fresh_frontend_dist(frontend) as fresh:
+                self.assertFalse(fresh.exists())
+                fresh.mkdir()
+                (fresh / "index.html").write_text("fresh\n", encoding="ascii")
+            self.assertEqual((dist / "old.txt").read_text(encoding="ascii"), "old\n")
+            dist.rename(frontend / "saved-dist")
+            with production_frontend._fresh_frontend_dist(frontend) as fresh:
+                fresh.mkdir()
+                (fresh / "index.html").write_text("fresh\n", encoding="ascii")
+            self.assertFalse((frontend / "dist").exists())
+            (frontend / "saved-dist").rename(dist)
 
 
 if __name__ == "__main__":
