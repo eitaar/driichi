@@ -453,7 +453,7 @@ function TileHitLayer({
 }) {
   const mapped = handActionMap(hand, actions);
   return (
-    <div className="table-hit-layer" aria-label="Your concealed hand">
+    <div className="table-hit-layer" role="group" aria-label="Your concealed hand">
       {mapped.map((action, index) => (
         <button
           key={`${hand[index]}-${index}`}
@@ -914,6 +914,13 @@ export function GameplaySurface({
       ) : (
         <main className="gameplay-main">
           <div className="table-letterbox">
+            {!projection && (
+              <div className="gameplay-sync-state" role="status" aria-live="polite">
+                <p className="eyebrow">TABLE SYNC</p>
+                <strong>Waiting for an authoritative projection</strong>
+                <span>The table will synchronize when the host sends the next snapshot.</span>
+              </div>
+            )}
             <PixiTable
               projection={projection}
               room={room}

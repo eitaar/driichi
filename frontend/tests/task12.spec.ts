@@ -1,8 +1,11 @@
 /// <reference types="../node_modules/@types/node" />
 
+import AxeBuilder from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+test.describe.configure({ mode: "serial" });
 
 const characterFixtureRoot = resolve(
   process.cwd(),
@@ -14,6 +17,9 @@ const projectionFixture = JSON.parse(
     "utf8",
   ),
 ) as {
+  acceptance: {
+    wall_tile_counts: Record<"3p-red-east" | "4p-red-east", number>;
+  };
   room_envelopes: Record<
     "3p-red-east" | "4p-red-east",
     Record<string, unknown>
@@ -21,13 +27,16 @@ const projectionFixture = JSON.parse(
   projections: Record<"3p-red-east" | "4p-red-east", Record<string, unknown>>;
 };
 
-async function installCharacterFixtures(page: Page) {
+async function installCharacterFixtures(
+  page: Page,
+  missingPortraitCharacterId?: string,
+) {
   await page.route("**/assets/characters/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     const match = /^\/assets\/characters\/([^/]+)\/(portrait|icon)\.webp$/.exec(
       pathname,
     );
-    if (!match) {
+    if (!match || (match[2] === "portrait" && match[1] === missingPortraitCharacterId)) {
       await route.fulfill({ status: 404, body: "missing test asset" });
       return;
     }
@@ -48,11 +57,12 @@ async function installSocket(
   page: Page,
   mode: "3p-red-east" | "4p-red-east",
   stateOverride?: Record<string, unknown>,
+  snapshotDelayMs = 0,
 ) {
   const room = projectionFixture.room_envelopes[mode];
   const state = stateOverride ?? projectionFixture.projections[mode];
   await page.addInitScript(
-    ({ room, state }) => {
+    ({ room, state, snapshotDelayMs }) => {
       (window as unknown as { __room: unknown; __state: unknown }).__room =
         room;
       (window as unknown as { __room: unknown; __state: unknown }).__state =
@@ -76,13 +86,18 @@ async function installSocket(
           setTimeout(() => {
             this.onopen?.();
             this.onmessage?.({
+              data: JSON.stringify({ type: "room_update", room: browser.__room }),
+            });
+          }, 0);
+          setTimeout(() => {
+            this.onmessage?.({
               data: JSON.stringify({
                 type: "snapshot",
                 room: browser.__room,
                 state: browser.__state,
               }),
             });
-          }, 0);
+          }, snapshotDelayMs);
         }
         send(value: string) {
           this.sent.push(value);
@@ -100,7 +115,7 @@ async function installSocket(
       });
       sessionStorage.setItem("driichi:participant:123456", "P1");
     },
-    { room, state },
+    { room, state, snapshotDelayMs },
   );
 }
 
@@ -150,9 +165,53 @@ async function expectRenderedTable(
   return table;
 }
 
+async function expectInViewport(page: Page, locator: Locator) {
+  const boxes = await locator.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+    }),
+  );
+  expect(boxes.length).toBeGreaterThan(0);
+  const viewport = await page.evaluate(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
+  for (const box of boxes) {
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.height).toBeGreaterThan(0);
+    expect(box.left).toBeGreaterThanOrEqual(0);
+    expect(box.top).toBeGreaterThanOrEqual(0);
+    expect(box.right).toBeLessThanOrEqual(viewport.width);
+    expect(box.bottom).toBeLessThanOrEqual(viewport.height);
+  }
+}
+
+async function expectNoSeriousOrCriticalViolations(page: Page, include?: string) {
+  const axe = new AxeBuilder({ page });
+  if (include) axe.include(include);
+  const results = await axe.analyze();
+  const seriousOrCritical = results.violations.filter((violation) =>
+    violation.impact === "serious" || violation.impact === "critical",
+  );
+  expect(
+    seriousOrCritical,
+    seriousOrCritical.map((violation) => violation.id).join(", "),
+  ).toEqual([]);
+}
+
 for (const viewport of [
   { width: 1024, height: 600, label: "1024x600" },
-  { width: 1440, height: 900, label: "1440x900" },
+  { width: 1280, height: 720, label: "1280x720" },
+  { width: 1600, height: 900, label: "1600x900" },
+  { width: 1920, height: 1080, label: "1920x1080" },
 ]) {
   for (const mode of ["3p-red-east", "4p-red-east"] as const) {
     test(`captures ${mode} authoritative gameplay at ${viewport.label}`, async ({
@@ -170,14 +229,18 @@ for (const viewport of [
       await expect(page.locator(".gameplay-rail")).toHaveCount(0);
       await expect(page.locator(".gameplay-controls")).toBeVisible();
       await expect(page.getByTestId("action-deck")).toBeVisible();
+      await expect(page.locator(".table-hit-layer")).toBeVisible();
       await expect(table).toHaveAttribute(
         "data-wall-tile-count",
-        mode === "3p-red-east" ? "54" : "69",
+        String(projectionFixture.acceptance.wall_tile_counts[mode]),
       );
       await expect(table).toHaveAttribute(
         "data-player-frame-count",
         mode === "3p-red-east" ? "3" : "4",
       );
+      await expectInViewport(page, page.locator(".gameplay-controls"));
+      await expectInViewport(page, page.getByTestId("action-deck"));
+      await expectInViewport(page, page.locator(".table-tile-hit.is-legal"));
       await expect(page.getByText("Mika")).toBeVisible();
       await expect(table).toHaveAttribute("data-center-data", /East 1/);
       await expect(page.getByTestId("decision-timer")).toHaveAttribute(
@@ -231,6 +294,69 @@ for (const viewport of [
   }
 }
 
+test("keeps a long participant name and missing portrait actionable", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  (state.players as Array<Record<string, unknown>>)[0].display_name =
+    "A very long participant display name";
+  await installCharacterFixtures(page, "player-red");
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  const table = await expectRenderedTable(page);
+  await expect(table).toHaveAttribute("data-player-frame-count", "4");
+  await expect(table).toHaveAttribute("data-render-ready", "true");
+  await expect(page.getByTestId("action-deck")).toBeVisible();
+  await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
+  await page.screenshot({
+    path: "test-results/immersive-table/4p-long-name-fallback.png",
+    fullPage: false,
+  });
+});
+
+test("keeps reduced-motion discard effects static", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  const table = await expectRenderedTable(page);
+  await expect(page.getByTestId("gameplay-shell")).toHaveAttribute(
+    "data-motion",
+    "static",
+  );
+  await page.evaluate(() => {
+    const browser = window as unknown as {
+      __socket: { emit: (value: unknown) => void };
+      __state: unknown;
+    };
+    browser.__socket.emit({
+      type: "game_update",
+      event: { type: "dahai", actor: 0, tile: 1 },
+      state: browser.__state,
+    });
+  });
+  await expect(table).toHaveAttribute("data-render-ready", "true");
+  await expect(table).toHaveAttribute("data-animation-state", "idle", {
+    timeout: 5_000,
+  });
+  await expect(table.locator("[data-animation-marker]")).toHaveCount(0);
+  await page.screenshot({
+    path: "test-results/immersive-table/4p-reduced-motion.png",
+    fullPage: false,
+  });
+});
+
+test("keeps Settings accessible when opened", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  await expectRenderedTable(page);
+  await page.getByText("Settings", { exact: true }).click();
+  await expect(page.locator(".audio-settings[open]")).toBeVisible();
+  await expectNoSeriousOrCriticalViolations(page, ".gameplay-shell");
+});
+
 test("omits the Action row when no Decision is open", async ({ page }) => {
   const state = structuredClone(projectionFixture.projections["4p-red-east"]);
   state.decision = null;
@@ -257,6 +383,7 @@ test("candidate popup transfers focus and closes on Escape", async ({ page }) =>
   const dialog = page.getByRole("dialog", { name: "Choose a legal candidate" });
   await expect(dialog).toHaveAttribute("aria-modal", "true");
   await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
+  await expectNoSeriousOrCriticalViolations(page, ".gameplay-main");
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
@@ -402,4 +529,29 @@ test("shows guidance below the supported gameplay viewport", async ({
   await page.goto("/room/123456/lobby");
   await expect(page.getByText("Widen this window to play.")).toBeVisible();
   await expect(page.getByTestId("pixi-table")).toHaveCount(0);
+});
+
+test("shows in-table synchronization before the first projection", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east", undefined, 2_000);
+  await page.goto("/room/123456/lobby");
+  await expect(page.getByText("Waiting for an authoritative projection")).toBeVisible();
+  await expect(page.getByTestId("action-deck")).toHaveCount(0);
+});
+
+test("blocks play when the Room is deleted", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  await expectRenderedTable(page);
+  await page.evaluate(() => {
+    const socket = (window as unknown as {
+      __socket: { onclose: ((event: { code: number; reason: string }) => void) | null };
+    }).__socket;
+    socket.onclose?.({ code: 4002, reason: "room_deleted" });
+  });
+  await expect(page.getByRole("alert")).toContainText("deleted this Room");
+  await expect(page.locator(".table-tile-hit")).toHaveCount(0);
 });

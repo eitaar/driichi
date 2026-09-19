@@ -1,4 +1,7 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+
+test.describe.configure({ mode: "serial" });
 
 const summary = {
   match_id: "MATCH15",
@@ -57,9 +60,24 @@ const replay = {
   ],
 };
 
+async function expectNoSeriousOrCriticalViolations(page: import("@playwright/test").Page, include?: string) {
+  const axe = new AxeBuilder({ page });
+  if (include) axe.include(include);
+  const results = await axe.analyze();
+  const seriousOrCritical = results.violations.filter((violation) =>
+    violation.impact === "serious" || violation.impact === "critical",
+  );
+  expect(
+    seriousOrCritical,
+    seriousOrCritical.map((violation) => violation.id).join(", "),
+  ).toEqual([]);
+}
+
 for (const viewport of [
   { width: 1024, height: 600, label: "1024x600" },
-  { width: 1440, height: 900, label: "1440x900" },
+  { width: 1280, height: 720, label: "1280x720" },
+  { width: 1600, height: 900, label: "1600x900" },
+  { width: 1920, height: 1080, label: "1920x1080" },
 ]) {
   test(`captures Replay library and viewer at ${viewport.label}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -94,9 +112,28 @@ for (const viewport of [
     await expect(page.getByTestId("pixi-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await expect(page.getByRole("status")).toContainText(/disconnected/i);
+    await expectNoSeriousOrCriticalViolations(page, ".replay-table-stage");
     await page.getByRole("button", { name: /next event/i }).click();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
-    await page.getByRole("button", { name: "2x" }).click();
+    const replayControls = stage.locator(".replay-controls-overlay");
+    const play = replayControls.getByRole("button", { name: /^play$/i });
+    await play.focus();
+    await expect(play).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(replayControls.getByRole("button", { name: /previous event/i })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(replayControls.getByRole("button", { name: /next event/i })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(replayControls.getByRole("button", { name: "0.5x" })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(replayControls.getByRole("button", { name: "1x" })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(replayControls.getByRole("button", { name: "2x" })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(replayControls.getByRole("button", { name: "4x" })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(replayControls.getByRole("combobox", { name: /jump to kyoku/i })).toBeFocused();
+    await replayControls.getByRole("button", { name: "2x" }).click();
     await expect(page.getByRole("button", { name: "2x" })).toHaveAttribute("aria-pressed", "true");
     await page.screenshot({ path: `test-results/task-15/viewer-${viewport.label}.png`, fullPage: false });
 
@@ -168,7 +205,7 @@ for (const viewport of [
     await page.getByRole("link", { name: /view replay match15/i }).click();
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await page.clock.install();
-    await page.clock.pauseAt(Date.now());
+    await page.clock.pauseAt(Date.now() + 1_000);
     await page.getByRole("button", { name: /^play$/i }).click();
     await expect(page.getByRole("button", { name: /^pause$/i })).toBeVisible();
     await page.getByRole("button", { name: /next event/i }).click();

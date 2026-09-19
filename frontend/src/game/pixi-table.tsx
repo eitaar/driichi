@@ -295,6 +295,7 @@ export function PixiTable({
         host.dataset.playerFrameCount = "0";
         host.dataset.wallTileCount = "0";
         host.dataset.portraitReady = "false";
+        host.dataset.animationState = "idle";
         app.stage.eventMode = "none";
         app.ticker.stop();
 
@@ -402,7 +403,10 @@ export function PixiTable({
         ) => {
           const version = renderVersion;
           const source = back ? sourceForBack() : tileAssetUrl(tile);
-          const texture = await loadTexture(source);
+          const texture =
+            back && usableTexture(tableArtAssets.tileBack)
+              ? tableArtAssets.tileBack
+              : await loadTexture(source);
           if (
             disposed ||
             version !== renderVersion ||
@@ -462,23 +466,6 @@ export function PixiTable({
           }
           updateRenderInstrumentation();
           if (!nextProjection) {
-            drawText(
-              root,
-              "Waiting for an authoritative projection",
-              TABLE_WIDTH / 2,
-              TABLE_HEIGHT / 2 - 13,
-              23,
-              0xc3cdc2,
-              "Geist Mono",
-            ).anchor.set(0.5, 0.5);
-            drawText(
-              root,
-              "The table will synchronize when the host sends the next snapshot.",
-              TABLE_WIDTH / 2,
-              TABLE_HEIGHT / 2 + 22,
-              15,
-              0x81938a,
-            ).anchor.set(0.5, 0.5);
             requestRender();
             return;
           }
@@ -668,14 +655,19 @@ export function PixiTable({
           onConsumed?: (id: number) => void,
         ) => {
           animationStop();
+          host.dataset.animationState = "idle";
           if (items.length === 0 || disposed) return;
+          host.dataset.animationState = reduce ? "idle" : "active";
           animationStop = runTableAnimation({
             stage: app.stage,
             Graphics,
             ticker: app.ticker,
             item: items[0],
             reducedMotion: reduce,
-            onConsumed,
+            onConsumed: (id) => {
+              host.dataset.animationState = "idle";
+              onConsumed?.(id);
+            },
             requestRender,
           });
         };
@@ -751,6 +743,7 @@ export function PixiTable({
       data-player-frame-count="0"
       data-wall-tile-count="0"
       data-portrait-ready="false"
+      data-animation-state="idle"
       role="img"
       aria-label="Authoritative mahjong table"
     />
