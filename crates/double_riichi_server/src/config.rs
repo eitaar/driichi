@@ -30,15 +30,11 @@ const DEFAULT_MAX_RANKED_QUEUE: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TracingFormat {
+    #[default]
     Text,
     Json,
-}
-
-impl Default for TracingFormat {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 #[derive(Debug, Error)]

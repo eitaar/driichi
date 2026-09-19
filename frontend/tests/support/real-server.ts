@@ -49,6 +49,20 @@ function cargoCommand(): string {
   return process.platform === "win32" ? "cargo.exe" : "cargo";
 }
 
+function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (!pid) return;
+  if (process.platform === "win32") {
+    child.kill(signal);
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    child.kill(signal);
+  }
+}
+
 function serverBinary(): string {
   return join(repositoryRoot, "target", "debug", process.platform === "win32" ? "driichi.exe" : "driichi");
 }
@@ -64,7 +78,11 @@ async function runCommand(
   input?: string,
   timeoutMilliseconds = 180_000,
 ): Promise<{ stdout: string; stderr: string }> {
-  const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(command, args, {
+    cwd,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8");
@@ -77,7 +95,7 @@ async function runCommand(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill("SIGKILL");
+      killProcessTree(child, "SIGKILL");
       reject(new Error(`${command} ${args.join(" ")} exceeded ${timeoutMilliseconds}ms`));
     }, timeoutMilliseconds);
     child.once("error", (error) => {
@@ -176,9 +194,9 @@ async function stopProcess(running: RunningProcess | undefined): Promise<void> {
         if (running.child.exitCode === null) running.child.kill("SIGKILL");
       }
     } else if (pid) {
-      running.child.kill("SIGTERM");
+      killProcessTree(running.child, "SIGTERM");
       if (!(await waitForProcessExit(running)) && running.child.exitCode === null) {
-        running.child.kill("SIGKILL");
+        killProcessTree(running.child, "SIGKILL");
       }
     }
   }
@@ -198,6 +216,7 @@ function startProcess(
     cwd,
     env: environment,
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
   const log = createWriteStream(logPath, { flags: "a" });
   child.stdout?.pipe(log, { end: false });

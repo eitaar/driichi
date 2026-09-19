@@ -3,7 +3,7 @@ use std::{fs, io::Read, path::PathBuf, sync::Arc};
 use axum::{body::Body, http::Request};
 use double_riichi_core::{
     GameEvent, GameMode, Participant, ParticipantKind, RoomCommand, RoomPhase, RoomRegistry, Seat,
-    Tile, TimeControl, Wind,
+    ShutdownMode, Tile, TimeControl, Wind,
 };
 use double_riichi_replay::{MAX_DECOMPRESSED_REPLAY_BYTES, ReplayWriter};
 use double_riichi_server::{
@@ -190,6 +190,7 @@ async fn completed_room_match_is_visible_through_admin_replay_api() {
     assert_eq!(view_body["room_name"], "Persistence Room");
     assert_eq!(view_body["players"].as_array().map(Vec::len), Some(3));
     assert!(!view_body["frames"].as_array().unwrap().is_empty());
+    registry.shutdown(ShutdownMode::Forced).await;
     storage.close().await;
     let _ = fs::remove_dir_all(root);
 }

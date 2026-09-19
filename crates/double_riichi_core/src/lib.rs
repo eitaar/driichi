@@ -27,9 +27,9 @@ pub use projection::{
 pub use room::{
     CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, MatchId, MatchPlayerSnapshot,
     MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY, ROOM_EFFECT_CAPACITY, RoomActor,
-    RoomCommand, RoomConfig, RoomConnection, RoomController, RoomEffect, RoomEffectError,
-    RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomHistoryProjection, RoomId,
-    RoomJoinCode, RoomKyokuProjection, RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot,
-    RoomPhase, RoomRegistry, RoomRegistryError, RoomRemoval, RoomResponse, RoomSnapshot, RoomState,
-    ShutdownMode,
+    RoomAuxiliaryEvent, RoomAuxiliaryPhase, RoomCommand, RoomConfig, RoomConnection,
+    RoomController, RoomEffect, RoomEffectError, RoomError, RoomEvent, RoomHandle,
+    RoomHistoryEvent, RoomHistoryProjection, RoomId, RoomJoinCode, RoomKyokuProjection,
+    RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot, RoomPhase, RoomRegistry,
+    RoomRegistryError, RoomRemoval, RoomResponse, RoomSnapshot, RoomState, ShutdownMode,
 };
