@@ -1,0 +1,40 @@
+Double Riichi third-party notices
+==================================
+
+This distribution includes the Rust and frontend dependencies resolved by
+Cargo.lock and frontend/package-lock.json. Those lockfiles are the complete,
+exact dependency inputs for the build. Each dependency remains under the
+license declared by its package; the corresponding package license and notice
+text must be retained when redistributing the source or a rebuilt artifact.
+This application does not alter those licenses.
+
+Self-hosted Geist fonts
+-----------------------
+Geist and Geist Mono are Copyright (c) 2023 Vercel, in collaboration with
+basement.studio, and are licensed under the SIL Open Font License 1.1. The
+font files are vendored under frontend/src/assets/fonts/; the complete license
+is frontend/src/assets/fonts/GEIST-LICENSE.txt. The source package is
+geist@1.7.2 with the npm integrity recorded in frontend/THIRD_PARTY_NOTICES.md.
+
+Riichi mahjong tiles
+--------------------
+The vendored tile SVGs are from FluffyStuff/riichi-mahjong-tiles:
+https://github.com/FluffyStuff/riichi-mahjong-tiles
+Revision: 26e127ba2117f45cdce5ea0225748cc0cfad3169
+License: public domain / CC0 1.0, as stated by upstream.
+The upstream license and README are retained under
+frontend/src/assets/tiles/. Vendored-file checksums are recorded in
+frontend/src/assets/SHA256SUMS.
+
+Generated Starter Packs
+----------------------
+The project-owned generated portraits, icons, and silent voice files under
+character-packs/ are dedicated to the public domain under CC0 1.0 Universal.
+Each Pack contains the full CC0 text in LICENSE and CC0-NOTICE.txt names every
+covered binary file. The generator source is distributed under the project's
+MIT OR Apache-2.0 license. Real Characters, trademarks, tile art, and all
+third-party assets are excluded from that dedication.
+
+No runtime CDN, system SQLite database, or OpenSSL dependency is required by
+this archive. Windows code signing and Sigstore signatures are not provided
+for v1.
