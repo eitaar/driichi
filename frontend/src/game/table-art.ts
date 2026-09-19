@@ -348,12 +348,14 @@ function playerFrameLayout(geometry: TableSeatGeometry): {
     };
   }
   if (geometry.position === "top") {
+    // The top hand occupies the middle of the north edge. Keep this frame in
+    // the right-hand rail pocket so its 270px panel cannot veil the hand.
     return {
-      cardX: x - 270,
+      cardX: x + 120,
       cardY: y - 78,
-      portraitX: x - 220,
+      portraitX: x + 170,
       portraitY: y - 20,
-      textX: x - 158,
+      textX: x + 232,
       textAlign: 0,
     };
   }
