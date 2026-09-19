@@ -109,7 +109,11 @@ for (const viewport of [
     await expect(stage.locator(".replay-status-toast")).toBeVisible();
     await expect(page.locator(".replay-event-log")).toBeVisible();
     await expect(page.locator(".replay-table-wrap + .replay-controls")).toHaveCount(0);
-    await expect(page.getByTestId("pixi-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+    const table = page.getByTestId("pixi-table");
+    await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+    await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
+    await expect(table).toHaveAttribute("data-rendered-table-primitives", /^[1-9]\d*$/);
+    await expect(table).toHaveAttribute("data-rendered-visual-primitives", /^[1-9]\d*$/);
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await expect(page.getByRole("status")).toContainText(/disconnected/i);
     await expectNoSeriousOrCriticalViolations(page, ".replay-table-stage");

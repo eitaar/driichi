@@ -191,3 +191,14 @@ All three are unavailable in this environment (`just: command not found`, exit 1
 - The four exact `test-spec` assertions from `justfile`: PASS.
 
 `git diff --check`: PASS. The existing screenshot review remains complete for all 9 `frontend/test-results/task-12/` PNGs and both required `frontend/test-results/immersive-table/` PNGs; the final browser runs regenerated the same required evidence without any visual-surface changes.
+
+## Follow-up P2 validation
+
+Added positive non-zero Replay viewer assertions in `frontend/tests/task15.spec.ts` for `data-rendered-tile-count`, `data-rendered-table-primitives`, and `data-rendered-visual-primitives`, alongside the existing `data-render-ready` assertion.
+
+```bash
+cd frontend
+npx playwright test tests/task15.spec.ts --reporter=line
+```
+
+PASS: 8 passed in 49.7s across all four Replay viewports and both Replay cases.
