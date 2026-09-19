@@ -8,6 +8,15 @@ import {
   discardPlacement,
   tableSeatGeometry,
 } from "./table-geometry";
+import {
+  drawCenterDevice,
+  drawPlayerFrame,
+  drawTableSkin,
+  drawWall,
+  loadTableArtAssets,
+  type TableArtAssets,
+  type TextureLoader,
+} from "./table-art";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 import { tileAssetUrl } from "./tiles";
 import { actionTile } from "./actions";
@@ -18,7 +27,6 @@ const TILE_FRAMES = {
   meld: { width: 38, height: 50 },
   dora: { width: 36, height: 48 },
 } as const;
-const ICON_FRAME = { width: 44, height: 44 } as const;
 const PORTRAIT_FRAME = { width: 190, height: 220 } as const;
 
 export interface PortraitEffect {
@@ -94,14 +102,6 @@ function concealedTiles(player: ProjectedPlayer): number {
     : 0;
 }
 
-function doraTiles(projection: ProjectedState | null): number[] {
-  return Array.isArray(projection?.dora_indicators)
-    ? projection.dora_indicators.filter(
-        (tile): tile is number => typeof tile === "number",
-      )
-    : [];
-}
-
 function centerRoundLabel(projection: ProjectedState): string {
   const kyoku = projection.kyoku;
   if (typeof kyoku === "string") return kyoku;
@@ -111,15 +111,12 @@ function centerRoundLabel(projection: ProjectedState): string {
   return typeof projection.round === "string" ? projection.round : "LIVE KYOKU";
 }
 
-function visibleWallValue(projection: ProjectedState | null): string | null {
-  const value =
-    projection?.remaining_wall ??
-    projection?.remaining_tiles ??
-    projection?.wall_remaining;
-  if (typeof value === "number")
-    return `${Math.max(0, Math.floor(value))} TILES LEFT`;
-  if (Array.isArray(value)) return `${value.length} TILES LEFT`;
-  return null;
+function doraTiles(projection: ProjectedState | null): number[] {
+  return Array.isArray(projection?.dora_indicators)
+    ? projection.dora_indicators.filter(
+        (tile): tile is number => typeof tile === "number",
+      )
+    : [];
 }
 
 function safeDestroy(child: unknown): void {
@@ -130,7 +127,10 @@ function safeDestroy(child: unknown): void {
   }
 }
 
-function usableTexture(texture: import("pixi.js").Texture): boolean {
+function usableTexture(
+  texture: import("pixi.js").Texture | null | undefined,
+): texture is import("pixi.js").Texture {
+  if (!texture) return false;
   const width = Number(texture.width);
   const height = Number(texture.height);
   return (
@@ -227,19 +227,6 @@ function sourceForBack(): string {
   return BACK_TILE_SOURCE;
 }
 
-function characterIdFor(
-  room: RoomSnapshot | null,
-  participantId: string,
-): string | null {
-  const roster = room?.roster?.length
-    ? room.roster
-    : (room?.match_players ?? []);
-  return (
-    roster.find((player) => player.participant_id === participantId)
-      ?.character_id ?? null
-  );
-}
-
 export function PixiTable({
   projection,
   room,
@@ -326,6 +313,10 @@ export function PixiTable({
         host.dataset.renderedTileCount = "0";
         host.dataset.renderedTablePrimitives = "0";
         host.dataset.renderedVisualPrimitives = "0";
+        host.dataset.skinReady = "false";
+        host.dataset.skinFallback = "false";
+        host.dataset.playerFrameCount = "0";
+        host.dataset.wallTileCount = "0";
         host.dataset.portraitReady = "false";
         app.stage.eventMode = "none";
         app.ticker.stop();
@@ -335,6 +326,8 @@ export function PixiTable({
         let renderVersion = 0;
         let renderedTileCount = 0;
         let renderedTablePrimitives = 0;
+        let renderedPlayerFrames = 0;
+        let renderedWallTiles = 0;
         let renderScheduled = false;
         const requestRender = () => {
           if (disposed || renderScheduled) return;
@@ -346,6 +339,8 @@ export function PixiTable({
         };
         const updateRenderInstrumentation = () => {
           host.dataset.renderedTileCount = String(renderedTileCount);
+          host.dataset.playerFrameCount = String(renderedPlayerFrames);
+          host.dataset.wallTileCount = String(renderedWallTiles);
           host.dataset.renderedTablePrimitives = String(
             renderedTablePrimitives,
           );
@@ -399,86 +394,25 @@ export function PixiTable({
           return text;
         };
 
-        const drawTableShell = (container: import("pixi.js").Container) => {
-          const frame = new Graphics();
-          frame.roundRect(32, 30, TABLE_WIDTH - 64, TABLE_HEIGHT - 60, 8);
-          frame.fill({ color: 0x071b16, alpha: 1 });
-          frame.stroke({ color: 0x315249, width: 2, alpha: 0.85 });
-          const field = new Graphics();
-          field.roundRect(246, 148, TABLE_WIDTH - 492, TABLE_HEIGHT - 296, 5);
-          field.fill({ color: 0x0d3027, alpha: 1 });
-          field.stroke({ color: 0x315249, width: 1, alpha: 0.62 });
-          const cross = new Graphics();
-          cross
-            .moveTo(TABLE_WIDTH / 2, 148)
-            .lineTo(TABLE_WIDTH / 2, TABLE_HEIGHT - 148);
-          cross
-            .moveTo(246, TABLE_HEIGHT / 2)
-            .lineTo(TABLE_WIDTH - 246, TABLE_HEIGHT / 2);
-          cross.stroke({ color: 0x21473c, width: 1, alpha: 0.5 });
-          container.addChild(frame, field, cross);
-          drawText(
-            container,
-            "DOUBLE RIICHI / LIVE TABLE",
-            68,
-            54,
-            16,
-            0xaeb8ae,
-            "Geist Mono",
+        const loadTexture: TextureLoader = async (source) => {
+          loadedSources.add(source);
+          return loadSource(Assets, source, (image) => Texture.from(image));
+        };
+        const tableArtAssets: TableArtAssets = await loadTableArtAssets(loadTexture);
+        if (disposed) {
+          await Promise.all(
+            [...loadedSources].map((source) =>
+              Assets.unload(source).catch(() => undefined),
+            ),
           );
-          drawText(
-            container,
-            room?.room_name ?? "AUTHORITATIVE TABLE",
-            TABLE_WIDTH - 68,
-            54,
-            14,
-            0x9ba8a0,
-            "Geist Mono",
-          ).anchor.set(1, 0);
-        };
-
-        const drawPlayerIcon = async (
-          container: import("pixi.js").Container,
-          player: ProjectedPlayer,
-          nextRoom: RoomSnapshot | null,
-          x: number,
-          y: number,
-          version: number,
-        ) => {
-          const characterId = characterIdFor(nextRoom, player.participant_id);
-          const source = characterId
-            ? `/assets/characters/${encodeURIComponent(characterId)}/icon.webp`
-            : "";
-          const texture = source
-            ? await loadSource(Assets, source, (image) => Texture.from(image))
-            : null;
-          if (disposed || version !== renderVersion) return;
-          if (texture && usableTexture(texture)) {
-            loadedSources.add(source);
-            const sprite = new Sprite(texture);
-            sprite.anchor.set(0.5);
-            sprite.x = x;
-            sprite.y = y;
-            fitSpriteToFrame(sprite, ICON_FRAME);
-            container.addChild(sprite);
-          } else {
-            const fallback = new Graphics();
-            fallback.roundRect(x - 22, y - 22, 44, 44, 5);
-            fallback.fill({ color: 0x1a2923, alpha: 1 });
-            fallback.stroke({ color: 0x52665b, width: 1, alpha: 1 });
-            container.addChild(fallback);
-            drawText(
-              container,
-              (player.kind ?? "player").slice(0, 1).toUpperCase(),
-              x,
-              y - 8,
-              18,
-              0xb6c3ba,
-              "Geist Mono",
-            ).anchor.set(0.5, 0.5);
-          }
-          requestRender();
-        };
+          app.destroy({ removeView: true }, { children: true });
+          return;
+        }
+        const tableArtUsesFallback =
+          !usableTexture(tableArtAssets.felt) ||
+          !usableTexture(tableArtAssets.rail) ||
+          !usableTexture(tableArtAssets.center) ||
+          !usableTexture(tableArtAssets.tileBack);
 
         const drawTile = async (
           container: import("pixi.js").Container,
@@ -491,10 +425,7 @@ export function PixiTable({
         ) => {
           const version = renderVersion;
           const source = back ? sourceForBack() : tileAssetUrl(tile);
-          loadedSources.add(source);
-          const texture = await loadSource(Assets, source, (image) =>
-            Texture.from(image),
-          );
+          const texture = await loadTexture(source);
           if (
             disposed ||
             version !== renderVersion ||
@@ -526,6 +457,12 @@ export function PixiTable({
           const version = ++renderVersion;
           renderedTileCount = 0;
           renderedTablePrimitives = 0;
+          renderedPlayerFrames = 0;
+          renderedWallTiles = 0;
+          host.dataset.skinReady = "false";
+          host.dataset.skinFallback = tableArtUsesFallback ? "true" : "false";
+          host.dataset.playerFrameCount = "0";
+          host.dataset.wallTileCount = "0";
           host.dataset.portraitReady = "false";
           delete host.dataset.portraitEffect;
           delete host.dataset.portraitName;
@@ -535,8 +472,17 @@ export function PixiTable({
           clearStage();
           const root = new Container();
           app.stage.addChild(root);
-          drawTableShell(root);
-          renderedTablePrimitives = root.children.length;
+          renderedTablePrimitives = drawTableSkin({
+            root,
+            assets: tableArtAssets,
+            Graphics,
+            Sprite,
+            drawText,
+          });
+          if (version === renderVersion && !disposed) {
+            host.dataset.skinReady = "true";
+            host.dataset.skinFallback = tableArtUsesFallback ? "true" : "false";
+          }
           updateRenderInstrumentation();
           if (!nextProjection) {
             drawText(
@@ -577,39 +523,23 @@ export function PixiTable({
             };
             const playerLayer = new Container();
             root.addChild(playerLayer);
-            const iconX =
-              position === "right"
-                ? coordinates.x - 72
-                : position === "left"
-                  ? coordinates.x + 72
-                  : coordinates.x - 122;
-            const iconY =
-              position === "top" ? coordinates.y + 25 : coordinates.y - 25;
-            void drawPlayerIcon(root, player, nextRoom, iconX, iconY, version);
-            const label = `${player.display_name}  ${readNumber(player.score)?.toLocaleString() ?? "—"}`;
-            const labelText = drawText(
+            void drawPlayerFrame({
               root,
-              label,
-              coordinates.x,
-              coordinates.y - (position === "bottom" ? 32 : 0),
-              17,
-              position === "bottom" ? 0xffaa9e : 0xc3cdc2,
-              "Geist Mono",
-            );
-            labelText.anchor.set(
-              position === "right" ? 1 : position === "left" ? 0 : 0.5,
-              0.5,
-            );
-            if (player.riichi)
-              drawText(
-                root,
-                "RIICHI",
-                coordinates.x,
-                coordinates.y - (position === "bottom" ? 55 : 22),
-                11,
-                0xd26c63,
-                "Geist Mono",
-              ).anchor.set(0.5, 0.5);
+              player,
+              room: nextRoom,
+              projection: nextProjection,
+              geometry,
+              Graphics,
+              Sprite,
+              drawText,
+              textureLoader: loadTexture,
+              isCurrent: () => !disposed && version === renderVersion,
+            }).then(() => {
+              if (disposed || version !== renderVersion) return;
+              renderedPlayerFrames += 1;
+              updateRenderInstrumentation();
+              requestRender();
+            });
 
             const hand = optionalVisibleTiles(player);
             const count =
@@ -694,28 +624,6 @@ export function PixiTable({
             });
           }
 
-          const dora = doraTiles(nextProjection);
-          if (dora.length > 0) {
-            drawText(
-              root,
-              "DORA",
-              TABLE_WIDTH / 2 - 110,
-              168,
-              11,
-              0xd26c63,
-              "Geist Mono",
-            );
-            dora.forEach(
-              (tile, index) =>
-                void drawTile(
-                  root,
-                  tile,
-                  TABLE_WIDTH / 2 - 45 + index * 48,
-                  178,
-                  TILE_FRAMES.dora,
-                ),
-            );
-          }
           const round = centerRoundLabel(nextProjection);
           const honba = readNumber(nextProjection.honba);
           const kyotaku = readNumber(nextProjection.kyotaku);
@@ -726,35 +634,28 @@ export function PixiTable({
           ]
             .filter(Boolean)
             .join(" / ");
-          drawText(
+          void drawWall({
             root,
-            round,
-            TABLE_WIDTH / 2,
-            TABLE_HEIGHT / 2 - 18,
-            20,
-            0xe8e5da,
-            "Geist Mono",
-          ).anchor.set(0.5, 0.5);
-          drawText(
+            assets: tableArtAssets,
+            projection: nextProjection,
+            Sprite,
+            textureLoader: loadTexture,
+            isCurrent: () => !disposed && version === renderVersion,
+          }).then((count) => {
+            if (disposed || version !== renderVersion) return;
+            renderedWallTiles = count;
+            updateRenderInstrumentation();
+            requestRender();
+          });
+          drawCenterDevice({
             root,
-            `HONBA ${honba ?? 0}  /  KYOTAKU ${kyotaku ?? 0}`,
-            TABLE_WIDTH / 2,
-            TABLE_HEIGHT / 2 + 16,
-            11,
-            0x9ba8a0,
-            "Geist Mono",
-          ).anchor.set(0.5, 0.5);
-          const wall = visibleWallValue(nextProjection);
-          if (wall)
-            drawText(
-              root,
-              wall,
-              TABLE_WIDTH / 2,
-              TABLE_HEIGHT / 2 + 120,
-              13,
-              0x9ba8a0,
-              "Geist Mono",
-            ).anchor.set(0.5, 0.5);
+            assets: tableArtAssets,
+            projection: nextProjection,
+            Graphics,
+            Sprite,
+            drawText,
+            drawTile,
+          });
 
           if (nextPortrait) {
             const portraitLayer = new Container();
@@ -1004,6 +905,10 @@ export function PixiTable({
       data-rendered-tile-count="0"
       data-rendered-table-primitives="0"
       data-rendered-visual-primitives="0"
+      data-skin-ready="false"
+      data-skin-fallback="false"
+      data-player-frame-count="0"
+      data-wall-tile-count="0"
       data-portrait-ready="false"
       role="img"
       aria-label="Authoritative mahjong table"

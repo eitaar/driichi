@@ -110,6 +110,11 @@ async function expectRenderedTable(page: Page) {
   await expect(table).toHaveAttribute("data-render-ready", "true", {
     timeout: 20000,
   });
+  await expect(table).toHaveAttribute("data-skin-ready", "true", {
+    timeout: 20000,
+  });
+  await expect(table).toHaveAttribute("data-player-frame-count", /^[34]$/);
+  await expect(table).toHaveAttribute("data-wall-tile-count", /^\d+$/);
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
   await expect(table).toHaveAttribute(
     "data-rendered-table-primitives",
@@ -157,6 +162,14 @@ for (const viewport of [
       await installSocket(page, mode);
       await page.goto("/room/123456/lobby");
       const table = await expectRenderedTable(page);
+      await expect(table).toHaveAttribute(
+        "data-wall-tile-count",
+        mode === "3p-red-east" ? "54" : "69",
+      );
+      await expect(table).toHaveAttribute(
+        "data-player-frame-count",
+        mode === "3p-red-east" ? "3" : "4",
+      );
       await expect(page.getByText("Mika")).toBeVisible();
       await expect(table).toHaveAttribute("data-center-data", /East 1/);
       await expect(page.getByTestId("decision-timer")).toHaveAttribute(
