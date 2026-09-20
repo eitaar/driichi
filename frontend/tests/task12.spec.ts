@@ -132,6 +132,12 @@ async function expectRenderedTable(page: Page) {
     "data-rendered-scene-primitives",
     /^[1-9]\d*$/,
   );
+  const tableHeightRatio = Number(await table.getAttribute("data-table-height-ratio"));
+  const tableWidthRatio = Number(await table.getAttribute("data-table-width-ratio"));
+  expect(tableWidthRatio).toBeGreaterThanOrEqual(0.82);
+  expect(tableWidthRatio).toBeLessThanOrEqual(0.9);
+  expect(tableHeightRatio).toBeGreaterThanOrEqual(0.78);
+  expect(tableHeightRatio).toBeLessThanOrEqual(0.88);
   const canvasBounds = await table.evaluate((node) => {
     const canvas = node.querySelector("canvas");
     if (!canvas) return null;
@@ -319,6 +325,10 @@ for (const viewport of requiredViewports) {
       const legalTiles = page.locator(".table-tile-hit.is-legal");
       await expect(legalTiles).toHaveCount(14);
       await expect(legalTiles.first()).toBeVisible();
+      await page.screenshot({
+        path: `test-results/task-12/${mode}-${viewport.label}-live.png`,
+        fullPage: false,
+      });
       await legalTiles.first().click();
       await expect(page.getByTestId("action-deck")).toHaveAttribute(
         "aria-busy",
@@ -355,10 +365,6 @@ for (const viewport of requiredViewports) {
         { type: "submit_action", decision_id: "d1", action_id: "a1" },
         { type: "submit_action", decision_id: "d1", action_id: "a1" },
       ]);
-      await page.screenshot({
-        path: `test-results/task-12/${mode}-${viewport.label}-decision.png`,
-        fullPage: false,
-      });
     });
   }
 }
@@ -527,6 +533,84 @@ test("runs one bounded discard motion and stops invalidating after idle", async 
   const medianFrameDuration = sortedFrameDurations[Math.floor(sortedFrameDurations.length / 2)];
   const softwareWebglFrameBaselineMs = 75;
   expect(medianFrameDuration).toBeLessThanOrEqual(softwareWebglFrameBaselineMs * 1.25);
+});
+
+test("accepts a 60fps-class motion budget at both required desktop resolutions", async ({ page }) => {
+  async function measureAt(viewport: { width: number; height: number }) {
+    await page.setViewportSize(viewport);
+    await installCharacterFixtures(page);
+    await installSocket(page, "4p-red-east");
+    await page.goto("/room/123456/lobby");
+    const table = await expectRenderedTable(page);
+    await page.waitForTimeout(300);
+    const emitMotion = async () => {
+      await page.evaluate(() => {
+        const browser = window as unknown as {
+          __socket: { emit: (value: unknown) => void };
+          __state: unknown;
+        };
+        browser.__socket.emit({
+          type: "game_update",
+          event: { type: "pon", actor: 0 },
+          state: browser.__state,
+        });
+      });
+      await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
+      await expect(table).toHaveAttribute("data-animation-state", "idle", { timeout: 5_000 });
+    };
+    await page.evaluate(() => {
+      performance.clearMeasures("three-table-motion-event");
+      performance.clearMeasures("three-table-motion-frame");
+    });
+    await emitMotion();
+    const setupEventMs = await page.evaluate(() =>
+      performance.getEntriesByName("three-table-motion-event", "measure")[0]?.duration ?? 0,
+    );
+    await page.evaluate(() => {
+      performance.clearMeasures("three-table-motion-event");
+      performance.clearMeasures("three-table-motion-frame");
+    });
+    await page.waitForTimeout(100);
+    for (let index = 0; index < 8; index += 1) await emitMotion();
+    const metrics = await page.evaluate(() => {
+      const frameDurations = performance
+        .getEntriesByName("three-table-motion-frame", "measure")
+        .map(({ duration }) => duration)
+        .sort((left, right) => left - right);
+      const eventDurations = performance
+        .getEntriesByName("three-table-motion-event", "measure")
+        .map(({ duration }) => duration);
+      const steadyDurations = frameDurations.length > 2
+        ? frameDurations.slice(1, -1)
+        : frameDurations;
+      return {
+        frameCount: frameDurations.length,
+        medianFrameMs: frameDurations[Math.floor(frameDurations.length / 2)] ?? Number.POSITIVE_INFINITY,
+        steadyFrameMs: steadyDurations[Math.floor(steadyDurations.length / 2)] ?? Number.POSITIVE_INFINITY,
+        eventMs: eventDurations[0] ?? 0,
+      };
+    });
+    expect(metrics.frameCount).toBeGreaterThan(0);
+    expect(metrics.eventMs).toBeGreaterThan(0);
+    const result = { ...metrics, setupEventMs };
+    console.log("motion metrics", viewport, result);
+    return result;
+  }
+
+  const at1600 = await measureAt({ width: 1600, height: 900 });
+  const at1920 = await measureAt({ width: 1920, height: 1080 });
+  expect(at1600.setupEventMs).toBeGreaterThan(0);
+  expect(at1920.setupEventMs).toBeGreaterThan(0);
+  expect(at1600.setupEventMs).toBeLessThanOrEqual(750);
+  expect(at1920.setupEventMs).toBeLessThanOrEqual(750);
+  expect(at1600.frameCount).toBeGreaterThanOrEqual(4);
+  expect(at1920.frameCount).toBeGreaterThanOrEqual(4);
+  // The median is collected across eight bounded motions so setup/teardown
+  // frames cannot mask the steady-state software-WebGL budget. 33.34ms
+  // rejects the previous 93.75ms (~11fps) result while tolerating SwiftShader.
+  expect(at1600.steadyFrameMs).toBeLessThanOrEqual(33.34);
+  expect(at1920.steadyFrameMs).toBeLessThanOrEqual(33.34);
+  expect(at1920.steadyFrameMs / at1600.steadyFrameMs).toBeLessThanOrEqual(1.5);
 });
 
 test("keeps reduced-motion discard effects static", async ({ page }) => {
@@ -807,12 +891,33 @@ test("shows guidance below the supported gameplay viewport", async ({
   await expect(page.getByTestId("three-table")).toHaveCount(0);
 });
 
+test("reactively gates the table on resize and keeps terminal alerts visible when narrow", async ({ page }) => {
+  await page.setViewportSize({ width: 1023, height: 599 });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expectRenderedTable(page);
+  await page.setViewportSize({ width: 900, height: 599 });
+  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  await page.evaluate(() => {
+    const socket = (window as unknown as {
+      __socket: { onclose: ((event: { code: number; reason: string }) => void) | null };
+    }).__socket;
+    socket.onclose?.({ code: 4002, reason: "room_deleted" });
+  });
+  await expect(page.getByRole("alert")).toContainText("deleted this Room");
+});
+
 test("shows in-table synchronization before the first projection", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east", undefined, 2_000);
   await page.goto("/room/123456/lobby");
   await expect(page.getByText("Waiting for an authoritative projection")).toBeVisible();
+  await expect(page.locator(".gameplay-sync-state[role=\"status\"]")).toHaveCount(1);
+  await expect(page.getByTestId("three-table").locator("[role=\"status\"]")).toHaveCount(0);
   await expect(page.getByTestId("action-deck")).toHaveCount(0);
 });
 

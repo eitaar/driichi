@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import {
+  Box3,
   BoxGeometry,
   Color,
   DoubleSide,
@@ -10,20 +11,31 @@ import {
   InstancedMesh,
   Matrix4,
   MeshBasicMaterial,
-  MeshStandardMaterial,
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
+  Scene,
+  Texture,
+  TextureLoader,
   Vector3,
 } from "three";
 
 import type { TileAtlas } from "./tile-atlas";
+import {
+  configureTableTexture,
+  disposeTableTextures,
+  TABLE_TEXTURE_SPECS,
+  TABLE_TEXTURE_URLS,
+  type TableTextureKey,
+} from "./table-materials";
 import { CAMERA, TABLE_SIZE, type MatchSceneLayout, type SceneTile } from "./three-table-layout";
 import { cameraAccentAt, sceneMotionProgress, type SceneMotion } from "./three-table-motion";
 
 export interface SceneRenderStats {
   tileCount: number;
   primitiveCount: number;
+  tableHeightRatio?: number;
+  tableWidthRatio?: number;
 }
 
 interface MatchTableSceneProps {
@@ -35,9 +47,24 @@ interface MatchTableSceneProps {
   onRenderReady(stats: SceneRenderStats): void;
 }
 
+export const TABLE_RENDER_SCALE = {
+  x: 0.9,
+  y: 1,
+  z: 1.1,
+} as const;
+
+const TABLE_RENDER_OFFSET: readonly [number, number, number] = [0, 0, -0.38];
 const BODY_SIZE = [0.62, 0.18, 0.86] as const;
 const FACE_SIZE = [0.58, 0.82] as const;
 const FACE_Y = BODY_SIZE[1] / 2 + 0.003;
+const MAX_TILE_INSTANCES = 256;
+
+interface TableTextures {
+  felt: Texture;
+  rail: Texture;
+  center: Texture;
+  back: Texture;
+}
 
 function instanceMatrix(tile: SceneTile, face = false): Matrix4 {
   const rotation = face
@@ -60,6 +87,7 @@ function applyMatrices(
   face: boolean,
 ): void {
   if (!mesh) return;
+  mesh.count = tiles.length;
   for (let index = 0; index < tiles.length; index += 1) {
     mesh.setMatrixAt(index, instanceMatrix(tiles[index], face));
   }
@@ -95,10 +123,88 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
   return material;
 }
 
+function loadTexture(
+  loader: TextureLoader,
+  key: TableTextureKey,
+): Promise<Texture> {
+  return new Promise((resolve, reject) => {
+    loader.load(
+      TABLE_TEXTURE_URLS[key],
+      (texture) => resolve(configureTableTexture(texture, TABLE_TEXTURE_SPECS[key])),
+      undefined,
+      reject,
+    );
+  });
+}
+
+function useTableTextures(): TableTextures | null {
+  const [textures, setTextures] = useState<TableTextures | null>(null);
+  const ownedRef = useRef<TableTextures | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const loader = new TextureLoader();
+    const keys: readonly TableTextureKey[] = ["felt", "rail", "center", "back"];
+
+    // Wait for every request before deciding ownership. Promise.all would reject
+    // on the first failed request and leak textures that finish afterward.
+    void Promise.allSettled(
+      keys.map(async (key) => ({ key, texture: await loadTexture(loader, key) })),
+    ).then((results) => {
+      const loaded: Partial<Record<TableTextureKey, Texture>> = {};
+      let failed = false;
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          loaded[result.value.key] = result.value.texture;
+        } else {
+          failed = true;
+        }
+      }
+
+      if (failed || !active) {
+        disposeTableTextures(loaded);
+        return;
+      }
+
+      const next = {
+        felt: loaded.felt!,
+        rail: loaded.rail!,
+        center: loaded.center!,
+        back: loaded.back!,
+      } satisfies TableTextures;
+      ownedRef.current = next;
+      setTextures(next);
+    });
+
+    return () => {
+      active = false;
+      disposeTableTextures(ownedRef.current);
+      ownedRef.current = null;
+    };
+  }, []);
+
+  return textures;
+}
+
+function updateAtlasCells(
+  geometry: PlaneGeometry,
+  tiles: readonly SceneTile[],
+  atlas: TileAtlas,
+): void {
+  const attribute = geometry.getAttribute("atlasCell") as InstancedBufferAttribute;
+  for (let index = 0; index < MAX_TILE_INSTANCES; index += 1) {
+    const tile = tiles[index];
+    const [column, row] = tile ? atlas.cellFor(tile.tile ?? -1) : [0, 0];
+    attribute.setXY(index, column, row);
+  }
+  attribute.needsUpdate = true;
+}
+
 function InstancedTiles({
   layout,
   atlas,
-}: Pick<MatchTableSceneProps, "layout" | "atlas">) {
+  textures,
+}: Pick<MatchTableSceneProps, "layout" | "atlas"> & { textures: TableTextures | null }) {
   const invalidate = useThree((state) => state.invalidate);
   const frontTiles = useMemo(
     () => layout.tiles.filter((tile) => tile.face === "front" && tile.tile !== null),
@@ -116,31 +222,28 @@ function InstancedTiles({
   const resources = useMemo(() => {
     const bodyGeometry = new BoxGeometry(...BODY_SIZE, 3, 1, 3);
     const faceGeometry = new PlaneGeometry(...FACE_SIZE);
-    const faceCells = new Float32Array(frontTiles.length * 2);
-    for (let index = 0; index < frontTiles.length; index += 1) {
-      const [column, row] = atlas.cellFor(frontTiles[index].tile ?? -1);
-      faceCells[index * 2] = column;
-      faceCells[index * 2 + 1] = row;
-    }
+    const faceCells = new Float32Array(MAX_TILE_INSTANCES * 2);
     faceGeometry.setAttribute("atlasCell", new InstancedBufferAttribute(faceCells, 2));
     return {
       bodyGeometry,
       faceGeometry,
       backGeometry: new PlaneGeometry(...FACE_SIZE),
-      ivoryMaterial: new MeshStandardMaterial({
+      ivoryMaterial: new MeshBasicMaterial({
         color: new Color("#eee5d2"),
-        metalness: 0.02,
-        roughness: 0.6,
+        toneMapped: false,
       }),
       faceMaterial: atlasMaterial(atlas),
-      backMaterial: new MeshStandardMaterial({
-        color: new Color("#173a33"),
-        metalness: 0.04,
-        roughness: 0.72,
-        side: DoubleSide,
-      }),
+      backMaterial: (() => {
+        const material = new MeshBasicMaterial({
+          color: new Color("#ffffff"),
+          side: DoubleSide,
+          toneMapped: false,
+        });
+        if (textures?.back) material.map = textures.back;
+        return material;
+      })(),
     };
-  }, [atlas, frontTiles]);
+  }, [atlas, textures?.back]);
 
   useEffect(
     () => () => {
@@ -155,58 +258,47 @@ function InstancedTiles({
   );
 
   useLayoutEffect(() => {
+    updateAtlasCells(resources.faceGeometry, frontTiles, atlas);
     applyMatrices(frontBody.current, frontTiles, false);
     applyMatrices(frontFaces.current, frontTiles, true);
     applyMatrices(backBody.current, backTiles, false);
     applyMatrices(backFaces.current, backTiles, true);
     invalidate();
-  }, [backTiles, frontTiles, invalidate]);
+  }, [atlas, backTiles, frontTiles, invalidate, resources.faceGeometry]);
 
   return (
-    <group dispose={null}>
-      {frontTiles.length > 0 ? (
-        <>
-          <instancedMesh
-            ref={frontBody}
-            name="tile-front-bodies"
-            userData={{ tileBodies: true }}
-            args={[resources.bodyGeometry, resources.ivoryMaterial, frontTiles.length]}
-            castShadow
-            receiveShadow
-            frustumCulled={false}
-            dispose={null}
-          />
-          <instancedMesh
-            ref={frontFaces}
-            name="tile-front-faces"
-            args={[resources.faceGeometry, resources.faceMaterial, frontTiles.length]}
-            receiveShadow
-            frustumCulled={false}
-            dispose={null}
-          />
-        </>
-      ) : null}
-      {backTiles.length > 0 ? (
-        <>
-          <instancedMesh
-            ref={backBody}
-            name="tile-back-bodies"
-            userData={{ tileBodies: true }}
-            args={[resources.bodyGeometry, resources.ivoryMaterial, backTiles.length]}
-            receiveShadow
-            frustumCulled={false}
-            dispose={null}
-          />
-          <instancedMesh
-            ref={backFaces}
-            name="tile-back-faces"
-            args={[resources.backGeometry, resources.backMaterial, backTiles.length]}
-            receiveShadow
-            frustumCulled={false}
-            dispose={null}
-          />
-        </>
-      ) : null}
+    <group name="persistent-tile-renderer" dispose={null}>
+      <instancedMesh
+        ref={frontBody}
+        name="tile-front-bodies"
+        userData={{ tileBodies: true }}
+        args={[resources.bodyGeometry, resources.ivoryMaterial, MAX_TILE_INSTANCES]}
+        castShadow
+        frustumCulled={false}
+        dispose={null}
+      />
+      <instancedMesh
+        ref={frontFaces}
+        name="tile-front-faces"
+        args={[resources.faceGeometry, resources.faceMaterial, MAX_TILE_INSTANCES]}
+        frustumCulled={false}
+        dispose={null}
+      />
+      <instancedMesh
+        ref={backBody}
+        name="tile-back-bodies"
+        userData={{ tileBodies: true }}
+        args={[resources.bodyGeometry, resources.ivoryMaterial, MAX_TILE_INSTANCES]}
+        frustumCulled={false}
+        dispose={null}
+      />
+      <instancedMesh
+        ref={backFaces}
+        name="tile-back-faces"
+        args={[resources.backGeometry, resources.backMaterial, MAX_TILE_INSTANCES]}
+        frustumCulled={false}
+        dispose={null}
+      />
     </group>
   );
 }
@@ -219,42 +311,48 @@ function resetMotionGroup(group: Group | null): void {
 
 function applyCameraFrame(camera: PerspectiveCamera, kind: SceneMotion["kind"], progress: number): void {
   const frame = cameraAccentAt(kind, progress);
+  if (kind !== "win") return;
   camera.fov = frame.fov;
   camera.position.set(...CAMERA.position);
   camera.lookAt(...frame.target);
   camera.updateProjectionMatrix();
 }
 
-function MotionTiles({
-  layout,
-  atlas,
+function MotionController({
+  groupRef,
   motion,
   onMotionComplete,
   onMotionFrame,
-}: Pick<
-  MatchTableSceneProps,
-  "layout" | "atlas" | "onMotionComplete" | "onMotionFrame"
-> & { motion: SceneMotion }) {
-  const groupRef = useRef<Group>(null);
+}: {
+  groupRef: React.RefObject<Group | null>;
+  motion: SceneMotion | null;
+  onMotionComplete(itemId: number): void;
+  onMotionFrame(now: number): void;
+}) {
   const startedAtRef = useRef<number | null>(null);
   const invalidate = useThree((state) => state.invalidate);
   const camera = useThree((state) => state.camera) as PerspectiveCamera;
 
   useLayoutEffect(() => {
-    startedAtRef.current = null;
+    if (!motion) {
+      startedAtRef.current = null;
+      resetMotionGroup(groupRef.current);
+      invalidate();
+      return undefined;
+    }
+    startedAtRef.current = motion.startedAt;
     invalidate();
     return () => {
       resetMotionGroup(groupRef.current);
       applyCameraFrame(camera, motion.kind, 1);
       invalidate();
     };
-  }, [camera, invalidate, motion.itemId, motion.kind]);
+  }, [camera, groupRef, invalidate, motion?.itemId, motion?.kind, motion?.startedAt]);
 
   useFrame(() => {
     const group = groupRef.current;
-    if (!group) return;
+    if (!group || !motion || startedAtRef.current === null) return;
     const now = performance.now();
-    startedAtRef.current ??= now;
     const progress = sceneMotionProgress(
       { ...motion, startedAt: startedAtRef.current },
       now,
@@ -275,11 +373,7 @@ function MotionTiles({
     invalidate();
   });
 
-  return (
-    <group ref={groupRef}>
-      <InstancedTiles layout={layout} atlas={atlas} />
-    </group>
-  );
+  return null;
 }
 
 function FixedCamera() {
@@ -297,17 +391,17 @@ function FixedCamera() {
   return null;
 }
 
-function TableRails() {
+function TableRails({ textures }: { textures: TableTextures | null }) {
   const invalidate = useThree((state) => state.invalidate);
   const meshRef = useRef<InstancedMesh>(null);
-  const resources = useMemo(() => ({
-    geometry: new BoxGeometry(1, 1, 1),
-    material: new MeshStandardMaterial({
-      color: new Color("#171c20"),
-      metalness: 0.58,
-      roughness: 0.46,
-    }),
-  }), []);
+  const resources = useMemo(() => {
+    const material = new MeshBasicMaterial({
+      color: new Color("#6e5136"),
+      toneMapped: false,
+    });
+    if (textures?.rail) material.map = textures.rail;
+    return { geometry: new BoxGeometry(1, 1, 1), material };
+  }, [textures?.rail]);
 
   useLayoutEffect(() => {
     const mesh = meshRef.current;
@@ -339,31 +433,61 @@ function TableRails() {
       ref={meshRef}
       name="table-rails"
       args={[resources.geometry, resources.material, 4]}
-      receiveShadow
       frustumCulled={false}
       dispose={null}
     />
   );
 }
 
+function projectedTableRatios(
+  scene: Scene,
+  camera: PerspectiveCamera,
+): { width: number; height: number } | null {
+  const table = scene.getObjectByName("table-body-root");
+  if (!table) return null;
+  const bounds = new Box3().setFromObject(table);
+  if (bounds.isEmpty()) return null;
+  const corners = [
+    new Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+    new Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+    new Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+    new Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+    new Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+    new Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+    new Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+    new Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+  ];
+  const projected = corners.map((corner) => corner.project(camera));
+  const minimum = Math.min(...projected.map(({ y }) => y));
+  const maximum = Math.max(...projected.map(({ y }) => y));
+  const minimumX = Math.min(...projected.map(({ x }) => x));
+  const maximumX = Math.max(...projected.map(({ x }) => x));
+  return {
+    width: Math.max(0, Math.min(1, (maximumX - minimumX) / 2)),
+    height: Math.max(0, Math.min(1, (maximum - minimum) / 2)),
+  };
+}
+
 function SceneReadiness({
   layout,
+  materialsReady,
   onRenderReady,
-}: Pick<MatchTableSceneProps, "layout" | "onRenderReady">) {
+}: Pick<MatchTableSceneProps, "layout" | "onRenderReady"> & { materialsReady: boolean }) {
   const invalidate = useThree((state) => state.invalidate);
   const scene = useThree((state) => state.scene);
   const gl = useThree((state) => state.gl);
+  const camera = useThree((state) => state.camera) as PerspectiveCamera;
   const scheduled = useRef(false);
   const reported = useRef(false);
 
   useEffect(() => {
     scheduled.current = false;
     reported.current = false;
-    invalidate();
-  }, [invalidate, layout]);
+    if (materialsReady) invalidate();
+  }, [gl, invalidate, layout, materialsReady]);
 
   useFrame(() => {
-    if (scheduled.current || reported.current) return;
+    if (!materialsReady || scheduled.current || reported.current) return;
     scheduled.current = true;
     queueMicrotask(() => {
       scheduled.current = false;
@@ -380,7 +504,14 @@ function SceneReadiness({
         return;
       }
       reported.current = true;
-      onRenderReady({ tileCount, primitiveCount });
+      gl.shadowMap.autoUpdate = false;
+      const tableRatios = projectedTableRatios(scene, camera);
+      onRenderReady({
+        tileCount,
+        primitiveCount,
+        tableHeightRatio: tableRatios?.height,
+        tableWidthRatio: tableRatios?.width,
+      });
     });
   });
 
@@ -392,10 +523,9 @@ function CenterTrim() {
   const meshRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
-    material: new MeshStandardMaterial({
+    material: new MeshBasicMaterial({
       color: new Color("#9a7042"),
-      metalness: 0.72,
-      roughness: 0.34,
+      toneMapped: false,
     }),
   }), []);
 
@@ -429,42 +559,66 @@ function CenterTrim() {
       ref={meshRef}
       name="center-device-trim"
       args={[resources.geometry, resources.material, 4]}
-      receiveShadow
       frustumCulled={false}
       dispose={null}
     />
   );
 }
 
-function ProceduralTable() {
+function FeltMaterial({ texture }: { texture: Texture | undefined }) {
+  return texture ? (
+    <meshBasicMaterial color="#21483f" map={texture} toneMapped={false} />
+  ) : (
+    <meshBasicMaterial color="#21483f" toneMapped={false} />
+  );
+}
+
+function CenterMaterial({ texture }: { texture: Texture | undefined }) {
+  return texture ? (
+    <meshBasicMaterial
+      color="#8a7150"
+      map={texture}
+      transparent
+      toneMapped={false}
+    />
+  ) : (
+    <meshBasicMaterial color="#1d292c" toneMapped={false} />
+  );
+}
+
+function ProceduralTable({ textures }: { textures: TableTextures | null }) {
   return (
-    <group scale={[0.94, 1, 1]}>
-      <mesh position={[0, -0.48, 0]} receiveShadow>
+    <group name="table-body-root">
+      <mesh position={[0, -0.48, 0]}>
         <boxGeometry args={[TABLE_SIZE.width, 0.72, TABLE_SIZE.depth]} />
-        <meshStandardMaterial color="#171c20" metalness={0.42} roughness={0.48} />
+        <meshBasicMaterial color="#20282a" toneMapped={false} />
       </mesh>
-      <mesh position={[0, -0.09, 0]} receiveShadow>
+      <mesh position={[0, -0.09, 0]}>
         <boxGeometry args={[12.65, 0.18, 8.25]} />
-        <meshStandardMaterial color="#32251e" metalness={0.2} roughness={0.62} />
+        <meshBasicMaterial color="#3a251d" toneMapped={false} />
       </mesh>
-      <mesh position={[0, 0.015, 0]} receiveShadow>
+      <mesh position={[0, 0.015, 0]}>
         <boxGeometry args={[11.7, 0.16, 7.3]} />
-        <meshStandardMaterial color="#21483f" metalness={0.02} roughness={0.94} />
+        <FeltMaterial texture={textures?.felt} />
       </mesh>
-      <mesh position={[0, 0.18, 0]} receiveShadow>
+      <mesh position={[0, 0.18, 0]}>
         <boxGeometry args={[2.55, 0.3, 2.05]} />
-        <meshStandardMaterial color="#30393b" metalness={0.64} roughness={0.38} />
+        <meshBasicMaterial color="#30393b" toneMapped={false} />
       </mesh>
-      <mesh position={[0, 0.345, 0]} receiveShadow>
+      <mesh position={[0, 0.345, 0]}>
         <boxGeometry args={[2.16, 0.035, 1.66]} />
-        <meshStandardMaterial color="#1d292c" emissive="#0c1214" emissiveIntensity={0.35} metalness={0.3} roughness={0.45} />
+        <meshBasicMaterial color="#1d292c" toneMapped={false} />
       </mesh>
-      <mesh position={[0, 0.37, 0]} receiveShadow>
+      <mesh position={[0, 0.366, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[2.16, 1.66]} />
+        <CenterMaterial texture={textures?.center} />
+      </mesh>
+      <mesh position={[0, 0.37, 0]}>
         <ringGeometry args={[0.36, 0.43, 48]} />
-        <meshStandardMaterial color="#9a7042" metalness={0.72} roughness={0.34} />
+        <meshBasicMaterial color="#9a7042" toneMapped={false} />
       </mesh>
       <CenterTrim />
-      <TableRails />
+      <TableRails textures={textures} />
     </group>
   );
 }
@@ -477,17 +631,20 @@ export function MatchTableScene({
   onMotionFrame,
   onRenderReady,
 }: MatchTableSceneProps) {
+  const textures = useTableTextures();
+  const tileGroupRef = useRef<Group>(null);
+
   return (
     <>
       <color attach="background" args={["#050709"]} />
-      <hemisphereLight args={["#e7ede8", "#17231f", 0.72]} />
+      <hemisphereLight args={["#dce8e0", "#17231f", 0.45]} />
       <directionalLight
         position={[-5.5, 10.5, 6.5]}
         color="#ffe2bd"
-        intensity={2.6}
+        intensity={2.2}
         castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
+        shadow-mapSize-width={512}
+        shadow-mapSize-height={512}
         shadow-camera-near={1}
         shadow-camera-far={32}
         shadow-camera-left={-9}
@@ -495,29 +652,33 @@ export function MatchTableScene({
         shadow-camera-top={7}
         shadow-camera-bottom={-7}
       />
-      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.8} />
+      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.48} />
       <spotLight
         position={[0, 3.8, 8.5]}
         color="#d8a873"
-        intensity={0.85}
+        intensity={0.68}
         angle={0.48}
         penumbra={0.9}
         distance={18}
       />
       <FixedCamera />
-      <ProceduralTable />
-      <SceneReadiness layout={layout} onRenderReady={onRenderReady} />
-      {motion ? (
-        <MotionTiles
-          layout={layout}
-          atlas={atlas}
-          motion={motion}
-          onMotionComplete={onMotionComplete}
-          onMotionFrame={onMotionFrame}
-        />
-      ) : (
-        <InstancedTiles layout={layout} atlas={atlas} />
-      )}
+      <group scale={[TABLE_RENDER_SCALE.x, TABLE_RENDER_SCALE.y, TABLE_RENDER_SCALE.z]} position={TABLE_RENDER_OFFSET}>
+        <ProceduralTable textures={textures} />
+        <group ref={tileGroupRef}>
+          <InstancedTiles layout={layout} atlas={atlas} textures={textures} />
+        </group>
+      </group>
+      <SceneReadiness
+        layout={layout}
+        materialsReady={textures !== null}
+        onRenderReady={onRenderReady}
+      />
+      <MotionController
+        groupRef={tileGroupRef}
+        motion={motion}
+        onMotionComplete={onMotionComplete}
+        onMotionFrame={onMotionFrame}
+      />
     </>
   );
 }

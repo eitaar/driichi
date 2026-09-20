@@ -276,6 +276,7 @@ export function ThreeTable({
       active = false;
       controller.abort();
       owned?.dispose();
+      setAtlas(null);
     };
   }, [hasProjection]);
 
@@ -303,6 +304,12 @@ export function ThreeTable({
   );
   const renderedTileCount = ready ? renderStats?.tileCount ?? 0 : 0;
   const primitiveCount = ready ? renderStats?.primitiveCount ?? 0 : 0;
+  const tableHeightRatio = ready && typeof renderStats?.tableHeightRatio === "number"
+    ? renderStats.tableHeightRatio
+    : 0;
+  const tableWidthRatio = ready && typeof renderStats?.tableWidthRatio === "number"
+    ? renderStats.tableWidthRatio
+    : 0;
   const recordRenderReady = useCallback((stats: SceneRenderStats) => {
     if (!layout || !atlas) return;
     setRenderStats({ ...stats, layout, atlas });
@@ -390,8 +397,6 @@ export function ThreeTable({
     const count = Number(host.dataset.animationFrameCount ?? 0);
     const firstFrame = !Number.isFinite(count) || count === 0;
     host.dataset.animationFrameCount = String(firstFrame ? 1 : count + 1);
-    const active = activeMotionRef.current;
-    if (firstFrame && active) active.motion.startedAt = now;
     const previous = lastMotionFrameAtRef.current;
     if (!firstFrame && previous !== null && typeof performance.measure === "function") {
       performance.measure("three-table-motion-frame", { start: previous, end: now });
@@ -410,6 +415,8 @@ export function ThreeTable({
       data-render-ready={String(ready)}
       data-rendered-tile-count={renderedTileCount}
       data-rendered-scene-primitives={primitiveCount}
+      data-table-height-ratio={tableHeightRatio}
+      data-table-width-ratio={tableWidthRatio}
       data-wall-tile-count={layout?.wallCount ?? 0}
       data-webgl-fallback={String(isFallback)}
       data-animation-state={animationState}
@@ -426,11 +433,7 @@ export function ThreeTable({
       {projection && layout && !isFallback && (
         <TableCenterFacts projection={projection} wallCount={layout.wallCount} />
       )}
-      {!projection ? (
-        <div role="status" aria-label="Table synchronization">
-          Synchronizing table
-        </div>
-      ) : isFallback ? (
+      {!projection ? null : isFallback ? (
         <TableFallback
           projection={projection}
           wallCount={layout?.wallCount ?? 0}
@@ -455,7 +458,7 @@ export function ThreeTable({
               near: CAMERA.near,
               far: CAMERA.far,
             }}
-            gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
+            gl={{ antialias: false, alpha: false, powerPreference: "high-performance" }}
             shadows={{ type: PCFShadowMap }}
             fallback={
               <TableFallback

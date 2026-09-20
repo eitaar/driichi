@@ -71,7 +71,8 @@
         { "action_id": "a11", "action": { "Discard": { "tile": 103, "tsumogiri": false } } },
         { "action_id": "a12", "action": { "Discard": { "tile": 108, "tsumogiri": false } } },
         { "action_id": "a13", "action": { "Discard": { "tile": 129, "tsumogiri": false } } },
-        { "action_id": "a14", "action": { "Discard": { "tile": 133, "tsumogiri": false } } }
+        { "action_id": "a14", "action": { "Discard": { "tile": 133, "tsumogiri": false } } },
+        { "action_id": "pass-1", "action": "Pass" }
       ], "default_action_id": "a4", "duration_ms": 30000, "remaining_ms": 29999, "watchdog": false }
     },
     "4p-red-east": {
@@ -97,7 +98,8 @@
         { "action_id": "a11", "action": { "Discard": { "tile": 100, "tsumogiri": false } } },
         { "action_id": "a12", "action": { "Discard": { "tile": 114, "tsumogiri": false } } },
         { "action_id": "a13", "action": { "Discard": { "tile": 117, "tsumogiri": false } } },
-        { "action_id": "a14", "action": { "Discard": { "tile": 131, "tsumogiri": false } } }
+        { "action_id": "a14", "action": { "Discard": { "tile": 131, "tsumogiri": false } } },
+        { "action_id": "pass-1", "action": "Pass" }
       ], "default_action_id": "a6", "duration_ms": 30000, "remaining_ms": 29999, "watchdog": false }
     }
   }

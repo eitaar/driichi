@@ -1,7 +1,14 @@
 import AxeBuilder from "@axe-core/playwright";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
+
+const characterFixtureRoot = resolve(
+  process.cwd(),
+  "tests/fixtures/task12-characters/player-red",
+);
 
 const summary = {
   match_id: "MATCH15",
@@ -24,19 +31,20 @@ function replayFrame(index: number, event: string, auxiliary_events: unknown[] =
       mode: "FourPlayerRedEast",
       round: "East",
       kyoku: index < 2 ? 1 : 2,
+      remaining_wall: Math.max(0, 66 - index * 7),
       players: [0, 1, 2, 3].map((seat) => ({
         seat,
         participant_id: `P${seat}`,
         display_name: `Seat ${seat}`,
         kind: "BuiltInBot",
-        score: 25000,
-        hand: [0, 1, 2],
-        concealed_count: 3,
-        discards: [],
-        melds: [],
-        riichi: false,
+        score: 25000 + (seat === 0 ? 1500 : -500),
+        hand: [0, 1, 2, 10, 11, 12, 20, 21, 22, 30, 31, 32, 40, 41],
+        concealed_count: 14,
+        discards: [3, 13, 23, 33, 43, 53],
+        melds: [{ tiles: [4, 5, 6] }],
+        riichi: seat === 2 && index > 0,
       })),
-      dora_indicators: [0],
+      dora_indicators: [0, 16],
       decision: null,
     },
     auxiliary_events,
@@ -79,7 +87,14 @@ for (const viewport of [
   test(`captures Replay library and viewer at ${viewport.label}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.route("**/assets/characters/ordinary-pack/**", async (route) => {
-      await route.fulfill({ status: 200, contentType: "image/svg+xml", body: "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"#fff\"/></svg>" });
+      const fileName = new URL(route.request().url()).pathname.endsWith("/icon.webp")
+        ? "icon.webp"
+        : "portrait.webp";
+      await route.fulfill({
+        status: 200,
+        contentType: "image/webp",
+        body: readFileSync(resolve(characterFixtureRoot, fileName)),
+      });
     });
     await page.route("**/api/v1/admin/replays**", async (route) => {
       if (route.request().method() === "DELETE") {
@@ -197,7 +212,18 @@ for (const viewport of [
     await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
     await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
     await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
+    const tableHeightRatio = Number(await table.getAttribute("data-table-height-ratio"));
+    const tableWidthRatio = Number(await table.getAttribute("data-table-width-ratio"));
+    expect(tableWidthRatio).toBeGreaterThanOrEqual(0.82);
+    expect(tableWidthRatio).toBeLessThanOrEqual(0.9);
+    expect(tableHeightRatio).toBeGreaterThanOrEqual(0.78);
+    expect(tableHeightRatio).toBeLessThanOrEqual(0.88);
+    expect(Number(await table.getAttribute("data-rendered-tile-count"))).toBeGreaterThanOrEqual(100);
     await expect(page.locator(".table-player-frame")).toHaveCount(4);
+    await expect(page.locator(".table-player-portrait")).toHaveCount(4);
+    await expect.poll(() => page.locator(".table-player-portrait").evaluateAll((images) =>
+      images.every((image) => (image as HTMLImageElement).naturalWidth > 1),
+    )).toBe(true);
     await expect(page.locator('.table-player-frame[data-position="top"]')).toHaveCount(1);
     const composition = await stage.evaluate((element) => {
       const bounds = element.getBoundingClientRect();
@@ -276,7 +302,14 @@ for (const viewport of [
     let deletedLaterPage = false;
     let failNextList = false;
     await page.route("**/assets/characters/ordinary-pack/**", async (route) => {
-      await route.fulfill({ status: 200, contentType: "image/svg+xml", body: "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"#fff\"/></svg>" });
+      const fileName = new URL(route.request().url()).pathname.endsWith("/icon.webp")
+        ? "icon.webp"
+        : "portrait.webp";
+      await route.fulfill({
+        status: 200,
+        contentType: "image/webp",
+        body: readFileSync(resolve(characterFixtureRoot, fileName)),
+      });
     });
     await page.route("**/api/v1/admin/replays**", async (route) => {
       const request = route.request();
