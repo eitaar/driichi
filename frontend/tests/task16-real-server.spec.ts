@@ -250,13 +250,13 @@ async function installEmbeddedProjection(page: Page) {
 
 async function waitForDecision(page: Page, seats: number) {
   await expect(page.getByTestId("gameplay-shell")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("pixi-table")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+  await expect(page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
   await expect.poll(
     async () => (await page.getByTestId("action-deck").locator("button:enabled").count())
       + (await page.locator(".table-tile-hit.is-legal").count()),
     { timeout: 30_000, message: "Human should receive an actual open Decision" },
   ).toBeGreaterThan(0);
-  await expect(page.getByTestId("pixi-table")).toHaveAttribute(
+  await expect(page.getByTestId("three-table")).toHaveAttribute(
     "data-player-frame-count",
     String(seats),
     { timeout: 30_000 },
@@ -447,7 +447,7 @@ test("serves the embedded gameplay with visible tiles under its CSP", async ({ p
   expect(documentResponse?.headers()["content-security-policy"]).toContain(
     "script-src 'self'",
   );
-  const table = page.getByTestId("pixi-table");
+  const table = page.getByTestId("three-table");
   await expect(table).toHaveAttribute("data-render-ready", "true", {
     timeout: 30_000,
   });
@@ -532,7 +532,7 @@ async function verifyReplayAndOpenRoutes(
   await expect(row).toHaveCount(1);
   await row.getByRole("link", { name: /view replay/i }).click();
   await expect(adminPage.getByRole("heading", { name: new RegExp(`Task 16 ${mode} Replay`, "i") })).toBeVisible();
-  await expect(adminPage.getByTestId("pixi-table")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+  await expect(adminPage.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
   await expect(adminPage.getByTestId("replay-viewer")).toHaveAttribute("data-motion", "static");
   await expectAccessible(adminPage, "replay viewer");
   await captureAtBothViewports(adminPage, `${mode}-replay-viewer`);

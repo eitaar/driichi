@@ -109,7 +109,7 @@ for (const viewport of [
     await expect(replayControls).toBeVisible();
     await expect(stage.locator(".replay-status-toast")).toBeVisible();
     await expect(page.locator(".replay-event-log")).toBeVisible();
-    if (viewport.height >= 1000) {
+    {
       const transportBounds = await replayControls.evaluate((element) => {
         const container = element.getBoundingClientRect();
         const controls = Array.from(
@@ -118,6 +118,7 @@ for (const viewport of [
           const rect = control.getBoundingClientRect();
           return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
         });
+        const stage = element.parentElement?.getBoundingClientRect();
         return {
           container: {
             left: container.left,
@@ -125,6 +126,12 @@ for (const viewport of [
             right: container.right,
             bottom: container.bottom,
           },
+          stage: stage ? {
+            left: stage.left,
+            top: stage.top,
+            right: stage.right,
+            bottom: stage.bottom,
+          } : null,
           controls,
           scrollHeight: element.scrollHeight,
           clientHeight: element.clientHeight,
@@ -132,24 +139,66 @@ for (const viewport of [
           clientWidth: element.clientWidth,
         };
       });
-      expect(transportBounds.container.bottom).toBeLessThanOrEqual(viewport.height);
+      expect(transportBounds.stage).not.toBeNull();
+      expect(transportBounds.container.left).toBeGreaterThanOrEqual(transportBounds.stage!.left);
+      expect(transportBounds.container.top).toBeGreaterThanOrEqual(transportBounds.stage!.top);
+      expect(transportBounds.container.right).toBeLessThanOrEqual(transportBounds.stage!.right);
+      expect(transportBounds.container.bottom).toBeLessThanOrEqual(transportBounds.stage!.bottom);
       expect(transportBounds.controls).not.toHaveLength(0);
       for (const control of transportBounds.controls) {
         expect(control.left).toBeGreaterThanOrEqual(transportBounds.container.left);
         expect(control.top).toBeGreaterThanOrEqual(transportBounds.container.top);
         expect(control.right).toBeLessThanOrEqual(transportBounds.container.right);
         expect(control.bottom).toBeLessThanOrEqual(transportBounds.container.bottom);
-        expect(control.bottom).toBeLessThanOrEqual(viewport.height);
       }
       expect(transportBounds.scrollHeight).toBeLessThanOrEqual(transportBounds.clientHeight);
       expect(transportBounds.scrollWidth).toBeLessThanOrEqual(transportBounds.clientWidth);
     }
     await expect(page.locator(".replay-table-wrap + .replay-controls")).toHaveCount(0);
-    const table = page.getByTestId("pixi-table");
+    const table = page.getByTestId("three-table");
     await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
     await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
-    await expect(table).toHaveAttribute("data-rendered-table-primitives", /^[1-9]\d*$/);
-    await expect(table).toHaveAttribute("data-rendered-visual-primitives", /^[1-9]\d*$/);
+    await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
+    await expect(page.locator(".table-player-frame")).toHaveCount(4);
+    await expect(page.locator('.table-player-frame[data-position="top"]')).toHaveCount(1);
+    const composition = await stage.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const safeHand = {
+        left: bounds.left + bounds.width * .18,
+        right: bounds.right - bounds.width * .18,
+        top: bounds.top + bounds.height * .64,
+        bottom: bounds.top + bounds.height * .8,
+      };
+      const boxes = Array.from(
+        element.querySelectorAll<HTMLElement>(".table-player-frame, .replay-controls-overlay"),
+      ).map((target) => {
+        const rect = target.getBoundingClientRect();
+        return {
+          label: target.className,
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      });
+      return {
+        bounds: { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom },
+        safeHand,
+        boxes,
+      };
+    });
+    expect(composition.boxes).toHaveLength(5);
+    for (const box of composition.boxes) {
+      expect(box.left).toBeGreaterThanOrEqual(composition.bounds.left);
+      expect(box.right).toBeLessThanOrEqual(composition.bounds.right);
+      expect(box.top).toBeGreaterThanOrEqual(composition.bounds.top);
+      expect(box.bottom).toBeLessThanOrEqual(composition.bounds.bottom);
+      const intersectsHand = box.left < composition.safeHand.right
+        && box.right > composition.safeHand.left
+        && box.top < composition.safeHand.bottom
+        && box.bottom > composition.safeHand.top;
+      expect(intersectsHand, box.label).toBe(false);
+    }
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await expect(page.getByRole("status")).toContainText(/disconnected/i);
     await expectNoSeriousOrCriticalViolations(page, ".replay-table-stage");

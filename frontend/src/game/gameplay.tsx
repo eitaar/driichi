@@ -8,7 +8,7 @@ import {
 } from "./actions";
 import { AudioManager, type AudioSettings, type VoiceKind } from "./audio";
 import { decodeCharacterAsset } from "./assets";
-import { PixiTable, type PortraitEffect } from "./pixi-table";
+import { ThreeTable, type PortraitEffect } from "./three-table";
 import { seatPositionFor } from "./orientation";
 import { useGameStore, type Transport } from "./store";
 import type {
@@ -985,7 +985,7 @@ export function GameplaySurface({
                 <span>The table will synchronize when the host sends the next snapshot.</span>
               </div>
             )}
-            <PixiTable
+            <ThreeTable
               projection={projection}
               room={room}
               animations={animations}
@@ -994,6 +994,7 @@ export function GameplaySurface({
               onAnimationConsumed={(id: number) =>
                 useGameStore.getState().consumeAnimations([id])
               }
+              surface="live"
             />
             <TileHitLayer
               hand={ownPlayer?.hand ?? []}

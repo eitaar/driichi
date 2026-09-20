@@ -7,8 +7,7 @@ import { seatPositions } from "./orientation";
 import { useGameStore } from "./store";
 import { tileAssetUrl, tileFileName, tileLabel } from "./tiles";
 import { portraitFromEvents } from "./gameplay";
-import { displayPlayerName, remainingWallValue } from "./table-art";
-import { effectDuration } from "./table-effects";
+import { wallTileCount } from "./table-geometry";
 
 beforeEach(() => {
   useGameStore.getState().reset();
@@ -32,13 +31,6 @@ describe("Task 12 table invariants", () => {
     expect(tileFileName(88)).toBe("Sou5-Dora.svg");
     expect(tileAssetUrl(16)).toContain("Regular/Man5-Dora.svg");
     expect(tileLabel(16)).toContain("5m");
-  });
-
-  it("removes transition time under Reduced Motion", () => {
-    expect(effectDuration("discard", true)).toBe(0);
-    expect(effectDuration("win", true)).toBe(0);
-    expect(effectDuration("discard", false)).toBe(240);
-    expect(effectDuration("win", false)).toBe(520);
   });
 
   it("keeps exactly 64 animations and cancels on the next item", () => {
@@ -126,17 +118,11 @@ describe("Task 12 table invariants", () => {
     expect(loadAudioSettings(storage)).toEqual({ master: 0.5, sfx: 0.4, voice: 0.3, voiceEnabled: false });
   });
 
-  it("bounds malformed center wall labels to the rendered wall", () => {
-    expect(remainingWallValue({ remaining_wall: 999 })).toBe("136 TILES LEFT");
-    expect(remainingWallValue({ remaining_wall: [1, 2, 3] })).toBe("3 TILES LEFT");
-    expect(remainingWallValue({ remaining_wall: Number.POSITIVE_INFINITY })).toBe("0 TILES LEFT");
-    expect(remainingWallValue({ remaining_wall: Number.NaN })).toBe("0 TILES LEFT");
-  });
-
-  it("bounds long table labels without changing the source Display Name", () => {
-    const name = "A very long participant display name";
-    expect(displayPlayerName(name)).toBe("A very long partic…");
-    expect(name).toBe("A very long participant display name");
+  it("bounds malformed center wall values to the rendered wall", () => {
+    expect(wallTileCount(999)).toBe(136);
+    expect(wallTileCount([1, 2, 3])).toBe(3);
+    expect(wallTileCount(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(wallTileCount(Number.NaN)).toBe(0);
   });
 
   it("derives a visible Mangan result from the projected resolution event", () => {

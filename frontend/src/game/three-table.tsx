@@ -15,7 +15,7 @@ import { MatchTableScene } from "./three-table-scene";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
 import { buildMatchSceneLayout, CAMERA } from "./three-table-layout";
 import { tileLabel } from "./tiles";
-import type { ProjectedState, RoomSnapshot } from "./types";
+import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 
 export interface PortraitEffect {
   characterId: string;
@@ -35,6 +35,12 @@ export interface ThreeTableProps {
   portraitEffect?: PortraitEffect | null;
   onAnimationConsumed?: (id: number) => void;
   surface?: "live" | "replay";
+}
+
+export interface TablePlayerOverlayProps {
+  projection: ProjectedState;
+  room: RoomSnapshot | null;
+  surface: "live" | "replay";
 }
 
 interface BoundaryProps {
@@ -99,6 +105,81 @@ function TableFallback({
   );
 }
 
+function characterIdFor(room: RoomSnapshot | null, participantId: string): string | null {
+  const roomPlayers = room?.roster?.length ? room.roster : room?.match_players ?? [];
+  return roomPlayers.find((player) => player.participant_id === participantId)?.character_id ?? null;
+}
+
+function playerInitial(player: ProjectedPlayer): string {
+  return Array.from(player.display_name.trim())[0]?.toUpperCase()
+    ?? Array.from((player.kind ?? "player").trim())[0]?.toUpperCase()
+    ?? "?";
+}
+
+function PlayerPortrait({
+  player,
+  characterId,
+}: {
+  player: ProjectedPlayer;
+  characterId: string | null;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (!characterId || failed) {
+    return (
+      <span className="table-player-portrait asset-fallback" aria-label={`${player.display_name} portrait unavailable`}>
+        {playerInitial(player)}
+      </span>
+    );
+  }
+  return (
+    <img
+      className="table-player-portrait"
+      src={`/assets/characters/${encodeURIComponent(characterId)}/portrait.webp`}
+      alt={`${player.display_name} portrait`}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+export function TablePlayerOverlay({
+  projection,
+  room,
+  surface,
+}: TablePlayerOverlayProps) {
+  const layout = useMemo(() => buildMatchSceneLayout(projection, room), [projection, room]);
+  return (
+    <div className="table-player-overlays" data-surface={surface}>
+      {layout.players.map((scenePlayer) => {
+        const player = projection.players?.find((candidate) => candidate.seat === scenePlayer.seat);
+        if (!player) return null;
+        const characterId = characterIdFor(room, player.participant_id);
+        return (
+          <section
+            className={`table-player-frame${scenePlayer.isLocal ? " is-local" : ""}`}
+            data-position={scenePlayer.position}
+            key={`${scenePlayer.position}:${player.participant_id}`}
+            aria-label={`${player.display_name}, ${scenePlayer.position} player`}
+          >
+            <PlayerPortrait
+              key={`${player.participant_id}:${characterId ?? "fallback"}`}
+              player={player}
+              characterId={characterId}
+            />
+            <span className="table-player-copy">
+              <strong>{player.display_name}</strong>
+              <span className="table-player-score">
+                {typeof player.score === "number" ? player.score.toLocaleString() : "—"}
+              </span>
+              <span className="table-player-position">{scenePlayer.position.toUpperCase()}</span>
+              {player.riichi && <span className="table-player-riichi">Riichi</span>}
+            </span>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ThreeTable({
   projection,
   room,
@@ -156,6 +237,11 @@ export function ThreeTable({
     : animations.length > 0
       ? "queued"
       : "idle";
+  const nextAnimationId = animations[0]?.id;
+
+  useEffect(() => {
+    if (nextAnimationId !== undefined) _onAnimationConsumed?.(nextAnimationId);
+  }, [nextAnimationId, _onAnimationConsumed]);
 
   return (
     <div
@@ -172,6 +258,9 @@ export function ThreeTable({
       role="group"
       aria-label="3D mahjong table"
     >
+      {projection && (
+        <TablePlayerOverlay projection={projection} room={room} surface={surface} />
+      )}
       {!projection ? (
         <div role="status" aria-label="Table synchronization">
           Synchronizing table

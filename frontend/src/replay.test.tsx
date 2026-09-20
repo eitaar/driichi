@@ -13,9 +13,9 @@ vi.mock("./game/audio", () => ({
   },
 }));
 vi.mock("./game/assets", () => ({ decodeCharacterAsset: mockDecodeCharacterAsset }));
-vi.mock("./game/pixi-table", () => ({
-  PixiTable: ({ projection, portraitEffect }: { projection: { players?: unknown[] }; portraitEffect?: { characterId: string } | null }) => (
-    <div data-testid="replay-pixi-table" data-portrait={portraitEffect?.characterId ?? "none"}>{projection.players?.length ?? 0} players</div>
+vi.mock("./game/three-table", () => ({
+  ThreeTable: ({ projection, portraitEffect, surface }: { projection: { players?: unknown[] }; portraitEffect?: { characterId: string } | null; surface?: string }) => (
+    <div data-testid="replay-three-table" data-portrait={portraitEffect?.characterId ?? "none"} data-surface={surface}>{projection.players?.length ?? 0} players</div>
   ),
 }));
 
@@ -75,6 +75,55 @@ describe("Replay Admin workspace", () => {
       if (path.endsWith("/admin/rooms")) return Promise.resolve(response([]));
       return Promise.resolve(response([]));
     }));
+  });
+
+  it("renders shared four- and three-player overlays from scene positions", async () => {
+    const { TablePlayerOverlay } = await vi.importActual<typeof import("./game/three-table")>(
+      "./game/three-table",
+    );
+    const players = [0, 1, 2, 3].map((seat) => ({
+      seat,
+      participant_id: `P${seat}`,
+      display_name: seat === 0 ? "Mika" : `Seat ${seat}`,
+      score: 25_000 - seat * 1_000,
+      hand: seat === 0 ? [0, 1, 2] : undefined,
+      concealed_count: 3,
+      discards: [],
+      melds: [],
+      riichi: seat === 1,
+    }));
+    const overlayRoom = {
+      roster: [{ participant_id: "P0", character_id: "ordinary-pack" }],
+      match_players: [],
+    } as never;
+    const view = render(
+      <TablePlayerOverlay
+        projection={{ mode: "4p-red-east", audience: "replay_admin", players }}
+        room={overlayRoom}
+        surface="replay"
+      />,
+    );
+
+    expect(view.container.querySelectorAll(".table-player-frame")).toHaveLength(4);
+    expect(view.container.querySelector('[data-position="top"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("Mika");
+    expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("25,000");
+    expect(view.container.querySelector('[data-position="right"]')).toHaveTextContent("Riichi");
+    expect(screen.getByAltText("Mika portrait")).toHaveAttribute(
+      "src",
+      "/assets/characters/ordinary-pack/portrait.webp",
+    );
+
+    view.rerender(
+      <TablePlayerOverlay
+        projection={{ mode: "3p-red-east", audience: "replay_admin", players }}
+        room={overlayRoom}
+        surface="replay"
+      />,
+    );
+    expect(view.container.querySelectorAll(".table-player-frame")).toHaveLength(3);
+    expect(view.container.querySelector('[data-position="top"]')).toBeNull();
+    expect(view.container).not.toHaveTextContent("Seat 3");
   });
 
   it("lists newest replays with View and Delete actions", async () => {
@@ -180,7 +229,7 @@ describe("Replay Admin workspace", () => {
     expect(await screen.findByText("ROOM ASSETS")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /next event/i }));
     await waitFor(() => expect(mockPlayVoices).toHaveBeenCalledWith([{ characterId: "ordinary-pack", kind: "tsumo" }]));
-    expect(screen.getByTestId("replay-pixi-table")).toHaveAttribute("data-portrait", "ordinary-pack");
+    expect(screen.getByTestId("replay-three-table")).toHaveAttribute("data-portrait", "ordinary-pack");
   });
 
   it("switches to generic silent playback when a Room pack cannot load", async () => {
@@ -196,7 +245,7 @@ describe("Replay Admin workspace", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: /view replay match15/i }));
     expect(await screen.findByText("GENERIC / SILENT")).toBeVisible();
-    expect(screen.getByTestId("replay-pixi-table")).toHaveAttribute("data-portrait", "none");
+    expect(screen.getByTestId("replay-three-table")).toHaveAttribute("data-portrait", "none");
     expect(mockPlayVoices).not.toHaveBeenCalled();
   });
 
@@ -213,7 +262,8 @@ describe("Replay Admin workspace", () => {
     render(<App />);
     fireEvent.click((await screen.findByRole("link", { name: /view replay match15/i })));
     expect(await screen.findByRole("heading", { name: /night market replay/i })).toBeVisible();
-    expect(screen.getByTestId("replay-pixi-table")).toHaveTextContent("4 players");
+    expect(screen.getByTestId("replay-three-table")).toHaveTextContent("4 players");
+    expect(screen.getByTestId("replay-three-table")).toHaveAttribute("data-surface", "replay");
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /previous event/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /next event/i })).toBeVisible();
