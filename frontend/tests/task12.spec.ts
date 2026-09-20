@@ -226,12 +226,14 @@ async function expectNoSeriousOrCriticalViolations(page: Page, include?: string)
   ).toEqual([]);
 }
 
-for (const viewport of [
+const requiredViewports = [
   { width: 1024, height: 600, label: "1024x600" },
   { width: 1280, height: 720, label: "1280x720" },
   { width: 1600, height: 900, label: "1600x900" },
   { width: 1920, height: 1080, label: "1920x1080" },
-]) {
+] as const;
+
+for (const viewport of requiredViewports) {
   for (const mode of ["3p-red-east", "4p-red-east"] as const) {
     test(`captures ${mode} authoritative gameplay at ${viewport.label}`, async ({
       page,
@@ -420,43 +422,45 @@ test("omits the Action row when no Decision is open", async ({ page }) => {
   await expect(page.getByTestId("action-deck")).toHaveCount(0);
 });
 
-test("candidate popup transfers focus and closes on Escape", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await installCharacterFixtures(page);
-  const popupState = JSON.parse(JSON.stringify(projectionFixture.projections["4p-red-east"])) as Record<string, unknown>;
-  (popupState.decision as Record<string, unknown>).actions = [
-    { action_id: "chi-1", action: { Chi: { target: 1, called: 1, consumed: [0, 4] } } },
-    { action_id: "chi-2", action: { Chi: { target: 1, called: 2, consumed: [1, 5] } } },
-  ];
-  await installSocket(page, "4p-red-east", popupState);
-  await page.goto("/room/123456/lobby");
-  const trigger = page.getByRole("button", { name: "Chi (2)" });
-  await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "Choose a legal candidate" });
-  await expect(dialog).toHaveAttribute("aria-modal", "true");
-  await expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
-  await expect(trigger).toHaveAttribute("aria-expanded", "true");
-  const dialogId = await dialog.getAttribute("id");
-  expect(dialogId).toBeTruthy();
-  await expect(trigger).toHaveAttribute("aria-controls", dialogId ?? "");
-  await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
-  await expectInsideStageAndClearOfHand(
-    page.locator(".table-letterbox"),
-    dialog,
-    page.locator(".table-hit-layer"),
-  );
-  await expectNoSeriousOrCriticalViolations(page, ".gameplay-main");
-  const candidateButtons = dialog.locator(".candidate-list button");
-  await candidateButtons.last().focus();
-  await page.keyboard.press("Tab");
-  await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(candidateButtons.last()).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(trigger).toHaveAttribute("aria-expanded", "false");
-  await expect(trigger).toBeFocused();
-});
+for (const viewport of requiredViewports) {
+  test(`candidate popup transfers focus and stays in its safe area at ${viewport.label}`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installCharacterFixtures(page);
+    const popupState = JSON.parse(JSON.stringify(projectionFixture.projections["4p-red-east"])) as Record<string, unknown>;
+    (popupState.decision as Record<string, unknown>).actions = [
+      { action_id: "chi-1", action: { Chi: { target: 1, called: 1, consumed: [0, 4] } } },
+      { action_id: "chi-2", action: { Chi: { target: 1, called: 2, consumed: [1, 5] } } },
+    ];
+    await installSocket(page, "4p-red-east", popupState);
+    await page.goto("/room/123456/lobby");
+    const trigger = page.getByRole("button", { name: "Chi (2)" });
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Choose a legal candidate" });
+    await expect(dialog).toHaveAttribute("aria-modal", "true");
+    await expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const dialogId = await dialog.getAttribute("id");
+    expect(dialogId).toBeTruthy();
+    await expect(trigger).toHaveAttribute("aria-controls", dialogId ?? "");
+    await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
+    await expectInsideStageAndClearOfHand(
+      page.locator(".table-letterbox"),
+      dialog,
+      page.locator(".table-hit-layer"),
+    );
+    await expectNoSeriousOrCriticalViolations(page, ".gameplay-main");
+    const candidateButtons = dialog.locator(".candidate-list button");
+    await candidateButtons.last().focus();
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(candidateButtons.last()).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(trigger).toBeFocused();
+  });
+}
 
 test("disables open candidate choices after transport disconnects", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
