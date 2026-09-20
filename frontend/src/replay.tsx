@@ -341,10 +341,10 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
         data-testid="replay-viewer"
         data-motion={reducedMotion ? "static" : "cinematic"}
       >
-        <div className="replay-viewer-head"><div><span className="state-label">EVENT {position + 1} / {frames.length}</span><h2>{readableKind(eventKind(frame.visible_event))}</h2></div><span className="replay-live-state">{presentationLabel}</span></div>
         <div className="replay-table-stage">
+          <div className="replay-viewer-head"><div><span className="state-label">EVENT {position + 1} / {frames.length}</span><h2>{readableKind(eventKind(frame.visible_event))}</h2></div></div>
           <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion} portraitEffect={portraitEffect} surface="replay" /></div>
-          <div className="replay-status-toast" role="status" aria-live="polite"><span className="state-label">EVENT SIGNAL</span><strong>{statusText}</strong></div>
+          <div className="replay-status-toast" role="status" aria-live="polite"><span className="replay-live-state">{presentationLabel}</span><span className="state-label">EVENT SIGNAL</span><strong>{statusText}</strong></div>
           <div className="replay-controls replay-controls-overlay" aria-label="Replay controls">
             {!playing ? <button className="button button-primary" onClick={() => setPlaying(position < frames.length - 1 && frames.length > 1)}><Play aria-hidden="true" weight="fill" />Play</button> : <button className="button button-primary" onClick={() => setPlaying(false)}><Pause aria-hidden="true" weight="fill" />Pause</button>}
             <button className="button button-secondary" aria-label="Previous Event" disabled={position === 0} onClick={() => selectPosition(position - 1)}><ArrowLeft aria-hidden="true" weight="regular" />Previous Event</button>
@@ -364,7 +364,7 @@ function ReplayDetail({ matchId }: { matchId: string }) {
   if (query.isLoading) return <main id="replay-main" className="replay-main"><section className="replay-loading" role="status" aria-busy="true" aria-live="polite"><span className="state-label">Loading Replay…</span></section></main>;
   if (query.isError) return <main id="replay-main" className="replay-main"><ProblemMessage problem={problemFrom(query.error)} /></main>;
   if (!query.data) return <main id="replay-main" className="replay-main"><ProblemMessage problem={{ code: "replay_unavailable", detail: "The Replay could not be loaded." }} /></main>;
-  return <main id="replay-main" className="replay-main replay-detail-main"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header><ReplayViewer replay={query.data} /></main>;
+  return <main id="replay-main" className="replay-main replay-detail-main"><ReplayViewer replay={query.data} /><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
 }
 
 export function ReplayWorkspace({ matchId }: { matchId?: string }) {

@@ -60,16 +60,13 @@ const replay = {
   ],
 };
 
-async function expectNoSeriousOrCriticalViolations(page: import("@playwright/test").Page, include?: string) {
+async function expectNoAxeViolations(page: import("@playwright/test").Page, include?: string) {
   const axe = new AxeBuilder({ page });
   if (include) axe.include(include);
   const results = await axe.analyze();
-  const seriousOrCritical = results.violations.filter((violation) =>
-    violation.impact === "serious" || violation.impact === "critical",
-  );
   expect(
-    seriousOrCritical,
-    seriousOrCritical.map((violation) => violation.id).join(", "),
+    results.violations,
+    results.violations.map((violation) => `${violation.id}:${violation.impact}`).join(", "),
   ).toEqual([]);
 }
 
@@ -105,6 +102,41 @@ for (const viewport of [
     await expect(page.getByRole("heading", { name: /night market replay/i })).toBeVisible();
     const stage = page.locator(".replay-table-stage");
     await expect(stage).toBeVisible();
+    const foldComposition = await stage.evaluate((element) => {
+      const stage = element.getBoundingClientRect();
+      const eventLog = document.querySelector<HTMLElement>(".replay-event-log")?.getBoundingClientRect();
+      return {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        stage: { top: stage.top, right: stage.right, bottom: stage.bottom, left: stage.left, width: stage.width, height: stage.height },
+        eventLogTop: eventLog?.top ?? 0,
+      };
+    });
+    expect(foldComposition.stage.top).toBeGreaterThanOrEqual(72);
+    expect(foldComposition.stage.bottom).toBeLessThanOrEqual(foldComposition.viewport.height);
+    expect(foldComposition.stage.width / foldComposition.stage.height).toBeCloseTo(16 / 9, 2);
+    expect(foldComposition.stage.width).toBeGreaterThanOrEqual(
+      Math.min(
+        foldComposition.viewport.width * 0.9,
+        (foldComposition.viewport.height - 72) * (16 / 9) * 0.98,
+      ),
+    );
+    expect(foldComposition.eventLogTop).toBeGreaterThanOrEqual(foldComposition.stage.bottom);
+    const viewerHeadBounds = await page.locator(".replay-viewer-head").evaluate((element) => {
+      const head = element.getBoundingClientRect();
+      const status = document.querySelector<HTMLElement>(".replay-status-toast")?.getBoundingClientRect();
+      const stage = element.closest(".replay-table-stage")?.getBoundingClientRect();
+      return {
+        head: { left: head.left, top: head.top, right: head.right, bottom: head.bottom },
+        status: status ? { top: status.top, bottom: status.bottom } : null,
+        stage: stage ? { left: stage.left, top: stage.top, right: stage.right, bottom: stage.bottom } : null,
+      };
+    });
+    expect(viewerHeadBounds.stage).not.toBeNull();
+    expect(viewerHeadBounds.status).not.toBeNull();
+    expect(viewerHeadBounds.head.left).toBeGreaterThanOrEqual(viewerHeadBounds.stage!.left);
+    expect(viewerHeadBounds.head.right).toBeLessThanOrEqual(viewerHeadBounds.stage!.right);
+    expect(viewerHeadBounds.head.top).toBeGreaterThanOrEqual(viewerHeadBounds.stage!.top);
+    expect(viewerHeadBounds.head.bottom).toBeLessThanOrEqual(viewerHeadBounds.status!.top - 4);
     const replayControls = stage.locator(".replay-controls-overlay");
     await expect(replayControls).toBeVisible();
     await expect(stage.locator(".replay-status-toast")).toBeVisible();
@@ -145,6 +177,8 @@ for (const viewport of [
       expect(transportBounds.container.right).toBeLessThanOrEqual(transportBounds.stage!.right);
       expect(transportBounds.container.bottom).toBeLessThanOrEqual(transportBounds.stage!.bottom);
       expect(transportBounds.controls).not.toHaveLength(0);
+      expect(Math.max(...transportBounds.controls.map(({ top }) => top)) - Math.min(...transportBounds.controls.map(({ top }) => top))).toBeLessThanOrEqual(2);
+      expect(Math.max(...transportBounds.controls.map(({ bottom }) => bottom)) - Math.min(...transportBounds.controls.map(({ bottom }) => bottom))).toBeLessThanOrEqual(2);
       for (const control of transportBounds.controls) {
         expect(control.left).toBeGreaterThanOrEqual(transportBounds.container.left);
         expect(control.top).toBeGreaterThanOrEqual(transportBounds.container.top);
@@ -205,7 +239,7 @@ for (const viewport of [
     }
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await expect(page.getByRole("status")).toContainText(/disconnected/i);
-    await expectNoSeriousOrCriticalViolations(page, ".replay-table-stage");
+    await expectNoAxeViolations(page, ".replay-table-stage");
     await page.getByRole("button", { name: /next event/i }).click();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
     const play = replayControls.getByRole("button", { name: /^play$/i });

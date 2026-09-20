@@ -1,4 +1,5 @@
 import type { AnimationItem } from "./animation";
+import { CAMERA, type Vec3 } from "./three-table-layout";
 
 export interface SceneMotion {
   itemId: number;
@@ -26,6 +27,26 @@ export function nextSceneMotion(
     if (motion) return { itemId: item.id, startedAt: 0, ...motion };
   }
   return null;
+}
+
+export function cameraAccentAt(
+  kind: SceneMotion["kind"],
+  progress: number,
+): { fov: number; target: Vec3 } {
+  if (kind !== "win") return { fov: CAMERA.fov, target: CAMERA.target };
+  const boundedProgress = Math.min(1, Math.max(0, progress));
+  if (boundedProgress === 0 || boundedProgress === 1) {
+    return { fov: CAMERA.fov, target: CAMERA.target };
+  }
+  const pulse = Math.sin(Math.PI * boundedProgress);
+  return {
+    fov: CAMERA.fov - 1.5 * pulse,
+    target: [
+      CAMERA.target[0],
+      CAMERA.target[1] + 0.08 * pulse,
+      CAMERA.target[2] + 0.22 * pulse,
+    ],
+  };
 }
 
 export function sceneMotionProgress(motion: SceneMotion, now: number): number {

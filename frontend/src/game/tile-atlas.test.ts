@@ -9,6 +9,8 @@ type ImageMode = "load" | "error" | "pending";
 let imageMode: ImageMode;
 let loadedUrls: string[];
 let drawImage: ReturnType<typeof vi.fn>;
+let fillRect: ReturnType<typeof vi.fn>;
+let fillStyle: string;
 let originalGetContext: typeof HTMLCanvasElement.prototype.getContext;
 
 class MockImage {
@@ -45,11 +47,18 @@ beforeEach(() => {
   imageMode = "load";
   loadedUrls = [];
   drawImage = vi.fn();
+  fillRect = vi.fn();
+  fillStyle = "";
   vi.stubGlobal("Image", MockImage);
   originalGetContext = HTMLCanvasElement.prototype.getContext;
   Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
-    value: vi.fn(() => ({ drawImage })),
+    value: vi.fn(() => ({
+      drawImage,
+      fillRect,
+      get fillStyle() { return fillStyle; },
+      set fillStyle(value: string) { fillStyle = value; },
+    })),
   });
 });
 
@@ -70,7 +79,11 @@ describe("createTileAtlas", () => {
     expect(atlas.rows).toBe(Math.ceil(representatives.length / 8));
     expect(loadedUrls).toHaveLength(representatives.length);
     expect(new Set(loadedUrls).size).toBe(representatives.length);
+    expect(fillStyle).toBe("#eee5d2");
+    expect(fillRect).toHaveBeenCalledTimes(representatives.length);
+    expect(fillRect).toHaveBeenNthCalledWith(1, 0, 0, 128, 171);
     expect(drawImage).toHaveBeenCalledTimes(representatives.length);
+    expect(fillRect.mock.invocationCallOrder[0]).toBeLessThan(drawImage.mock.invocationCallOrder[0]);
 
     const cells = representatives.map((tile) => JSON.stringify(atlas.cellFor(tile)));
     expect(new Set(cells).size).toBe(representatives.length);

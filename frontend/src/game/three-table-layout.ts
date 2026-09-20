@@ -29,9 +29,9 @@ export interface MatchSceneLayout {
 
 export const TABLE_SIZE = { width: 13.6, depth: 9.2 } as const;
 export const CAMERA = {
-  fov: 31,
-  position: [0, 11.8, 12.6] as Vec3,
-  target: [0, 0.15, 0.25] as Vec3,
+  fov: 32,
+  position: [0, 12.8, 11.6] as Vec3,
+  target: [0, 0.15, 0] as Vec3,
   near: 0.1,
   far: 60,
 } as const;
@@ -39,7 +39,7 @@ export const LOCAL_TILE_SIZE = 1;
 export const REMOTE_TILE_SIZE = 0.72;
 
 const HAND_ANCHORS: Record<SceneSeat, Vec3> = {
-  bottom: [0, 0.28, 3.45],
+  bottom: [0, 0.28, 3.95],
   right: [5.35, 0.2, 0],
   top: [0, 0.2, -3.45],
   left: [-5.35, 0.2, 0],

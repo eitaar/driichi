@@ -213,6 +213,28 @@ async function expectInsideStageAndClearOfHand(
   }
 }
 
+async function expectApprovedLiveOverlayGeometry(page: Page) {
+  const geometry = await page.locator(".table-letterbox").evaluate((stage) => {
+    const stageRect = stage.getBoundingClientRect();
+    const hand = stage.querySelector<HTMLElement>(".table-hit-layer")!.getBoundingClientRect();
+    const actions = stage.querySelector<HTMLElement>(".action-deck")!.getBoundingClientRect();
+    const frames = Array.from(stage.querySelectorAll<HTMLElement>(".table-player-frame"))
+      .map((frame) => frame.getBoundingClientRect());
+    return {
+      stage: { width: stageRect.width, height: stageRect.height },
+      hand: { top: hand.top, bottom: hand.bottom, height: hand.height },
+      actions: { top: actions.top, bottom: actions.bottom },
+      frameWidths: frames.map(({ width }) => width),
+      factCount: stage.querySelectorAll(".table-center-facts > div").length,
+    };
+  });
+  expect(geometry.actions.bottom).toBeLessThanOrEqual(geometry.hand.top - 12);
+  // Hit targets should hug the projected local hand, not create a broad action band.
+  expect(geometry.hand.height).toBeLessThanOrEqual(geometry.stage.height * 0.12 + 4);
+  expect(Math.max(...geometry.frameWidths)).toBeLessThanOrEqual(geometry.stage.width * 0.09 + 1);
+  expect(geometry.factCount).toBe(5);
+}
+
 async function expectNoSeriousOrCriticalViolations(page: Page, include?: string) {
   const axe = new AxeBuilder({ page });
   if (include) axe.include(include);
@@ -223,6 +245,16 @@ async function expectNoSeriousOrCriticalViolations(page: Page, include?: string)
   expect(
     seriousOrCritical,
     seriousOrCritical.map((violation) => violation.id).join(", "),
+  ).toEqual([]);
+}
+
+async function expectNoAxeViolations(page: Page, include?: string) {
+  const axe = new AxeBuilder({ page });
+  if (include) axe.include(include);
+  const results = await axe.analyze();
+  expect(
+    results.violations,
+    results.violations.map((violation) => `${violation.id}:${violation.impact}`).join(", "),
   ).toEqual([]);
 }
 
@@ -278,6 +310,7 @@ for (const viewport of requiredViewports) {
         page.getByTestId("action-deck"),
         page.locator(".table-hit-layer"),
       );
+      await expectApprovedLiveOverlayGeometry(page);
       await expect(table.getByText("Mika")).toBeVisible();
       await expect(page.getByTestId("decision-timer")).toHaveAttribute(
         "aria-label",
@@ -382,6 +415,54 @@ test("keeps legal actions usable when WebGL creation fails", async ({ page }) =>
   expect(sent).toEqual([
     { type: "submit_action", decision_id: "d1", action_id: "a1" },
   ]);
+  await expectNoAxeViolations(page, ".gameplay-main");
+});
+
+test("falls back when renderer creation fails after WebGL preflight", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    let webglRequests = 0;
+    HTMLCanvasElement.prototype.getContext = function getContext(
+      this: HTMLCanvasElement,
+      contextId: string,
+      ...args: unknown[]
+    ) {
+      if (contextId === "webgl" || contextId === "webgl2" || contextId === "experimental-webgl") {
+        webglRequests += 1;
+        if (webglRequests > 1) return null;
+      }
+      return Reflect.apply(original, this, [contextId, ...args]);
+    } as typeof original;
+  });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+
+  const table = page.getByTestId("three-table");
+  await expect(table).toHaveAttribute("data-webgl-fallback", "true", { timeout: 20_000 });
+  await expect(table).toHaveAttribute("data-render-ready", "false");
+  await expect(table).toHaveAttribute("data-rendered-tile-count", "0");
+  await expect(table).toHaveAttribute("data-rendered-scene-primitives", "0");
+  await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
+});
+
+test("falls back accessibly after WebGL context loss", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  const table = await expectRenderedTable(page);
+
+  await table.locator("canvas").dispatchEvent("webglcontextlost");
+
+  await expect(table).toHaveAttribute("data-webgl-fallback", "true");
+  await expect(table).toHaveAttribute("data-render-ready", "false");
+  await expect(table).toHaveAttribute("data-rendered-tile-count", "0");
+  await expect(table).toHaveAttribute("data-rendered-scene-primitives", "0");
+  await expect(page.getByRole("status", { name: "3D table unavailable" })).toBeVisible();
+  await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
+  await expectNoAxeViolations(page, ".gameplay-main");
 });
 
 test("runs one bounded discard motion and stops invalidating after idle", async ({ page }) => {
@@ -394,6 +475,10 @@ test("runs one bounded discard motion and stops invalidating after idle", async 
   const shell = page.getByTestId("gameplay-shell");
   const consumedBefore = Number(await shell.getAttribute("data-animation-consumed-count"));
 
+  await page.evaluate(() => {
+    performance.clearMeasures("three-table-motion-event");
+    performance.clearMeasures("three-table-motion-frame");
+  });
   await page.evaluate(() => {
     const browser = window as unknown as {
       __socket: { emit: (value: unknown) => void };
@@ -430,6 +515,18 @@ test("runs one bounded discard motion and stops invalidating after idle", async 
   await page.waitForTimeout(300);
   expect(Number(await table.getAttribute("data-animation-frame-count"))).toBe(idleFrameCount);
   expect(Number(await shell.getAttribute("data-animation-consumed-count"))).toBe(consumedBefore + 1);
+  const performanceEntries = await page.evaluate(() => ({
+    events: performance.getEntriesByName("three-table-motion-event", "measure").map(({ duration }) => duration),
+    frames: performance.getEntriesByName("three-table-motion-frame", "measure").map(({ duration }) => duration),
+  }));
+  expect(performanceEntries.events).toHaveLength(1);
+  expect(performanceEntries.frames.length).toBeGreaterThan(0);
+  const focusedEventBaselineMs = 250;
+  expect(performanceEntries.events[0]).toBeLessThanOrEqual(focusedEventBaselineMs * 1.25);
+  const sortedFrameDurations = performanceEntries.frames.toSorted((left, right) => left - right);
+  const medianFrameDuration = sortedFrameDurations[Math.floor(sortedFrameDurations.length / 2)];
+  const softwareWebglFrameBaselineMs = 75;
+  expect(medianFrameDuration).toBeLessThanOrEqual(softwareWebglFrameBaselineMs * 1.25);
 });
 
 test("keeps reduced-motion discard effects static", async ({ page }) => {
@@ -511,6 +608,7 @@ for (const viewport of requiredViewports) {
     (popupState.decision as Record<string, unknown>).actions = [
       { action_id: "chi-1", action: { Chi: { target: 1, called: 1, consumed: [0, 4] } } },
       { action_id: "chi-2", action: { Chi: { target: 1, called: 2, consumed: [1, 5] } } },
+      { action_id: "pass-1", action: "Pass" },
     ];
     await installSocket(page, "4p-red-east", popupState);
     await page.goto("/room/123456/lobby");
@@ -529,13 +627,35 @@ for (const viewport of requiredViewports) {
       dialog,
       page.locator(".table-hit-layer"),
     );
-    await expectNoSeriousOrCriticalViolations(page, ".gameplay-main");
+    await expectNoAxeViolations(page, ".gameplay-main");
     const candidateButtons = dialog.locator(".candidate-list button");
     await candidateButtons.last().focus();
     await page.keyboard.press("Tab");
     await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
     await page.keyboard.press("Shift+Tab");
     await expect(candidateButtons.last()).toBeFocused();
+
+    const backgroundPass = page.getByRole("button", { name: "Pass" });
+    await backgroundPass.focus();
+    await expect(backgroundPass).not.toBeFocused();
+    await expect(candidateButtons.last()).toBeFocused();
+
+    await candidateButtons.first().click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute("aria-busy", "true");
+    await page.evaluate(() => {
+      (window as unknown as { __socket: { emit: (value: unknown) => void } }).__socket.emit({
+        type: "action_result",
+        decision_id: "d1",
+        action_id: "chi-1",
+        status: "rejected",
+        code: "illegal_action",
+      });
+    });
+    await expect(dialog).toHaveAttribute("aria-busy", "false");
+    await expect(candidateButtons.first()).toBeEnabled();
+    await expect(candidateButtons.first()).toBeFocused();
+
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toHaveAttribute("aria-expanded", "false");

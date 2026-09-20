@@ -498,14 +498,20 @@ function CandidatePopup({
   id: string;
   disabled: boolean;
 }) {
-  const popupRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
     const popup = popupRef.current;
+    if (!popup) return;
     const returnFocus = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
+    try {
+      if (!popup.open) popup.showModal();
+    } catch {
+      popup.setAttribute("open", "");
+    }
     const focusableSelector = [
       "button:not([disabled])",
       "[href]",
@@ -515,20 +521,17 @@ function CandidatePopup({
       "[tabindex]:not([tabindex=\"-1\"])",
     ].join(",");
     const focusable = () =>
-      popup
-        ? Array.from(popup.querySelectorAll<HTMLElement>(focusableSelector))
-        : [];
+      Array.from(popup.querySelectorAll<HTMLElement>(focusableSelector));
     const initialFocus =
-      popup?.querySelector<HTMLButtonElement>(
+      popup.querySelector<HTMLButtonElement>(
         ".candidate-list button:not([disabled])",
-      ) ?? popup?.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button");
+      ) ?? popup.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button");
     initialFocus?.focus();
+    const onCancel = (event: Event) => {
+      event.preventDefault();
+      closeRef.current();
+    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeRef.current();
-        return;
-      }
       if (event.key !== "Tab") return;
       const elements = focusable();
       if (elements.length === 0) {
@@ -539,29 +542,47 @@ function CandidatePopup({
       const last = elements[elements.length - 1];
       const active = document.activeElement;
       if (event.shiftKey) {
-        if (active === first || !popup?.contains(active)) {
+        if (active === first || !popup.contains(active)) {
           event.preventDefault();
           last.focus();
         }
-      } else if (active === last || !popup?.contains(active)) {
+      } else if (active === last || !popup.contains(active)) {
         event.preventDefault();
         first.focus();
       }
     };
-    document.addEventListener("keydown", onKeyDown);
+    popup.addEventListener("cancel", onCancel);
+    popup.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("keydown", onKeyDown);
+      popup.removeEventListener("cancel", onCancel);
+      popup.removeEventListener("keydown", onKeyDown);
+      if (popup.open) popup.close();
+      else popup.removeAttribute("open");
       if (returnFocus?.isConnected) returnFocus.focus();
     };
   }, []);
+  useEffect(() => {
+    const popup = popupRef.current;
+    if (!popup) return;
+    const firstCandidate = popup.querySelector<HTMLButtonElement>(
+      ".candidate-list button:not([disabled])",
+    );
+    if (!disabled) {
+      firstCandidate?.focus();
+      return;
+    }
+    if (document.activeElement instanceof HTMLButtonElement && document.activeElement.disabled) {
+      popup.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button")?.focus();
+    }
+  }, [disabled]);
   return (
-    <div
+    <dialog
       ref={popupRef}
       id={id}
       className="candidate-popup"
-      role="dialog"
       aria-modal="true"
       aria-label="Choose a legal candidate"
+      aria-busy={disabled ? "true" : "false"}
     >
       <div className="candidate-popup-head">
         <span>Choose a line</span>
@@ -583,7 +604,7 @@ function CandidatePopup({
           </button>
         ))}
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -686,10 +707,7 @@ function ActionDeck({
           id={popupId}
           actions={grouped.candidates.get(popupKind) ?? []}
           disabled={disabled}
-          onAction={(action) => {
-            setPopupKind(null);
-            onAction(action);
-          }}
+          onAction={onAction}
           onClose={() => setPopupKind(null)}
         />
       )}
