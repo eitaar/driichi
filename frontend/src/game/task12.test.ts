@@ -44,6 +44,26 @@ describe("Task 12 table invariants", () => {
     expect(animationKindForEvent({ hora: { actor: 0, target: 0, han: 5 } })).toBe("win");
   });
 
+  it("dequeues cancellation without counting completion and consumes the replacement once", () => {
+    const room = (revision: number) => ({ revision }) as never;
+    useGameStore.getState().receiveSnapshot(room(1), {
+      audience: "player", viewer_seat: 0, mode: "4p-red-east", players: [], decision: null,
+    });
+    useGameStore.getState().receiveUpdate(room(2), undefined, {
+      type: "game_update",
+      events: [{ dahai: { actor: 0, tile: 1 } }, { tsumo: { actor: 1, tile: 2 } }],
+    });
+    const [oldMotion, replacement] = useGameStore.getState().animationQueue;
+
+    useGameStore.getState().cancelAnimations([oldMotion.id]);
+    expect(useGameStore.getState().animationQueue).toEqual([replacement]);
+    expect(useGameStore.getState().animationConsumedCount).toBe(0);
+
+    useGameStore.getState().consumeAnimations([replacement.id]);
+    expect(useGameStore.getState().animationQueue).toEqual([]);
+    expect(useGameStore.getState().animationConsumedCount).toBe(1);
+  });
+
   it("keeps the first queued animation stable across unrelated updates", () => {
     const room = (revision: number) => ({ revision }) as never;
     useGameStore.getState().receiveSnapshot(room(1), {

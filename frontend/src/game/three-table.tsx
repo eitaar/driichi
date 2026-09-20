@@ -36,6 +36,7 @@ export interface ThreeTableProps {
   reducedMotion?: boolean;
   portraitEffect?: PortraitEffect | null;
   onAnimationConsumed?: (id: number) => void;
+  onAnimationCancelled?: (id: number) => void;
   surface?: "live" | "replay";
 }
 
@@ -105,7 +106,8 @@ function TableFallback({
 }
 
 function canCreateWebGL(): boolean {
-  if (typeof document === "undefined" || typeof WebGLRenderingContext === "undefined") return true;
+  if (typeof document === "undefined") return true;
+  if (typeof WebGLRenderingContext === "undefined") return false;
   try {
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
@@ -198,6 +200,7 @@ export function ThreeTable({
   reducedMotion = false,
   portraitEffect: _portraitEffect = null,
   onAnimationConsumed: _onAnimationConsumed,
+  onAnimationCancelled: _onAnimationCancelled,
   surface = "live",
 }: ThreeTableProps) {
   const [atlas, setAtlas] = useState<TileAtlas | null>(null);
@@ -209,7 +212,9 @@ export function ThreeTable({
   const activeMotionRef = useRef<{ motion: SceneMotion; layout: typeof layout } | null>(null);
   const blockedAnimationIdsRef = useRef(new Set<number>());
   const onAnimationConsumedRef = useRef(_onAnimationConsumed);
+  const onAnimationCancelledRef = useRef(_onAnimationCancelled);
   onAnimationConsumedRef.current = _onAnimationConsumed;
+  onAnimationCancelledRef.current = _onAnimationCancelled;
   const hasProjection = projection !== null;
   const layout = useMemo(
     () => (projection ? buildMatchSceneLayout(projection, room) : null),
@@ -254,6 +259,9 @@ export function ThreeTable({
     setLastConsumedAnimationId(id);
     onAnimationConsumedRef.current?.(id);
   }, []);
+  const reportCancelled = useCallback((id: number) => {
+    onAnimationCancelledRef.current?.(id);
+  }, []);
 
   useEffect(() => {
     const active = activeMotionRef.current;
@@ -261,17 +269,21 @@ export function ThreeTable({
       blockedAnimationIdsRef.current.add(active.motion.itemId);
       activeMotionRef.current = null;
       setMotion(null);
+      reportCancelled(active.motion.itemId);
     }
     const presentIds = new Set(animations.map((item) => item.id));
     for (const id of blockedAnimationIdsRef.current) {
       if (!presentIds.has(id)) blockedAnimationIdsRef.current.delete(id);
     }
-  }, [animations, layout]);
+  }, [animations, layout, reportCancelled]);
 
   useEffect(() => {
     if (reducedMotion) {
       const active = activeMotionRef.current;
-      if (active) blockedAnimationIdsRef.current.add(active.motion.itemId);
+      if (active) {
+        blockedAnimationIdsRef.current.add(active.motion.itemId);
+        reportConsumed(active.motion.itemId);
+      }
       activeMotionRef.current = null;
       setMotion(null);
       for (const item of animations) {
@@ -296,8 +308,10 @@ export function ThreeTable({
   }, [animations, layout, ready, reducedMotion, reportConsumed, motion]);
 
   useEffect(() => () => {
+    const active = activeMotionRef.current;
     activeMotionRef.current = null;
-  }, []);
+    if (active) reportCancelled(active.motion.itemId);
+  }, [reportCancelled]);
 
   const completeMotion = useCallback((id: number) => {
     const active = activeMotionRef.current;
