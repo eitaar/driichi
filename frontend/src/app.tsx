@@ -159,6 +159,29 @@ function CreateRoomDialog({ open, onClose, mutation }: { open: boolean; onClose:
 type SocketRoom = RoomSnapshot;
 type HumanSocketMessage = { type: string; room?: SocketRoom; state?: unknown; event?: unknown; code?: string; status?: string; decision_id?: string; action_id?: string };
 
+const TERMINAL_CLOSE_REASONS = new Set([
+  "connected_elsewhere",
+  "room_deleted",
+  "server_shutdown",
+  "slow_consumer",
+  "token_revoked",
+  "session_expired",
+]);
+const CLOSE_REASON_BY_CODE: Record<number, string> = {
+  4001: "connected_elsewhere",
+  4002: "room_deleted",
+  4003: "server_shutdown",
+  4005: "slow_consumer",
+  4006: "session_expired",
+};
+
+function terminalCloseReason(event: CloseEvent): string | null {
+  const statedReason = event.reason?.trim() || "";
+  if (TERMINAL_CLOSE_REASONS.has(statedReason)) return statedReason;
+  const mappedReason = CLOSE_REASON_BY_CODE[event.code] || "";
+  return TERMINAL_CLOSE_REASONS.has(mappedReason) ? mappedReason : null;
+}
+
 export function reconnectDelay(attempt: number, random = Math.random): number {
   const count = Math.max(1, Math.floor(attempt));
   const base = Math.min(10_000, 500 * 2 ** Math.min(count - 1, 4));
@@ -181,7 +204,10 @@ function useHumanSocket(joinCode: string) {
   const participantKey = `driichi:participant:${joinCode}`;
   const [sessionReady, setSessionReady] = useState(false);
   const send = useCallback<Transport>((value) => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(value));
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(value));
+    return true;
   }, []);
   useEffect(() => {
     stoppedRef.current = false;
@@ -236,12 +262,11 @@ function useHumanSocket(joinCode: string) {
       };
       socket.onclose = (event) => {
         if (stoppedRef.current || generationRef.current !== generation || socketRef.current !== socket) return;
-        const semantic: Record<number, string> = { 4001: "connected_elsewhere", 4002: "room_deleted", 4005: "slow_consumer", 4006: "session_expired" };
-        const semanticReason = semantic[event.code] ?? event.reason;
-        if (semanticReason && [4001, 4002, 4006].includes(event.code)) {
-          useGameStore.getState().reset();
-          useGameStore.getState().setStatus("closed", semanticReason);
-          if ([4002, 4006].includes(event.code))
+        const semanticReason = terminalCloseReason(event);
+        if (semanticReason) {
+          socketRef.current = null;
+          useGameStore.getState().preserveForTerminal(semanticReason);
+          if (["room_deleted", "session_expired", "token_revoked"].includes(semanticReason))
             sessionStorage.removeItem(participantKey);
           return;
         }
@@ -293,20 +318,22 @@ function HumanLobby({ joinCode }: { joinCode: string }) {
       .then(() => { completionTimer = window.setTimeout(() => { if (active) setPreload("complete"); }, 0); })
       .catch(() => { if (active) setPreload("error"); });
     return () => { active = false; if (completionTimer !== undefined) window.clearTimeout(completionTimer); };
-  }, [selectedIds]);
+  }, [selectedIds, connectionGeneration]);
   const canReady = status === "connected" && room?.phase === "lobby" && Boolean(own?.selected)
     && selected.length === seatCount && preload === "complete" && !own?.ready;
   const closeMessage = reason === "connected_elsewhere"
     ? "This Participant connected in another tab."
     : reason === "room_deleted"
       ? "The host deleted this Room."
-      : reason === "session_expired"
-        ? "This Guest Session has expired."
+      : reason === "server_shutdown"
+        ? "The host service shut down this connection."
         : reason === "slow_consumer"
           ? "The connection was closed because it could not keep up."
-          : reason
-            ? `The live Room connection reported ${reason}.`
-            : "";
+          : reason === "token_revoked"
+            ? "This Guest Session token is no longer valid."
+            : reason === "session_expired"
+              ? "This Guest Session has expired."
+              : "";
 
   if (room && (room.phase === "playing" || room.phase === "post_match")) {
     return <GameplaySurface room={room} projection={projection} status={status} reason={reason} commandError={commandError} connectionGeneration={connectionGeneration} send={send} reducedMotion={reducedMotion} participantId={participantId} />;

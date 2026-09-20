@@ -36,6 +36,11 @@ describe("immersive table geometry", () => {
     expect(wallTileCount(-2)).toBe(0);
     expect(wallTileCount(3.9)).toBe(3);
     expect(wallTileCount(999)).toBe(136);
+    expect(wallTileCount(Number.NaN)).toBe(0);
+    expect(wallTileCount(Infinity)).toBe(0);
+    expect(wallTileCount([1, 2, 3])).toBe(3);
+    expect(wallTileCount(Array.from({ length: 999 }))).toBe(136);
+    expect(wallTileCount(4, Number.NaN)).toBe(0);
   });
 
   it("creates one deterministic in-bounds placement per remaining tile", () => {

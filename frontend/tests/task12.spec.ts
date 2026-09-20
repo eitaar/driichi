@@ -399,11 +399,44 @@ test("candidate popup transfers focus and closes on Escape", async ({ page }) =>
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Choose a legal candidate" });
   await expect(dialog).toHaveAttribute("aria-modal", "true");
+  await expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  const dialogId = await dialog.getAttribute("id");
+  expect(dialogId).toBeTruthy();
+  await expect(trigger).toHaveAttribute("aria-controls", dialogId ?? "");
   await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
   await expectNoSeriousOrCriticalViolations(page, ".gameplay-main");
+  const candidateButtons = dialog.locator(".candidate-list button");
+  await candidateButtons.last().focus();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(candidateButtons.last()).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
   await expect(trigger).toBeFocused();
+});
+
+test("disables open candidate choices after transport disconnects", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await installCharacterFixtures(page);
+  const popupState = structuredClone(projectionFixture.projections["4p-red-east"]);
+  (popupState.decision as Record<string, unknown>).actions = [
+    { action_id: "chi-1", action: { Chi: { target: 1, called: 1, consumed: [0, 4] } } },
+    { action_id: "chi-2", action: { Chi: { target: 1, called: 2, consumed: [1, 5] } } },
+  ];
+  await installSocket(page, "4p-red-east", popupState);
+  await page.goto("/room/123456/lobby");
+  const trigger = page.getByRole("button", { name: "Chi (2)" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Choose a legal candidate" });
+  await expect(dialog.locator(".candidate-list button")).toHaveCount(2);
+  await page.evaluate(() => {
+    (window as unknown as { __socket: { onerror: (() => void) | null } }).__socket.onerror?.();
+  });
+  await expect(dialog.locator(".candidate-list button").first()).toBeDisabled();
+  await expect(dialog.locator(".candidate-list button").last()).toBeDisabled();
 });
 
 test("keeps the Riichi legal highlight while its authoritative action is pending", async ({ page }) => {
@@ -557,6 +590,63 @@ test("shows in-table synchronization before the first projection", async ({ page
   await expect(page.getByTestId("action-deck")).toHaveCount(0);
 });
 
+test("preserves the last table scene during a transient reconnect", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  await expectRenderedTable(page);
+  await page.evaluate(() => {
+    const socket = (window as unknown as {
+      __socket: {
+        onerror: (() => void) | null;
+        onclose: ((event: { code: number; reason: string }) => void) | null;
+      };
+    }).__socket;
+    socket.onerror?.();
+  });
+  await expect(page.getByTestId("pixi-table")).toBeVisible();
+  await expect(page.locator(".gameplay-blocking-state")).toHaveCount(0);
+  await page.evaluate(() => {
+    const socket = (window as unknown as {
+      __socket: { onclose: ((event: { code: number; reason: string }) => void) | null };
+    }).__socket;
+    socket.onclose?.({ code: 1006, reason: "" });
+  });
+  await expect(page.getByTestId("pixi-table")).toBeVisible();
+  await expect(page.getByText(/last authoritative table state remains visible/i)).toBeVisible();
+  await expect(page.locator(".gameplay-shell")).toHaveAttribute("data-testid", "gameplay-shell");
+});
+
+test("keeps full player status semantics while terminal gameplay is blocked", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  const players = state.players as Array<Record<string, unknown>>;
+  players[0].display_name = "A very long participant display name";
+  players[0].riichi = true;
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  await expectRenderedTable(page);
+  const playerStatus = page.locator('ul[aria-label="Player status"]');
+  await expect(playerStatus).toContainText("A very long participant display name");
+  await expect(playerStatus).toContainText("Score 25,000");
+  await expect(playerStatus).toContainText("Seat position: bottom");
+  await expect(playerStatus).toContainText("Riichi");
+  await page.evaluate(() => {
+    const socket = (window as unknown as {
+      __socket: { onclose: ((event: { code: number; reason: string }) => void) | null };
+    }).__socket;
+    socket.onclose?.({ code: 4002, reason: "room_deleted" });
+  });
+  await expect(page.locator(".gameplay-blocking-state")).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("deleted this Room");
+  await expect(page.getByTestId("gameplay-shell")).toBeVisible();
+  await expect(page.locator(".lobby-shell")).toHaveCount(0);
+  await expect(playerStatus).toContainText("A very long participant display name");
+  await expect(page.getByTestId("pixi-table")).toHaveCount(0);
+});
+
 test("blocks play when the Room is deleted", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await installCharacterFixtures(page);
@@ -569,6 +659,7 @@ test("blocks play when the Room is deleted", async ({ page }) => {
     }).__socket;
     socket.onclose?.({ code: 4002, reason: "room_deleted" });
   });
+  await expect(page.locator(".gameplay-blocking-state")).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("deleted this Room");
   await expect(page.locator(".table-tile-hit")).toHaveCount(0);
 });

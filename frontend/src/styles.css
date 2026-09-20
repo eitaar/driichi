@@ -441,6 +441,13 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
 .replay-jump{display:flex;align-items:center;gap:8px;color:#ded6c5;font:10px 'Geist Mono',monospace;letter-spacing:.08em;text-transform:uppercase}
 .replay-jump select{width:auto;min-width:120px;height:38px;border-color:#c59a51;background:#101d42;color:#fff4d7;font:11px Geist,sans-serif;letter-spacing:0;text-transform:none}
 .replay-event-log{padding-top:24px}
+@media (min-width: 1800px) and (min-height: 1000px) {
+  /* Keep the complete transport inside the first 1920 × 1080 viewport. */
+  .replay-detail-main .replay-table-stage {
+    width: min(100%, calc((100dvh - 570px) * 1.7778));
+    max-height: calc(100dvh - 570px);
+  }
+}
 .replay-event-log .section-heading{margin-bottom:13px}
 .replay-event-log ol{display:grid;gap:3px;margin:0;padding:0;list-style:none;border-top:1px solid var(--line)}
 .replay-event-log li{border-bottom:1px solid var(--line)}

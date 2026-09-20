@@ -4,6 +4,7 @@ import {
   TABLE_WIDTH,
   type TableSeatGeometry,
   wallPlacements,
+  wallTileCount,
 } from "./table-geometry";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 
@@ -206,13 +207,10 @@ function centerRoundLabel(projection: ProjectedState): string {
   return typeof projection.round === "string" ? projection.round : "LIVE KYOKU";
 }
 
-function remainingWallValue(projection: ProjectedState): string | null {
+export function remainingWallValue(projection: ProjectedState): string | null {
   const value = projection.remaining_wall;
-  if (typeof value === "number") {
-    return `${Math.max(0, Math.floor(value))} TILES LEFT`;
-  }
-  if (Array.isArray(value)) return `${value.length} TILES LEFT`;
-  return null;
+  if (typeof value !== "number" && !Array.isArray(value)) return null;
+  return `${wallTileCount(value)} TILES LEFT`;
 }
 
 function doraTiles(projection: ProjectedState): number[] {
