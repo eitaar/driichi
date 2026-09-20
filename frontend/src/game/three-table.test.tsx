@@ -396,12 +396,10 @@ describe("ThreeTable", () => {
     expect(host).toHaveAttribute("data-rendered-scene-primitives", "0");
   });
 
-  it("keeps a quiet synchronization state without a projection", () => {
+  it("leaves synchronization announcements to the gameplay surface", () => {
     render(<ThreeTable projection={null} room={null} />);
 
-    expect(screen.getByRole("status", { name: "Table synchronization" })).toHaveTextContent(
-      "Synchronizing table",
-    );
+    expect(screen.queryByRole("status", { name: "Table synchronization" })).not.toBeInTheDocument();
     expect(screen.getByTestId("three-table")).toHaveAttribute("data-render-ready", "false");
   });
 

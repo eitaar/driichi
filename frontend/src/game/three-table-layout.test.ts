@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TABLE_RENDER_SCALE } from "./three-table-scene";
 import type { ProjectedState } from "./types";
 import {
   CAMERA,
@@ -39,6 +40,8 @@ function projection(overrides: Partial<ProjectedState> = {}): ProjectedState {
 describe("three-dimensional table layout", () => {
   it("exposes the exact table and camera constants", () => {
     expect(TABLE_SIZE).toEqual({ width: 13.6, depth: 9.2 });
+    expect(TABLE_RENDER_SCALE.z).toBeGreaterThanOrEqual(1.1);
+    expect(TABLE_RENDER_SCALE.z).toBeLessThanOrEqual(1.2);
     expect(CAMERA).toEqual({
       fov: 32,
       position: [0, 12.8, 11.6],

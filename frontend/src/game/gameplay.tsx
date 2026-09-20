@@ -20,6 +20,7 @@ import type {
   VisibleAction,
 } from "./types";
 import { tileLabel } from "./tiles";
+import { useGameplayViewportSupport } from "./viewport";
 
 export interface GameplayProps {
   room: RoomSnapshot | null;
@@ -941,9 +942,7 @@ export function GameplaySurface({
               : reason === "session_expired"
                 ? "This Guest Session has expired."
                 : "";
-  const supported =
-    typeof window === "undefined" ||
-    (window.innerWidth >= 1024 && window.innerHeight >= 600);
+  const supported = useGameplayViewportSupport();
   const mode = projection?.mode ?? room?.game_mode ?? "4p-red-east";
   const ownController = room?.participants.find((participant) => participant.participant_id === participantId)?.controller
     ?? roster(room).find((player) => player.seat === viewer)?.controller
@@ -976,7 +975,15 @@ export function GameplaySurface({
         mode={mode}
         viewerSeat={projection?.audience === "player" ? viewer : undefined}
       />
-      {!supported ? (
+      {closeMessage ? (
+        <main className="gameplay-main gameplay-blocking-main">
+          <section className="gameplay-blocking-state" role="alert">
+            <p className="eyebrow">TABLE UNAVAILABLE</p>
+            <h1>Live table paused</h1>
+            <p>{closeMessage}</p>
+          </section>
+        </main>
+      ) : !supported ? (
         <main className="gameplay-guidance">
           <p className="eyebrow">DESKTOP TABLE REQUIRED</p>
           <h2>Widen this window to play.</h2>
@@ -984,14 +991,6 @@ export function GameplaySurface({
             Gameplay needs a landscape window at least 1024 × 600. The table
             will appear when the window is large enough.
           </p>
-        </main>
-      ) : closeMessage ? (
-        <main className="gameplay-main">
-          <section className="gameplay-blocking-state" role="alert">
-            <p className="eyebrow">TABLE UNAVAILABLE</p>
-            <h1>Live table paused</h1>
-            <p>{closeMessage}</p>
-          </section>
         </main>
       ) : (
         <main className="gameplay-main">
