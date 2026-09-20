@@ -994,6 +994,9 @@ export function GameplaySurface({
               onAnimationConsumed={(id: number) =>
                 useGameStore.getState().consumeAnimations([id])
               }
+              onAnimationCancelled={(id: number) =>
+                useGameStore.getState().cancelAnimations([id])
+              }
               surface="live"
             />
             <TileHitLayer

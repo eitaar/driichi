@@ -403,6 +403,48 @@ async function submitConcreteAction(page: Page): Promise<{ submitted: boolean; m
   return { submitted: true, multiCandidate: false, actionId: actionId! };
 }
 
+async function startActionAutoplay(page: Page) {
+  await page.evaluate(() => {
+    const browser = window as typeof window & {
+      __task16Autoplay?: number;
+      __task16ObservedMultiCandidate?: boolean;
+    };
+    browser.__task16ObservedMultiCandidate = false;
+    browser.__task16Autoplay = window.setInterval(() => {
+      const shell = document.querySelector<HTMLElement>('[data-testid="gameplay-shell"]');
+      const deck = document.querySelector<HTMLElement>('[data-testid="action-deck"]');
+      if (!shell || !deck || deck.getAttribute("aria-busy") === "true") return;
+
+      const candidates = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('.candidate-list button:not([disabled])'),
+      );
+      if (candidates.length > 0) {
+        browser.__task16ObservedMultiCandidate ||= candidates.length > 1;
+        candidates[0].click();
+        return;
+      }
+
+      const buttons = Array.from(deck.querySelectorAll<HTMLButtonElement>("button:not([disabled])"));
+      const multi = buttons.find((button) => /^(chi|pon|kan|kita) \(\d+\)$/i.test(button.textContent?.trim() ?? ""));
+      const winning = buttons.find((button) => /^(ron|tsumo)$/i.test(button.textContent?.trim() ?? ""));
+      const pass = buttons.find((button) => /^pass$/i.test(button.textContent?.trim() ?? ""));
+      const legalTile = document.querySelector<HTMLButtonElement>(".table-tile-hit.is-legal");
+      (multi ?? winning ?? pass ?? legalTile ?? buttons[0])?.click();
+    }, 16);
+  });
+}
+
+async function stopActionAutoplay(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const browser = window as typeof window & {
+      __task16Autoplay?: number;
+      __task16ObservedMultiCandidate?: boolean;
+    };
+    if (browser.__task16Autoplay !== undefined) window.clearInterval(browser.__task16Autoplay);
+    return browser.__task16ObservedMultiCandidate === true;
+  });
+}
+
 async function completeMatch(page: Page, mode: MatchMode, seats: number) {
   await waitForDecision(page, seats);
   await expect(page.getByTestId("gameplay-shell")).toHaveAttribute("data-motion", "static");
@@ -410,16 +452,20 @@ async function completeMatch(page: Page, mode: MatchMode, seats: number) {
   await captureAtBothViewports(page, `${mode}-decision`);
   await expectAccessible(page, "actual decision");
 
-  const deadline = Date.now() + 240_000;
-  let submitted = 0;
-  while (Date.now() < deadline) {
-    if (await page.getByTestId("results-panel").isVisible().catch(() => false)) break;
-    const action = await submitConcreteAction(page);
-    if (action.submitted) submitted += 1;
-    await page.waitForTimeout(80);
+  const firstActionDeadline = Date.now() + 30_000;
+  let firstAction = { submitted: false, multiCandidate: false };
+  while (!firstAction.submitted && Date.now() < firstActionDeadline) {
+    firstAction = await submitConcreteAction(page);
+    if (!firstAction.submitted) await page.waitForTimeout(50);
   }
-  expect(submitted, `${mode} should submit accepted legal actions`).toBeGreaterThan(0);
-  await expect(page.getByTestId("results-panel")).toBeVisible({ timeout: 30_000 });
+  expect(firstAction.submitted, `${mode} should submit an accepted legal action`).toBe(true);
+  observedMultiCandidateAction ||= firstAction.multiCandidate;
+  await startActionAutoplay(page);
+  try {
+    await expect(page.getByTestId("results-panel")).toBeVisible({ timeout: 240_000 });
+  } finally {
+    observedMultiCandidateAction ||= await stopActionAutoplay(page);
+  }
   await expect(page.getByRole("heading", { name: /standings/i })).toBeVisible();
   await expect(page.locator(".results-list li")).toHaveCount(seats);
   await expect(page.getByText("Permanent Auto")).toHaveCount(seats - 1);

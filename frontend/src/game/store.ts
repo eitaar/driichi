@@ -53,6 +53,7 @@ export interface GameStoreState {
   setCommandError: (error: string) => void;
   clearPendingAction: () => void;
   consumeAnimations: (ids?: number[]) => void;
+  cancelAnimations: (ids: number[]) => void;
 }
 
 const initialState = {
@@ -251,6 +252,12 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     return {
       animationQueue: state.animationQueue.filter((item) => !remove.has(item.id)),
       animationConsumedCount: state.animationConsumedCount + consumed,
+    };
+  }),
+  cancelAnimations: (ids) => set((state) => {
+    const remove = new Set(ids);
+    return {
+      animationQueue: state.animationQueue.filter((item) => !remove.has(item.id)),
     };
   }),
 }));
