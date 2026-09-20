@@ -1,9 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectedState, RoomSnapshot } from "./types";
 import { CAMERA } from "./three-table-layout";
 
 const canvasCalls = vi.hoisted(() => vi.fn());
+const sceneCalls = vi.hoisted(() => vi.fn());
 const canvasState = vi.hoisted(() => ({ fallback: false }));
 const atlasDispose = vi.hoisted(() => vi.fn());
 const createTileAtlas = vi.hoisted(() =>
@@ -25,7 +27,7 @@ vi.mock("@react-three/fiber", async () => {
       return React.createElement("div", {
         "data-testid": "mock-r3f-canvas",
         "aria-hidden": props["aria-hidden"],
-      });
+      }, props.children as ReactNode);
     },
     useThree: (selector: (state: Record<string, unknown>) => unknown) =>
       selector({ invalidate: vi.fn(), camera: { position: { set: vi.fn() }, lookAt: vi.fn() } }),
@@ -33,6 +35,15 @@ vi.mock("@react-three/fiber", async () => {
 });
 
 vi.mock("./tile-atlas", () => ({ createTileAtlas }));
+vi.mock("./three-table-scene", async () => {
+  const React = await import("react");
+  return {
+    MatchTableScene: (props: Record<string, unknown>) => {
+      sceneCalls(props);
+      return React.createElement("div", { "data-testid": "mock-table-scene" });
+    },
+  };
+});
 
 import { ThreeTable } from "./three-table";
 
@@ -72,6 +83,7 @@ const room = {
 
 beforeEach(() => {
   canvasCalls.mockClear();
+  sceneCalls.mockClear();
   createTileAtlas.mockClear();
   atlasDispose.mockClear();
   canvasState.fallback = false;
@@ -108,6 +120,93 @@ describe("ThreeTable", () => {
     expect(host).toHaveAttribute("data-player-frame-count", "4");
   });
 
+  it("runs one motion to idle and reports its exact ID once", async () => {
+    const onAnimationConsumed = vi.fn();
+    render(
+      <ThreeTable
+        projection={projection()}
+        room={room}
+        animations={[{ id: 12, kind: "discard", event: { type: "dahai" } }]}
+        onAnimationConsumed={onAnimationConsumed}
+      />,
+    );
+
+    const host = screen.getByTestId("three-table");
+    await waitFor(() => expect(host).toHaveAttribute("data-animation-state", "active"));
+    expect(host).toHaveAttribute("data-animation-item-id", "12");
+    const activeScene = sceneCalls.mock.lastCall?.[0] as {
+      onMotionComplete(id: number): void;
+    };
+    act(() => activeScene.onMotionComplete(12));
+
+    await waitFor(() => expect(host).toHaveAttribute("data-animation-state", "idle"));
+    expect(host).toHaveAttribute("data-last-consumed-animation-id", "12");
+    expect(onAnimationConsumed).toHaveBeenCalledTimes(1);
+    expect(onAnimationConsumed).toHaveBeenCalledWith(12);
+    act(() => activeScene.onMotionComplete(12));
+    expect(onAnimationConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies Reduced Motion immediately and consumes each exact ID once", async () => {
+    const onAnimationConsumed = vi.fn();
+    const animations = [
+      { id: 20, kind: "draw", event: { type: "tsumo" } },
+      { id: 21, kind: "win", event: { type: "hora" } },
+    ] as const;
+    render(
+      <ThreeTable
+        projection={projection()}
+        room={room}
+        animations={[...animations]}
+        reducedMotion
+        onAnimationConsumed={onAnimationConsumed}
+      />,
+    );
+
+    const host = screen.getByTestId("three-table");
+    expect(host).toHaveAttribute("data-animation-state", "static");
+    await waitFor(() => expect(onAnimationConsumed).toHaveBeenCalledTimes(2));
+    expect(onAnimationConsumed.mock.calls).toEqual([[20], [21]]);
+    expect(host).toHaveAttribute("data-last-consumed-animation-id", "21");
+    expect(sceneCalls.mock.lastCall?.[0]).toMatchObject({ motion: null });
+  });
+
+  it("cancels replaced and unmounted motion without consuming stale IDs", async () => {
+    const onAnimationConsumed = vi.fn();
+    const view = render(
+      <ThreeTable
+        projection={projection()}
+        room={room}
+        animations={[{ id: 30, kind: "call", event: { type: "pon" } }]}
+        onAnimationConsumed={onAnimationConsumed}
+      />,
+    );
+    const host = screen.getByTestId("three-table");
+    await waitFor(() => expect(host).toHaveAttribute("data-animation-item-id", "30"));
+    const staleScene = sceneCalls.mock.lastCall?.[0] as {
+      onMotionComplete(id: number): void;
+    };
+
+    view.rerender(
+      <ThreeTable
+        projection={projection({ remaining_wall: 41 })}
+        room={room}
+        animations={[{ id: 31, kind: "draw", event: { type: "tsumo" } }]}
+        onAnimationConsumed={onAnimationConsumed}
+      />,
+    );
+    await waitFor(() => expect(host).toHaveAttribute("data-animation-item-id", "31"));
+    act(() => staleScene.onMotionComplete(30));
+    expect(onAnimationConsumed).not.toHaveBeenCalled();
+
+    const replacementScene = sceneCalls.mock.lastCall?.[0] as {
+      onMotionComplete(id: number): void;
+    };
+    view.unmount();
+    act(() => replacementScene.onMotionComplete(31));
+    expect(onAnimationConsumed).not.toHaveBeenCalled();
+  });
+
   it("keeps semantic match facts when WebGL is unavailable", async () => {
     canvasState.fallback = true;
     render(<ThreeTable projection={projection()} room={room} />);
@@ -116,9 +215,6 @@ describe("ThreeTable", () => {
     expect(fallback).toHaveTextContent("East 1");
     expect(fallback).toHaveTextContent("42 tiles left");
     expect(fallback).toHaveTextContent("Dora 1m");
-    await waitFor(() =>
-      expect(screen.getByTestId("three-table")).toHaveAttribute("data-webgl-fallback", "true"),
-    );
   });
 
   it("keeps a quiet synchronization state without a projection", () => {

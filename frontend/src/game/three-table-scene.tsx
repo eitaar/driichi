@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { useThree } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import {
   BoxGeometry,
   Color,
   DoubleSide,
   Euler,
   InstancedBufferAttribute,
+  Group,
   InstancedMesh,
   Matrix4,
   MeshStandardMaterial,
@@ -16,10 +17,14 @@ import {
 
 import type { TileAtlas } from "./tile-atlas";
 import { CAMERA, TABLE_SIZE, type MatchSceneLayout, type SceneTile } from "./three-table-layout";
+import { sceneMotionProgress, type SceneMotion } from "./three-table-motion";
 
 interface MatchTableSceneProps {
   layout: MatchSceneLayout;
   atlas: TileAtlas;
+  motion: SceneMotion | null;
+  onMotionComplete(itemId: number): void;
+  onMotionFrame(): void;
 }
 
 const BODY_SIZE = [0.62, 0.18, 0.86] as const;
@@ -83,7 +88,10 @@ function atlasMaterial(atlas: TileAtlas): MeshStandardMaterial {
   return material;
 }
 
-function InstancedTiles({ layout, atlas }: MatchTableSceneProps) {
+function InstancedTiles({
+  layout,
+  atlas,
+}: Pick<MatchTableSceneProps, "layout" | "atlas">) {
   const invalidate = useThree((state) => state.invalidate);
   const frontTiles = useMemo(
     () => layout.tiles.filter((tile) => tile.face === "front" && tile.tile !== null),
@@ -190,6 +198,52 @@ function InstancedTiles({ layout, atlas }: MatchTableSceneProps) {
   );
 }
 
+function resetMotionGroup(group: Group | null): void {
+  if (!group) return;
+  group.position.set(0, 0, 0);
+  group.scale.set(1, 1, 1);
+}
+
+function MotionTiles({
+  layout,
+  atlas,
+  motion,
+  onMotionComplete,
+  onMotionFrame,
+}: MatchTableSceneProps & { motion: SceneMotion }) {
+  const groupRef = useRef<Group>(null);
+  const invalidate = useThree((state) => state.invalidate);
+
+  useLayoutEffect(() => {
+    invalidate();
+    return () => resetMotionGroup(groupRef.current);
+  }, [invalidate, motion.itemId]);
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    const progress = sceneMotionProgress(motion, performance.now());
+    const pulse = Math.sin(Math.PI * progress);
+    const translates = motion.kind === "draw" || motion.kind === "discard";
+    group.position.y = translates ? pulse * 0.09 : 0;
+    const scale = translates ? 1 : 1 + pulse * (motion.kind === "win" ? 0.025 : 0.012);
+    group.scale.set(scale, scale, scale);
+    onMotionFrame();
+    if (progress >= 1) {
+      resetMotionGroup(group);
+      onMotionComplete(motion.itemId);
+      return;
+    }
+    invalidate();
+  });
+
+  return (
+    <group ref={groupRef}>
+      <InstancedTiles layout={layout} atlas={atlas} />
+    </group>
+  );
+}
+
 function FixedCamera() {
   const camera = useThree((state) => state.camera);
   const invalidate = useThree((state) => state.invalidate);
@@ -251,7 +305,13 @@ function ProceduralTable() {
   );
 }
 
-export function MatchTableScene({ layout, atlas }: MatchTableSceneProps) {
+export function MatchTableScene({
+  layout,
+  atlas,
+  motion,
+  onMotionComplete,
+  onMotionFrame,
+}: MatchTableSceneProps) {
   return (
     <>
       <color attach="background" args={["#050709"]} />
@@ -281,7 +341,17 @@ export function MatchTableScene({ layout, atlas }: MatchTableSceneProps) {
       />
       <FixedCamera />
       <ProceduralTable />
-      <InstancedTiles layout={layout} atlas={atlas} />
+      {motion ? (
+        <MotionTiles
+          layout={layout}
+          atlas={atlas}
+          motion={motion}
+          onMotionComplete={onMotionComplete}
+          onMotionFrame={onMotionFrame}
+        />
+      ) : (
+        <InstancedTiles layout={layout} atlas={atlas} />
+      )}
     </>
   );
 }

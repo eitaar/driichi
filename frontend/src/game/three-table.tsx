@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { Canvas } from "@react-three/fiber";
@@ -12,6 +13,7 @@ import { PCFSoftShadowMap, SRGBColorSpace } from "three";
 
 import type { AnimationItem } from "./animation";
 import { MatchTableScene } from "./three-table-scene";
+import { nextSceneMotion, type SceneMotion } from "./three-table-motion";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
 import { buildMatchSceneLayout, CAMERA } from "./three-table-layout";
 import { tileLabel } from "./tiles";
@@ -88,13 +90,10 @@ function doraFact(projection: ProjectedState): string {
 function TableFallback({
   projection,
   wallCount,
-  onFallback,
 }: {
   projection: ProjectedState;
   wallCount: number;
-  onFallback(): void;
 }) {
-  useEffect(onFallback, [onFallback]);
   return (
     <div className="three-table__fallback" role="status" aria-label="3D table unavailable">
       <strong>3D table unavailable.</strong>{" "}
@@ -103,6 +102,18 @@ function TableFallback({
       <span>{doraFact(projection)}.</span>
     </div>
   );
+}
+
+function canCreateWebGL(): boolean {
+  if (typeof document === "undefined" || typeof WebGLRenderingContext === "undefined") return true;
+  try {
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+    context?.getExtension("WEBGL_lose_context")?.loseContext();
+    return context !== null;
+  } catch {
+    return false;
+  }
 }
 
 function characterIdFor(room: RoomSnapshot | null, participantId: string): string | null {
@@ -191,7 +202,14 @@ export function ThreeTable({
 }: ThreeTableProps) {
   const [atlas, setAtlas] = useState<TileAtlas | null>(null);
   const [atlasFailed, setAtlasFailed] = useState(false);
-  const [webglFallback, setWebglFallback] = useState(false);
+  const [webglFallback, setWebglFallback] = useState(() => !canCreateWebGL());
+  const [motion, setMotion] = useState<SceneMotion | null>(null);
+  const [lastConsumedAnimationId, setLastConsumedAnimationId] = useState<number | null>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const activeMotionRef = useRef<{ motion: SceneMotion; layout: typeof layout } | null>(null);
+  const blockedAnimationIdsRef = useRef(new Set<number>());
+  const onAnimationConsumedRef = useRef(_onAnimationConsumed);
+  onAnimationConsumedRef.current = _onAnimationConsumed;
   const hasProjection = projection !== null;
   const layout = useMemo(
     () => (projection ? buildMatchSceneLayout(projection, room) : null),
@@ -232,19 +250,76 @@ export function ThreeTable({
   const primitiveCount = layout
     ? 10 + new Set(layout.tiles.map((tile) => `${tile.face}:${tile.group}`)).size
     : 0;
-  const animationState = reducedMotion
-    ? "reduced"
-    : animations.length > 0
-      ? "queued"
-      : "idle";
-  const nextAnimationId = animations[0]?.id;
+  const reportConsumed = useCallback((id: number) => {
+    setLastConsumedAnimationId(id);
+    onAnimationConsumedRef.current?.(id);
+  }, []);
 
   useEffect(() => {
-    if (nextAnimationId !== undefined) _onAnimationConsumed?.(nextAnimationId);
-  }, [nextAnimationId, _onAnimationConsumed]);
+    const active = activeMotionRef.current;
+    if (active && active.layout !== layout) {
+      blockedAnimationIdsRef.current.add(active.motion.itemId);
+      activeMotionRef.current = null;
+      setMotion(null);
+    }
+    const presentIds = new Set(animations.map((item) => item.id));
+    for (const id of blockedAnimationIdsRef.current) {
+      if (!presentIds.has(id)) blockedAnimationIdsRef.current.delete(id);
+    }
+  }, [animations, layout]);
+
+  useEffect(() => {
+    if (reducedMotion) {
+      const active = activeMotionRef.current;
+      if (active) blockedAnimationIdsRef.current.add(active.motion.itemId);
+      activeMotionRef.current = null;
+      setMotion(null);
+      for (const item of animations) {
+        if (blockedAnimationIdsRef.current.has(item.id)) continue;
+        blockedAnimationIdsRef.current.add(item.id);
+        reportConsumed(item.id);
+      }
+      return;
+    }
+    if (!ready || activeMotionRef.current) return;
+    const item = animations.find(({ id }) => !blockedAnimationIdsRef.current.has(id));
+    if (!item) return;
+    const candidate = nextSceneMotion([item], false);
+    if (!candidate) {
+      blockedAnimationIdsRef.current.add(item.id);
+      reportConsumed(item.id);
+      return;
+    }
+    const nextMotion = { ...candidate, startedAt: performance.now() };
+    activeMotionRef.current = { motion: nextMotion, layout };
+    setMotion(nextMotion);
+  }, [animations, layout, ready, reducedMotion, reportConsumed, motion]);
+
+  useEffect(() => () => {
+    activeMotionRef.current = null;
+  }, []);
+
+  const completeMotion = useCallback((id: number) => {
+    const active = activeMotionRef.current;
+    if (!active || active.motion.itemId !== id) return;
+    blockedAnimationIdsRef.current.add(id);
+    activeMotionRef.current = null;
+    setMotion(null);
+    reportConsumed(id);
+  }, [reportConsumed]);
+
+  const recordMotionFrame = useCallback(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const count = Number(host.dataset.animationFrameCount ?? 0);
+    host.dataset.animationFrameCount = String(Number.isFinite(count) ? count + 1 : 1);
+  }, []);
+
+  const animationState = reducedMotion ? "static" : motion ? "active" : "idle";
 
   return (
     <div
+      ref={hostRef}
       className="three-table"
       data-testid="three-table"
       data-surface={surface}
@@ -254,6 +329,9 @@ export function ThreeTable({
       data-wall-tile-count={layout?.wallCount ?? 0}
       data-webgl-fallback={String(isFallback)}
       data-animation-state={animationState}
+      data-animation-item-id={motion?.itemId ?? ""}
+      data-last-consumed-animation-id={lastConsumedAnimationId ?? ""}
+      data-animation-frame-count="0"
       data-player-frame-count={layout?.players.length ?? 0}
       role="group"
       aria-label="3D mahjong table"
@@ -265,11 +343,10 @@ export function ThreeTable({
         <div role="status" aria-label="Table synchronization">
           Synchronizing table
         </div>
-      ) : atlasFailed ? (
+      ) : isFallback ? (
         <TableFallback
           projection={projection}
           wallCount={layout?.wallCount ?? 0}
-          onFallback={markFallback}
         />
       ) : atlas && layout ? (
         <TableErrorBoundary
@@ -278,7 +355,6 @@ export function ThreeTable({
             <TableFallback
               projection={projection}
               wallCount={layout.wallCount}
-              onFallback={markFallback}
             />
           }
         >
@@ -298,7 +374,6 @@ export function ThreeTable({
               <TableFallback
                 projection={projection}
                 wallCount={layout.wallCount}
-                onFallback={markFallback}
               />
             }
             onCreated={({ gl }) => {
@@ -307,7 +382,13 @@ export function ThreeTable({
               gl.shadowMap.type = PCFSoftShadowMap;
             }}
           >
-            <MatchTableScene layout={layout} atlas={atlas} />
+            <MatchTableScene
+              layout={layout}
+              atlas={atlas}
+              motion={motion}
+              onMotionComplete={completeMotion}
+              onMotionFrame={recordMotionFrame}
+            />
           </Canvas>
         </TableErrorBoundary>
       ) : (

@@ -353,6 +353,85 @@ test("keeps a long participant name and missing portrait actionable", async ({ p
   });
 });
 
+test("keeps legal actions usable when WebGL creation fails", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function getContext(
+      this: HTMLCanvasElement,
+      contextId: string,
+      ...args: unknown[]
+    ) {
+      if (contextId === "webgl" || contextId === "webgl2") return null;
+      return Reflect.apply(original, this, [contextId, ...args]);
+    } as typeof original;
+  });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+
+  const table = page.getByTestId("three-table");
+  await expect(table).toHaveAttribute("data-webgl-fallback", "true", { timeout: 20_000 });
+  await expect(page.getByRole("status", { name: "3D table unavailable" })).toContainText("East 1");
+  const legalTiles = page.locator(".table-tile-hit.is-legal");
+  await expect(legalTiles).toHaveCount(14);
+  await legalTiles.first().click();
+  const sent = await page.evaluate(() =>
+    (window as unknown as { __socket: { sent: string[] } }).__socket.sent.map((value) => JSON.parse(value)),
+  );
+  expect(sent).toEqual([
+    { type: "submit_action", decision_id: "d1", action_id: "a1" },
+  ]);
+});
+
+test("runs one bounded discard motion and stops invalidating after idle", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  const table = await expectRenderedTable(page);
+  const shell = page.getByTestId("gameplay-shell");
+  const consumedBefore = Number(await shell.getAttribute("data-animation-consumed-count"));
+
+  await page.evaluate(() => {
+    const browser = window as unknown as {
+      __socket: { emit: (value: unknown) => void };
+      __state: unknown;
+      __animationStates: string[];
+    };
+    const table = document.querySelector<HTMLElement>('[data-testid="three-table"]')!;
+    browser.__animationStates = [];
+    new MutationObserver(() => {
+      browser.__animationStates.push(
+        `${table.dataset.animationState}:${table.dataset.animationItemId}`,
+      );
+    }).observe(table, {
+      attributes: true,
+      attributeFilter: ["data-animation-state", "data-animation-item-id"],
+    });
+    browser.__socket.emit({
+      type: "game_update",
+      event: { type: "dahai", actor: 0, tile: 1 },
+      state: browser.__state,
+    });
+  });
+
+  await expect(table).toHaveAttribute("data-animation-state", "idle", { timeout: 5_000 });
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __animationStates: string[] }).__animationStates,
+  )).toContain("active:0");
+  await expect(table).toHaveAttribute("data-last-consumed-animation-id", "0");
+  await expect.poll(
+    async () => Number(await shell.getAttribute("data-animation-consumed-count")),
+  ).toBe(consumedBefore + 1);
+  const idleFrameCount = Number(await table.getAttribute("data-animation-frame-count"));
+  expect(idleFrameCount).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  expect(Number(await table.getAttribute("data-animation-frame-count"))).toBe(idleFrameCount);
+  expect(Number(await shell.getAttribute("data-animation-consumed-count"))).toBe(consumedBefore + 1);
+});
+
 test("keeps reduced-motion discard effects static", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -388,12 +467,14 @@ test("keeps reduced-motion discard effects static", async ({ page }) => {
   await expect.poll(
     async () => Number(await shell.getAttribute("data-animation-enqueued-count")),
     { timeout: 5_000, message: "discard event should enqueue an animation" },
-  ).toBeGreaterThan(enqueuedBefore);
+  ).toBe(enqueuedBefore + 1);
   await expect.poll(
     async () => Number(await shell.getAttribute("data-animation-consumed-count")),
     { timeout: 5_000, message: "reduced-motion animation should be consumed" },
-  ).toBeGreaterThan(consumedBefore);
-  await expect(table).toHaveAttribute("data-animation-state", "reduced");
+  ).toBe(consumedBefore + 1);
+  await expect(table).toHaveAttribute("data-animation-state", "static");
+  await expect(table).toHaveAttribute("data-last-consumed-animation-id", "0");
+  expect(Number(await table.getAttribute("data-animation-frame-count"))).toBe(0);
   await page.screenshot({
     path: "test-results/immersive-table/4p-reduced-motion.png",
     fullPage: false,
@@ -588,7 +669,7 @@ test("shows the authoritative Mangan post-match results surface", async ({
   await expect(table).toHaveAttribute("data-render-ready", "true");
   await expect(page.getByTestId("results-panel")).toBeVisible();
   await expect(page.getByText("Permanent Auto")).toHaveCount(3);
-  await expect(page.getByAltText("Mika portrait")).toBeVisible();
+  await expect(page.getByTestId("results-panel").getByAltText("Mika portrait")).toBeVisible();
   await page.screenshot({
     path: "test-results/task-12/results-portrait-state.png",
     fullPage: false,
