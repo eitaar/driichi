@@ -1,0 +1,147 @@
+import {
+  CanvasTexture,
+  LinearFilter,
+  SRGBColorSpace,
+  type Texture,
+} from "three";
+
+import { tileAssetUrl, tileFileName } from "./tiles";
+
+const ATLAS_COLUMNS = 8;
+const CELL_WIDTH = 128;
+const CELL_HEIGHT = 171;
+const PHYSICAL_TILE_IDS = Array.from({ length: 136 }, (_, tile) => tile);
+const FALLBACK_TILE = -1;
+
+interface AtlasEntry {
+  readonly tile: number;
+  readonly fileName: string;
+}
+
+const ATLAS_ENTRIES: readonly AtlasEntry[] = (() => {
+  const seen = new Set<string>();
+  const entries: AtlasEntry[] = [];
+
+  for (const tile of [...PHYSICAL_TILE_IDS, FALLBACK_TILE]) {
+    const fileName = tileFileName(tile);
+    if (seen.has(fileName)) continue;
+    seen.add(fileName);
+    entries.push(Object.freeze({ tile, fileName }));
+  }
+
+  return Object.freeze(entries);
+})();
+
+const CELL_BY_FILE = new Map<string, readonly [number, number]>(
+  ATLAS_ENTRIES.map((entry, index) => [
+    entry.fileName,
+    Object.freeze([
+      index % ATLAS_COLUMNS,
+      Math.floor(index / ATLAS_COLUMNS),
+    ]) as readonly [number, number],
+  ]),
+);
+const FALLBACK_CELL = CELL_BY_FILE.get(tileFileName(FALLBACK_TILE))!;
+
+export interface TileAtlas {
+  readonly texture: CanvasTexture;
+  readonly columns: number;
+  readonly rows: number;
+  cellFor(tile: number): readonly [number, number];
+  dispose(): void;
+}
+
+function abortError(): DOMException {
+  return new DOMException("Tile atlas creation aborted", "AbortError");
+}
+
+function loadImage(url: string, signal?: AbortSignal): Promise<HTMLImageElement> {
+  if (signal?.aborted) return Promise.reject(abortError());
+
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    let settled = false;
+
+    const cleanup = () => {
+      image.onload = null;
+      image.onerror = null;
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(image);
+    };
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(`Failed to load tile face: ${url}`));
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      image.src = "";
+      reject(abortError());
+    };
+
+    image.onload = succeed;
+    image.onerror = fail;
+    signal?.addEventListener("abort", onAbort, { once: true });
+    image.src = url;
+  });
+}
+
+function disposeOnce(texture: Texture): () => void {
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    texture.dispose();
+  };
+}
+
+export async function createTileAtlas(signal?: AbortSignal): Promise<TileAtlas> {
+  if (signal?.aborted) throw abortError();
+
+  const rows = Math.ceil(ATLAS_ENTRIES.length / ATLAS_COLUMNS);
+  const canvas = document.createElement("canvas");
+  canvas.width = ATLAS_COLUMNS * CELL_WIDTH;
+  canvas.height = rows * CELL_HEIGHT;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas 2D context is unavailable");
+
+  for (let index = 0; index < ATLAS_ENTRIES.length; index += 1) {
+    if (signal?.aborted) throw abortError();
+    const entry = ATLAS_ENTRIES[index];
+    const image = await loadImage(tileAssetUrl(entry.tile), signal);
+    if (signal?.aborted) throw abortError();
+    context.drawImage(
+      image,
+      (index % ATLAS_COLUMNS) * CELL_WIDTH,
+      Math.floor(index / ATLAS_COLUMNS) * CELL_HEIGHT,
+      CELL_WIDTH,
+      CELL_HEIGHT,
+    );
+  }
+
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  texture.flipY = false;
+  texture.generateMipmaps = false;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.needsUpdate = true;
+
+  return Object.freeze({
+    texture,
+    columns: ATLAS_COLUMNS,
+    rows,
+    cellFor(tile: number): readonly [number, number] {
+      return CELL_BY_FILE.get(tileFileName(tile)) ?? FALLBACK_CELL;
+    },
+    dispose: disposeOnce(texture),
+  });
+}
