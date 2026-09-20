@@ -28,6 +28,7 @@ import { actionTile } from "./actions";
 
 const TILE_FRAMES = {
   hand: { width: 42, height: 56 },
+  opponentHand: { width: 32, height: 43 },
   discard: { width: 31, height: 42 },
   meld: { width: 38, height: 50 },
   dora: { width: 36, height: 48 },
@@ -509,7 +510,16 @@ export function PixiTable({
             const hand = optionalVisibleTiles(player);
             const count =
               hand.length > 0 ? hand.length : concealedTiles(player);
-            const gap = 45;
+            const primarySeat =
+              nextProjection.audience === "player" &&
+              typeof nextProjection.viewer_seat === "number"
+                ? nextProjection.viewer_seat
+                : 0;
+            const isViewerHand = seat === primarySeat;
+            const handFrame = isViewerHand
+              ? TILE_FRAMES.hand
+              : TILE_FRAMES.opponentHand;
+            const gap = isViewerHand ? 45 : 35;
             const start = -((Math.max(count, 1) - 1) * gap) / 2;
             for (let index = 0; index < count; index += 1) {
               const tile = hand[index] ?? 0;
@@ -527,7 +537,7 @@ export function PixiTable({
                 tile,
                 x,
                 y,
-                TILE_FRAMES.hand,
+                handFrame,
                 coordinates.handRotation,
                 hand.length === 0,
               );

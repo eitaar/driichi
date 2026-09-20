@@ -112,9 +112,14 @@ export function discardPlacement(
 }
 
 export function wallTileCount(value: unknown, maximum = 136): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.min(maximum, Math.max(0, Math.floor(value)))
+  const boundedMaximum = Number.isFinite(maximum)
+    ? Math.max(0, Math.floor(maximum))
     : 0;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.min(boundedMaximum, Math.max(0, Math.floor(value)));
+  }
+  if (Array.isArray(value)) return Math.min(boundedMaximum, value.length);
+  return 0;
 }
 
 export function wallPlacements(

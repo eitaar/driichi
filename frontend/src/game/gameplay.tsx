@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   actionCandidates,
   actionGroupLabel,
@@ -391,9 +391,11 @@ function GameplayToast({
 }) {
   return (
     <div className="gameplay-toast-stack" aria-live="polite">
-      {status === "reconnecting" && (
+      {(status === "reconnecting" || status === "error") && (
         <p className="gameplay-toast" role="status">
-          Reconnecting… The last authoritative table state remains visible.
+          {status === "error"
+            ? "Network connection interrupted… Retrying while the last authoritative table state remains visible."
+            : "Reconnecting… The last authoritative table state remains visible."}
         </p>
       )}
       {commandError && (
@@ -487,10 +489,14 @@ function CandidatePopup({
   actions,
   onAction,
   onClose,
+  id,
+  disabled,
 }: {
   actions: VisibleAction[];
   onAction: (action: VisibleAction) => void;
   onClose: () => void;
+  id: string;
+  disabled: boolean;
 }) {
   const popupRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -500,11 +506,47 @@ function CandidatePopup({
     const returnFocus = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    popup?.querySelector<HTMLButtonElement>(".candidate-list button")?.focus();
+    const focusableSelector = [
+      "button:not([disabled])",
+      "[href]",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex=\"-1\"])",
+    ].join(",");
+    const focusable = () =>
+      popup
+        ? Array.from(popup.querySelectorAll<HTMLElement>(focusableSelector))
+        : [];
+    const initialFocus =
+      popup?.querySelector<HTMLButtonElement>(
+        ".candidate-list button:not([disabled])",
+      ) ?? popup?.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button");
+    initialFocus?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      closeRef.current();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      if (elements.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === first || !popup?.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !popup?.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
@@ -515,6 +557,7 @@ function CandidatePopup({
   return (
     <div
       ref={popupRef}
+      id={id}
       className="candidate-popup"
       role="dialog"
       aria-modal="true"
@@ -533,6 +576,7 @@ function CandidatePopup({
             className="button button-secondary"
             key={action.action_id}
             data-action-id={action.action_id}
+            disabled={disabled}
             onClick={() => onAction(action)}
           >
             {describeAction(action)}
@@ -559,6 +603,7 @@ function ActionDeck({
   const [popupKind, setPopupKind] = useState<
     "chi" | "pon" | "kan" | "nuki" | null
   >(null);
+  const popupId = `${useId()}-candidate-dialog`;
   const grouped = useMemo(() => actionCandidates(decision), [decision]);
   useEffect(() => {
     setPopupKind(null);
@@ -611,28 +656,36 @@ function ActionDeck({
             ) : null;
           },
         )}
-        {candidateButtons.map(({ kind, candidates }) => (
-          <button
-            key={kind}
-            type="button"
-            className="button button-secondary"
-            data-action-id={candidates.length === 1 ? candidates[0].action_id : ""}
-            disabled={disabled}
-            onClick={() =>
-              candidates.length === 1
-                ? onAction(candidates[0])
-                : setPopupKind(kind)
-            }
-          >
-            {candidates.length === 1
-              ? actionGroupLabel(kind)
-              : `${actionGroupLabel(kind)} (${candidates.length})`}
-          </button>
-        ))}
+        {candidateButtons.map(({ kind, candidates }) => {
+          const multiple = candidates.length > 1;
+          return (
+            <button
+              key={kind}
+              type="button"
+              className="button button-secondary"
+              data-action-id={candidates.length === 1 ? candidates[0].action_id : ""}
+              disabled={disabled}
+              aria-haspopup={multiple ? "dialog" : undefined}
+              aria-expanded={multiple ? popupKind === kind : undefined}
+              aria-controls={multiple ? popupId : undefined}
+              onClick={() =>
+                candidates.length === 1
+                  ? onAction(candidates[0])
+                  : setPopupKind(kind)
+              }
+            >
+              {candidates.length === 1
+                ? actionGroupLabel(kind)
+                : `${actionGroupLabel(kind)} (${candidates.length})`}
+            </button>
+          );
+        })}
       </div>
       {popupKind && (
         <CandidatePopup
+          id={popupId}
           actions={grouped.candidates.get(popupKind) ?? []}
+          disabled={disabled}
           onAction={(action) => {
             setPopupKind(null);
             onAction(action);
@@ -851,7 +904,7 @@ export function GameplaySurface({
       useGameStore.getState().clearPendingAction();
   }, [decision?.decision_id, pending]);
   const submit = (action: VisibleAction) => {
-    if (!decision) return;
+    if (!decision || status !== "connected") return;
     useGameStore
       .getState()
       .submitAction(decision.decision_id, action.action_id, send);
@@ -861,11 +914,15 @@ export function GameplaySurface({
       ? "This Participant connected in another tab."
       : reason === "room_deleted"
         ? "The host deleted this Room."
-        : reason === "session_expired"
-          ? "This Guest Session has expired."
-          : reason
-            ? `The live Room connection reported ${reason}.`
-            : "";
+        : reason === "server_shutdown"
+          ? "The host service shut down this connection."
+          : reason === "slow_consumer"
+            ? "The connection was closed because it could not keep up."
+            : reason === "token_revoked"
+              ? "This Guest Session token is no longer valid."
+              : reason === "session_expired"
+                ? "This Guest Session has expired."
+                : "";
   const supported =
     typeof window === "undefined" ||
     (window.innerWidth >= 1024 && window.innerHeight >= 600);

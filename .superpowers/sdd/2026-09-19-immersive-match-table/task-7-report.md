@@ -202,3 +202,73 @@ npx playwright test tests/task15.spec.ts --reporter=line
 ```
 
 PASS: 8 passed in 49.7s across all four Replay viewports and both Replay cases.
+
+## Broad-review recovery evidence
+
+Recovery preserved the eleven pre-existing uncommitted frontend files on base `b24d4e401a75152b0c82f6bf940c5e9dd399015c`; no reset or restart was performed.
+
+### RED
+
+The focused reconnect/preload contract failed before the recovery edit:
+
+```text
+$ cd frontend && npx vitest run src/app.test.tsx -t "repeats selected asset preload for a fresh connection generation" --reporter=verbose
+FAIL: expected 6 to be 12
+```
+
+The failure was caused by preserving the authoritative lobby Room during reconnect without rerunning the selected-character preload effect for the new `connectionGeneration`. The expectation remained justified: a fresh WebSocket generation must decode the selected portrait and icon assets again before Ready can be sent.
+
+### GREEN / focused corrections
+
+- Added `connectionGeneration` to the lobby preload effect dependencies; the focused test now passes with image counts `6` then `12`.
+- Recoverable close/error states retain the last Room/projection scene; terminal close reasons (`connected_elsewhere`, `room_deleted`, `server_shutdown`, `slow_consumer`, `token_revoked`, `session_expired`) preserve the scene and route gameplay to blocking UI, while `network_error` remains transient.
+- Shared `wallTileCount()` now bounds numeric and array center labels exactly as the rendered wall, including non-finite values; added focused unit assertions.
+- Kept the viewer hand at the larger actionable frame and opponent hands at the smaller frame/gap.
+- Candidate buttons are disabled with the rest of action input while disconnected/pending; failed sends clear pending state; multi-candidate triggers expose the dialog relationship and the chooser traps Tab focus with Escape/focus restoration.
+- Replay transport bounds now have explicit 1920×1080 child/control containment assertions.
+
+Focused unit validation:
+
+```text
+$ cd frontend && npm test -- --run src/game/table-geometry.test.ts src/game/task12.test.ts src/replay.test.tsx
+PASS: 3 files, 28 tests
+
+$ cd frontend && npx vitest run src/app.test.tsx -t "repeats selected asset preload for a fresh connection generation" --reporter=verbose
+PASS: 1 test (20 skipped)
+```
+
+Focused browser validation:
+
+```text
+$ cd frontend && npx playwright test tests/task12.spec.ts --grep "candidate popup|disables open candidate|preserves the last table scene|keeps full player status|blocks play when the Room is deleted|captures 4p-red-east authoritative gameplay at 1920x1080" --reporter=line
+PASS: 6 tests
+
+$ cd frontend && npx playwright test tests/task15.spec.ts --grep "captures Replay library and viewer at 1920x1080" --reporter=line
+PASS: 1 test
+```
+
+The 1920×1080 Replay screenshot was inspected at `frontend/test-results/task-15/viewer-1920x1080.png`; the complete Play/Previous/Next/speed/Kyoku transport is inside the stage and viewport with no scroll clipping.
+
+Affected acceptance lanes:
+
+```text
+$ cd frontend && npm run typecheck && npm test -- --run && npm run build
+PASS: typecheck; Vitest 4 files / 49 tests; Vite production build
+
+$ cd frontend && npx playwright test tests/task12.spec.ts tests/task15.spec.ts --reporter=line
+PASS: 30 tests in 1.7m
+
+$ cd frontend && npx playwright test tests/task16-real-server.spec.ts --config=playwright.real.config.ts --reporter=line
+PASS: 3 tests in 6.8m (embedded CSP, real 3p, real 4p)
+```
+
+### Final validation
+
+The required single full browser gate was run only after the focused checks above were green:
+
+```text
+$ cd frontend && npm run test:browser
+PASS: 42 tests in 7.2m
+```
+
+`git diff --check` passed (only existing LF→CRLF conversion warnings for the modified frontend text specs/modules). Backend/domain/projection/protocol files were untouched; action `decision_id`/`action_id` semantics and no-optimistic-update behavior remain covered.

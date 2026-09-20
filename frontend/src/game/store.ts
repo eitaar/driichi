@@ -13,7 +13,8 @@ import type {
   WebSocketStatus,
 } from "./types";
 
-export type Transport = (message: unknown) => void;
+/** A transport returns false when the message could not be sent on an open connection. */
+export type Transport = (message: unknown) => unknown;
 
 type ActionResult = {
   decision_id?: string;
@@ -43,6 +44,7 @@ export interface GameStoreState {
   setStatus: (status: WebSocketStatus, reason?: string) => void;
   reset: () => void;
   resetForReconnect: () => void;
+  preserveForTerminal: (reason: string) => void;
   setTransport: (transport: Transport | null) => void;
   submitAction: (decisionId: string, actionId: string, transport?: Transport) => boolean;
   receiveSnapshot: (room: RoomSnapshot | null, projection: unknown) => void;
@@ -92,8 +94,9 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   resetForReconnect: () => set((state) => ({
     status: "reconnecting",
     reason: "",
-    room: null,
-    projection: null,
+    // Keep the last authoritative scene mounted while the transport retries.
+    room: state.room,
+    projection: state.projection,
     commandError: "",
     actionError: "",
     pendingAction: null,
@@ -106,14 +109,39 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     animationConsumedCount: 0,
     lastEventToken: state.lastEventToken + 1,
   })),
+  preserveForTerminal: (reason) => set((state) => ({
+    status: "closed",
+    reason,
+    // Terminal UI is rendered by GameplaySurface over this authoritative scene.
+    room: state.room,
+    projection: state.projection,
+    commandError: "",
+    actionError: "",
+    pendingAction: null,
+    animationQueue: [],
+    lastEvents: [],
+    lastActionResult: null,
+    actionResultHistory: [],
+    transport: null,
+    lastEventToken: state.lastEventToken + 1,
+  })),
   setTransport: (transport) => set({ transport }),
   submitAction: (decisionId, actionId, transport) => {
     const state = get();
     if (state.pendingAction || !decisionId || !actionId) return false;
     const send = transport ?? state.transport;
     if (!send) return false;
+    const message = { type: "submit_action", decision_id: decisionId, action_id: actionId };
     set({ pendingAction: { decisionId, actionId }, actionError: "", commandError: "" });
-    send({ type: "submit_action", decision_id: decisionId, action_id: actionId });
+    try {
+      if (send(message) === false) {
+        set({ pendingAction: null });
+        return false;
+      }
+    } catch {
+      set({ pendingAction: null });
+      return false;
+    }
     return true;
   },
   receiveSnapshot: (room, projection) => set((state) => {

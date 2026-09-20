@@ -105,9 +105,45 @@ for (const viewport of [
     await expect(page.getByRole("heading", { name: /night market replay/i })).toBeVisible();
     const stage = page.locator(".replay-table-stage");
     await expect(stage).toBeVisible();
-    await expect(stage.locator(".replay-controls-overlay")).toBeVisible();
+    const replayControls = stage.locator(".replay-controls-overlay");
+    await expect(replayControls).toBeVisible();
     await expect(stage.locator(".replay-status-toast")).toBeVisible();
     await expect(page.locator(".replay-event-log")).toBeVisible();
+    if (viewport.height >= 1000) {
+      const transportBounds = await replayControls.evaluate((element) => {
+        const container = element.getBoundingClientRect();
+        const controls = Array.from(
+          element.querySelectorAll<HTMLElement>("button, select"),
+        ).map((control) => {
+          const rect = control.getBoundingClientRect();
+          return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+        });
+        return {
+          container: {
+            left: container.left,
+            top: container.top,
+            right: container.right,
+            bottom: container.bottom,
+          },
+          controls,
+          scrollHeight: element.scrollHeight,
+          clientHeight: element.clientHeight,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      });
+      expect(transportBounds.container.bottom).toBeLessThanOrEqual(viewport.height);
+      expect(transportBounds.controls).not.toHaveLength(0);
+      for (const control of transportBounds.controls) {
+        expect(control.left).toBeGreaterThanOrEqual(transportBounds.container.left);
+        expect(control.top).toBeGreaterThanOrEqual(transportBounds.container.top);
+        expect(control.right).toBeLessThanOrEqual(transportBounds.container.right);
+        expect(control.bottom).toBeLessThanOrEqual(transportBounds.container.bottom);
+        expect(control.bottom).toBeLessThanOrEqual(viewport.height);
+      }
+      expect(transportBounds.scrollHeight).toBeLessThanOrEqual(transportBounds.clientHeight);
+      expect(transportBounds.scrollWidth).toBeLessThanOrEqual(transportBounds.clientWidth);
+    }
     await expect(page.locator(".replay-table-wrap + .replay-controls")).toHaveCount(0);
     const table = page.getByTestId("pixi-table");
     await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
@@ -119,7 +155,6 @@ for (const viewport of [
     await expectNoSeriousOrCriticalViolations(page, ".replay-table-stage");
     await page.getByRole("button", { name: /next event/i }).click();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
-    const replayControls = stage.locator(".replay-controls-overlay");
     const play = replayControls.getByRole("button", { name: /^play$/i });
     await play.focus();
     await expect(play).toBeFocused();

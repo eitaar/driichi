@@ -7,7 +7,7 @@ import { seatPositions } from "./orientation";
 import { useGameStore } from "./store";
 import { tileAssetUrl, tileFileName, tileLabel } from "./tiles";
 import { portraitFromEvents } from "./gameplay";
-import { displayPlayerName } from "./table-art";
+import { displayPlayerName, remainingWallValue } from "./table-art";
 import { effectDuration } from "./table-effects";
 
 beforeEach(() => {
@@ -96,6 +96,21 @@ describe("Task 12 table invariants", () => {
     expect(useGameStore.getState().pendingAction).toBeNull();
   });
 
+  it("does not create pending state when transport rejects a disconnected send", () => {
+    useGameStore.getState().receiveSnapshot(null, {
+      audience: "player", viewer_seat: 0, mode: "4p-red-east", players: [],
+      decision: { decision_id: "offline-decision", kind: "turn", actions: [
+        { action_id: "offline-action", action: { discard: { tile: 16 } } },
+      ] },
+    });
+    expect(useGameStore.getState().submitAction(
+      "offline-decision",
+      "offline-action",
+      () => false,
+    )).toBe(false);
+    expect(useGameStore.getState().pendingAction).toBeNull();
+  });
+
   it("groups compound candidates and persists safe audio settings", () => {
     const actions = actionCandidates({ decision_id: "d", kind: "response", actions: [
       { action_id: "a1", action: { chi: { called: 1 } } },
@@ -109,6 +124,13 @@ describe("Task 12 table invariants", () => {
     const storage = { getItem: () => stored, setItem: (_key: string, value: string) => { stored = value; } } as unknown as Storage;
     saveAudioSettings({ master: 0.5, sfx: 0.4, voice: 0.3, voiceEnabled: false }, storage);
     expect(loadAudioSettings(storage)).toEqual({ master: 0.5, sfx: 0.4, voice: 0.3, voiceEnabled: false });
+  });
+
+  it("bounds malformed center wall labels to the rendered wall", () => {
+    expect(remainingWallValue({ remaining_wall: 999 })).toBe("136 TILES LEFT");
+    expect(remainingWallValue({ remaining_wall: [1, 2, 3] })).toBe("3 TILES LEFT");
+    expect(remainingWallValue({ remaining_wall: Number.POSITIVE_INFINITY })).toBe("0 TILES LEFT");
+    expect(remainingWallValue({ remaining_wall: Number.NaN })).toBe("0 TILES LEFT");
   });
 
   it("bounds long table labels without changing the source Display Name", () => {
