@@ -16,3 +16,4 @@ character-packs-*.zip.sha256
 .pi/
 playwright-report/
 test-results/
+docs/design/concepts/generated/
