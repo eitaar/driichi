@@ -119,28 +119,17 @@ async function installSocket(
   );
 }
 
-async function expectRenderedTable(
-  page: Page,
-  expectedSkinFallback: "true" | "false" = "false",
-) {
-  const table = page.getByTestId("pixi-table");
+async function expectRenderedTable(page: Page) {
+  const table = page.getByTestId("three-table");
   await expect(table).toBeVisible({ timeout: 20000 });
   await expect(table).toHaveAttribute("data-render-ready", "true", {
     timeout: 20000,
   });
-  await expect(table).toHaveAttribute("data-skin-ready", "true", {
-    timeout: 20000,
-  });
-  await expect(table).toHaveAttribute("data-skin-fallback", expectedSkinFallback);
   await expect(table).toHaveAttribute("data-player-frame-count", /^[34]$/);
   await expect(table).toHaveAttribute("data-wall-tile-count", /^\d+$/);
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
   await expect(table).toHaveAttribute(
-    "data-rendered-table-primitives",
-    /^[1-9]\d*$/,
-  );
-  await expect(table).toHaveAttribute(
-    "data-rendered-visual-primitives",
+    "data-rendered-scene-primitives",
     /^[1-9]\d*$/,
   );
   const canvasBounds = await table.evaluate((node) => {
@@ -194,6 +183,36 @@ async function expectInViewport(page: Page, locator: Locator) {
   }
 }
 
+async function expectInsideStageAndClearOfHand(
+  stage: Locator,
+  targets: Locator,
+  hand: Locator,
+) {
+  const stageBox = await stage.boundingBox();
+  const handBox = await hand.boundingBox();
+  const targetBoxes = await targets.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }),
+  );
+  expect(stageBox).not.toBeNull();
+  expect(handBox).not.toBeNull();
+  expect(targetBoxes.length).toBeGreaterThan(0);
+  for (const box of targetBoxes) {
+    expect(box.x).toBeGreaterThanOrEqual(stageBox!.x);
+    expect(box.y).toBeGreaterThanOrEqual(stageBox!.y);
+    expect(box.x + box.width).toBeLessThanOrEqual(stageBox!.x + stageBox!.width);
+    expect(box.y + box.height).toBeLessThanOrEqual(stageBox!.y + stageBox!.height);
+    const intersectsHand =
+      box.x < handBox!.x + handBox!.width
+      && box.x + box.width > handBox!.x
+      && box.y < handBox!.y + handBox!.height
+      && box.y + box.height > handBox!.y;
+    expect(intersectsHand).toBe(false);
+  }
+}
+
 async function expectNoSeriousOrCriticalViolations(page: Page, include?: string) {
   const axe = new AxeBuilder({ page });
   if (include) axe.include(include);
@@ -238,11 +257,26 @@ for (const viewport of [
         "data-player-frame-count",
         mode === "3p-red-east" ? "3" : "4",
       );
+      await expect(page.locator(".table-player-frame")).toHaveCount(
+        mode === "3p-red-east" ? 3 : 4,
+      );
+      await expect(page.locator('.table-player-frame[data-position="top"]')).toHaveCount(
+        mode === "3p-red-east" ? 0 : 1,
+      );
       await expectInViewport(page, page.locator(".gameplay-controls"));
       await expectInViewport(page, page.getByTestId("action-deck"));
       await expectInViewport(page, page.locator(".table-tile-hit.is-legal"));
-      await expect(page.getByText("Mika")).toBeVisible();
-      await expect(table).toHaveAttribute("data-center-data", /East 1/);
+      await expectInsideStageAndClearOfHand(
+        page.locator(".table-letterbox"),
+        page.locator(".table-player-frame"),
+        page.locator(".table-hit-layer"),
+      );
+      await expectInsideStageAndClearOfHand(
+        page.locator(".table-letterbox"),
+        page.getByTestId("action-deck"),
+        page.locator(".table-hit-layer"),
+      );
+      await expect(table.getByText("Mika")).toBeVisible();
       await expect(page.getByTestId("decision-timer")).toHaveAttribute(
         "aria-label",
         /Decision timer: \d+ seconds/,
@@ -305,6 +339,10 @@ test("keeps a long participant name and missing portrait actionable", async ({ p
   const table = await expectRenderedTable(page);
   await expect(table).toHaveAttribute("data-player-frame-count", "4");
   await expect(table).toHaveAttribute("data-render-ready", "true");
+  await expect(table.locator('.table-player-frame[data-position="bottom"]')).toContainText(
+    "A very long participant display name",
+  );
+  await expect(table.locator('.table-player-frame[data-position="bottom"] .asset-fallback')).toBeVisible();
   await expect(page.getByTestId("action-deck")).toBeVisible();
   await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
   await page.screenshot({
@@ -353,10 +391,7 @@ test("keeps reduced-motion discard effects static", async ({ page }) => {
     async () => Number(await shell.getAttribute("data-animation-consumed-count")),
     { timeout: 5_000, message: "reduced-motion animation should be consumed" },
   ).toBeGreaterThan(consumedBefore);
-  await expect(table).toHaveAttribute(
-    "data-animation-marker-state",
-    "suppressed-consumed",
-  );
+  await expect(table).toHaveAttribute("data-animation-state", "reduced");
   await page.screenshot({
     path: "test-results/immersive-table/4p-reduced-motion.png",
     fullPage: false,
@@ -405,6 +440,11 @@ test("candidate popup transfers focus and closes on Escape", async ({ page }) =>
   expect(dialogId).toBeTruthy();
   await expect(trigger).toHaveAttribute("aria-controls", dialogId ?? "");
   await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
+  await expectInsideStageAndClearOfHand(
+    page.locator(".table-letterbox"),
+    dialog,
+    page.locator(".table-hit-layer"),
+  );
   await expectNoSeriousOrCriticalViolations(page, ".gameplay-main");
   const candidateButtons = dialog.locator(".candidate-list button");
   await candidateButtons.last().focus();
@@ -449,7 +489,7 @@ test("keeps the Riichi legal highlight while its authoritative action is pending
   ];
   await installSocket(page, "4p-red-east", riichiState);
   await page.goto("/room/123456/lobby");
-  await expect(page.getByTestId("pixi-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20000 });
+  await expect(page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20000 });
   const legal = page.locator(".table-tile-hit.is-legal");
   await expect(legal).toHaveCount(1);
   const initialStyle = await legal.first().evaluate((element) => {
@@ -497,12 +537,6 @@ test("shows the authoritative Mangan post-match results surface", async ({
       state: browser.__state,
     });
   });
-  await expect(table).toHaveAttribute("data-portrait-ready", "true", {
-    timeout: 20000,
-  });
-  await expect(table).toHaveAttribute("data-portrait-effect", "Mangan");
-  await expect(table).toHaveAttribute("data-portrait-name", "Mika");
-  await expect(table).toHaveAttribute("data-portrait-result", "Ron");
   await page.evaluate(() => {
     const browser = window as unknown as {
       __socket: { emit: (value: unknown) => void };
@@ -547,7 +581,7 @@ test("shows the authoritative Mangan post-match results surface", async ({
       state: browser.__state,
     });
   });
-  await expect(table).toHaveAttribute("data-portrait-ready", "true");
+  await expect(table).toHaveAttribute("data-render-ready", "true");
   await expect(page.getByTestId("results-panel")).toBeVisible();
   await expect(page.getByText("Permanent Auto")).toHaveCount(3);
   await expect(page.getByAltText("Mika portrait")).toBeVisible();
@@ -555,19 +589,6 @@ test("shows the authoritative Mangan post-match results surface", async ({
     path: "test-results/task-12/results-portrait-state.png",
     fullPage: false,
   });
-  await page.waitForTimeout(12100);
-  await expect(table).toHaveAttribute("data-portrait-ready", "false");
-});
-
-test("falls back to procedural table art when generated textures fail", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.route(/\/(table-felt|table-rail|center-device|tile-back-material)-?.*\.webp$/, (route) => route.abort());
-  await installCharacterFixtures(page);
-  await installSocket(page, "4p-red-east");
-  await page.goto("/room/123456/lobby");
-  const table = await expectRenderedTable(page, "true");
-  await expect(table).toHaveAttribute("data-skin-fallback", "true");
-  await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
 });
 
 test("shows guidance below the supported gameplay viewport", async ({
@@ -578,7 +599,7 @@ test("shows guidance below the supported gameplay viewport", async ({
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
   await expect(page.getByText("Widen this window to play.")).toBeVisible();
-  await expect(page.getByTestId("pixi-table")).toHaveCount(0);
+  await expect(page.getByTestId("three-table")).toHaveCount(0);
 });
 
 test("shows in-table synchronization before the first projection", async ({ page }) => {
@@ -605,7 +626,7 @@ test("preserves the last table scene during a transient reconnect", async ({ pag
     }).__socket;
     socket.onerror?.();
   });
-  await expect(page.getByTestId("pixi-table")).toBeVisible();
+  await expect(page.getByTestId("three-table")).toBeVisible();
   await expect(page.locator(".gameplay-blocking-state")).toHaveCount(0);
   await page.evaluate(() => {
     const socket = (window as unknown as {
@@ -613,7 +634,7 @@ test("preserves the last table scene during a transient reconnect", async ({ pag
     }).__socket;
     socket.onclose?.({ code: 1006, reason: "" });
   });
-  await expect(page.getByTestId("pixi-table")).toBeVisible();
+  await expect(page.getByTestId("three-table")).toBeVisible();
   await expect(page.getByText(/last authoritative table state remains visible/i)).toBeVisible();
   await expect(page.locator(".gameplay-shell")).toHaveAttribute("data-testid", "gameplay-shell");
 });
@@ -644,7 +665,7 @@ test("keeps full player status semantics while terminal gameplay is blocked", as
   await expect(page.getByTestId("gameplay-shell")).toBeVisible();
   await expect(page.locator(".lobby-shell")).toHaveCount(0);
   await expect(playerStatus).toContainText("A very long participant display name");
-  await expect(page.getByTestId("pixi-table")).toHaveCount(0);
+  await expect(page.getByTestId("three-table")).toHaveCount(0);
 });
 
 test("blocks play when the Room is deleted", async ({ page }) => {
