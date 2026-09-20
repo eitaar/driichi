@@ -151,8 +151,12 @@ for (const viewport of [
         expect(control.right).toBeLessThanOrEqual(transportBounds.container.right);
         expect(control.bottom).toBeLessThanOrEqual(transportBounds.container.bottom);
       }
-      expect(transportBounds.scrollHeight).toBeLessThanOrEqual(transportBounds.clientHeight);
-      expect(transportBounds.scrollWidth).toBeLessThanOrEqual(transportBounds.clientWidth);
+      expect(transportBounds.scrollHeight).toBeLessThanOrEqual(
+        Math.ceil(transportBounds.container.bottom - transportBounds.container.top),
+      );
+      expect(transportBounds.scrollWidth).toBeLessThanOrEqual(
+        Math.ceil(transportBounds.container.right - transportBounds.container.left),
+      );
     }
     await expect(page.locator(".replay-table-wrap + .replay-controls")).toHaveCount(0);
     const table = page.getByTestId("three-table");

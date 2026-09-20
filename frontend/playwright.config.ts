@@ -11,6 +11,21 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        browserName: "chromium",
+        launchOptions: {
+          args: [
+            "--use-angle=swiftshader",
+            "--enable-webgl",
+            "--enable-unsafe-swiftshader",
+          ],
+        },
+      },
+    },
+  ],
   webServer: {
     command: "npm run dev -- --host 127.0.0.1",
     url: "http://127.0.0.1:4173",
