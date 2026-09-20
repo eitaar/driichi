@@ -118,13 +118,11 @@ export async function createTileAtlas(signal?: AbortSignal): Promise<TileAtlas> 
     const entry = ATLAS_ENTRIES[index];
     const image = await loadImage(tileAssetUrl(entry.tile), signal);
     if (signal?.aborted) throw abortError();
-    context.drawImage(
-      image,
-      (index % ATLAS_COLUMNS) * CELL_WIDTH,
-      Math.floor(index / ATLAS_COLUMNS) * CELL_HEIGHT,
-      CELL_WIDTH,
-      CELL_HEIGHT,
-    );
+    const x = (index % ATLAS_COLUMNS) * CELL_WIDTH;
+    const y = Math.floor(index / ATLAS_COLUMNS) * CELL_HEIGHT;
+    context.fillStyle = "#eee5d2";
+    context.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
+    context.drawImage(image, x, y, CELL_WIDTH, CELL_HEIGHT);
   }
 
   const texture = new CanvasTexture(canvas);

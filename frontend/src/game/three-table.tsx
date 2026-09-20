@@ -9,10 +9,10 @@ import {
   useState,
 } from "react";
 import { Canvas } from "@react-three/fiber";
-import { PCFSoftShadowMap, SRGBColorSpace } from "three";
+import { PCFShadowMap, SRGBColorSpace } from "three";
 
 import type { AnimationItem } from "./animation";
-import { MatchTableScene } from "./three-table-scene";
+import { MatchTableScene, type SceneRenderStats } from "./three-table-scene";
 import { nextSceneMotion, type SceneMotion } from "./three-table-motion";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
 import { buildMatchSceneLayout, CAMERA } from "./three-table-layout";
@@ -79,6 +79,12 @@ function roundFact(projection: ProjectedState): string {
   return "Round unavailable";
 }
 
+function numericFact(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : 0;
+}
+
 function doraFact(projection: ProjectedState): string {
   const indicators = Array.isArray(projection.dora_indicators)
     ? projection.dora_indicators.filter((tile): tile is number => typeof tile === "number")
@@ -86,6 +92,24 @@ function doraFact(projection: ProjectedState): string {
   return indicators.length > 0
     ? `Dora ${indicators.map(tileLabel).join(", ")}`
     : "Dora unavailable";
+}
+
+function TableCenterFacts({
+  projection,
+  wallCount,
+}: {
+  projection: ProjectedState;
+  wallCount: number;
+}) {
+  return (
+    <dl className="table-center-facts" aria-label="Match facts">
+      <div><dt>Kyoku</dt><dd>{roundFact(projection)}</dd></div>
+      <div><dt>Honba</dt><dd>{numericFact(projection.honba)}</dd></div>
+      <div><dt>Kyotaku</dt><dd>{numericFact(projection.kyotaku)}</dd></div>
+      <div><dt>Wall</dt><dd>{wallCount}</dd></div>
+      <div><dt>Dora</dt><dd>{doraFact(projection).replace(/^Dora\s*/, "")}</dd></div>
+    </dl>
+  );
 }
 
 function TableFallback({
@@ -206,9 +230,15 @@ export function ThreeTable({
   const [atlas, setAtlas] = useState<TileAtlas | null>(null);
   const [atlasFailed, setAtlasFailed] = useState(false);
   const [webglFallback, setWebglFallback] = useState(() => !canCreateWebGL());
+  const [rendererCreated, setRendererCreated] = useState(false);
+  const [renderStats, setRenderStats] = useState<
+    (SceneRenderStats & { layout: object; atlas: TileAtlas }) | null
+  >(null);
   const [motion, setMotion] = useState<SceneMotion | null>(null);
   const [lastConsumedAnimationId, setLastConsumedAnimationId] = useState<number | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const contextCleanupRef = useRef<(() => void) | null>(null);
+  const lastMotionFrameAtRef = useRef<number | null>(null);
   const activeMotionRef = useRef<{ motion: SceneMotion; layout: typeof layout } | null>(null);
   const blockedAnimationIdsRef = useRef(new Set<number>());
   const onAnimationConsumedRef = useRef(_onAnimationConsumed);
@@ -218,7 +248,7 @@ export function ThreeTable({
   const hasProjection = projection !== null;
   const layout = useMemo(
     () => (projection ? buildMatchSceneLayout(projection, room) : null),
-    [projection, room],
+    [projection],
   );
 
   useEffect(() => {
@@ -249,12 +279,34 @@ export function ThreeTable({
     };
   }, [hasProjection]);
 
-  const markFallback = useCallback(() => setWebglFallback(true), []);
+  const markFallback = useCallback(() => {
+    contextCleanupRef.current?.();
+    contextCleanupRef.current = null;
+    setRendererCreated(false);
+    setRenderStats(null);
+    setWebglFallback(true);
+  }, []);
+  useEffect(() => () => contextCleanupRef.current?.(), []);
+  useEffect(() => {
+    if (!layout || !atlas || rendererCreated || webglFallback) return;
+    const timeout = window.setTimeout(markFallback, 3_000);
+    return () => window.clearTimeout(timeout);
+  }, [atlas, layout, markFallback, rendererCreated, webglFallback]);
   const isFallback = atlasFailed || webglFallback;
-  const ready = Boolean(layout && atlas && !isFallback);
-  const primitiveCount = layout
-    ? 10 + new Set(layout.tiles.map((tile) => `${tile.face}:${tile.group}`)).size
-    : 0;
+  const ready = Boolean(
+    layout
+    && atlas
+    && rendererCreated
+    && renderStats?.layout === layout
+    && renderStats.atlas === atlas
+    && !isFallback,
+  );
+  const renderedTileCount = ready ? renderStats?.tileCount ?? 0 : 0;
+  const primitiveCount = ready ? renderStats?.primitiveCount ?? 0 : 0;
+  const recordRenderReady = useCallback((stats: SceneRenderStats) => {
+    if (!layout || !atlas) return;
+    setRenderStats({ ...stats, layout, atlas });
+  }, [atlas, layout]);
   const reportConsumed = useCallback((id: number) => {
     setLastConsumedAnimationId(id);
     onAnimationConsumedRef.current?.(id);
@@ -303,6 +355,8 @@ export function ThreeTable({
       return;
     }
     const nextMotion = { ...candidate, startedAt: performance.now() };
+    lastMotionFrameAtRef.current = null;
+    if (hostRef.current) hostRef.current.dataset.animationFrameCount = "0";
     activeMotionRef.current = { motion: nextMotion, layout };
     setMotion(nextMotion);
   }, [animations, layout, ready, reducedMotion, reportConsumed, motion]);
@@ -317,16 +371,32 @@ export function ThreeTable({
     const active = activeMotionRef.current;
     if (!active || active.motion.itemId !== id) return;
     blockedAnimationIdsRef.current.add(id);
+    if (typeof performance.measure === "function") {
+      performance.measure("three-table-motion-event", {
+        start: active.motion.startedAt,
+        end: performance.now(),
+        detail: { itemId: id, kind: active.motion.kind },
+      });
+    }
+    lastMotionFrameAtRef.current = null;
     activeMotionRef.current = null;
     setMotion(null);
     reportConsumed(id);
   }, [reportConsumed]);
 
-  const recordMotionFrame = useCallback(() => {
+  const recordMotionFrame = useCallback((now: number) => {
     const host = hostRef.current;
     if (!host) return;
     const count = Number(host.dataset.animationFrameCount ?? 0);
-    host.dataset.animationFrameCount = String(Number.isFinite(count) ? count + 1 : 1);
+    const firstFrame = !Number.isFinite(count) || count === 0;
+    host.dataset.animationFrameCount = String(firstFrame ? 1 : count + 1);
+    const active = activeMotionRef.current;
+    if (firstFrame && active) active.motion.startedAt = now;
+    const previous = lastMotionFrameAtRef.current;
+    if (!firstFrame && previous !== null && typeof performance.measure === "function") {
+      performance.measure("three-table-motion-frame", { start: previous, end: now });
+    }
+    lastMotionFrameAtRef.current = now;
   }, []);
 
   const animationState = reducedMotion ? "static" : motion ? "active" : "idle";
@@ -338,7 +408,7 @@ export function ThreeTable({
       data-testid="three-table"
       data-surface={surface}
       data-render-ready={String(ready)}
-      data-rendered-tile-count={layout?.tiles.length ?? 0}
+      data-rendered-tile-count={renderedTileCount}
       data-rendered-scene-primitives={primitiveCount}
       data-wall-tile-count={layout?.wallCount ?? 0}
       data-webgl-fallback={String(isFallback)}
@@ -352,6 +422,9 @@ export function ThreeTable({
     >
       {projection && (
         <TablePlayerOverlay projection={projection} room={room} surface={surface} />
+      )}
+      {projection && layout && !isFallback && (
+        <TableCenterFacts projection={projection} wallCount={layout.wallCount} />
       )}
       {!projection ? (
         <div role="status" aria-label="Table synchronization">
@@ -383,7 +456,7 @@ export function ThreeTable({
               far: CAMERA.far,
             }}
             gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
-            shadows={{ type: PCFSoftShadowMap }}
+            shadows={{ type: PCFShadowMap }}
             fallback={
               <TableFallback
                 projection={projection}
@@ -393,7 +466,16 @@ export function ThreeTable({
             onCreated={({ gl }) => {
               gl.outputColorSpace = SRGBColorSpace;
               gl.shadowMap.enabled = true;
-              gl.shadowMap.type = PCFSoftShadowMap;
+              gl.shadowMap.type = PCFShadowMap;
+              contextCleanupRef.current?.();
+              const onContextLost = (event: Event) => {
+                event.preventDefault();
+                markFallback();
+              };
+              gl.domElement.addEventListener("webglcontextlost", onContextLost);
+              contextCleanupRef.current = () =>
+                gl.domElement.removeEventListener("webglcontextlost", onContextLost);
+              setRendererCreated(true);
             }}
           >
             <MatchTableScene
@@ -402,6 +484,7 @@ export function ThreeTable({
               motion={motion}
               onMotionComplete={completeMotion}
               onMotionFrame={recordMotionFrame}
+              onRenderReady={recordRenderReady}
             />
           </Canvas>
         </TableErrorBoundary>

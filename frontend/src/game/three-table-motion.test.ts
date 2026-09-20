@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { AnimationItem, AnimationKind } from "./animation";
-import { nextSceneMotion, sceneMotionProgress } from "./three-table-motion";
+import { cameraAccentAt, nextSceneMotion, sceneMotionProgress } from "./three-table-motion";
+import { CAMERA } from "./three-table-layout";
 
 function item(id: number, kind: AnimationKind): AnimationItem {
   return { id, kind, event: { type: kind } };
@@ -37,6 +38,21 @@ describe("nextSceneMotion", () => {
 
   it("returns no motion when Reduced Motion is enabled", () => {
     expect(nextSceneMotion([item(4, "win")], true)).toBeNull();
+  });
+});
+
+describe("cameraAccentAt", () => {
+  it("adds one bounded win accent and restores the fixed camera exactly", () => {
+    expect(cameraAccentAt("win", 0)).toEqual({ fov: CAMERA.fov, target: CAMERA.target });
+    expect(cameraAccentAt("win", 0.5)).toEqual({
+      fov: CAMERA.fov - 1.5,
+      target: [CAMERA.target[0], CAMERA.target[1] + 0.08, CAMERA.target[2] + 0.22],
+    });
+    expect(cameraAccentAt("win", 1)).toEqual({ fov: CAMERA.fov, target: CAMERA.target });
+  });
+
+  it("leaves the fixed camera unchanged for non-win motion", () => {
+    expect(cameraAccentAt("discard", 0.5)).toEqual({ fov: CAMERA.fov, target: CAMERA.target });
   });
 });
 

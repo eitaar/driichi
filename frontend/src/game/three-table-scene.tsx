@@ -9,7 +9,9 @@ import {
   Group,
   InstancedMesh,
   Matrix4,
+  MeshBasicMaterial,
   MeshStandardMaterial,
+  PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
   Vector3,
@@ -17,14 +19,20 @@ import {
 
 import type { TileAtlas } from "./tile-atlas";
 import { CAMERA, TABLE_SIZE, type MatchSceneLayout, type SceneTile } from "./three-table-layout";
-import { sceneMotionProgress, type SceneMotion } from "./three-table-motion";
+import { cameraAccentAt, sceneMotionProgress, type SceneMotion } from "./three-table-motion";
+
+export interface SceneRenderStats {
+  tileCount: number;
+  primitiveCount: number;
+}
 
 interface MatchTableSceneProps {
   layout: MatchSceneLayout;
   atlas: TileAtlas;
   motion: SceneMotion | null;
   onMotionComplete(itemId: number): void;
-  onMotionFrame(): void;
+  onMotionFrame(now: number): void;
+  onRenderReady(stats: SceneRenderStats): void;
 }
 
 const BODY_SIZE = [0.62, 0.18, 0.86] as const;
@@ -58,13 +66,12 @@ function applyMatrices(
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-function atlasMaterial(atlas: TileAtlas): MeshStandardMaterial {
-  const material = new MeshStandardMaterial({
+function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
+  const material = new MeshBasicMaterial({
     color: new Color("#ffffff"),
     map: atlas.texture,
-    metalness: 0,
-    roughness: 0.68,
     side: DoubleSide,
+    toneMapped: false,
   });
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
@@ -161,6 +168,8 @@ function InstancedTiles({
         <>
           <instancedMesh
             ref={frontBody}
+            name="tile-front-bodies"
+            userData={{ tileBodies: true }}
             args={[resources.bodyGeometry, resources.ivoryMaterial, frontTiles.length]}
             castShadow
             receiveShadow
@@ -169,6 +178,7 @@ function InstancedTiles({
           />
           <instancedMesh
             ref={frontFaces}
+            name="tile-front-faces"
             args={[resources.faceGeometry, resources.faceMaterial, frontTiles.length]}
             receiveShadow
             frustumCulled={false}
@@ -180,6 +190,8 @@ function InstancedTiles({
         <>
           <instancedMesh
             ref={backBody}
+            name="tile-back-bodies"
+            userData={{ tileBodies: true }}
             args={[resources.bodyGeometry, resources.ivoryMaterial, backTiles.length]}
             receiveShadow
             frustumCulled={false}
@@ -187,6 +199,7 @@ function InstancedTiles({
           />
           <instancedMesh
             ref={backFaces}
+            name="tile-back-faces"
             args={[resources.backGeometry, resources.backMaterial, backTiles.length]}
             receiveShadow
             frustumCulled={false}
@@ -204,33 +217,58 @@ function resetMotionGroup(group: Group | null): void {
   group.scale.set(1, 1, 1);
 }
 
+function applyCameraFrame(camera: PerspectiveCamera, kind: SceneMotion["kind"], progress: number): void {
+  const frame = cameraAccentAt(kind, progress);
+  camera.fov = frame.fov;
+  camera.position.set(...CAMERA.position);
+  camera.lookAt(...frame.target);
+  camera.updateProjectionMatrix();
+}
+
 function MotionTiles({
   layout,
   atlas,
   motion,
   onMotionComplete,
   onMotionFrame,
-}: MatchTableSceneProps & { motion: SceneMotion }) {
+}: Pick<
+  MatchTableSceneProps,
+  "layout" | "atlas" | "onMotionComplete" | "onMotionFrame"
+> & { motion: SceneMotion }) {
   const groupRef = useRef<Group>(null);
+  const startedAtRef = useRef<number | null>(null);
   const invalidate = useThree((state) => state.invalidate);
+  const camera = useThree((state) => state.camera) as PerspectiveCamera;
 
   useLayoutEffect(() => {
+    startedAtRef.current = null;
     invalidate();
-    return () => resetMotionGroup(groupRef.current);
-  }, [invalidate, motion.itemId]);
+    return () => {
+      resetMotionGroup(groupRef.current);
+      applyCameraFrame(camera, motion.kind, 1);
+      invalidate();
+    };
+  }, [camera, invalidate, motion.itemId, motion.kind]);
 
   useFrame(() => {
     const group = groupRef.current;
     if (!group) return;
-    const progress = sceneMotionProgress(motion, performance.now());
+    const now = performance.now();
+    startedAtRef.current ??= now;
+    const progress = sceneMotionProgress(
+      { ...motion, startedAt: startedAtRef.current },
+      now,
+    );
     const pulse = Math.sin(Math.PI * progress);
     const translates = motion.kind === "draw" || motion.kind === "discard";
     group.position.y = translates ? pulse * 0.09 : 0;
-    const scale = translates ? 1 : 1 + pulse * (motion.kind === "win" ? 0.025 : 0.012);
+    const scale = translates ? 1 : 1 + pulse * (motion.kind === "win" ? 0 : 0.012);
     group.scale.set(scale, scale, scale);
-    onMotionFrame();
+    applyCameraFrame(camera, motion.kind, progress);
+    onMotionFrame(now);
     if (progress >= 1) {
       resetMotionGroup(group);
+      applyCameraFrame(camera, motion.kind, 1);
       onMotionComplete(motion.itemId);
       return;
     }
@@ -250,6 +288,7 @@ function FixedCamera() {
 
   useLayoutEffect(() => {
     camera.position.set(...CAMERA.position);
+    if (camera instanceof PerspectiveCamera) camera.fov = CAMERA.fov;
     camera.lookAt(...CAMERA.target);
     camera.updateProjectionMatrix();
     invalidate();
@@ -258,49 +297,174 @@ function FixedCamera() {
   return null;
 }
 
+function TableRails() {
+  const invalidate = useThree((state) => state.invalidate);
+  const meshRef = useRef<InstancedMesh>(null);
+  const resources = useMemo(() => ({
+    geometry: new BoxGeometry(1, 1, 1),
+    material: new MeshStandardMaterial({
+      color: new Color("#171c20"),
+      metalness: 0.58,
+      roughness: 0.46,
+    }),
+  }), []);
+
+  useLayoutEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const rails = [
+      { position: [0, 0.2, 4.24] as const, scale: [12.62, 0.34, 0.62] as const },
+      { position: [0, 0.2, -4.24] as const, scale: [12.62, 0.34, 0.62] as const },
+      { position: [6.44, 0.2, 0] as const, scale: [0.62, 0.34, 7.62] as const },
+      { position: [-6.44, 0.2, 0] as const, scale: [0.62, 0.34, 7.62] as const },
+    ];
+    rails.forEach((rail, index) => {
+      mesh.setMatrixAt(index, new Matrix4().compose(
+        new Vector3(...rail.position),
+        new Quaternion(),
+        new Vector3(...rail.scale),
+      ));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    invalidate();
+  }, [invalidate]);
+
+  useEffect(() => () => {
+    resources.geometry.dispose();
+    resources.material.dispose();
+  }, [resources]);
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      name="table-rails"
+      args={[resources.geometry, resources.material, 4]}
+      receiveShadow
+      frustumCulled={false}
+      dispose={null}
+    />
+  );
+}
+
+function SceneReadiness({
+  layout,
+  onRenderReady,
+}: Pick<MatchTableSceneProps, "layout" | "onRenderReady">) {
+  const invalidate = useThree((state) => state.invalidate);
+  const scene = useThree((state) => state.scene);
+  const gl = useThree((state) => state.gl);
+  const scheduled = useRef(false);
+  const reported = useRef(false);
+
+  useEffect(() => {
+    scheduled.current = false;
+    reported.current = false;
+    invalidate();
+  }, [invalidate, layout]);
+
+  useFrame(() => {
+    if (scheduled.current || reported.current) return;
+    scheduled.current = true;
+    queueMicrotask(() => {
+      scheduled.current = false;
+      if (reported.current) return;
+      let tileCount = 0;
+      scene.traverse((object) => {
+        if (object instanceof InstancedMesh && object.userData.tileBodies === true) {
+          tileCount += object.count;
+        }
+      });
+      const primitiveCount = gl.info.render.calls;
+      if (tileCount <= 0 || primitiveCount <= 0) {
+        invalidate();
+        return;
+      }
+      reported.current = true;
+      onRenderReady({ tileCount, primitiveCount });
+    });
+  });
+
+  return null;
+}
+
+function CenterTrim() {
+  const invalidate = useThree((state) => state.invalidate);
+  const meshRef = useRef<InstancedMesh>(null);
+  const resources = useMemo(() => ({
+    geometry: new BoxGeometry(1, 1, 1),
+    material: new MeshStandardMaterial({
+      color: new Color("#9a7042"),
+      metalness: 0.72,
+      roughness: 0.34,
+    }),
+  }), []);
+
+  useLayoutEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const trims = [
+      { position: [0, 0.37, -0.73] as const, scale: [1.62, 0.035, 0.055] as const },
+      { position: [0, 0.37, 0.73] as const, scale: [1.62, 0.035, 0.055] as const },
+      { position: [-0.92, 0.37, 0] as const, scale: [0.055, 0.035, 1.32] as const },
+      { position: [0.92, 0.37, 0] as const, scale: [0.055, 0.035, 1.32] as const },
+    ];
+    trims.forEach((trim, index) => {
+      mesh.setMatrixAt(index, new Matrix4().compose(
+        new Vector3(...trim.position),
+        new Quaternion(),
+        new Vector3(...trim.scale),
+      ));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    invalidate();
+  }, [invalidate]);
+
+  useEffect(() => () => {
+    resources.geometry.dispose();
+    resources.material.dispose();
+  }, [resources]);
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      name="center-device-trim"
+      args={[resources.geometry, resources.material, 4]}
+      receiveShadow
+      frustumCulled={false}
+      dispose={null}
+    />
+  );
+}
+
 function ProceduralTable() {
   return (
-    <group>
+    <group scale={[0.94, 1, 1]}>
       <mesh position={[0, -0.48, 0]} receiveShadow>
         <boxGeometry args={[TABLE_SIZE.width, 0.72, TABLE_SIZE.depth]} />
-        <meshStandardMaterial color="#0b0e11" metalness={0.5} roughness={0.52} />
+        <meshStandardMaterial color="#171c20" metalness={0.42} roughness={0.48} />
       </mesh>
       <mesh position={[0, -0.09, 0]} receiveShadow>
         <boxGeometry args={[12.65, 0.18, 8.25]} />
-        <meshStandardMaterial color="#221b18" metalness={0.2} roughness={0.62} />
+        <meshStandardMaterial color="#32251e" metalness={0.2} roughness={0.62} />
       </mesh>
       <mesh position={[0, 0.015, 0]} receiveShadow>
         <boxGeometry args={[11.7, 0.16, 7.3]} />
-        <meshStandardMaterial color="#18352f" metalness={0.02} roughness={0.94} />
+        <meshStandardMaterial color="#21483f" metalness={0.02} roughness={0.94} />
       </mesh>
       <mesh position={[0, 0.18, 0]} receiveShadow>
         <boxGeometry args={[2.55, 0.3, 2.05]} />
-        <meshStandardMaterial color="#171c20" metalness={0.68} roughness={0.38} />
+        <meshStandardMaterial color="#30393b" metalness={0.64} roughness={0.38} />
       </mesh>
       <mesh position={[0, 0.345, 0]} receiveShadow>
         <boxGeometry args={[2.16, 0.035, 1.66]} />
-        <meshStandardMaterial color="#0b0e11" metalness={0.3} roughness={0.45} />
+        <meshStandardMaterial color="#1d292c" emissive="#0c1214" emissiveIntensity={0.35} metalness={0.3} roughness={0.45} />
       </mesh>
       <mesh position={[0, 0.37, 0]} receiveShadow>
         <ringGeometry args={[0.36, 0.43, 48]} />
         <meshStandardMaterial color="#9a7042" metalness={0.72} roughness={0.34} />
       </mesh>
-      <mesh position={[0, 0.2, 4.24]} receiveShadow>
-        <boxGeometry args={[12.62, 0.34, 0.62]} />
-        <meshStandardMaterial color="#171c20" metalness={0.58} roughness={0.46} />
-      </mesh>
-      <mesh position={[0, 0.2, -4.24]} receiveShadow>
-        <boxGeometry args={[12.62, 0.34, 0.62]} />
-        <meshStandardMaterial color="#171c20" metalness={0.58} roughness={0.46} />
-      </mesh>
-      <mesh position={[6.44, 0.2, 0]} receiveShadow>
-        <boxGeometry args={[0.62, 0.34, 7.62]} />
-        <meshStandardMaterial color="#171c20" metalness={0.58} roughness={0.46} />
-      </mesh>
-      <mesh position={[-6.44, 0.2, 0]} receiveShadow>
-        <boxGeometry args={[0.62, 0.34, 7.62]} />
-        <meshStandardMaterial color="#171c20" metalness={0.58} roughness={0.46} />
-      </mesh>
+      <CenterTrim />
+      <TableRails />
     </group>
   );
 }
@@ -311,15 +475,16 @@ export function MatchTableScene({
   motion,
   onMotionComplete,
   onMotionFrame,
+  onRenderReady,
 }: MatchTableSceneProps) {
   return (
     <>
       <color attach="background" args={["#050709"]} />
-      <hemisphereLight args={["#c9d5d0", "#030405", 0.45]} />
+      <hemisphereLight args={["#e7ede8", "#17231f", 0.72]} />
       <directionalLight
         position={[-5.5, 10.5, 6.5]}
         color="#ffe2bd"
-        intensity={2.25}
+        intensity={2.6}
         castShadow
         shadow-mapSize-width={1024}
         shadow-mapSize-height={1024}
@@ -330,17 +495,18 @@ export function MatchTableScene({
         shadow-camera-top={7}
         shadow-camera-bottom={-7}
       />
-      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.48} />
+      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.8} />
       <spotLight
         position={[0, 3.8, 8.5]}
         color="#d8a873"
-        intensity={0.7}
+        intensity={0.85}
         angle={0.48}
         penumbra={0.9}
         distance={18}
       />
       <FixedCamera />
       <ProceduralTable />
+      <SceneReadiness layout={layout} onRenderReady={onRenderReady} />
       {motion ? (
         <MotionTiles
           layout={layout}
