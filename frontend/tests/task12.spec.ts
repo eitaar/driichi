@@ -540,6 +540,39 @@ test("runs one bounded discard motion and stops invalidating after idle", async 
   expect(medianFrameDuration).toBeLessThanOrEqual(softwareWebglFrameBaselineMs * 1.25);
 });
 
+test("captures the complete 4p scene during active motion at 1024x600", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  const table = await expectRenderedTable(page);
+  await page.evaluate(() => {
+    const browser = window as unknown as {
+      __socket: { emit: (value: unknown) => void };
+      __state: unknown;
+    };
+    browser.__socket.emit({
+      type: "game_update",
+      event: { type: "pon", actor: 0 },
+      state: browser.__state,
+    });
+  });
+  await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
+  await expect(table).toHaveAttribute("data-player-frame-count", "4");
+  await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
+  await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
+  await page.screenshot({
+    path: "test-results/task-12/4p-1024-active-motion.png",
+    fullPage: false,
+  });
+  await expect(table).toHaveAttribute("data-animation-state", "idle", { timeout: 5_000 });
+  await page.screenshot({
+    path: "test-results/task-12/4p-1024-idle-motion.png",
+    fullPage: false,
+  });
+});
+
 test("accepts a 60fps-class motion budget at both required desktop resolutions", async ({ page }) => {
   async function measureAt(viewport: { width: number; height: number }) {
     await page.setViewportSize(viewport);
