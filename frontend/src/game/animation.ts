@@ -96,9 +96,13 @@ export function enqueueAnimationEvents(
   events: unknown[],
   nextId = nextAnimationId(current),
 ): AnimationQueueResult {
-  const mapped = events.flatMap((event, index) => {
+  let id = nextId;
+  const mapped = events.flatMap((event) => {
     const kind = animationKindForEvent(event);
-    return kind ? [{ id: nextId + index, kind, event }] : [];
+    if (!kind) return [];
+    const item = { id, kind, event };
+    id += 1;
+    return [item];
   });
   if (mapped.length === 0) return { queue: current, overflow: false };
   if (current.length + mapped.length > ANIMATION_QUEUE_CAP) return { queue: [], overflow: true };

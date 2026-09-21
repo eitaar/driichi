@@ -33,14 +33,17 @@ export const CAMERA = {
   // The fixed lens stays inside the approved envelope while the authored table
   // depth keeps the complete world frame within the 16:9 safe composition.
   fov: 34,
-  position: [0, 12.8, 12.3] as Vec3,
-  target: [0, 0.15, 1] as Vec3,
+  position: [0, 12.8, 12.9] as Vec3,
+  target: [0, 0.15, 0.38] as Vec3,
   near: 0.1,
   far: 60,
 } as const;
 export const LOCAL_TILE_SIZE = 1;
-export const REMOTE_TILE_SIZE = 0.72;
-export const TILE_BODY_SIZE = { width: 0.6, depth: 0.82 } as const;
+// Keep layout, hit-target projection, and the instanced renderer on one authored
+// tile footprint. The remote scale remains the visual/replay value from the
+// authoritative-motion integration.
+export const REMOTE_TILE_SIZE = 0.78;
+export const TILE_BODY_SIZE = { width: 0.62, height: 0.12, depth: 0.86 } as const;
 export const CENTER_DEVICE_AABB = {
   minX: -1.65,
   maxX: 1.65,
@@ -268,9 +271,9 @@ function addDoraTiles(tiles: SceneTile[], indicators: unknown): void {
       sceneTile(
         `dora-${index}`,
         tile,
-        [(index - center) * 0.55, 0.28, -0.18],
+        [(index - center) * 0.64, 0.61, 0.86],
         [0, 0, 0],
-        REMOTE_TILE_SIZE,
+        LOCAL_TILE_SIZE,
         "front",
         "dora",
       ),

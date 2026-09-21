@@ -40,6 +40,7 @@ describe("table material assets", () => {
     expect(TABLE_TEXTURE_SPECS.felt.repeat).toEqual([1.5, 1]);
     expect(TABLE_TEXTURE_SPECS.felt.colorSpace).toBe("srgb");
     expect(TABLE_TEXTURE_SPECS.felt.minFilter).toBe("mipmap");
+    expect(TABLE_TEXTURE_SPECS.felt.anisotropy).toBe(1);
   });
 
   it("keeps felt direct-loaded and deep-green without a derived canvas texture", () => {
@@ -48,7 +49,7 @@ describe("table material assets", () => {
       "utf8",
     );
 
-    expect(FELT_MATERIAL_TINT).toBe("#225d44");
+    expect(FELT_MATERIAL_TINT).toBe("#18352f");
     expect(sceneSource).not.toContain("CanvasTexture");
     expect(sceneSource).not.toContain("tintFeltTexture");
     expect(sceneSource).toContain(

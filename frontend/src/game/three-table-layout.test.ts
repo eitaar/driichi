@@ -54,8 +54,8 @@ describe("three-dimensional table layout", () => {
     expect(TABLE_SIZE).toEqual({ width: 13.6, depth: 11 });
     expect(CAMERA).toEqual({
       fov: 34,
-      position: [0, 12.8, 12.3],
-      target: [0, 0.15, 1],
+      position: [0, 12.8, 12.9],
+      target: [0, 0.15, 0.38],
       near: 0.1,
       far: 60,
     });
@@ -77,11 +77,11 @@ describe("three-dimensional table layout", () => {
   it("keeps concealed backs inset within the unchanged front-face footprint", () => {
     const backGeometry = createBackFaceGeometry();
 
-    expect(BACK_FACE_SIZE).toEqual([0.48, 0.7]);
+    expect(BACK_FACE_SIZE).toEqual([0.54, 0.78]);
     expect(backGeometry.parameters.width).toBe(BACK_FACE_SIZE[0]);
     expect(backGeometry.parameters.height).toBe(BACK_FACE_SIZE[1]);
-    expect(BACK_FACE_SIZE[0]).toBeLessThan(0.56);
-    expect(BACK_FACE_SIZE[1]).toBeLessThan(0.78);
+    expect(BACK_FACE_SIZE[0]).toBeLessThan(0.58);
+    expect(BACK_FACE_SIZE[1]).toBeLessThan(0.82);
 
     backGeometry.dispose();
   });
@@ -154,6 +154,20 @@ describe("three-dimensional table layout", () => {
     expect(new Set(localHand.map(({ scale }) => scale))).toEqual(new Set([LOCAL_TILE_SIZE]));
     expect(opponentHands.length).toBe(9);
     expect(new Set(opponentHands.map(({ scale }) => scale))).toEqual(new Set([REMOTE_TILE_SIZE]));
+    expect(LOCAL_TILE_SIZE / REMOTE_TILE_SIZE).toBeCloseTo(1.282, 3);
+  });
+
+  it("places Dora indicators on the raised center console with local readability", () => {
+    const layout = buildMatchSceneLayout(
+      projection({ dora_indicators: [4, 8, 12, 16, 20] }),
+      null,
+    );
+    const dora = layout.tiles.filter(({ group }) => group === "dora");
+    expect(dora).toHaveLength(5);
+    expect(dora.every(({ scale }) => scale === LOCAL_TILE_SIZE)).toBe(true);
+    expect(dora.every(({ position }) => position[1] === 0.61 && position[2] === 0.86)).toBe(true);
+    expect(dora.map(({ position }) => position[0])).toEqual([-1.28, -0.64, 0, 0.64, 1.28]);
+    expect(dora.every(({ position }) => Number.isFinite(position[0]))).toBe(true);
   });
 
   it("normalizes malformed remaining wall values and creates matching instances", () => {

@@ -136,22 +136,19 @@ for (const viewport of [
       ),
     );
     expect(foldComposition.eventLogTop).toBeGreaterThanOrEqual(foldComposition.stage.bottom);
-    const viewerHeadBounds = await page.locator(".replay-viewer-head").evaluate((element) => {
-      const head = element.getBoundingClientRect();
-      const status = document.querySelector<HTMLElement>(".replay-status-toast")?.getBoundingClientRect();
+    const statusBounds = await page.locator(".replay-status-toast").evaluate((element) => {
+      const status = element.getBoundingClientRect();
       const stage = element.closest(".replay-table-stage")?.getBoundingClientRect();
       return {
-        head: { left: head.left, top: head.top, right: head.right, bottom: head.bottom },
-        status: status ? { top: status.top, bottom: status.bottom } : null,
-        stage: stage ? { left: stage.left, top: stage.top, right: stage.right, bottom: stage.bottom } : null,
+        status: { left: status.left, top: status.top, right: status.right, bottom: status.bottom },
+        stage: stage ? { left: stage.left, top: stage.top, right: stage.right, bottom: stage.bottom, height: stage.height } : null,
       };
     });
-    expect(viewerHeadBounds.stage).not.toBeNull();
-    expect(viewerHeadBounds.status).not.toBeNull();
-    expect(viewerHeadBounds.head.left).toBeGreaterThanOrEqual(viewerHeadBounds.stage!.left);
-    expect(viewerHeadBounds.head.right).toBeLessThanOrEqual(viewerHeadBounds.stage!.right);
-    expect(viewerHeadBounds.head.top).toBeGreaterThanOrEqual(viewerHeadBounds.stage!.top);
-    expect(viewerHeadBounds.head.bottom).toBeLessThanOrEqual(viewerHeadBounds.status!.top - 4);
+    expect(statusBounds.stage).not.toBeNull();
+    expect(statusBounds.status.left).toBeGreaterThanOrEqual(statusBounds.stage!.left);
+    expect(statusBounds.status.right).toBeLessThanOrEqual(statusBounds.stage!.right);
+    expect(statusBounds.status.top).toBeGreaterThanOrEqual(statusBounds.stage!.top);
+    expect(statusBounds.status.bottom).toBeLessThanOrEqual(statusBounds.stage!.top + statusBounds.stage!.height * 0.10);
     const replayControls = stage.locator(".replay-controls-overlay");
     await expect(replayControls).toBeVisible();
     await expect(stage.locator(".replay-status-toast")).toBeVisible();
@@ -368,14 +365,14 @@ for (const viewport of [
     await page.getByRole("button", { name: /^play$/i }).click();
     await expect(page.getByRole("button", { name: /^pause$/i })).toBeVisible();
     await page.getByRole("button", { name: /next event/i }).click();
-    await expect(page.getByText("EVENT 2 / 3")).toBeVisible();
+    await expect(page.getByText("EVENT 002")).toBeVisible();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
     await page.getByRole("button", { name: /next event/i }).click();
-    await expect(page.getByText("EVENT 3 / 3")).toBeVisible();
+    await expect(page.getByText("EVENT 003")).toBeVisible();
     await page.getByRole("button", { name: /previous event/i }).click();
-    await expect(page.getByText("EVENT 2 / 3")).toBeVisible();
+    await expect(page.getByText("EVENT 002")).toBeVisible();
     await page.getByRole("combobox", { name: /jump to kyoku/i }).selectOption("2");
-    await expect(page.getByText("EVENT 3 / 3")).toBeVisible();
+    await expect(page.getByText("EVENT 003")).toBeVisible();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
 
     await page.clock.resume();
