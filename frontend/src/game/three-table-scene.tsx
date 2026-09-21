@@ -49,16 +49,32 @@ interface MatchTableSceneProps {
 }
 
 export const TABLE_RENDER_SCALE = {
-  x: 0.9,
+  // The lower camera needs a little more depth while the x span stays inside
+  // the 16:9 safe composition; tiles and the physical table share this frame.
+  x: 0.85,
   y: 1,
-  z: 1.1,
+  z: 1.3,
 } as const;
 
 const TABLE_RENDER_OFFSET: readonly [number, number, number] = [0, 0, -0.38];
-const BODY_SIZE = [0.62, 0.18, 0.86] as const;
-const FACE_SIZE = [0.58, 0.82] as const;
+const BODY_SIZE = [0.6, 0.2, 0.82] as const;
+const FACE_SIZE = [0.56, 0.78] as const;
 const FACE_Y = BODY_SIZE[1] / 2 + 0.003;
 const MAX_TILE_INSTANCES = 256;
+
+/**
+ * Lay a tile face flat first, then apply its seat rotation around the table's
+ * up axis. Applying both rotations as one XYZ Euler makes the +/-90° side
+ * faces stand on edge; the body stays correct while its UV-backed face twists.
+ */
+export function tileFaceQuaternion(
+  rotation: readonly [number, number, number],
+): Quaternion {
+  const seatRotation = new Quaternion().setFromEuler(new Euler(...rotation));
+  return seatRotation.multiply(
+    new Quaternion().setFromEuler(new Euler(-Math.PI / 2, 0, 0)),
+  );
+}
 
 interface TableTextures {
   felt: Texture;
@@ -68,17 +84,21 @@ interface TableTextures {
 }
 
 function instanceMatrix(tile: SceneTile, face = false): Matrix4 {
-  const rotation = face
-    ? new Euler(tile.rotation[0] - Math.PI / 2, tile.rotation[1], tile.rotation[2])
-    : new Euler(...tile.rotation);
+  // Walls are deliberately a touch more separated than hands/rivers. The
+  // shared tile geometry still does the work, but the ivory sidewalls can be
+  // read as individual pieces instead of one continuous strip at distance.
+  const tileScale = tile.group === "wall" ? tile.scale * 0.84 : tile.scale;
+  const orientation = face
+    ? tileFaceQuaternion(tile.rotation)
+    : new Quaternion().setFromEuler(new Euler(...tile.rotation));
   return new Matrix4().compose(
     new Vector3(
       tile.position[0],
-      tile.position[1] + (face ? FACE_Y * tile.scale : 0),
+      tile.position[1] + (face ? FACE_Y * tileScale : 0),
       tile.position[2],
     ),
-    new Quaternion().setFromEuler(rotation),
-    new Vector3(tile.scale, tile.scale, tile.scale),
+    orientation,
+    new Vector3(tileScale, tileScale, tileScale),
   );
 }
 
@@ -230,9 +250,9 @@ function InstancedTiles({
       faceGeometry,
       backGeometry: new PlaneGeometry(...FACE_SIZE),
       ivoryMaterial: new MeshStandardMaterial({
-        color: new Color("#c8b99d"),
+        color: new Color("#d9cbb3"),
         metalness: 0.02,
-        roughness: 0.6,
+        roughness: 0.52,
       }),
       faceMaterial: atlasMaterial(atlas),
       backMaterial: (() => {
@@ -276,6 +296,7 @@ function InstancedTiles({
         userData={{ tileBodies: true }}
         args={[resources.bodyGeometry, resources.ivoryMaterial, MAX_TILE_INSTANCES]}
         castShadow
+        receiveShadow
         frustumCulled={false}
         dispose={null}
       />
@@ -291,6 +312,7 @@ function InstancedTiles({
         name="tile-back-bodies"
         userData={{ tileBodies: true }}
         args={[resources.bodyGeometry, resources.ivoryMaterial, MAX_TILE_INSTANCES]}
+        receiveShadow
         frustumCulled={false}
         dispose={null}
       />
@@ -414,36 +436,181 @@ function FixedCamera() {
   return null;
 }
 
+type TablePart = {
+  position: readonly [number, number, number];
+  scale: readonly [number, number, number];
+  rotation?: readonly [number, number, number];
+};
+
+function applyTableParts(mesh: InstancedMesh | null, parts: readonly TablePart[]): void {
+  if (!mesh) return;
+  mesh.count = parts.length;
+  parts.forEach((part, index) => {
+    const rotation = part.rotation
+      ? new Quaternion().setFromEuler(new Euler(...part.rotation))
+      : new Quaternion();
+    mesh.setMatrixAt(index, new Matrix4().compose(
+      new Vector3(...part.position),
+      rotation,
+      new Vector3(...part.scale),
+    ));
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+}
+
 function TableRails({ textures }: { textures: TableTextures | null }) {
   const invalidate = useThree((state) => state.invalidate);
-  const meshRef = useRef<InstancedMesh>(null);
+  const chassisRef = useRef<InstancedMesh>(null);
+  const walnutRef = useRef<InstancedMesh>(null);
+  const bronzeRef = useRef<InstancedMesh>(null);
+  const capsRef = useRef<InstancedMesh>(null);
+  const capAccentsRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => {
-    const material = new MeshStandardMaterial({
-      color: new Color("#ffffff"),
-      metalness: 0.18,
-      roughness: 0.48,
+    const geometry = new BoxGeometry(1, 1, 1);
+    const chassisMaterial = new MeshStandardMaterial({
+      color: new Color("#30383a"),
+      metalness: 0.4,
+      roughness: 0.4,
     });
-    if (textures?.rail) material.map = textures.rail;
-    return { geometry: new BoxGeometry(1, 1, 1), material };
+    if (textures?.rail) chassisMaterial.map = textures.rail;
+    return {
+      geometry,
+      chassisMaterial,
+      walnutMaterial: new MeshStandardMaterial({
+        color: new Color("#704023"),
+        metalness: 0.06,
+        roughness: 0.56,
+      }),
+      bronzeMaterial: new MeshStandardMaterial({
+        color: new Color("#cf9753"),
+        metalness: 0.66,
+        roughness: 0.3,
+      }),
+      capMaterial: new MeshStandardMaterial({
+        color: new Color("#343638"),
+        metalness: 0.48,
+        roughness: 0.38,
+      }),
+      capAccentMaterial: new MeshStandardMaterial({
+        color: new Color("#c18e51"),
+        metalness: 0.68,
+        roughness: 0.28,
+      }),
+    };
   }, [textures?.rail]);
 
   useLayoutEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    const rails = [
-      { position: [0, 0.2, 4.24] as const, scale: [12.62, 0.34, 0.62] as const },
-      { position: [0, 0.2, -4.24] as const, scale: [12.62, 0.34, 0.62] as const },
-      { position: [6.44, 0.2, 0] as const, scale: [0.62, 0.34, 7.62] as const },
-      { position: [-6.44, 0.2, 0] as const, scale: [0.62, 0.34, 7.62] as const },
+    const outerChassis: readonly TablePart[] = [
+      { position: [0, 0.02, 4.05], scale: [12.85, 0.2, 0.68] },
+      { position: [0, 0.02, -4.05], scale: [12.85, 0.2, 0.68] },
+      { position: [6.18, 0.02, 0], scale: [0.68, 0.2, 7.72] },
+      { position: [-6.18, 0.02, 0], scale: [0.68, 0.2, 7.72] },
     ];
-    rails.forEach((rail, index) => {
-      mesh.setMatrixAt(index, new Matrix4().compose(
-        new Vector3(...rail.position),
-        new Quaternion(),
-        new Vector3(...rail.scale),
-      ));
-    });
-    mesh.instanceMatrix.needsUpdate = true;
+    const walnutRails: readonly TablePart[] = [
+      { position: [0, 0.15, 3.73], scale: [12.15, 0.22, 0.5] },
+      { position: [0, 0.15, -3.73], scale: [12.15, 0.22, 0.5] },
+      { position: [5.86, 0.15, 0], scale: [0.5, 0.22, 7.14] },
+      { position: [-5.86, 0.15, 0], scale: [0.5, 0.22, 7.14] },
+    ];
+    const bronzeInlays: readonly TablePart[] = [
+      { position: [0, 0.29, 3.56], scale: [11.98, 0.045, 0.06] },
+      { position: [0, 0.29, -3.56], scale: [11.98, 0.045, 0.06] },
+      { position: [5.66, 0.29, 0], scale: [0.06, 0.045, 6.9] },
+      { position: [-5.66, 0.29, 0], scale: [0.06, 0.045, 6.9] },
+    ];
+    const corners: readonly TablePart[] = [
+      { position: [-5.72, 0.26, -3.46], scale: [0.74, 0.16, 0.46] },
+      { position: [5.72, 0.26, -3.46], scale: [0.74, 0.16, 0.46] },
+      { position: [5.72, 0.26, 3.46], scale: [0.74, 0.16, 0.46] },
+      { position: [-5.72, 0.26, 3.46], scale: [0.74, 0.16, 0.46] },
+    ];
+    const cornerAccents: readonly TablePart[] = corners.map(({ position }) => ({
+      position: [position[0], 0.36, position[2]],
+      scale: [0.34, 0.035, 0.07],
+    }));
+    applyTableParts(chassisRef.current, outerChassis);
+    applyTableParts(walnutRef.current, walnutRails);
+    applyTableParts(bronzeRef.current, bronzeInlays);
+    applyTableParts(capsRef.current, corners);
+    applyTableParts(capAccentsRef.current, cornerAccents);
+    invalidate();
+  }, [invalidate]);
+
+  useEffect(() => () => {
+    resources.geometry.dispose();
+    resources.chassisMaterial.dispose();
+    resources.walnutMaterial.dispose();
+    resources.bronzeMaterial.dispose();
+    resources.capMaterial.dispose();
+    resources.capAccentMaterial.dispose();
+  }, [resources]);
+
+  return (
+    <group name="layered-table-perimeter">
+      <instancedMesh
+        ref={chassisRef}
+        name="table-rails"
+        args={[resources.geometry, resources.chassisMaterial, 4]}
+        frustumCulled={false}
+        receiveShadow
+        dispose={null}
+      />
+      <instancedMesh
+        ref={walnutRef}
+        name="table-walnut-inner-rail"
+        args={[resources.geometry, resources.walnutMaterial, 4]}
+        frustumCulled={false}
+        receiveShadow
+        dispose={null}
+      />
+      <instancedMesh
+        ref={bronzeRef}
+        name="table-bronze-inlay"
+        args={[resources.geometry, resources.bronzeMaterial, 4]}
+        frustumCulled={false}
+        receiveShadow
+        dispose={null}
+      />
+      <instancedMesh
+        ref={capsRef}
+        name="table-corner-caps"
+        args={[resources.geometry, resources.capMaterial, 4]}
+        frustumCulled={false}
+        receiveShadow
+        dispose={null}
+      />
+      <instancedMesh
+        ref={capAccentsRef}
+        name="table-corner-accents"
+        args={[resources.geometry, resources.capAccentMaterial, 4]}
+        frustumCulled={false}
+        receiveShadow
+        dispose={null}
+      />
+    </group>
+  );
+}
+
+function FeltSeams() {
+  const invalidate = useThree((state) => state.invalidate);
+  const meshRef = useRef<InstancedMesh>(null);
+  const resources = useMemo(() => ({
+    geometry: new BoxGeometry(1, 1, 1),
+    material: new MeshStandardMaterial({
+      color: new Color("#17392f"),
+      metalness: 0.02,
+      roughness: 0.92,
+    }),
+  }), []);
+
+  useLayoutEffect(() => {
+    const seams: readonly TablePart[] = [
+      { position: [-3.3, 0.16, -2.02], scale: [4.65, 0.018, 0.032], rotation: [0, -0.53, 0] },
+      { position: [3.3, 0.16, -2.02], scale: [4.65, 0.018, 0.032], rotation: [0, 0.53, 0] },
+      { position: [-3.3, 0.16, 2.02], scale: [4.65, 0.018, 0.032], rotation: [0, 0.53, 0] },
+      { position: [3.3, 0.16, 2.02], scale: [4.65, 0.018, 0.032], rotation: [0, -0.53, 0] },
+    ];
+    applyTableParts(meshRef.current, seams);
     invalidate();
   }, [invalidate]);
 
@@ -455,9 +622,10 @@ function TableRails({ textures }: { textures: TableTextures | null }) {
   return (
     <instancedMesh
       ref={meshRef}
-      name="table-rails"
+      name="felt-directional-seams"
       args={[resources.geometry, resources.material, 4]}
       frustumCulled={false}
+      receiveShadow
       dispose={null}
     />
   );
@@ -549,28 +717,23 @@ function CenterTrim() {
     geometry: new BoxGeometry(1, 1, 1),
     material: new MeshStandardMaterial({
       color: new Color("#a77842"),
-      metalness: 0.58,
-      roughness: 0.34,
+      metalness: 0.62,
+      roughness: 0.3,
     }),
   }), []);
 
   useLayoutEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    const trims = [
-      { position: [0, 0.37, -0.73] as const, scale: [1.62, 0.035, 0.055] as const },
-      { position: [0, 0.37, 0.73] as const, scale: [1.62, 0.035, 0.055] as const },
-      { position: [-0.92, 0.37, 0] as const, scale: [0.055, 0.035, 1.32] as const },
-      { position: [0.92, 0.37, 0] as const, scale: [0.055, 0.035, 1.32] as const },
+    const trims: readonly TablePart[] = [
+      { position: [0, 0.49, -1.02], scale: [2.72, 0.045, 0.055] },
+      { position: [0, 0.49, 1.02], scale: [2.72, 0.045, 0.055] },
+      { position: [-1.38, 0.49, 0], scale: [0.055, 0.045, 1.94] },
+      { position: [1.38, 0.49, 0], scale: [0.055, 0.045, 1.94] },
+      { position: [-1.3, 0.5, -0.91], scale: [0.13, 0.055, 0.13] },
+      { position: [1.3, 0.5, -0.91], scale: [0.13, 0.055, 0.13] },
+      { position: [1.3, 0.5, 0.91], scale: [0.13, 0.055, 0.13] },
+      { position: [-1.3, 0.5, 0.91], scale: [0.13, 0.055, 0.13] },
     ];
-    trims.forEach((trim, index) => {
-      mesh.setMatrixAt(index, new Matrix4().compose(
-        new Vector3(...trim.position),
-        new Quaternion(),
-        new Vector3(...trim.scale),
-      ));
-    });
-    mesh.instanceMatrix.needsUpdate = true;
+    applyTableParts(meshRef.current, trims);
     invalidate();
   }, [invalidate]);
 
@@ -583,8 +746,9 @@ function CenterTrim() {
     <instancedMesh
       ref={meshRef}
       name="center-device-trim"
-      args={[resources.geometry, resources.material, 4]}
+      args={[resources.geometry, resources.material, 8]}
       frustumCulled={false}
+      receiveShadow
       dispose={null}
     />
   );
@@ -593,63 +757,62 @@ function CenterTrim() {
 function FeltMaterial({ texture }: { texture: Texture | undefined }) {
   return texture ? (
     <meshStandardMaterial
-      color="#3d7d61"
+      color="#225d44"
       map={texture}
       metalness={0.02}
-      roughness={0.9}
+      roughness={0.94}
     />
   ) : (
-    <meshStandardMaterial color="#3d7d61" metalness={0.02} roughness={0.9} />
+    <meshStandardMaterial color="#225d44" metalness={0.02} roughness={0.94} />
   );
 }
 
 function CenterMaterial({ texture }: { texture: Texture | undefined }) {
   return texture ? (
     <meshStandardMaterial
-      color="#bd9867"
+      color="#ffffff"
       map={texture}
-      metalness={0.24}
-      roughness={0.44}
-      emissive="#2c506b"
-      emissiveIntensity={0.9}
+      metalness={0.38}
+      roughness={0.42}
       side={DoubleSide}
       transparent
+      depthWrite={false}
     />
   ) : (
-    <meshStandardMaterial color="#151d22" metalness={0.3} roughness={0.44} />
+    <meshStandardMaterial color="#1b2328" metalness={0.42} roughness={0.4} />
   );
 }
 
 function ProceduralTable({ textures }: { textures: TableTextures | null }) {
   return (
     <group name="table-body-root">
-      <mesh position={[0, -0.48, 0]}>
+      {/* The deep chassis is the structural shadow line beneath the assembled rails. */}
+      <mesh position={[0, -0.48, 0]} receiveShadow>
         <boxGeometry args={[TABLE_SIZE.width, 0.72, TABLE_SIZE.depth]} />
-        <meshStandardMaterial color="#293337" metalness={0.34} roughness={0.58} />
+        <meshStandardMaterial color="#2a3438" metalness={0.42} roughness={0.48} />
       </mesh>
-      <mesh position={[0, -0.09, 0]}>
-        <boxGeometry args={[12.65, 0.18, 8.25]} />
-        <meshStandardMaterial color="#65402d" metalness={0.08} roughness={0.62} />
+      <mesh position={[0, -0.075, 0]} receiveShadow>
+        <boxGeometry args={[13.28, 0.17, 8.88]} />
+        <meshStandardMaterial color="#4a5557" metalness={0.38} roughness={0.42} />
       </mesh>
-      <mesh position={[0, 0.015, 0]}>
-        <boxGeometry args={[11.7, 0.16, 7.3]} />
+      {/* A recessed, textile-covered playfield leaves the perimeter visibly built up. */}
+      <mesh position={[0, 0.075, 0]} receiveShadow>
+        <boxGeometry args={[11.58, 0.12, 7.18]} />
         <FeltMaterial texture={textures?.felt} />
       </mesh>
-      <mesh position={[0, 0.18, 0]}>
-        <boxGeometry args={[2.55, 0.3, 2.05]} />
-        <meshStandardMaterial color="#29353b" metalness={0.5} roughness={0.42} />
+      <FeltSeams />
+      {/* Machined center console: dark housing, bronze frame, restrained material inset. */}
+      <mesh position={[0, 0.255, 0]} receiveShadow>
+        <boxGeometry args={[3.3, 0.32, 2.68]} />
+        <meshStandardMaterial color="#1d2529" metalness={0.56} roughness={0.36} />
       </mesh>
-      <mesh position={[0, 0.345, 0]}>
-        <boxGeometry args={[2.16, 0.035, 1.66]} />
-        <meshStandardMaterial color="#1c3546" metalness={0.28} roughness={0.48} />
+      <mesh position={[0, 0.43, 0]} receiveShadow>
+        <boxGeometry args={[3.02, 0.055, 2.4]} />
+        <meshStandardMaterial color="#2b3030" metalness={0.48} roughness={0.4} />
       </mesh>
-      <mesh position={[0, 0.366, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[2.16, 1.66]} />
+      <mesh position={[0, 0.464, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[2.5, 1.88]} />
         <CenterMaterial texture={textures?.center} />
-      </mesh>
-      <mesh position={[0, 0.37, 0]}>
-        <ringGeometry args={[0.36, 0.43, 48]} />
-        <meshStandardMaterial color="#a77842" metalness={0.58} roughness={0.34} />
       </mesh>
       <CenterTrim />
       <TableRails textures={textures} />

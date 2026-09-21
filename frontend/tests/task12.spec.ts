@@ -783,15 +783,24 @@ test("keeps the Riichi legal highlight while its authoritative action is pending
   await expect(legal).toHaveCount(1);
   const initialStyle = await legal.first().evaluate((element) => {
     const style = getComputedStyle(element);
-    return { border: style.borderTopColor, background: style.backgroundColor };
+    return {
+      borderStyle: style.borderTopStyle,
+      borderWidth: style.borderTopWidth,
+      background: style.backgroundColor,
+      boxShadow: style.boxShadow,
+    };
   });
-  expect(initialStyle.border).not.toBe("rgba(0, 0, 0, 0)");
-  expect(initialStyle.background).not.toBe("rgba(0, 0, 0, 0)");
+  expect(initialStyle.borderStyle).toBe("none");
+  expect(initialStyle.borderWidth).toBe("0px");
+  expect(initialStyle.background).toBe("rgba(0, 0, 0, 0)");
+  expect(initialStyle.boxShadow).toBe("none");
+  await legal.first().focus();
+  await expect.poll(() => legal.first().evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
   await legal.first().click();
   await expect(page.getByTestId("action-deck")).toHaveAttribute("aria-busy", "true");
   await expect(legal).toHaveCount(1);
   const pendingStyle = await legal.first().evaluate((element) => getComputedStyle(element).backgroundColor);
-  expect(pendingStyle).not.toBe("rgba(0, 0, 0, 0)");
+  expect(pendingStyle).toBe("rgba(0, 0, 0, 0)");
 });
 
 test("shows the authoritative Mangan post-match results surface", async ({

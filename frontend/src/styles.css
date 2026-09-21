@@ -272,21 +272,28 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   position: relative;
   flex: 1;
   min-width: 0;
-  border: 1px solid transparent;
+  border: 0;
   background: transparent;
   color: transparent;
   pointer-events: auto;
   padding: 0;
-  outline-offset: 3px;
-  border-radius: 2px;
-  transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
+  outline: none;
+  border-radius: 0;
+  transition: outline-color .16s ease, transform .16s ease;
 }
-.table-tile-hit.is-legal { border-color: rgba(234, 194, 123, .72); background: rgba(185, 58, 53, .08); box-shadow: inset 0 -2px 0 rgba(234, 194, 123, .35); }
-.table-tile-hit.is-legal:hover:not(:disabled),
+/* Hit targets stay semantic and operable, but never paint a second 2D tile. */
+.table-tile-hit.is-legal,
+.table-tile-hit.is-legal:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
 .table-tile-hit.is-legal:focus-visible {
-  border-color: #f0c76c;
-  background: rgba(185, 58, 53, .22);
-  box-shadow: 0 0 0 1px rgba(255, 226, 151, .55), inset 0 -2px 0 #f0c76c;
+  outline: 2px solid #f0c76c;
+  outline-offset: 3px;
+  background: transparent;
+  box-shadow: none;
   transform: translateY(-2px);
 }
 .table-tile-hit:disabled { cursor: not-allowed; }
