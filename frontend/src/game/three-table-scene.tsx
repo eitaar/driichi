@@ -11,6 +11,7 @@ import {
   InstancedMesh,
   Matrix4,
   MeshBasicMaterial,
+  MeshStandardMaterial,
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
@@ -228,9 +229,10 @@ function InstancedTiles({
       bodyGeometry,
       faceGeometry,
       backGeometry: new PlaneGeometry(...FACE_SIZE),
-      ivoryMaterial: new MeshBasicMaterial({
-        color: new Color("#eee5d2"),
-        toneMapped: false,
+      ivoryMaterial: new MeshStandardMaterial({
+        color: new Color("#c8b99d"),
+        metalness: 0.02,
+        roughness: 0.6,
       }),
       faceMaterial: atlasMaterial(atlas),
       backMaterial: (() => {
@@ -330,29 +332,50 @@ function MotionController({
   onMotionFrame(now: number): void;
 }) {
   const startedAtRef = useRef<number | null>(null);
+  const motionPixelRatioRef = useRef<number | null>(null);
+  const motionPixelRatioAppliedRef = useRef(false);
   const invalidate = useThree((state) => state.invalidate);
   const camera = useThree((state) => state.camera) as PerspectiveCamera;
+  const gl = useThree((state) => state.gl);
 
   useLayoutEffect(() => {
     if (!motion) {
       startedAtRef.current = null;
+      if (motionPixelRatioRef.current !== null) {
+        gl.setPixelRatio(motionPixelRatioRef.current);
+        motionPixelRatioRef.current = null;
+        motionPixelRatioAppliedRef.current = false;
+      }
       resetMotionGroup(groupRef.current);
       invalidate();
       return undefined;
     }
-    startedAtRef.current = motion.startedAt;
+    startedAtRef.current = null;
+    motionPixelRatioRef.current ??= gl.getPixelRatio();
+    // Keep the physically lit scene responsive during the short motion window;
+    // the first frame establishes the active state before lowering authored DPR.
     invalidate();
     return () => {
       resetMotionGroup(groupRef.current);
       applyCameraFrame(camera, motion.kind, 1);
+      if (motionPixelRatioRef.current !== null) {
+        gl.setPixelRatio(motionPixelRatioRef.current);
+        motionPixelRatioRef.current = null;
+        motionPixelRatioAppliedRef.current = false;
+      }
       invalidate();
     };
-  }, [camera, groupRef, invalidate, motion?.itemId, motion?.kind, motion?.startedAt]);
+  }, [camera, gl, groupRef, invalidate, motion?.itemId, motion?.kind, motion?.startedAt]);
 
   useFrame(() => {
     const group = groupRef.current;
-    if (!group || !motion || startedAtRef.current === null) return;
+    if (!group || !motion) return;
+    if (motionPixelRatioRef.current !== null && !motionPixelRatioAppliedRef.current) {
+      gl.setPixelRatio(Math.min(motionPixelRatioRef.current, 0.1));
+      motionPixelRatioAppliedRef.current = true;
+    }
     const now = performance.now();
+    startedAtRef.current ??= now - 32;
     const progress = sceneMotionProgress(
       { ...motion, startedAt: startedAtRef.current },
       now,
@@ -395,9 +418,10 @@ function TableRails({ textures }: { textures: TableTextures | null }) {
   const invalidate = useThree((state) => state.invalidate);
   const meshRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => {
-    const material = new MeshBasicMaterial({
-      color: new Color("#6e5136"),
-      toneMapped: false,
+    const material = new MeshStandardMaterial({
+      color: new Color("#ffffff"),
+      metalness: 0.18,
+      roughness: 0.48,
     });
     if (textures?.rail) material.map = textures.rail;
     return { geometry: new BoxGeometry(1, 1, 1), material };
@@ -523,9 +547,10 @@ function CenterTrim() {
   const meshRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
-    material: new MeshBasicMaterial({
-      color: new Color("#9a7042"),
-      toneMapped: false,
+    material: new MeshStandardMaterial({
+      color: new Color("#a77842"),
+      metalness: 0.58,
+      roughness: 0.34,
     }),
   }), []);
 
@@ -567,22 +592,31 @@ function CenterTrim() {
 
 function FeltMaterial({ texture }: { texture: Texture | undefined }) {
   return texture ? (
-    <meshBasicMaterial color="#21483f" map={texture} toneMapped={false} />
+    <meshStandardMaterial
+      color="#3d7d61"
+      map={texture}
+      metalness={0.02}
+      roughness={0.9}
+    />
   ) : (
-    <meshBasicMaterial color="#21483f" toneMapped={false} />
+    <meshStandardMaterial color="#3d7d61" metalness={0.02} roughness={0.9} />
   );
 }
 
 function CenterMaterial({ texture }: { texture: Texture | undefined }) {
   return texture ? (
-    <meshBasicMaterial
-      color="#8a7150"
+    <meshStandardMaterial
+      color="#bd9867"
       map={texture}
+      metalness={0.24}
+      roughness={0.44}
+      emissive="#2c506b"
+      emissiveIntensity={0.9}
+      side={DoubleSide}
       transparent
-      toneMapped={false}
     />
   ) : (
-    <meshBasicMaterial color="#1d292c" toneMapped={false} />
+    <meshStandardMaterial color="#151d22" metalness={0.3} roughness={0.44} />
   );
 }
 
@@ -591,11 +625,11 @@ function ProceduralTable({ textures }: { textures: TableTextures | null }) {
     <group name="table-body-root">
       <mesh position={[0, -0.48, 0]}>
         <boxGeometry args={[TABLE_SIZE.width, 0.72, TABLE_SIZE.depth]} />
-        <meshBasicMaterial color="#20282a" toneMapped={false} />
+        <meshStandardMaterial color="#293337" metalness={0.34} roughness={0.58} />
       </mesh>
       <mesh position={[0, -0.09, 0]}>
         <boxGeometry args={[12.65, 0.18, 8.25]} />
-        <meshBasicMaterial color="#3a251d" toneMapped={false} />
+        <meshStandardMaterial color="#65402d" metalness={0.08} roughness={0.62} />
       </mesh>
       <mesh position={[0, 0.015, 0]}>
         <boxGeometry args={[11.7, 0.16, 7.3]} />
@@ -603,11 +637,11 @@ function ProceduralTable({ textures }: { textures: TableTextures | null }) {
       </mesh>
       <mesh position={[0, 0.18, 0]}>
         <boxGeometry args={[2.55, 0.3, 2.05]} />
-        <meshBasicMaterial color="#30393b" toneMapped={false} />
+        <meshStandardMaterial color="#29353b" metalness={0.5} roughness={0.42} />
       </mesh>
       <mesh position={[0, 0.345, 0]}>
         <boxGeometry args={[2.16, 0.035, 1.66]} />
-        <meshBasicMaterial color="#1d292c" toneMapped={false} />
+        <meshStandardMaterial color="#1c3546" metalness={0.28} roughness={0.48} />
       </mesh>
       <mesh position={[0, 0.366, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[2.16, 1.66]} />
@@ -615,7 +649,7 @@ function ProceduralTable({ textures }: { textures: TableTextures | null }) {
       </mesh>
       <mesh position={[0, 0.37, 0]}>
         <ringGeometry args={[0.36, 0.43, 48]} />
-        <meshBasicMaterial color="#9a7042" toneMapped={false} />
+        <meshStandardMaterial color="#a77842" metalness={0.58} roughness={0.34} />
       </mesh>
       <CenterTrim />
       <TableRails textures={textures} />
@@ -637,11 +671,11 @@ export function MatchTableScene({
   return (
     <>
       <color attach="background" args={["#050709"]} />
-      <hemisphereLight args={["#dce8e0", "#17231f", 0.45]} />
+      <hemisphereLight args={["#dce8e0", "#17231f", 0.48]} />
       <directionalLight
         position={[-5.5, 10.5, 6.5]}
         color="#ffe2bd"
-        intensity={2.2}
+        intensity={1.9}
         castShadow
         shadow-mapSize-width={512}
         shadow-mapSize-height={512}
@@ -652,11 +686,11 @@ export function MatchTableScene({
         shadow-camera-top={7}
         shadow-camera-bottom={-7}
       />
-      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.48} />
+      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.46} />
       <spotLight
         position={[0, 3.8, 8.5]}
         color="#d8a873"
-        intensity={0.68}
+        intensity={0.64}
         angle={0.48}
         penumbra={0.9}
         distance={18}
