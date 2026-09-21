@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
-import { TABLE_RENDER_SCALE, tileFaceQuaternion } from "./three-table-scene";
+import {
+  BACK_FACE_SIZE,
+  TABLE_RENDER_SCALE,
+  createBackFaceGeometry,
+  tileFaceQuaternion,
+} from "./three-table-scene";
 import type { ProjectedState } from "./types";
 import {
   CAMERA,
@@ -52,6 +57,18 @@ describe("three-dimensional table layout", () => {
       near: 0.1,
       far: 60,
     });
+  });
+
+  it("keeps concealed backs inset within the unchanged front-face footprint", () => {
+    const backGeometry = createBackFaceGeometry();
+
+    expect(BACK_FACE_SIZE).toEqual([0.48, 0.7]);
+    expect(backGeometry.parameters.width).toBe(BACK_FACE_SIZE[0]);
+    expect(backGeometry.parameters.height).toBe(BACK_FACE_SIZE[1]);
+    expect(BACK_FACE_SIZE[0]).toBeLessThan(0.56);
+    expect(BACK_FACE_SIZE[1]).toBeLessThan(0.78);
+
+    backGeometry.dispose();
   });
 
   it("lays side-seat face and back planes flat without twisting their UV axes", () => {

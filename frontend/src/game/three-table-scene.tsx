@@ -59,8 +59,13 @@ export const TABLE_RENDER_SCALE = {
 const TABLE_RENDER_OFFSET: readonly [number, number, number] = [0, 0, -0.38];
 const BODY_SIZE = [0.6, 0.2, 0.82] as const;
 const FACE_SIZE = [0.56, 0.78] as const;
+export const BACK_FACE_SIZE = [0.48, 0.7] as const;
 const FACE_Y = BODY_SIZE[1] / 2 + 0.003;
 const MAX_TILE_INSTANCES = 256;
+
+export function createBackFaceGeometry(): PlaneGeometry {
+  return new PlaneGeometry(...BACK_FACE_SIZE);
+}
 
 /**
  * Lay a tile face flat first, then apply its seat rotation around the table's
@@ -248,7 +253,7 @@ function InstancedTiles({
     return {
       bodyGeometry,
       faceGeometry,
-      backGeometry: new PlaneGeometry(...FACE_SIZE),
+      backGeometry: createBackFaceGeometry(),
       frontBodyMaterial: new MeshStandardMaterial({
         color: new Color("#d9cbb3"),
         metalness: 0.02,
