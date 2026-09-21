@@ -254,20 +254,19 @@ function InstancedTiles({
         metalness: 0.02,
         roughness: 0.52,
       }),
-      // Concealed tiles use a ceramic edge rather than the old navy/gold
-      // atlas. The amber edge keeps the individual tiles separated at range.
+      // Concealed tiles keep the same warm ivory ceramic sidewall as the
+      // visible hand. Their smaller inset face is muted amber so each back
+      // remains legible without returning to the old navy treatment.
       backBodyMaterial: new MeshStandardMaterial({
-        color: new Color("#c38a46"),
-        metalness: 0.05,
-        roughness: 0.46,
-        emissive: new Color("#2b1608"),
-        emissiveIntensity: 0.12,
+        color: new Color("#d9cbb3"),
+        metalness: 0.02,
+        roughness: 0.52,
       }),
       faceMaterial: atlasMaterial(atlas),
       backMaterial: new MeshStandardMaterial({
-        color: new Color("#eed8ad"),
-        metalness: 0.02,
-        roughness: 0.42,
+        color: new Color("#b07a3d"),
+        metalness: 0.08,
+        roughness: 0.5,
         side: DoubleSide,
       }),
     };
@@ -509,18 +508,18 @@ function TableRails({ textures }: { textures: TableTextures | null }) {
       geometry,
       chassisMaterial,
       walnutMaterial: new MeshStandardMaterial({
-        color: new Color("#985b32"),
-        metalness: 0.08,
-        roughness: 0.48,
-        emissive: new Color("#6c3517"),
-        emissiveIntensity: 0.3,
+        color: new Color("#633925"),
+        metalness: 0.06,
+        roughness: 0.58,
+        emissive: new Color("#000000"),
+        emissiveIntensity: 0,
       }),
       bronzeMaterial: new MeshStandardMaterial({
-        color: new Color("#d69f58"),
-        metalness: 0.58,
-        roughness: 0.32,
-        emissive: new Color("#85501b"),
-        emissiveIntensity: 0.36,
+        color: new Color("#a77645"),
+        metalness: 0.5,
+        roughness: 0.4,
+        emissive: new Color("#000000"),
+        emissiveIntensity: 0,
       }),
       capMaterial: new MeshStandardMaterial({
         color: new Color("#53585a"),
@@ -530,11 +529,11 @@ function TableRails({ textures }: { textures: TableTextures | null }) {
         emissiveIntensity: 0.58,
       }),
       capAccentMaterial: new MeshStandardMaterial({
-        color: new Color("#d9a55d"),
-        metalness: 0.58,
-        roughness: 0.3,
-        emissive: new Color("#85501b"),
-        emissiveIntensity: 0.38,
+        color: new Color("#b0824f"),
+        metalness: 0.5,
+        roughness: 0.38,
+        emissive: new Color("#000000"),
+        emissiveIntensity: 0,
       }),
     };
   }, [textures?.rail]);
@@ -734,11 +733,11 @@ function CenterTrim() {
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
     material: new MeshStandardMaterial({
-      color: new Color("#dda661"),
-      metalness: 0.56,
-      roughness: 0.28,
-      emissive: new Color("#6e3d12"),
-      emissiveIntensity: 0.22,
+      color: new Color("#ac7d49"),
+      metalness: 0.5,
+      roughness: 0.38,
+      emissive: new Color("#000000"),
+      emissiveIntensity: 0,
     }),
   }), []);
 
@@ -838,8 +837,8 @@ function ProceduralTable({ textures }: { textures: TableTextures | null }) {
           color="#625d50"
           metalness={0.42}
           roughness={0.36}
-          emissive="#3b2814"
-          emissiveIntensity={0.3}
+          emissive="#000000"
+          emissiveIntensity={0}
         />
       </mesh>
       <mesh position={[0, 0.464, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
