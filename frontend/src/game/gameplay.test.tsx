@@ -8,6 +8,7 @@ import {
   handActionMap,
   type RoundWinEffect,
 } from "./gameplay";
+import { actionCandidates } from "./actions";
 import { useGameStore } from "./store";
 import type { ProjectedState } from "./types";
 
@@ -121,6 +122,34 @@ describe("GameplayPlayerStatus", () => {
       hand.map((tile) => `discard-${tile}`),
     );
     expect(mapped.filter(Boolean)).toHaveLength(actions.length);
+  });
+
+  it("keeps ordinary and Riichi discard candidates separate for duplicate tile values", () => {
+    const hand = [16, 17, 29]; // red 5m, regular 5m, and 8m: duplicate value plus red identity.
+    const grouped = actionCandidates({
+      decision_id: "tenpai-turn",
+      kind: "turn",
+      actions: [
+        { action_id: "ordinary-red-five", action: { Discard: { tile: 16 } } },
+        { action_id: "ordinary-five-copy", action: { Discard: { tile: 17 } } },
+        { action_id: "ordinary-eight", action: { Discard: { tile: 29 } } },
+        { action_id: "riichi-red-five", action: { riichi_discard: { tile: 16 } } },
+      ],
+    });
+
+    expect(grouped.discard.map(({ action_id }) => action_id)).toEqual([
+      "ordinary-red-five",
+      "ordinary-five-copy",
+      "ordinary-eight",
+    ]);
+    expect(grouped.riichiDiscard.map(({ action_id }) => action_id)).toEqual([
+      "riichi-red-five",
+    ]);
+    expect(handActionMap(hand, grouped.discard).map((action) => action?.action_id)).toEqual([
+      "ordinary-red-five",
+      "ordinary-five-copy",
+      "ordinary-eight",
+    ]);
   });
 
   it("maps every physical tile id and leaves unavailable candidates unbound", () => {
