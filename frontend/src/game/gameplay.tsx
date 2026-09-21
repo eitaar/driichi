@@ -35,6 +35,8 @@ export interface GameplayProps {
   send: Transport;
   reducedMotion: boolean;
   participantId?: string | null;
+  /** Leave the local result presentation without changing the authoritative room phase. */
+  onLeaveResults?: () => void;
 }
 
 interface AssetState {
@@ -725,7 +727,7 @@ function ActionDeck({
   onAction: (action: VisibleAction) => void;
 }) {
   const [popupKind, setPopupKind] = useState<
-    "chi" | "pon" | "kan" | "nuki" | null
+    "riichi_discard" | "chi" | "pon" | "kan" | "nuki" | null
   >(null);
   const popupId = `${useId()}-candidate-dialog`;
   const grouped = useMemo(() => actionCandidates(decision), [decision]);
@@ -739,9 +741,11 @@ function ActionDeck({
     const kind = actionKind(action.action);
     if (!simpleByKind.has(kind)) simpleByKind.set(kind, action);
   });
-  const candidateButtons = (["chi", "pon", "kan", "nuki"] as const).flatMap(
+  const candidateButtons = (["riichi_discard", "chi", "pon", "kan", "nuki"] as const).flatMap(
     (kind) => {
-      const candidates = grouped.candidates.get(kind) ?? [];
+      const candidates = kind === "riichi_discard"
+        ? grouped.riichiDiscard
+        : grouped.candidates.get(kind) ?? [];
       if (!candidates.length) return [];
       return [{ kind, candidates }];
     },
@@ -809,7 +813,9 @@ function ActionDeck({
       {popupKind && (
         <CandidatePopup
           id={popupId}
-          actions={grouped.candidates.get(popupKind) ?? []}
+          actions={popupKind === "riichi_discard"
+            ? grouped.riichiDiscard
+            : grouped.candidates.get(popupKind) ?? []}
           disabled={disabled}
           onAction={onAction}
           onClose={() => setPopupKind(null)}
@@ -1201,6 +1207,7 @@ export function GameplaySurface({
   send,
   reducedMotion,
   participantId,
+  onLeaveResults,
 }: GameplayProps) {
   const storeEvents = useGameStore((state) => state.lastEvents);
   const eventToken = useGameStore((state) => state.lastEventToken);
@@ -1221,10 +1228,14 @@ export function GameplaySurface({
     () => (projection ? buildMatchSceneLayout(projection, room) : null),
     [projection, room],
   );
-  const riichiMode = grouped.riichiDiscard.length > 0;
-  const legalDiscardActions = riichiMode
-    ? grouped.riichiDiscard
-    : grouped.discard;
+  // Ordinary discards remain table targets when both families are offered.
+  // A Riichi-only decision still uses the table target as its concrete action;
+  // when both are present, Riichi is rendered independently in ActionDeck so
+  // neither authoritative action family hides the other.
+  const legalDiscardActions = grouped.discard.length > 0
+    ? grouped.discard
+    : grouped.riichiDiscard;
+  const resultDismissRef = useRef<HTMLButtonElement>(null);
   const [portraitEffect, setPortraitEffect] = useState<RoundWinEffect | null>(
     null,
   );
@@ -1244,6 +1255,11 @@ export function GameplaySurface({
     if (pending && decision && pending.decisionId !== decision.decision_id)
       useGameStore.getState().clearPendingAction();
   }, [decision?.decision_id, pending]);
+  useEffect(() => {
+    if (room?.phase !== "post_match" || !onLeaveResults) return;
+    const focusTimer = window.setTimeout(() => resultDismissRef.current?.focus(), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [onLeaveResults, room?.phase]);
   const submit = (action: VisibleAction) => {
     if (!decision || status !== "connected") return;
     useGameStore
@@ -1367,6 +1383,19 @@ export function GameplaySurface({
             {room?.phase === "post_match" && (
               <div className="results-overlay">
                 <ResultsPanel room={room} assets={assets} />
+                {onLeaveResults && (
+                  <div className="results-actions">
+                    <button
+                      ref={resultDismissRef}
+                      type="button"
+                      className="button button-secondary"
+                      data-testid="dismiss-results"
+                      onClick={onLeaveResults}
+                    >
+                      Return to room
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
