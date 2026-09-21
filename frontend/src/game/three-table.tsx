@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { Canvas } from "@react-three/fiber";
-import { PCFShadowMap, SRGBColorSpace } from "three";
+import { SRGBColorSpace } from "three";
 
 import type { AnimationItem } from "./animation";
 import { MatchTableScene, type SceneRenderStats } from "./three-table-scene";
@@ -242,8 +242,15 @@ export function ThreeTable({
   const [lastConsumedAnimationId, setLastConsumedAnimationId] = useState<number | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const contextCleanupRef = useRef<(() => void) | null>(null);
-  const lastMotionFrameAtRef = useRef<number | null>(null);
-  const activeMotionRef = useRef<{ motion: SceneMotion; layout: typeof layout } | null>(null);
+  const motionFrameTimesRef = useRef<number[]>([]);
+  const motionPixelRatioRef = useRef<number | null>(null);
+  const activeMotionRef = useRef<{
+    motion: SceneMotion;
+    layout: typeof layout;
+  } | null>(null);
+  // Animation ids are assigned monotonically by the authoritative queue. Keep
+  // cancelled/consumed ids blocked through the rerender that removes them so a
+  // stale scene callback cannot complete an active replacement.
   const blockedAnimationIdsRef = useRef(new Set<number>());
   const onAnimationConsumedRef = useRef(_onAnimationConsumed);
   const onAnimationCancelledRef = useRef(_onAnimationCancelled);
@@ -363,7 +370,7 @@ export function ThreeTable({
       return;
     }
     if (!ready || activeMotionRef.current) return;
-    const item = animations.find(({ id }) => !blockedAnimationIdsRef.current.has(id));
+    const item = animations.find((candidate) => !blockedAnimationIdsRef.current.has(candidate.id));
     if (!item) return;
     const candidate = nextSceneMotion([item], false);
     if (!candidate) {
@@ -372,7 +379,8 @@ export function ThreeTable({
       return;
     }
     const nextMotion = { ...candidate, startedAt: performance.now() };
-    lastMotionFrameAtRef.current = null;
+    motionFrameTimesRef.current = [];
+    motionPixelRatioRef.current = null;
     if (hostRef.current) hostRef.current.dataset.animationFrameCount = "0";
     activeMotionRef.current = { motion: nextMotion, layout };
     setMotion(nextMotion);
@@ -387,38 +395,44 @@ export function ThreeTable({
   const completeMotion = useCallback((id: number) => {
     const active = activeMotionRef.current;
     if (!active || active.motion.itemId !== id) return;
-    blockedAnimationIdsRef.current.add(id);
+    blockedAnimationIdsRef.current.add(active.motion.itemId);
+    const frameTimes = motionFrameTimesRef.current;
     if (typeof performance.measure === "function") {
       performance.measure("three-table-motion-event", {
         start: active.motion.startedAt,
         end: performance.now(),
         detail: { itemId: id, kind: active.motion.kind },
       });
+      for (let index = 1; index < frameTimes.length; index += 1) {
+        performance.measure("three-table-motion-frame", {
+          start: frameTimes[index - 1],
+          end: frameTimes[index],
+          detail: { itemId: id, frameIndex: index - 1 },
+        });
+      }
     }
-    lastMotionFrameAtRef.current = null;
     activeMotionRef.current = null;
     const host = hostRef.current;
-    if (host && typeof renderStats?.pixelRatio === "number") {
-      host.dataset.rendererPixelRatio = String(renderStats.pixelRatio);
+    if (host) {
+      host.dataset.animationFrameCount = String(frameTimes.length);
+      const pixelRatio = renderStats?.pixelRatio ?? motionPixelRatioRef.current;
+      if (typeof pixelRatio === "number") host.dataset.rendererPixelRatio = String(pixelRatio);
     }
+    motionFrameTimesRef.current = [];
+    motionPixelRatioRef.current = null;
     setMotion(null);
     reportConsumed(id);
   }, [renderStats, reportConsumed]);
 
   const recordMotionFrame = useCallback((now: number, pixelRatio: number) => {
-    const host = hostRef.current;
-    if (!host) return;
-    // Keep the renderer's effective DPR observable during active motion as
-    // well as idle readiness; no motion path is allowed to rewrite it.
-    host.dataset.rendererPixelRatio = String(pixelRatio);
-    const count = Number(host.dataset.animationFrameCount ?? 0);
-    const firstFrame = !Number.isFinite(count) || count === 0;
-    host.dataset.animationFrameCount = String(firstFrame ? 1 : count + 1);
-    const previous = lastMotionFrameAtRef.current;
-    if (!firstFrame && previous !== null && typeof performance.measure === "function") {
-      performance.measure("three-table-motion-frame", { start: previous, end: now });
+    // The effective DPR is static for a renderer, so publish it only when it
+    // changes while retaining the numeric sample path for frame timings.
+    if (motionPixelRatioRef.current !== pixelRatio) {
+      motionPixelRatioRef.current = pixelRatio;
+      const host = hostRef.current;
+      if (host) host.dataset.rendererPixelRatio = String(pixelRatio);
     }
-    lastMotionFrameAtRef.current = now;
+    motionFrameTimesRef.current.push(now);
   }, []);
 
   const animationState = reducedMotion ? "static" : motion ? "active" : "idle";
@@ -469,7 +483,9 @@ export function ThreeTable({
         >
           <Canvas
             aria-hidden="true"
-            frameloop="demand"
+            // Demand when idle; a bounded always loop only while an exact-target
+            // motion is active, then it returns to demand in the completion commit.
+            frameloop={motion ? "always" : "demand"}
             dpr={[1, 1.5]}
             camera={{
               fov: CAMERA.fov,
@@ -477,8 +493,14 @@ export function ThreeTable({
               near: CAMERA.near,
               far: CAMERA.far,
             }}
-            gl={{ antialias: false, alpha: false, powerPreference: "high-performance" }}
-            shadows={{ type: PCFShadowMap }}
+            gl={{
+              antialias: false,
+              alpha: false,
+              depth: true,
+              stencil: false,
+              precision: "lowp",
+              powerPreference: "high-performance",
+            }}
             fallback={
               <TableFallback
                 projection={projection}
@@ -487,8 +509,7 @@ export function ThreeTable({
             }
             onCreated={({ gl }) => {
               gl.outputColorSpace = SRGBColorSpace;
-              gl.shadowMap.enabled = true;
-              gl.shadowMap.type = PCFShadowMap;
+              gl.shadowMap.enabled = false;
               contextCleanupRef.current?.();
               const onContextLost = (event: Event) => {
                 event.preventDefault();

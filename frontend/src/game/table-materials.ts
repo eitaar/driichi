@@ -1,7 +1,7 @@
 import {
   ClampToEdgeWrapping,
   LinearFilter,
-  LinearMipmapLinearFilter,
+  LinearMipmapNearestFilter,
   RepeatWrapping,
   SRGBColorSpace,
   type Texture,
@@ -15,7 +15,7 @@ export type TableTextureKey = keyof typeof TABLE_TEXTURE_URLS;
 
 // Keep the felt readable as a deep green with or without the local texture.
 // The texture remains the original asset; this color is only the material tint.
-export const FELT_MATERIAL_TINT = "#225d44";
+export const FELT_MATERIAL_TINT = "#18352f";
 
 export interface TableTextureSpec {
   readonly wrap: "repeat" | "clamp";
@@ -43,7 +43,7 @@ export function configureTableTexture(
   texture.wrapS = spec.wrap === "repeat" ? RepeatWrapping : ClampToEdgeWrapping;
   texture.wrapT = spec.wrap === "repeat" ? RepeatWrapping : ClampToEdgeWrapping;
   texture.minFilter = spec.minFilter === "mipmap"
-    ? LinearMipmapLinearFilter
+    ? LinearMipmapNearestFilter
     : LinearFilter;
   texture.magFilter = LinearFilter;
   texture.generateMipmaps = spec.minFilter === "mipmap";

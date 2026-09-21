@@ -44,7 +44,7 @@ function sceneCamera(aspect: number): PerspectiveCamera {
 
 function projectedTileRect(tile: SceneTile, camera: PerspectiveCamera): SceneRect {
   const halfWidth = (TILE_BODY_SIZE.width * tile.scale) / 2;
-  const halfHeight = 0.2 * tile.scale / 2;
+  const halfHeight = (TILE_BODY_SIZE.height * tile.scale) / 2;
   const halfDepth = (TILE_BODY_SIZE.depth * tile.scale) / 2;
   const rotation = new Euler(...tile.rotation);
   const center = new Vector3(

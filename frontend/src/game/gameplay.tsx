@@ -309,20 +309,23 @@ function formatSeconds(milliseconds: number | null): string {
 
 function useDecisionTimer(
   decision: ProjectedDecision | null | undefined,
+  paused = false,
 ): number | null {
   const [remaining, setRemaining] = useState(() => decisionRemaining(decision));
   useEffect(() => {
     const initial = decisionRemaining(decision);
-    if (initial === null) {
-      setRemaining(null);
+    if (initial === null || paused) {
+      setRemaining(initial);
       return;
     }
     const deadline = Date.now() + initial;
     const update = () => setRemaining(Math.max(0, deadline - Date.now()));
     update();
-    const timer = window.setInterval(update, 250);
+    // The UI displays whole seconds; avoid waking the gameplay tree four
+    // times per second while the table is rendering an exact-target motion.
+    const timer = window.setInterval(update, 1000);
     return () => window.clearInterval(timer);
-  }, [decision?.decision_id, decision?.remaining_ms, decision?.duration_ms]);
+  }, [decision?.decision_id, decision?.remaining_ms, decision?.duration_ms, paused]);
   return remaining;
 }
 
@@ -710,15 +713,15 @@ function CandidatePopup({
 
 function ActionDeck({
   decision,
-  remaining,
   pending,
   disabled,
+  motionActive,
   onAction,
 }: {
   decision: ProjectedDecision | null | undefined;
-  remaining: number | null;
   pending: boolean;
   disabled: boolean;
+  motionActive: boolean;
   onAction: (action: VisibleAction) => void;
 }) {
   const [popupKind, setPopupKind] = useState<
@@ -726,6 +729,7 @@ function ActionDeck({
   >(null);
   const popupId = `${useId()}-candidate-dialog`;
   const grouped = useMemo(() => actionCandidates(decision), [decision]);
+  const remaining = useDecisionTimer(decision, motionActive);
   useEffect(() => {
     setPopupKind(null);
   }, [decision?.decision_id]);
@@ -1210,7 +1214,6 @@ export function GameplaySurface({
   const assets = useRosterPreload(room, connectionGeneration);
   const manager = useVoiceManager(storeEvents, eventToken, room, assets);
   const decision = projection?.decision;
-  const timer = useDecisionTimer(decision);
   const viewer = ownSeat(projection);
   const ownPlayer = projectionPlayer(projection, viewer);
   const grouped = useMemo(() => actionCandidates(decision), [decision]);
@@ -1355,9 +1358,9 @@ export function GameplaySurface({
             {room?.phase !== "post_match" && (
               <ActionDeck
                 decision={decision}
-                remaining={timer}
                 pending={Boolean(pending)}
                 disabled={inputDisabled}
+                motionActive={animations.length > 0}
                 onAction={submit}
               />
             )}

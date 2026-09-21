@@ -16,7 +16,7 @@ function item(id: number, kind: AnimationKind): AnimationItem {
 describe("nextSceneMotion", () => {
   it.each([
     ["draw", "draw", 140, 220],
-    ["discard", "discard", 140, 220],
+    ["discard", "discard", 140, 260],
     ["call", "call", 180, 300],
     ["riichi", "riichi", 180, 300],
     ["score_change", "score", 180, 300],
@@ -114,6 +114,7 @@ describe("cameraAccentAt", () => {
 
   it("leaves the fixed camera unchanged for non-win motion", () => {
     expect(cameraAccentAt("discard", 0.5)).toEqual({ fov: CAMERA.fov, target: CAMERA.target });
+    expect(cameraAccentAt("win", 0.5).target[2]).toBeCloseTo(0.6);
   });
 });
 

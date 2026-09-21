@@ -17,7 +17,7 @@ export interface SceneMotion {
 
 const MOTION_BY_KIND = {
   draw: { kind: "draw", durationMs: 180 },
-  discard: { kind: "discard", durationMs: 180 },
+  discard: { kind: "discard", durationMs: 240 },
   call: { kind: "call", durationMs: 240 },
   riichi: { kind: "riichi", durationMs: 240 },
   score_change: { kind: "score", durationMs: 240 },
@@ -165,12 +165,16 @@ export function sceneMotionTarget(
   }
 }
 
-export function sceneMotionProgress(motion: SceneMotion, now: number): number {
+export function sceneMotionProgress(
+  motion: SceneMotion,
+  now: number,
+  startedAt = motion.startedAt,
+): number {
   if (
-    !Number.isFinite(motion.startedAt)
+    !Number.isFinite(startedAt)
     || !Number.isFinite(motion.durationMs)
     || motion.durationMs <= 0
     || !Number.isFinite(now)
   ) return 0;
-  return Math.min(1, Math.max(0, (now - motion.startedAt) / motion.durationMs));
+  return Math.min(1, Math.max(0, (now - startedAt) / motion.durationMs));
 }

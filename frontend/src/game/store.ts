@@ -32,6 +32,8 @@ export interface GameStoreState {
   actionError: string;
   pendingAction: PendingAction | null;
   animationQueue: AnimationItem[];
+  /** Monotonic queue identity prevents a just-consumed motion id from racing a new event. */
+  nextAnimationId: number;
   connectionGeneration: number;
   lastRevision: number | null;
   lastEventToken: number;
@@ -65,6 +67,7 @@ const initialState = {
   actionError: "",
   pendingAction: null,
   animationQueue: [] as AnimationItem[],
+  nextAnimationId: 0,
   connectionGeneration: 0,
   lastRevision: null,
   lastEventToken: 0,
@@ -165,7 +168,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     const enqueuedEvents = events.filter((event) => animationKindForEvent(event)).length;
     const result = discontinuity
       ? { queue: [], overflow: false }
-      : enqueueAnimationEvents(state.animationQueue, events);
+      : enqueueAnimationEvents(state.animationQueue, events, state.nextAnimationId);
     const projectionValue = projection === undefined ? state.projection : projectedState(projection);
     const pending = state.pendingAction && projectionValue?.decision?.decision_id !== state.pendingAction.decisionId
       ? null
@@ -174,6 +177,8 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       room: room ?? state.room,
       projection: projectionValue,
       animationQueue: result.queue,
+      nextAnimationId: state.nextAnimationId
+        + (!discontinuity ? enqueuedEvents : 0),
       pendingAction: pending,
       actionError: pending ? state.actionError : "",
       lastRevision: nextRevision ?? state.lastRevision,

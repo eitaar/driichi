@@ -610,12 +610,16 @@ test("captures the complete 4p scene during active motion at 1024x600", async ({
   await page.evaluate(() => {
     const browser = window as unknown as {
       __socket: { emit: (value: unknown) => void };
-      __state: unknown;
+      __state: Record<string, unknown>;
     };
+    const state = structuredClone(browser.__state) as Record<string, unknown>;
+    const players = state.players as Array<Record<string, unknown>>;
+    const local = players.find((player) => player.seat === 0)!;
+    local.melds = [{ tiles: [1, 2, 3] }];
     browser.__socket.emit({
       type: "game_update",
       event: { type: "pon", actor: 0 },
-      state: browser.__state,
+      state,
     });
   });
   await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
@@ -645,12 +649,16 @@ test("accepts a 60fps-class motion budget at both required desktop resolutions",
       await page.evaluate(() => {
         const browser = window as unknown as {
           __socket: { emit: (value: unknown) => void };
-          __state: unknown;
+          __state: Record<string, unknown>;
         };
+        const state = structuredClone(browser.__state) as Record<string, unknown>;
+        const players = state.players as Array<Record<string, unknown>>;
+        const local = players.find((player) => player.seat === 0)!;
+        local.discards = [...((local.discards as number[] | undefined) ?? []), 1];
         browser.__socket.emit({
           type: "game_update",
-          event: { type: "pon", actor: 0 },
-          state: browser.__state,
+          event: { type: "dahai", actor: 0, tile: 1 },
+          state,
         });
       });
       await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
@@ -674,22 +682,31 @@ test("accepts a 60fps-class motion budget at both required desktop resolutions",
       performance.clearMeasures("three-table-motion-frame");
     });
     await page.waitForTimeout(100);
-    for (let index = 0; index < 8; index += 1) await emitMotion();
+    for (let index = 0; index < 12; index += 1) await emitMotion();
     const metrics = await page.evaluate(() => {
-      const frameDurations = performance
+      const frameEntries = performance
         .getEntriesByName("three-table-motion-frame", "measure")
+        .map((entry) => ({
+          duration: entry.duration,
+          detail: entry.detail as { frameIndex?: number } | null,
+        }));
+      const frameDurations = frameEntries
         .map(({ duration }) => duration)
         .sort((left, right) => left - right);
       const eventDurations = performance
         .getEntriesByName("three-table-motion-event", "measure")
         .map(({ duration }) => duration);
-      const steadyDurations = frameDurations.length > 2
-        ? frameDurations.slice(1, -1)
-        : frameDurations;
+      const steadyDurations = frameEntries
+        .filter(({ detail }) => (detail?.frameIndex ?? 0) > 0)
+        .map(({ duration }) => duration)
+        .sort((left, right) => left - right);
+      const percentile = (values: number[], fraction: number) =>
+        values[Math.min(values.length - 1, Math.floor(values.length * fraction))] ?? Number.POSITIVE_INFINITY;
       return {
         frameCount: frameDurations.length,
-        medianFrameMs: frameDurations[Math.floor(frameDurations.length / 2)] ?? Number.POSITIVE_INFINITY,
-        steadyFrameMs: steadyDurations[Math.floor(steadyDurations.length / 2)] ?? Number.POSITIVE_INFINITY,
+        medianFrameMs: percentile(steadyDurations, 0.5),
+        p90FrameMs: percentile(steadyDurations, 0.9),
+        eventCount: eventDurations.length,
         eventMs: eventDurations[0] ?? 0,
       };
     });
@@ -704,14 +721,20 @@ test("accepts a 60fps-class motion budget at both required desktop resolutions",
   expect(at1920.setupEventMs).toBeGreaterThan(0);
   expect(at1600.setupEventMs).toBeLessThanOrEqual(750);
   expect(at1920.setupEventMs).toBeLessThanOrEqual(750);
-  expect(at1600.frameCount).toBeGreaterThanOrEqual(4);
-  expect(at1920.frameCount).toBeGreaterThanOrEqual(4);
-  // The median is collected across eight bounded motions so setup/teardown
-  // frames cannot mask the steady-state software-WebGL budget. 33.34ms
-  // rejects the previous 93.75ms (~11fps) result while tolerating SwiftShader.
-  expect(at1600.steadyFrameMs).toBeLessThanOrEqual(33.34);
-  expect(at1920.steadyFrameMs).toBeLessThanOrEqual(33.34);
-  expect(at1920.steadyFrameMs / at1600.steadyFrameMs).toBeLessThanOrEqual(1.5);
+  expect(at1600.eventCount).toBe(12);
+  expect(at1920.eventCount).toBe(12);
+  expect(at1600.frameCount).toBeGreaterThanOrEqual(96);
+  expect(at1920.frameCount).toBeGreaterThanOrEqual(96);
+  // 1600x900 is the 60fps contract with a documented 5% timer tolerance.
+  // p90 remains logged above as diagnostic evidence; SwiftShader can add
+  // scheduler jitter without changing the representative median.
+  expect(at1600.medianFrameMs).toBeLessThanOrEqual(17.5);
+  // 1920x1080 is a separately labeled, evidence-based non-regression guard,
+  // not a 60fps claim. Keep its wider bound explicit rather than conflating
+  // the larger software-rendered surface with the 1600x900 contract.
+  expect(at1920.medianFrameMs).toBeLessThanOrEqual(32);
+  expect(at1920.p90FrameMs).toBeLessThanOrEqual(50);
+  expect(at1920.medianFrameMs / at1600.medianFrameMs).toBeLessThanOrEqual(1.5);
 });
 
 test("keeps reduced-motion discard effects static", async ({ page }) => {
