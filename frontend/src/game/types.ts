@@ -43,6 +43,7 @@ export interface ProjectedState {
   audience?: ProjectionAudience | string;
   viewer_seat?: number;
   mode?: string;
+  player_count?: number;
   players?: ProjectedPlayer[];
   dora_indicators?: number[];
   decision?: ProjectedDecision | null;

@@ -31,7 +31,12 @@ import {
   type TableTextureKey,
 } from "./table-materials";
 import { CAMERA, TABLE_SIZE, type MatchSceneLayout, type SceneTile } from "./three-table-layout";
-import { cameraAccentAt, sceneMotionProgress, type SceneMotion } from "./three-table-motion";
+import {
+  cameraAccentAt,
+  sceneMotionProgress,
+  sceneMotionTarget,
+  type SceneMotion,
+} from "./three-table-motion";
 
 export interface SceneRenderStats {
   tileCount: number;
@@ -314,9 +319,30 @@ function InstancedTiles({
   );
 }
 
+export function applyMotionAccentFrame(
+  accent: Group | null,
+  target: SceneTile | null,
+  kind: SceneMotion["kind"],
+  progress: number,
+): void {
+  if (!accent || !target) return;
+  const boundedProgress = Math.min(1, Math.max(0, progress));
+  const pulse = Math.sin(Math.PI * boundedProgress);
+  const translates = kind === "draw" || kind === "discard";
+  accent.position.set(
+    target.position[0],
+    target.position[1] + (translates ? pulse * 0.09 : 0),
+    target.position[2],
+  );
+  accent.rotation.set(...target.rotation);
+  const scale = target.scale * (translates ? 1 : 1 + pulse * 0.012);
+  accent.scale.set(scale, scale, scale);
+}
+
 function resetMotionGroup(group: Group | null): void {
   if (!group) return;
   group.position.set(0, 0, 0);
+  group.rotation.set(0, 0, 0);
   group.scale.set(1, 1, 1);
 }
 
@@ -329,64 +355,94 @@ function applyCameraFrame(camera: PerspectiveCamera, kind: SceneMotion["kind"], 
   camera.updateProjectionMatrix();
 }
 
+function motionAccentColor(kind: SceneMotion["kind"]): string {
+  switch (kind) {
+    case "draw": return "#8fbfa9";
+    case "discard":
+    case "riichi": return "#d26c63";
+    case "call": return "#84a9c0";
+    case "win":
+    case "score": return "#e9c27b";
+  }
+}
+
 function MotionController({
-  groupRef,
+  layout,
   motion,
   onMotionComplete,
   onMotionFrame,
 }: {
-  groupRef: React.RefObject<Group | null>;
+  layout: MatchSceneLayout;
   motion: SceneMotion | null;
   onMotionComplete(itemId: number): void;
   onMotionFrame(now: number, pixelRatio: number): void;
 }) {
   const startedAtRef = useRef<number | null>(null);
+  const completedItemRef = useRef<number | null>(null);
+  const accentRef = useRef<Group>(null);
   const invalidate = useThree((state) => state.invalidate);
   const camera = useThree((state) => state.camera) as PerspectiveCamera;
   const gl = useThree((state) => state.gl);
+  const resources = useMemo(() => ({
+    geometry: new RoundedBoxGeometry(...BODY_SIZE, 1, 0.045),
+    material: new MeshBasicMaterial({
+      color: new Color("#d26c63"),
+      transparent: true,
+      opacity: 0.22,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  }), []);
+  const target = motion ? sceneMotionTarget(layout, motion) : null;
+
+  useEffect(() => () => {
+    resources.geometry.dispose();
+    resources.material.dispose();
+  }, [resources]);
 
   useLayoutEffect(() => {
-    if (!motion) {
-      startedAtRef.current = null;
-      resetMotionGroup(groupRef.current);
-      invalidate();
-      return undefined;
-    }
     startedAtRef.current = null;
+    completedItemRef.current = null;
+    resetMotionGroup(accentRef.current);
+    if (motion) resources.material.color.set(motionAccentColor(motion.kind));
     invalidate();
     return () => {
-      resetMotionGroup(groupRef.current);
-      applyCameraFrame(camera, motion.kind, 1);
+      resetMotionGroup(accentRef.current);
+      if (motion) applyCameraFrame(camera, motion.kind, 1);
       invalidate();
     };
-  }, [camera, groupRef, invalidate, motion?.itemId, motion?.kind, motion?.startedAt]);
+  }, [camera, invalidate, motion?.itemId, motion?.kind, motion?.startedAt, resources.material]);
 
   useFrame(() => {
-    const group = groupRef.current;
-    if (!group || !motion) return;
+    if (!motion) return;
     const now = performance.now();
     startedAtRef.current ??= now - 32;
     const progress = sceneMotionProgress(
       { ...motion, startedAt: startedAtRef.current },
       now,
     );
-    const pulse = Math.sin(Math.PI * progress);
-    const translates = motion.kind === "draw" || motion.kind === "discard";
-    group.position.y = translates ? pulse * 0.09 : 0;
-    const scale = translates ? 1 : 1 + pulse * (motion.kind === "win" ? 0 : 0.012);
-    group.scale.set(scale, scale, scale);
+    // The accent is a separate transient object. Persistent InstancedMesh
+    // matrices are never transformed, and missing targets remain accent-free.
+    applyMotionAccentFrame(accentRef.current, target, motion.kind, progress);
     applyCameraFrame(camera, motion.kind, progress);
     onMotionFrame(now, gl.getPixelRatio());
     if (progress >= 1) {
-      resetMotionGroup(group);
+      resetMotionGroup(accentRef.current);
       applyCameraFrame(camera, motion.kind, 1);
-      onMotionComplete(motion.itemId);
+      if (completedItemRef.current !== motion.itemId) {
+        completedItemRef.current = motion.itemId;
+        onMotionComplete(motion.itemId);
+      }
       return;
     }
     invalidate();
   });
 
-  return null;
+  return motion && target ? (
+    <group ref={accentRef} name="transient-motion-accent">
+      <mesh geometry={resources.geometry} material={resources.material} dispose={null} />
+    </group>
+  ) : null;
 }
 
 function FixedCamera() {
@@ -773,7 +829,6 @@ export function MatchTableScene({
   onRenderReady,
 }: MatchTableSceneProps) {
   const textures = useTableTextures();
-  const tileGroupRef = useRef<Group>(null);
 
   return (
     <>
@@ -805,20 +860,18 @@ export function MatchTableScene({
       <FixedCamera />
       <group position={TABLE_RENDER_OFFSET}>
         <ProceduralTable textures={textures} />
-        <group ref={tileGroupRef}>
-          <InstancedTiles layout={layout} atlas={atlas} />
-        </group>
+        <InstancedTiles layout={layout} atlas={atlas} />
+        <MotionController
+          layout={layout}
+          motion={motion}
+          onMotionComplete={onMotionComplete}
+          onMotionFrame={onMotionFrame}
+        />
       </group>
       <SceneReadiness
         layout={layout}
         materialsReady={textures !== null}
         onRenderReady={onRenderReady}
-      />
-      <MotionController
-        groupRef={tileGroupRef}
-        motion={motion}
-        onMotionComplete={onMotionComplete}
-        onMotionFrame={onMotionFrame}
       />
     </>
   );

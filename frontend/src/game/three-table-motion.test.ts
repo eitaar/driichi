@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { AnimationItem, AnimationKind } from "./animation";
-import { cameraAccentAt, nextSceneMotion, sceneMotionProgress } from "./three-table-motion";
-import { CAMERA } from "./three-table-layout";
+import { CAMERA, type MatchSceneLayout } from "./three-table-layout";
+import {
+  cameraAccentAt,
+  nextSceneMotion,
+  sceneMotionProgress,
+  sceneMotionTarget,
+} from "./three-table-motion";
 
 function item(id: number, kind: AnimationKind): AnimationItem {
   return { id, kind, event: { type: kind } };
@@ -34,6 +39,62 @@ describe("nextSceneMotion", () => {
         false,
       ),
     ).toMatchObject({ itemId: 3, kind: "discard" });
+  });
+
+  it("carries authoritative event data for targeted accents", () => {
+    const event = { dahai: { actor: 1, tile: 8 } };
+    const motion = nextSceneMotion([{ id: 4, kind: "discard", event }], false);
+    expect(motion?.event).toBe(event);
+
+    const layout: MatchSceneLayout = {
+      players: [],
+      wallCount: 0,
+      tiles: [
+        {
+          key: "discard-right-seat-1-0",
+          tile: 8,
+          position: [1, 0.2, 2],
+          rotation: [0, -Math.PI / 2, 0],
+          scale: 0.72,
+          face: "front",
+          group: "discard",
+        },
+        {
+          key: "hand-bottom-seat-0-0",
+          tile: 0,
+          position: [0, 0.2, 4],
+          rotation: [0, 0, 0],
+          scale: 1,
+          face: "front",
+          group: "hand",
+        },
+      ],
+    };
+    expect(motion && sceneMotionTarget(layout, motion)?.key).toBe(
+      "discard-right-seat-1-0",
+    );
+  });
+
+  it("does not invent a discard target when the authoritative tile is absent", () => {
+    const motion = nextSceneMotion([{
+      id: 5,
+      kind: "discard",
+      event: { dahai: { actor: 1, tile: 12 } },
+    }], false);
+    const layout: MatchSceneLayout = {
+      players: [],
+      wallCount: 0,
+      tiles: [{
+        key: "discard-right-seat-1-0",
+        tile: 8,
+        position: [1, 0.2, 2],
+        rotation: [0, -Math.PI / 2, 0],
+        scale: 0.72,
+        face: "front",
+        group: "discard",
+      }],
+    };
+    expect(motion && sceneMotionTarget(layout, motion)).toBeNull();
   });
 
   it("returns no motion when Reduced Motion is enabled", () => {

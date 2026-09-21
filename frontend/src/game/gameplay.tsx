@@ -9,7 +9,7 @@ import {
 import { AudioManager, type AudioSettings, type VoiceKind } from "./audio";
 import { decodeCharacterAsset } from "./assets";
 import { ThreeTable, type PortraitEffect } from "./three-table";
-import { seatPositionFor } from "./orientation";
+import { seatPositionFor, seatPositions } from "./orientation";
 import { useGameStore, type Transport } from "./store";
 import type {
   ProjectedDecision,
@@ -845,15 +845,23 @@ function GameplayPlayerStatus({
   players,
   mode,
   viewerSeat,
+  playerCount,
 }: {
   players: ProjectedPlayer[];
   mode: string;
   viewerSeat?: number;
+  playerCount?: number;
 }) {
-  if (!players.length) return null;
+  const seats = seatPositions(mode, viewerSeat);
+  const count = Number.isInteger(playerCount)
+    ? Math.max(0, Math.min(playerCount as number, seats.length))
+    : seats.length;
+  const validSeats = new Set(seats.slice(0, count).map(({ seat }) => seat));
+  const validPlayers = players.filter((player) => validSeats.has(player.seat));
+  if (!validPlayers.length) return null;
   return (
     <ul className="visually-hidden" aria-label="Player status">
-      {players
+      {validPlayers
         .slice()
         .sort((left, right) => left.seat - right.seat)
         .map((player) => (
@@ -974,6 +982,7 @@ export function GameplaySurface({
         players={projection?.players ?? []}
         mode={mode}
         viewerSeat={projection?.audience === "player" ? viewer : undefined}
+        playerCount={projection?.player_count}
       />
       {closeMessage ? (
         <main className="gameplay-main gameplay-blocking-main">
