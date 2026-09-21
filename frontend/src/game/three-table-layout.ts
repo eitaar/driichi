@@ -29,9 +29,11 @@ export interface MatchSceneLayout {
 
 export const TABLE_SIZE = { width: 13.6, depth: 9.2 } as const;
 export const CAMERA = {
-  fov: 32,
-  position: [0, 12.8, 11.6] as Vec3,
-  target: [0, 0.15, 0] as Vec3,
+  // Lower the fixed lens into the table's near field so rails, tile bodies, and
+  // the center console carry a readable manufactured side profile.
+  fov: 30,
+  position: [0, 11.5, 15] as Vec3,
+  target: [0, 0.12, 0] as Vec3,
   near: 0.1,
   far: 60,
 } as const;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TABLE_RENDER_SCALE } from "./three-table-scene";
+import { Vector3 } from "three";
+import { TABLE_RENDER_SCALE, tileFaceQuaternion } from "./three-table-scene";
 import type { ProjectedState } from "./types";
 import {
   CAMERA,
@@ -40,15 +41,51 @@ function projection(overrides: Partial<ProjectedState> = {}): ProjectedState {
 describe("three-dimensional table layout", () => {
   it("exposes the exact table and camera constants", () => {
     expect(TABLE_SIZE).toEqual({ width: 13.6, depth: 9.2 });
-    expect(TABLE_RENDER_SCALE.z).toBeGreaterThanOrEqual(1.1);
-    expect(TABLE_RENDER_SCALE.z).toBeLessThanOrEqual(1.2);
+    expect(TABLE_RENDER_SCALE.x).toBeGreaterThanOrEqual(0.8);
+    expect(TABLE_RENDER_SCALE.x).toBeLessThanOrEqual(0.9);
+    expect(TABLE_RENDER_SCALE.z).toBeGreaterThanOrEqual(1.2);
+    expect(TABLE_RENDER_SCALE.z).toBeLessThanOrEqual(1.35);
     expect(CAMERA).toEqual({
-      fov: 32,
-      position: [0, 12.8, 11.6],
-      target: [0, 0.15, 0],
+      fov: 30,
+      position: [0, 11.5, 15],
+      target: [0, 0.12, 0],
       near: 0.1,
       far: 60,
     });
+  });
+
+  it("lays side-seat face and back planes flat without twisting their UV axes", () => {
+    const right = tileFaceQuaternion([0, -Math.PI / 2, 0]);
+    const left = tileFaceQuaternion([0, Math.PI / 2, 0]);
+    const normal = new Vector3(0, 0, 1);
+    expect(normal.clone().applyQuaternion(right).y).toBeCloseTo(1);
+    expect(normal.clone().applyQuaternion(left).y).toBeCloseTo(1);
+    expect(new Vector3(1, 0, 0).applyQuaternion(right).z).toBeCloseTo(1);
+    expect(new Vector3(1, 0, 0).applyQuaternion(left).z).toBeCloseTo(-1);
+    expect(new Vector3(0, 1, 0).applyQuaternion(right).x).toBeCloseTo(1);
+    expect(new Vector3(0, 1, 0).applyQuaternion(left).x).toBeCloseTo(-1);
+    expect(new Vector3(1, 0, 0).applyQuaternion(tileFaceQuaternion([0, 0, 0])).x).toBeCloseTo(1);
+    expect(new Vector3(1, 0, 0).applyQuaternion(tileFaceQuaternion([0, Math.PI, 0])).x).toBeCloseTo(-1);
+  });
+
+  it("keeps right and left hand backs and front tiles on the same seat frame", () => {
+    const layout = buildMatchSceneLayout(
+      projection({
+        players: [
+          player(0, "local", { hand: [1] }),
+          player(1, "right", { concealed_count: 2, discards: [3], melds: [{ tiles: [4, 5, 6] }] }),
+          player(2, "top", { concealed_count: 2 }),
+          player(3, "left", { concealed_count: 2, discards: [7], melds: [{ tiles: [8, 9, 10] }] }),
+        ],
+      }),
+      null,
+    );
+    for (const [position, rotation] of [["right", -Math.PI / 2], ["left", Math.PI / 2]] as const) {
+      const sideTiles = layout.tiles.filter((tile) => tile.key.includes(`-${position}-`));
+      expect(sideTiles.filter(({ group }) => group === "hand").every(({ face }) => face === "back")).toBe(true);
+      expect(sideTiles.filter(({ group }) => group === "discard" || group === "meld").every(({ face }) => face === "front")).toBe(true);
+      expect(new Set(sideTiles.map(({ rotation: tileRotation }) => tileRotation[1]))).toEqual(new Set([rotation]));
+    }
   });
 
   it("keeps only the oriented three-player seats", () => {
