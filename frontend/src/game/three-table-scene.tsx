@@ -3,7 +3,6 @@ import { useFrame, useThree } from "@react-three/fiber";
 import {
   Box3,
   BoxGeometry,
-  CanvasTexture,
   Color,
   DoubleSide,
   Euler,
@@ -27,6 +26,7 @@ import type { TileAtlas } from "./tile-atlas";
 import {
   configureTableTexture,
   disposeTableTextures,
+  FELT_MATERIAL_TINT,
   TABLE_TEXTURE_SPECS,
   TABLE_TEXTURE_URLS,
   type TableTextureKey,
@@ -144,30 +144,6 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
   return material;
 }
 
-function tintFeltTexture(texture: Texture): Texture {
-  if (typeof document === "undefined" || !texture.image) return texture;
-  const image = texture.image as CanvasImageSource;
-  const width = "width" in image && typeof image.width === "number" ? image.width : 0;
-  const height = "height" in image && typeof image.height === "number" ? image.height : 0;
-  if (!width || !height) return texture;
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) return texture;
-  context.drawImage(image, 0, 0, width, height);
-  const pixels = context.getImageData(0, 0, width, height);
-  for (let index = 0; index < pixels.data.length; index += 4) {
-    const luminance = (pixels.data[index] * 0.2126 + pixels.data[index + 1] * 0.7152 + pixels.data[index + 2] * 0.0722) / 255;
-    pixels.data[index] = Math.round(24 + luminance * 58);
-    pixels.data[index + 1] = Math.round(66 + luminance * 104);
-    pixels.data[index + 2] = Math.round(42 + luminance * 66);
-  }
-  context.putImageData(pixels, 0, 0);
-  texture.dispose();
-  return new CanvasTexture(canvas);
-}
-
 function loadTexture(
   loader: TextureLoader,
   key: TableTextureKey,
@@ -175,11 +151,7 @@ function loadTexture(
   return new Promise((resolve, reject) => {
     loader.load(
       TABLE_TEXTURE_URLS[key],
-      (texture) => {
-        const configured = configureTableTexture(texture, TABLE_TEXTURE_SPECS[key]);
-        const next = key === "felt" ? tintFeltTexture(configured) : configured;
-        resolve(key === "felt" ? configureTableTexture(next, TABLE_TEXTURE_SPECS[key]) : next);
-      },
+      (texture) => resolve(configureTableTexture(texture, TABLE_TEXTURE_SPECS[key])),
       undefined,
       reject,
     );
@@ -734,9 +706,9 @@ function CenterTrim() {
 
 function FeltMaterial({ texture }: { texture: Texture | undefined }) {
   return texture ? (
-    <meshBasicMaterial color="#ffffff" map={texture} />
+    <meshBasicMaterial color={FELT_MATERIAL_TINT} map={texture} />
   ) : (
-    <meshBasicMaterial color="#5e9b70" />
+    <meshBasicMaterial color={FELT_MATERIAL_TINT} />
   );
 }
 

@@ -13,6 +13,10 @@ export const TABLE_TEXTURE_URLS = {
 
 export type TableTextureKey = keyof typeof TABLE_TEXTURE_URLS;
 
+// Keep the felt readable as a deep green with or without the local texture.
+// The texture remains the original asset; this color is only the material tint.
+export const FELT_MATERIAL_TINT = "#225d44";
+
 export interface TableTextureSpec {
   readonly wrap: "repeat" | "clamp";
   readonly repeat: readonly [number, number];
