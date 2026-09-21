@@ -26,20 +26,15 @@ function textureStub() {
 const texture = textureStub();
 
 describe("table material assets", () => {
-  it("keeps all approved local table materials in the bundle", () => {
+  it("loads only the sampled felt texture", () => {
+    expect(Object.keys(TABLE_TEXTURE_URLS)).toEqual(["felt"]);
     expect(TABLE_TEXTURE_URLS.felt).toContain("table-felt.webp");
-    expect(TABLE_TEXTURE_URLS.rail).toContain("table-rail.webp");
-    expect(TABLE_TEXTURE_URLS.center).toContain("center-device.webp");
-    expect(TABLE_TEXTURE_URLS.back).toContain("tile-back-material.webp");
   });
 
-  it("defines restrained color-space, filtering, and wrapping per material", () => {
+  it("defines restrained color-space, filtering, and wrapping for the sampled material", () => {
     expect(TABLE_TEXTURE_SPECS.felt.wrap).toBe("repeat");
-    expect(TABLE_TEXTURE_SPECS.rail.wrap).toBe("repeat");
-    expect(TABLE_TEXTURE_SPECS.center.wrap).toBe("clamp");
-    expect(TABLE_TEXTURE_SPECS.back.wrap).toBe("clamp");
     expect(TABLE_TEXTURE_SPECS.felt.colorSpace).toBe("srgb");
-    expect(TABLE_TEXTURE_SPECS.back.minFilter).toBe("linear");
+    expect(TABLE_TEXTURE_SPECS.felt.minFilter).toBe("mipmap");
   });
 
   it("applies texture sampling settings without relying on defaults", () => {
@@ -54,7 +49,7 @@ describe("table material assets", () => {
   it("disposes every owned texture exactly once", () => {
     const dispose = () => { disposeCalls += 1; };
     let disposeCalls = 0;
-    disposeTableTextures({ felt: { dispose } as never, back: { dispose } as never });
-    expect(disposeCalls).toBe(2);
+    disposeTableTextures({ felt: { dispose } as never });
+    expect(disposeCalls).toBe(1);
   });
 });

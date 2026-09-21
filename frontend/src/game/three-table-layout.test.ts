@@ -1,8 +1,10 @@
+/// <reference types="node" />
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
 import {
   BACK_FACE_SIZE,
-  TABLE_RENDER_SCALE,
   createBackFaceGeometry,
   tileFaceQuaternion,
 } from "./three-table-scene";
@@ -45,18 +47,27 @@ function projection(overrides: Partial<ProjectedState> = {}): ProjectedState {
 
 describe("three-dimensional table layout", () => {
   it("exposes the exact table and camera constants", () => {
-    expect(TABLE_SIZE).toEqual({ width: 13.6, depth: 9.2 });
-    expect(TABLE_RENDER_SCALE.x).toBeGreaterThanOrEqual(0.8);
-    expect(TABLE_RENDER_SCALE.x).toBeLessThanOrEqual(0.9);
-    expect(TABLE_RENDER_SCALE.z).toBeGreaterThanOrEqual(1.2);
-    expect(TABLE_RENDER_SCALE.z).toBeLessThanOrEqual(1.35);
+    expect(TABLE_SIZE).toEqual({ width: 13.6, depth: 11 });
     expect(CAMERA).toEqual({
-      fov: 30,
-      position: [0, 11.5, 15],
-      target: [0, 0.12, 0],
+      fov: 32.25,
+      position: [0, 12.8, 13.8],
+      target: [0, 0.15, 0.25],
       near: 0.1,
       far: 60,
     });
+    expect(CAMERA.fov).toBeGreaterThanOrEqual(28);
+    expect(CAMERA.fov).toBeLessThanOrEqual(34);
+    expect(CAMERA.position[1]).toBeGreaterThanOrEqual(10.8);
+    expect(CAMERA.position[1]).toBeLessThanOrEqual(12.8);
+    expect(CAMERA.position[2]).toBeGreaterThanOrEqual(11.6);
+    expect(CAMERA.position[2]).toBeLessThanOrEqual(13.8);
+  });
+
+  it("rejects global scene distortion in the authored render path", () => {
+    const sceneSource = readFileSync(resolve(process.cwd(), "src/game/three-table-scene.tsx"), "utf8");
+    expect(sceneSource).not.toContain("TABLE_RENDER_SCALE");
+    expect(sceneSource).not.toMatch(/<group\s+scale=/);
+    expect(sceneSource).not.toContain("setPixelRatio");
   });
 
   it("keeps concealed backs inset within the unchanged front-face footprint", () => {
@@ -216,7 +227,7 @@ describe("three-dimensional table layout", () => {
     );
     const discards = layout.tiles.filter(({ group }) => group === "discard");
     expect(discards).toHaveLength(7);
-    expect(discards.slice(0, 6).every(({ position }) => position[2] === 1.45)).toBe(true);
-    expect(discards[6]?.position[2]).toBe(2);
+    expect(discards.slice(0, 6).every(({ position }) => position[2] === 1.73)).toBe(true);
+    expect(discards[6]?.position[2]).toBe(2.39);
   });
 });

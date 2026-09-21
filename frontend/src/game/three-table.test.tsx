@@ -64,6 +64,8 @@ vi.mock("./three-table-scene", async () => {
           (props.onRenderReady as ((stats: Record<string, number>) => void) | undefined)?.({
             tileCount: 54,
             primitiveCount: 9,
+            pixelRatio: 1,
+            triangleCount: 100,
           });
         }
       }, [props.layout]);
@@ -145,6 +147,8 @@ describe("ThreeTable", () => {
       far: CAMERA.far,
     });
     expect(screen.getByTestId("mock-r3f-canvas")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByTestId("three-table").querySelector(".table-player-overlays"))
+      .toHaveAttribute("aria-hidden", "true");
   });
 
   it("reports renderer-backed instrumentation only after Canvas and the scene render", async () => {
@@ -167,9 +171,9 @@ describe("ThreeTable", () => {
       gl: { domElement: canvas, outputColorSpace: "", shadowMap: { enabled: false, type: 0 } },
     }));
     const sceneProps = sceneCalls.mock.lastCall?.[0] as {
-      onRenderReady(stats: { tileCount: number; primitiveCount: number }): void;
+      onRenderReady(stats: { tileCount: number; primitiveCount: number; pixelRatio: number; triangleCount: number }): void;
     };
-    act(() => sceneProps.onRenderReady({ tileCount: 54, primitiveCount: 9 }));
+    act(() => sceneProps.onRenderReady({ tileCount: 54, primitiveCount: 9, pixelRatio: 1, triangleCount: 100 }));
 
     await waitFor(() => expect(host).toHaveAttribute("data-render-ready", "true"));
     expect(host).toHaveAttribute("data-rendered-tile-count", "54");
@@ -177,6 +181,7 @@ describe("ThreeTable", () => {
     expect(host).toHaveAttribute("data-wall-tile-count", "42");
     expect(host).toHaveAttribute("data-webgl-fallback", "false");
     expect(host).toHaveAttribute("data-animation-state", "idle");
+    expect(host).toHaveAttribute("data-renderer-pixel-ratio", "1");
     expect(host).toHaveAttribute("data-player-frame-count", "4");
   });
 
@@ -196,10 +201,14 @@ describe("ThreeTable", () => {
     expect(host).toHaveAttribute("data-animation-item-id", "12");
     const activeScene = sceneCalls.mock.lastCall?.[0] as {
       onMotionComplete(id: number): void;
+      onMotionFrame(now: number, pixelRatio: number): void;
     };
+    act(() => activeScene.onMotionFrame(100, 1.25));
+    expect(host).toHaveAttribute("data-renderer-pixel-ratio", "1.25");
     act(() => activeScene.onMotionComplete(12));
 
     await waitFor(() => expect(host).toHaveAttribute("data-animation-state", "idle"));
+    expect(host).toHaveAttribute("data-renderer-pixel-ratio", "1");
     expect(host).toHaveAttribute("data-last-consumed-animation-id", "12");
     expect(onAnimationConsumed).toHaveBeenCalledTimes(1);
     expect(onAnimationConsumed).toHaveBeenCalledWith(12);

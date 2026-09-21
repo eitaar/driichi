@@ -105,6 +105,7 @@ describe("Replay Admin workspace", () => {
     );
 
     expect(view.container.querySelectorAll(".table-player-frame")).toHaveLength(4);
+    expect(view.container.querySelector(".table-player-overlays")).not.toHaveAttribute("aria-hidden");
     expect(view.container.querySelector('[data-position="top"]')).not.toBeNull();
     expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("Mika");
     expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("25,000");

@@ -185,7 +185,11 @@ export function TablePlayerOverlay({
 }: TablePlayerOverlayProps) {
   const layout = useMemo(() => buildMatchSceneLayout(projection, room), [projection, room]);
   return (
-    <div className="table-player-overlays" data-surface={surface}>
+    <div
+      className="table-player-overlays"
+      data-surface={surface}
+      aria-hidden={surface === "live" ? "true" : undefined}
+    >
       {layout.players.map((scenePlayer) => {
         const player = projection.players?.find((candidate) => candidate.seat === scenePlayer.seat);
         if (!player) return null;
@@ -310,6 +314,12 @@ export function ThreeTable({
   const tableWidthRatio = ready && typeof renderStats?.tableWidthRatio === "number"
     ? renderStats.tableWidthRatio
     : 0;
+  const rendererPixelRatio = ready && typeof renderStats?.pixelRatio === "number"
+    ? renderStats.pixelRatio
+    : 0;
+  const renderedTriangleCount = ready && typeof renderStats?.triangleCount === "number"
+    ? renderStats.triangleCount
+    : 0;
   const recordRenderReady = useCallback((stats: SceneRenderStats) => {
     if (!layout || !atlas) return;
     setRenderStats({ ...stats, layout, atlas });
@@ -387,13 +397,20 @@ export function ThreeTable({
     }
     lastMotionFrameAtRef.current = null;
     activeMotionRef.current = null;
+    const host = hostRef.current;
+    if (host && typeof renderStats?.pixelRatio === "number") {
+      host.dataset.rendererPixelRatio = String(renderStats.pixelRatio);
+    }
     setMotion(null);
     reportConsumed(id);
-  }, [reportConsumed]);
+  }, [renderStats, reportConsumed]);
 
-  const recordMotionFrame = useCallback((now: number) => {
+  const recordMotionFrame = useCallback((now: number, pixelRatio: number) => {
     const host = hostRef.current;
     if (!host) return;
+    // Keep the renderer's effective DPR observable during active motion as
+    // well as idle readiness; no motion path is allowed to rewrite it.
+    host.dataset.rendererPixelRatio = String(pixelRatio);
     const count = Number(host.dataset.animationFrameCount ?? 0);
     const firstFrame = !Number.isFinite(count) || count === 0;
     host.dataset.animationFrameCount = String(firstFrame ? 1 : count + 1);
@@ -417,6 +434,8 @@ export function ThreeTable({
       data-rendered-scene-primitives={primitiveCount}
       data-table-height-ratio={tableHeightRatio}
       data-table-width-ratio={tableWidthRatio}
+      data-renderer-pixel-ratio={rendererPixelRatio || ""}
+      data-rendered-scene-triangles={renderedTriangleCount}
       data-wall-tile-count={layout?.wallCount ?? 0}
       data-webgl-fallback={String(isFallback)}
       data-animation-state={animationState}

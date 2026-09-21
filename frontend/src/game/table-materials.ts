@@ -9,9 +9,6 @@ import {
 
 export const TABLE_TEXTURE_URLS = {
   felt: new URL("../assets/table/table-felt.webp", import.meta.url).href,
-  rail: new URL("../assets/table/table-rail.webp", import.meta.url).href,
-  center: new URL("../assets/table/center-device.webp", import.meta.url).href,
-  back: new URL("../assets/table/tile-back-material.webp", import.meta.url).href,
 } as const;
 
 export type TableTextureKey = keyof typeof TABLE_TEXTURE_URLS;
@@ -30,28 +27,7 @@ export const TABLE_TEXTURE_SPECS: Record<TableTextureKey, TableTextureSpec> = {
     repeat: [4, 3],
     minFilter: "mipmap",
     colorSpace: "srgb",
-    anisotropy: 4,
-  },
-  rail: {
-    wrap: "repeat",
-    repeat: [3, 1],
-    minFilter: "mipmap",
-    colorSpace: "srgb",
-    anisotropy: 4,
-  },
-  center: {
-    wrap: "clamp",
-    repeat: [1, 1],
-    minFilter: "linear",
-    colorSpace: "srgb",
-    anisotropy: 2,
-  },
-  back: {
-    wrap: "clamp",
-    repeat: [1, 1],
-    minFilter: "linear",
-    colorSpace: "srgb",
-    anisotropy: 2,
+    anisotropy: 1,
   },
 };
 

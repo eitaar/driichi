@@ -27,13 +27,13 @@ export interface MatchSceneLayout {
   wallCount: number;
 }
 
-export const TABLE_SIZE = { width: 13.6, depth: 9.2 } as const;
+export const TABLE_SIZE = { width: 13.6, depth: 11 } as const;
 export const CAMERA = {
-  // Lower the fixed lens into the table's near field so rails, tile bodies, and
-  // the center console carry a readable manufactured side profile.
-  fov: 30,
-  position: [0, 11.5, 15] as Vec3,
-  target: [0, 0.12, 0] as Vec3,
+  // The fixed lens stays inside the approved envelope while the authored table
+  // depth keeps the complete world frame within the 16:9 safe composition.
+  fov: 32.25,
+  position: [0, 12.8, 13.8] as Vec3,
+  target: [0, 0.15, 0.25] as Vec3,
   near: 0.1,
   far: 60,
 } as const;
@@ -41,9 +41,9 @@ export const LOCAL_TILE_SIZE = 1;
 export const REMOTE_TILE_SIZE = 0.72;
 
 const HAND_ANCHORS: Record<SceneSeat, Vec3> = {
-  bottom: [0, 0.28, 3.95],
+  bottom: [0, 0.28, 4.72],
   right: [5.35, 0.2, 0],
-  top: [0, 0.2, -3.45],
+  top: [0, 0.2, -4.13],
   left: [-5.35, 0.2, 0],
 };
 
@@ -56,10 +56,10 @@ const SEAT_ROTATIONS: Record<SceneSeat, Vec3> = {
 
 const WALL_EDGE_ORDER: readonly SceneSeat[] = ["bottom", "right", "top", "left"];
 const WALL_ANCHORS: Record<SceneSeat, Vec3> = {
-  bottom: [-4.25, 0.18, 2.65],
-  right: [4.65, 0.18, 2.25],
-  top: [4.25, 0.18, -2.65],
-  left: [-4.65, 0.18, -2.25],
+  bottom: [-4.25, 0.18, 3.17],
+  right: [4.65, 0.18, 2.69],
+  top: [4.25, 0.18, -3.17],
+  left: [-4.65, 0.18, -2.69],
 };
 
 function nonNegativeInteger(value: unknown): number {
@@ -148,8 +148,8 @@ function discardPosition(position: SceneSeat, index: number): Vec3 {
   const column = index % 6;
   const row = Math.floor(index / 6);
   const offset = (column - 2.5) * 0.55;
-  if (position === "bottom") return [offset, 0.2, 1.45 + row * 0.55];
-  if (position === "top") return [offset, 0.2, -1.45 - row * 0.55];
+  if (position === "bottom") return [offset, 0.2, 1.73 + row * 0.66];
+  if (position === "top") return [offset, 0.2, -1.73 - row * 0.66];
   if (position === "right") return [2.55 + row * 0.55, 0.2, offset];
   return [-2.55 - row * 0.55, 0.2, offset];
 }
@@ -177,8 +177,8 @@ function addDiscardTiles(
 
 function meldPosition(position: SceneSeat, index: number, count: number): Vec3 {
   const offset = (index - (count - 1) / 2) * 0.55;
-  if (position === "bottom") return [offset, 0.2, 2.55];
-  if (position === "top") return [offset, 0.2, -2.55];
+  if (position === "bottom") return [offset, 0.2, 3.05];
+  if (position === "top") return [offset, 0.2, -3.05];
   if (position === "right") return [4.45, 0.2, offset];
   return [-4.45, 0.2, offset];
 }

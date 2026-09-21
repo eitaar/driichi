@@ -391,7 +391,7 @@ function GameplayToast({
   actionError: string;
 }) {
   return (
-    <div className="gameplay-toast-stack" aria-live="polite">
+    <div className="gameplay-toast-stack">
       {(status === "reconnecting" || status === "error") && (
         <p className="gameplay-toast" role="status">
           {status === "error"
