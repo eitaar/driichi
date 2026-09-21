@@ -3,12 +3,15 @@ import {
   actionCandidates,
   actionGroupLabel,
   actionKind,
+  actionTile,
   describeAction,
   type ActionKind,
 } from "./actions";
 import { AudioManager, type AudioSettings, type VoiceKind } from "./audio";
 import { decodeCharacterAsset } from "./assets";
 import { ThreeTable, type PortraitEffect } from "./three-table";
+import { buildMatchSceneLayout, type MatchSceneLayout } from "./three-table-layout";
+import { projectLocalHandHitTargets } from "./table-hit-targets";
 import { seatPositionFor, seatPositions } from "./orientation";
 import { useGameStore, type Transport } from "./store";
 import type {
@@ -414,21 +417,7 @@ function GameplayToast({
   );
 }
 
-function actionTileForHand(action: VisibleAction): number | undefined {
-  const actionValue = action.action;
-  if (!actionValue || typeof actionValue !== "object") return undefined;
-  const key = Object.keys(actionValue as Record<string, unknown>)[0];
-  const payload = key
-    ? (actionValue as Record<string, unknown>)[key]
-    : undefined;
-  return payload &&
-    typeof payload === "object" &&
-    typeof (payload as Record<string, unknown>).tile === "number"
-    ? ((payload as Record<string, unknown>).tile as number)
-    : undefined;
-}
-
-function handActionMap(
+export function handActionMap(
   hand: number[],
   actions: VisibleAction[],
 ): Array<VisibleAction | undefined> {
@@ -436,7 +425,7 @@ function handActionMap(
   return hand.map((tile) => {
     const action = actions.find(
       (candidate) =>
-        !used.has(candidate.action_id) && actionTileForHand(candidate) === tile,
+        !used.has(candidate.action_id) && actionTile(candidate.action) === tile,
     );
     if (action) used.add(action.action_id);
     return action;
@@ -446,42 +435,73 @@ function handActionMap(
 function TileHitLayer({
   hand,
   actions,
+  layout,
   disabled,
   onAction,
 }: {
   hand: number[];
   actions: VisibleAction[];
+  layout: MatchSceneLayout | null;
   disabled: boolean;
   onAction: (action: VisibleAction) => void;
 }) {
   const mapped = handActionMap(hand, actions);
+  const projected = useMemo(
+    () => projectLocalHandHitTargets(layout ?? { players: [], tiles: [], wallCount: 0 }),
+    [layout],
+  );
+  const bounds = projected.bounds;
+  const hasProjectedBounds = projected.targets.length > 0 && bounds.width > 0 && bounds.height > 0;
   return (
-    <div className="table-hit-layer" role="group" aria-label="Your concealed hand">
-      {mapped.map((action, index) => (
-        <button
-          key={`${hand[index]}-${index}`}
-          type="button"
-          className={`table-tile-hit${action ? " is-legal" : ""}`}
-          data-action-id={action?.action_id ?? ""}
-          style={
-            {
-              "--tile-index": index,
-              "--tile-count": hand.length,
-            } as React.CSSProperties
-          }
-          aria-label={
-            action
-              ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(hand[index])}`
-              : `Your ${tileLabel(hand[index])}`
-          }
-          disabled={disabled || !action}
-          onClick={() => {
-            if (action) onAction(action);
-          }}
-        >
-          {tileLabel(hand[index])}
-        </button>
-      ))}
+    <div
+      className="table-hit-layer"
+      role="group"
+      aria-label="Your concealed hand"
+      style={
+        hasProjectedBounds
+          ? {
+              left: `${bounds.left * 100}%`,
+              top: `${bounds.top * 100}%`,
+              right: "auto",
+              bottom: "auto",
+              width: `${bounds.width * 100}%`,
+              height: `${bounds.height * 100}%`,
+            }
+          : undefined
+      }
+    >
+      {mapped.map((action, index) => {
+        const target = projected.targets[index];
+        const targetStyle = target && hasProjectedBounds
+          ? {
+              left: `${((target.rect.left - bounds.left) / bounds.width) * 100}%`,
+              top: `${((target.rect.top - bounds.top) / bounds.height) * 100}%`,
+              width: `${(target.rect.width / bounds.width) * 100}%`,
+              height: `${(target.rect.height / bounds.height) * 100}%`,
+            }
+          : undefined;
+        return (
+          <button
+            key={target?.tileKey ?? `${hand[index]}-${index}`}
+            type="button"
+            className={`table-tile-hit${action ? " is-legal" : ""}`}
+            data-action-id={action?.action_id ?? ""}
+            data-tile-key={target?.tileKey ?? ""}
+            style={targetStyle}
+            aria-label={
+              action
+                ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(hand[index])}`
+                : `Your ${tileLabel(hand[index])}`
+            }
+            disabled={disabled || !action}
+            onClick={() => {
+              if (action) onAction(action);
+            }}
+          >
+            {tileLabel(hand[index])}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -907,6 +927,10 @@ export function GameplaySurface({
   const viewer = ownSeat(projection);
   const ownPlayer = projectionPlayer(projection, viewer);
   const grouped = useMemo(() => actionCandidates(decision), [decision]);
+  const sceneLayout = useMemo(
+    () => (projection ? buildMatchSceneLayout(projection, room) : null),
+    [projection, room],
+  );
   const riichiMode = grouped.riichiDiscard.length > 0;
   const legalDiscardActions = riichiMode
     ? grouped.riichiDiscard
@@ -1028,6 +1052,7 @@ export function GameplaySurface({
             <TileHitLayer
               hand={ownPlayer?.hand ?? []}
               actions={legalDiscardActions}
+              layout={sceneLayout}
               disabled={inputDisabled}
               onAction={submit}
             />

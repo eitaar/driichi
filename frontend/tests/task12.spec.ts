@@ -374,6 +374,66 @@ for (const viewport of requiredViewports) {
   }
 }
 
+test("keeps called-hand canvas tiles and semantic hit extents in the same projection", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  const local = (state.players as Array<Record<string, unknown>>)[0];
+  const hand = [16, 17, 52, 53, 88];
+  local.hand = hand;
+  local.concealed_count = hand.length;
+  local.melds = [
+    { tiles: [0, 1, 2] },
+    { tiles: [4, 5, 6] },
+    { tiles: [8, 9, 10] },
+  ];
+  state.decision = {
+    decision_id: "called-hand-1",
+    kind: "Turn",
+    actions: hand.map((tile, index) => ({
+      action_id: `called-discard-${index}`,
+      action: { Discard: { tile, tsumogiri: index === hand.length - 1 } },
+    })),
+  };
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  await expectRenderedTable(page);
+
+  const stage = page.locator(".table-letterbox");
+  const layer = page.locator(".table-hit-layer");
+  const targets = layer.locator(".table-tile-hit.is-legal");
+  await expect(targets).toHaveCount(hand.length);
+  const tileKeys = await targets.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-tile-key")),
+  );
+  expect(tileKeys).toEqual(hand.map((_, index) => `hand-bottom-seat-0-${index}`));
+  const geometry = await stage.evaluate((element) => {
+    const stageRect = element.getBoundingClientRect();
+    const layer = element.querySelector<HTMLElement>(".table-hit-layer")!;
+    const layerRect = layer.getBoundingClientRect();
+    const targetRects = Array.from(layer.querySelectorAll<HTMLElement>(".table-tile-hit.is-legal"))
+      .map((target) => {
+        const rect = target.getBoundingClientRect();
+        return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      });
+    return {
+      stage: { left: stageRect.left, top: stageRect.top, right: stageRect.right, bottom: stageRect.bottom, width: stageRect.width },
+      layer: { left: layerRect.left, top: layerRect.top, right: layerRect.right, bottom: layerRect.bottom, width: layerRect.width, height: layerRect.height },
+      targetRects,
+    };
+  });
+  expect(geometry.layer.width).toBeGreaterThan(0);
+  expect(geometry.layer.width).toBeLessThan(geometry.stage.width * 0.6);
+  expect(geometry.layer.height).toBeGreaterThan(0);
+  expect(geometry.targetRects).toHaveLength(hand.length);
+  for (const target of geometry.targetRects) {
+    expect(target.left).toBeGreaterThanOrEqual(geometry.stage.left);
+    expect(target.top).toBeGreaterThanOrEqual(geometry.stage.top);
+    expect(target.right).toBeLessThanOrEqual(geometry.stage.right);
+    expect(target.bottom).toBeLessThanOrEqual(geometry.stage.bottom);
+  }
+});
+
 test("keeps a long participant name and missing portrait actionable", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   const state = structuredClone(projectionFixture.projections["4p-red-east"]);
@@ -635,9 +695,7 @@ test("accepts a 60fps-class motion budget at both required desktop resolutions",
     });
     expect(metrics.frameCount).toBeGreaterThan(0);
     expect(metrics.eventMs).toBeGreaterThan(0);
-    const result = { ...metrics, setupEventMs };
-    console.log("motion metrics", viewport, result);
-    return result;
+    return { ...metrics, setupEventMs };
   }
 
   const at1600 = await measureAt({ width: 1600, height: 900 });
