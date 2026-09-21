@@ -30,7 +30,14 @@ import {
   TABLE_TEXTURE_URLS,
   type TableTextureKey,
 } from "./table-materials";
-import { CAMERA, TABLE_SIZE, type MatchSceneLayout, type SceneTile } from "./three-table-layout";
+import {
+  CAMERA,
+  TABLE_RENDER_OFFSET,
+  TILE_BODY_SIZE,
+  TABLE_SIZE,
+  type MatchSceneLayout,
+  type SceneTile,
+} from "./three-table-layout";
 import {
   cameraAccentAt,
   sceneMotionProgress,
@@ -58,8 +65,7 @@ interface MatchTableSceneProps {
 
 // This is a framing translation only. Geometry remains in the authored world
 // dimensions; in particular, no axis is scaled at runtime.
-const TABLE_RENDER_OFFSET: readonly [number, number, number] = [0, 0, -0.38];
-const BODY_SIZE = [0.6, 0.2, 0.82] as const;
+const BODY_SIZE = [TILE_BODY_SIZE.width, 0.2, TILE_BODY_SIZE.depth] as const;
 const FACE_SIZE = [0.56, 0.78] as const;
 export const BACK_FACE_SIZE = [0.48, 0.7] as const;
 const FACE_Y = BODY_SIZE[1] / 2 + 0.003;

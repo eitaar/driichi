@@ -28,6 +28,7 @@ export interface MatchSceneLayout {
 }
 
 export const TABLE_SIZE = { width: 13.6, depth: 11 } as const;
+export const TABLE_RENDER_OFFSET: readonly [number, number, number] = [0, 0, -0.38];
 export const CAMERA = {
   // The fixed lens stays inside the approved envelope while the authored table
   // depth keeps the complete world frame within the 16:9 safe composition.
@@ -39,6 +40,42 @@ export const CAMERA = {
 } as const;
 export const LOCAL_TILE_SIZE = 1;
 export const REMOTE_TILE_SIZE = 0.72;
+export const TILE_BODY_SIZE = { width: 0.6, depth: 0.82 } as const;
+export const CENTER_DEVICE_AABB = {
+  minX: -1.65,
+  maxX: 1.65,
+  minZ: -1.34,
+  maxZ: 1.34,
+} as const;
+
+export interface SceneAabb {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+export function sceneTileAabb(tile: Pick<SceneTile, "position" | "rotation" | "scale">): SceneAabb {
+  const halfWidth = (TILE_BODY_SIZE.width * tile.scale) / 2;
+  const halfDepth = (TILE_BODY_SIZE.depth * tile.scale) / 2;
+  const cosine = Math.cos(tile.rotation[1]);
+  const sine = Math.sin(tile.rotation[1]);
+  const extentX = Math.abs(cosine) * halfWidth + Math.abs(sine) * halfDepth;
+  const extentZ = Math.abs(sine) * halfWidth + Math.abs(cosine) * halfDepth;
+  return {
+    minX: tile.position[0] - extentX,
+    maxX: tile.position[0] + extentX,
+    minZ: tile.position[2] - extentZ,
+    maxZ: tile.position[2] + extentZ,
+  };
+}
+
+export function aabbIntersects(left: SceneAabb, right: SceneAabb): boolean {
+  return left.minX < right.maxX
+    && left.maxX > right.minX
+    && left.minZ < right.maxZ
+    && left.maxZ > right.minZ;
+}
 
 const HAND_ANCHORS: Record<SceneSeat, Vec3> = {
   bottom: [0, 0.28, 4.72],
@@ -175,12 +212,27 @@ function addDiscardTiles(
   }
 }
 
-function meldPosition(position: SceneSeat, index: number, count: number): Vec3 {
-  const offset = (index - (count - 1) / 2) * 0.55;
-  if (position === "bottom") return [offset, 0.2, 3.05];
-  if (position === "top") return [offset, 0.2, -3.05];
-  if (position === "right") return [4.45, 0.2, offset];
-  return [-4.45, 0.2, offset];
+const MELD_TILE_SPACING = 0.55;
+const MELD_LANE_CENTERS = [-4, 4] as const;
+const MELD_ROW_CENTERS = [3, 3.72] as const;
+
+function meldPosition(
+  position: SceneSeat,
+  meldIndex: number,
+  tileIndex: number,
+  tileCount: number,
+): Vec3 {
+  // Keep each called group in one of two side lanes. A single horizontal meld
+  // strip sits in the river's rows, so a long river can occupy the same world
+  // AABB. Side lanes are outside the six-column river footprint for every seat;
+  // the second row still clears the local hand's inner edge.
+  const laneCenter = MELD_LANE_CENTERS[meldIndex % MELD_LANE_CENTERS.length];
+  const rowCenter = MELD_ROW_CENTERS[Math.floor(meldIndex / MELD_LANE_CENTERS.length) % MELD_ROW_CENTERS.length];
+  const offset = (tileIndex - (tileCount - 1) / 2) * MELD_TILE_SPACING;
+  if (position === "bottom") return [laneCenter + offset, 0.2, rowCenter];
+  if (position === "top") return [laneCenter + offset, 0.2, -rowCenter];
+  if (position === "right") return [rowCenter, 0.2, laneCenter + offset];
+  return [-rowCenter, 0.2, laneCenter + offset];
 }
 
 function addMeldTiles(
@@ -189,23 +241,21 @@ function addMeldTiles(
   seat: number,
   position: SceneSeat,
 ): void {
-  const meldTiles = (player.melds ?? []).flatMap((meld, meldIndex) =>
-    (meld.tiles ?? [])
-      .filter((tile) => Number.isInteger(tile))
-      .map((tile, tileIndex) => ({ tile, meldIndex, tileIndex })),
-  );
-  for (const [flatIndex, { tile, meldIndex, tileIndex }] of meldTiles.entries()) {
-    tiles.push(
-      sceneTile(
-        `meld-${position}-seat-${seat}-${meldIndex}-${tileIndex}`,
-        tile,
-        meldPosition(position, flatIndex, meldTiles.length),
-        SEAT_ROTATIONS[position],
-        position === "bottom" ? LOCAL_TILE_SIZE : REMOTE_TILE_SIZE,
-        "front",
-        "meld",
-      ),
-    );
+  for (const [meldIndex, meld] of (player.melds ?? []).entries()) {
+    const meldTiles = (meld.tiles ?? []).filter((tile) => Number.isInteger(tile));
+    for (const [tileIndex, tile] of meldTiles.entries()) {
+      tiles.push(
+        sceneTile(
+          `meld-${position}-seat-${seat}-${meldIndex}-${tileIndex}`,
+          tile,
+          meldPosition(position, meldIndex, tileIndex, meldTiles.length),
+          SEAT_ROTATIONS[position],
+          position === "bottom" ? LOCAL_TILE_SIZE : REMOTE_TILE_SIZE,
+          "front",
+          "meld",
+        ),
+      );
+    }
   }
 }
 

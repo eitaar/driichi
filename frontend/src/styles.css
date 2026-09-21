@@ -259,18 +259,13 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
 .table-hit-layer {
   position: absolute;
   z-index: 2;
-  inset-inline: 20%;
-  /* Match the projected local tile strip; the hit layer should not become a second hand. */
-  inset-block-end: 11%;
-  block-size: 11%;
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
+  /* React supplies the projected union of local tile AABBs. */
+  inset: auto;
   pointer-events: none;
 }
 .table-tile-hit {
-  position: relative;
-  flex: 1;
+  position: absolute;
+  flex: none;
   min-width: 0;
   border: 0;
   background: transparent;
@@ -302,7 +297,7 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   z-index: 5;
   inset-inline-start: 50%;
   inset-inline-end: auto;
-  inset-block-end: calc(22% + 64px);
+  inset-block-end: calc(22% + 72px);
   width: max-content;
   max-width: calc(100% - 24px);
   transform: translateX(-50%);
@@ -438,7 +433,6 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   .action-buttons { gap: 6px; }
   .action-buttons .button,
   .candidate-list .button { min-height: 36px; height: 36px; padding-inline: 10px; }
-  .table-hit-layer { block-size: 11%; }
 }
 @media (max-width: 1023px), (max-height: 599px) {
   .gameplay-shell .gameplay-main:not(.gameplay-blocking-main) { display: none; }

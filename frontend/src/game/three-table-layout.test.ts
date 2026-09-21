@@ -11,11 +11,15 @@ import {
 import type { ProjectedState } from "./types";
 import {
   CAMERA,
+  CENTER_DEVICE_AABB,
   LOCAL_TILE_SIZE,
   REMOTE_TILE_SIZE,
   TABLE_SIZE,
+  aabbIntersects,
   buildMatchSceneLayout,
+  sceneTileAabb,
 } from "./three-table-layout";
+import { projectLocalHandHitTargets, projectSceneTileRect } from "./table-hit-targets";
 
 function player(
   seat: number,
@@ -229,5 +233,83 @@ describe("three-dimensional table layout", () => {
     expect(discards).toHaveLength(7);
     expect(discards.slice(0, 6).every(({ position }) => position[2] === 1.73)).toBe(true);
     expect(discards[6]?.position[2]).toBe(2.39);
+  });
+
+  it("projects every reduced local hand to the exact rendered tile extent", () => {
+    for (const mode of ["3p-red-east", "4p-red-east"] as const) {
+      const seats = mode.startsWith("3p") ? 3 : 4;
+      for (let viewerSeat = 0; viewerSeat < seats; viewerSeat += 1) {
+        for (let calls = 0; calls <= 4; calls += 1) {
+          const hand = Array.from(
+            { length: 14 - calls * 3 },
+            (_, index) => [0, 1, 16, 17, 52, 53, 88][index % 7] + Math.floor(index / 7) * 4,
+          );
+          const players = Array.from({ length: seats }, (_, seat) =>
+            player(seat, `seat-${seat}`, {
+              hand: seat === viewerSeat ? hand : undefined,
+              concealed_count: seat === viewerSeat ? hand.length : 13,
+              melds: seat === viewerSeat
+                ? Array.from({ length: calls }, (_, meldIndex) => ({
+                    tiles: [meldIndex * 4, meldIndex * 4 + 1, meldIndex * 4 + 2],
+                  }))
+                : [],
+            }),
+          );
+          const layout = buildMatchSceneLayout(
+            projection({ mode, viewer_seat: viewerSeat, players }),
+            null,
+          );
+          const rendered = layout.tiles.filter(
+            (tile) => tile.group === "hand" && tile.key.includes("hand-bottom-seat-"),
+          );
+          const projected = projectLocalHandHitTargets(layout);
+          expect(rendered).toHaveLength(hand.length);
+          expect(projected.targets).toHaveLength(hand.length);
+          projected.targets.forEach((target, index) => {
+            expect(target.tileKey).toBe(rendered[index]?.key);
+            expect(target.rect).toEqual(projectSceneTileRect(rendered[index]!));
+          });
+        }
+      }
+    }
+  });
+
+  it("keeps maximum rivers and called melds disjoint from one another and the center device", () => {
+    for (const mode of ["3p-red-east", "4p-red-east"] as const) {
+      const seats = mode.startsWith("3p") ? 3 : 4;
+      for (let viewerSeat = 0; viewerSeat < seats; viewerSeat += 1) {
+        const players = Array.from({ length: seats }, (_, seat) =>
+          player(seat, `seat-${seat}`, {
+            hand: seat === viewerSeat ? [0, 1] : Array.from({ length: 13 }, (_, index) => index + 20),
+            concealed_count: seat === viewerSeat ? 2 : 13,
+            discards: Array.from({ length: 24 }, (_, index) => index + seat * 24),
+            melds: Array.from({ length: 4 }, (_, meldIndex) => ({
+              tiles: Array.from({ length: 4 }, (_, tileIndex) => 100 + seat * 16 + meldIndex * 4 + tileIndex),
+            })),
+          }),
+        );
+        const layout = buildMatchSceneLayout(
+          projection({ mode, viewer_seat: viewerSeat, players }),
+          null,
+        );
+        for (const scenePlayer of layout.players) {
+          const discards = layout.tiles.filter(
+            (tile) => tile.group === "discard" && tile.key.includes(`-${scenePlayer.position}-seat-${scenePlayer.seat}-`),
+          );
+          const melds = layout.tiles.filter(
+            (tile) => tile.group === "meld" && tile.key.includes(`-${scenePlayer.position}-seat-${scenePlayer.seat}-`),
+          );
+          for (const discard of discards) {
+            expect(aabbIntersects(sceneTileAabb(discard), CENTER_DEVICE_AABB)).toBe(false);
+            for (const meld of melds) {
+              expect(aabbIntersects(sceneTileAabb(discard), sceneTileAabb(meld))).toBe(false);
+            }
+          }
+          for (const meld of melds) {
+            expect(aabbIntersects(sceneTileAabb(meld), CENTER_DEVICE_AABB)).toBe(false);
+          }
+        }
+      }
+    }
   });
 });
