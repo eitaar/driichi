@@ -120,6 +120,90 @@ describe("three-dimensional table layout", () => {
     }
   });
 
+  it.each([
+    ["4p-red-east", [0, 1, 2, 3]],
+    ["3p-red-east", [0, 1, 2, 3]],
+  ] as const)("reveals only authoritative opponent hands on Replay for %s", (mode, seats) => {
+    const hands = new Map([
+      [0, [0, 16, 52]],
+      [1, [3, 17, 53]],
+      [2, [6, 18, 88]],
+      [3, [9, 19, 89]],
+    ]);
+    const replayProjection = projection({
+      mode,
+      audience: "replay_admin",
+      players: seats.map((seat) => player(seat, `seat-${seat}`, {
+        hand: hands.get(seat),
+        concealed_count: hands.get(seat)?.length,
+      })).concat(
+        mode.startsWith("3p") ? [player(3, "stale-fourth-seat", { hand: hands.get(3), concealed_count: 3 })] : [],
+      ),
+    });
+    const live = buildMatchSceneLayout(replayProjection, null, "live");
+    const replay = buildMatchSceneLayout(replayProjection, null, "replay");
+
+    expect(live.players.map(({ seat }) => seat)).toEqual(mode.startsWith("3p") ? [0, 1, 2] : [0, 1, 2, 3]);
+    expect(replay.players.map(({ seat }) => seat)).toEqual(live.players.map(({ seat }) => seat));
+    expect(live.players.some(({ participantId }) => participantId === "stale-fourth-seat")).toBe(false);
+    expect(replay.players.some(({ participantId }) => participantId === "stale-fourth-seat")).toBe(false);
+
+    for (const seat of live.players.map(({ seat: playerSeat }) => playerSeat)) {
+      const liveHand = live.tiles.filter((tile) => tile.group === "hand" && tile.key.includes(`seat-${seat}-`));
+      const replayHand = replay.tiles.filter((tile) => tile.group === "hand" && tile.key.includes(`seat-${seat}-`));
+      expect(liveHand).toHaveLength(hands.get(seat)?.length ?? 0);
+      expect(replayHand).toHaveLength(hands.get(seat)?.length ?? 0);
+      if (seat === 0) {
+        expect(liveHand.every(({ face }) => face === "front")).toBe(true);
+      } else {
+        expect(liveHand.every(({ face, tile }) => face === "back" && tile === null)).toBe(true);
+      }
+      expect(replayHand.every(({ face, tile }, index) => face === "front" && tile === hands.get(seat)?.[index])).toBe(true);
+      expect(new Set(replayHand.map(({ scale }) => scale))).toEqual(new Set([seat === 0 ? LOCAL_TILE_SIZE : REMOTE_TILE_SIZE]));
+    }
+  });
+
+  it("keeps absent replay hands concealed instead of reconstructing tile faces", () => {
+    const layout = buildMatchSceneLayout(
+      projection({
+        audience: "replay_admin",
+        players: [
+          player(0, "local", { hand: [0] }),
+          player(1, "missing", { concealed_count: 3 }),
+          player(2, "right", { hand: [16] }),
+          player(3, "left", { hand: [52] }),
+        ],
+      }),
+      null,
+      "replay",
+    );
+    const missingHand = layout.tiles.filter((tile) => tile.group === "hand" && tile.key.includes("hand-right-seat-1-"));
+    expect(missingHand).toHaveLength(3);
+    expect(missingHand.every(({ face, tile }) => face === "back" && tile === null)).toBe(true);
+  });
+
+  it("keeps replay hand tiles frame-local while stepping events", () => {
+    const firstFrame = projection({
+      mode: "3p-red-east",
+      audience: "replay_admin",
+      players: [
+        player(0, "local", { hand: [0, 16] }),
+        player(1, "right", { hand: [20, 52] }),
+        player(2, "left", { hand: [40, 88] }),
+      ],
+    });
+    const secondFrame = {
+      ...firstFrame,
+      players: firstFrame.players?.map((entry) => entry.seat === 1
+        ? { ...entry, hand: [21, 53] }
+        : entry),
+    };
+    const firstLayout = buildMatchSceneLayout(firstFrame, null, "replay");
+    const secondLayout = buildMatchSceneLayout(secondFrame, null, "replay");
+    expect(firstLayout.tiles.filter((tile) => tile.key.includes("hand-right-seat-1-")).map(({ tile }) => tile)).toEqual([20, 52]);
+    expect(secondLayout.tiles.filter((tile) => tile.key.includes("hand-right-seat-1-")).map(({ tile }) => tile)).toEqual([21, 53]);
+  });
+
   it("keeps only the oriented three-player seats", () => {
     const layout = buildMatchSceneLayout(
       projection({

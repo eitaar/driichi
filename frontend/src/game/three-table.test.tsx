@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectedState, RoomSnapshot } from "./types";
-import { CAMERA } from "./three-table-layout";
+import { CAMERA, type MatchSceneLayout } from "./three-table-layout";
 
 const canvasCalls = vi.hoisted(() => vi.fn());
 const sceneCalls = vi.hoisted(() => vi.fn());
@@ -149,6 +149,29 @@ describe("ThreeTable", () => {
     expect(screen.getByTestId("mock-r3f-canvas")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByTestId("three-table").querySelector(".table-player-overlays"))
       .toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("uses the explicit surface to keep live hands concealed and Replay hands authoritative", async () => {
+    const replayProjection = projection({
+      audience: "replay_admin",
+      players: [
+        player(0, "local", { hand: [0, 16] }),
+        player(1, "right", { hand: [20, 52], concealed_count: 2 }),
+        player(2, "top", { hand: [40, 88], concealed_count: 2 }),
+        player(3, "left", { hand: [60, 104], concealed_count: 2 }),
+      ],
+    });
+    const sceneLayout = () => (sceneCalls.mock.lastCall?.[0] as { layout: MatchSceneLayout }).layout;
+    const view = render(<ThreeTable projection={replayProjection} room={room} surface="live" />);
+    await waitFor(() => expect(sceneCalls).toHaveBeenCalled());
+    const liveOpponentHand = sceneLayout().tiles.filter((tile) => tile.group === "hand" && tile.key.includes("seat-1-"));
+    expect(liveOpponentHand.every(({ face, tile }) => face === "back" && tile === null)).toBe(true);
+
+    view.rerender(<ThreeTable projection={replayProjection} room={room} surface="replay" />);
+    await waitFor(() => {
+      const replayOpponentHand = sceneLayout().tiles.filter((tile) => tile.group === "hand" && tile.key.includes("seat-1-"));
+      expect(replayOpponentHand.map(({ face, tile }) => [face, tile])).toEqual([["front", 20], ["front", 52]]);
+    });
   });
 
   it("reports renderer-backed instrumentation only after Canvas and the scene render", async () => {

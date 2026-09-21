@@ -27,6 +27,8 @@ export interface MatchSceneLayout {
   wallCount: number;
 }
 
+export type TableSurface = "live" | "replay";
+
 export const TABLE_SIZE = { width: 13.6, depth: 11 } as const;
 export const TABLE_RENDER_OFFSET: readonly [number, number, number] = [0, 0, -0.38];
 export const CAMERA = {
@@ -110,7 +112,7 @@ function nonNegativeInteger(value: unknown): number {
 function handValues(
   player: ProjectedPlayer,
   position: SceneSeat,
-  audience: ProjectedState["audience"],
+  surface: TableSurface,
 ): { values: Array<number | null>; face: "front" | "back" } {
   if (position === "bottom") {
     if (Array.isArray(player.hand)) {
@@ -121,7 +123,12 @@ function handValues(
       face: "front",
     };
   }
-  if (audience === "replay_admin" && Array.isArray(player.hand)) {
+  // The render surface, not the payload's audience field, is the privacy
+  // boundary. A live/spectator surface may receive a malformed or stale
+  // replay-shaped projection, but it must never turn opponent hands face-up.
+  // Replay consumes only the exact hand array persisted in the current frame;
+  // a missing array remains concealed rather than being reconstructed.
+  if (surface === "replay" && Array.isArray(player.hand)) {
     return { values: player.hand, face: "front" };
   }
   return {
@@ -158,9 +165,9 @@ function addHandTiles(
   player: ProjectedPlayer,
   seat: number,
   position: SceneSeat,
-  audience: ProjectedState["audience"],
+  surface: TableSurface,
 ): void {
-  const { values, face } = handValues(player, position, audience);
+  const { values, face } = handValues(player, position, surface);
   const spacing = position === "bottom" ? 0.66 : 0.51;
   const center = (values.length - 1) / 2;
   const anchor = HAND_ANCHORS[position];
@@ -312,6 +319,7 @@ function addWallTiles(tiles: SceneTile[], count: number): void {
 export function buildMatchSceneLayout(
   projection: ProjectedState,
   room: RoomSnapshot | null,
+  surface: TableSurface = "live",
 ): MatchSceneLayout {
   void room;
   const geometry = tableSeatGeometry(projection.mode, projection.viewer_seat);
@@ -328,7 +336,7 @@ export function buildMatchSceneLayout(
       position,
       isLocal: position === "bottom",
     });
-    addHandTiles(tiles, player, seat, position, projection.audience);
+    addHandTiles(tiles, player, seat, position, surface);
     addDiscardTiles(tiles, player, seat, position);
     addMeldTiles(tiles, player, seat, position);
   }

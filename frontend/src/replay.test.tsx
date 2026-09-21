@@ -4,6 +4,7 @@ import { App } from "./app";
 
 const mockPlayVoices = vi.hoisted(() => vi.fn());
 const mockDecodeCharacterAsset = vi.hoisted(() => vi.fn());
+const mockThreeTable = vi.hoisted(() => vi.fn());
 vi.mock("./game/audio", () => ({
   AudioManager: class {
     settings = { master: 1, sfx: 1, voice: 1, voiceEnabled: true };
@@ -14,9 +15,10 @@ vi.mock("./game/audio", () => ({
 }));
 vi.mock("./game/assets", () => ({ decodeCharacterAsset: mockDecodeCharacterAsset }));
 vi.mock("./game/three-table", () => ({
-  ThreeTable: ({ projection, portraitEffect, surface }: { projection: { players?: unknown[] }; portraitEffect?: { characterId: string } | null; surface?: string }) => (
-    <div data-testid="replay-three-table" data-portrait={portraitEffect?.characterId ?? "none"} data-surface={surface}>{projection.players?.length ?? 0} players</div>
-  ),
+  ThreeTable: (props: { projection: { players?: unknown[] }; portraitEffect?: { characterId: string } | null; surface?: string }) => {
+    mockThreeTable(props);
+    return <div data-testid="replay-three-table" data-portrait={props.portraitEffect?.characterId ?? "none"} data-surface={props.surface}>{props.projection.players?.length ?? 0} players</div>;
+  },
 }));
 
 function response(body: unknown, status = 200) {
@@ -38,7 +40,12 @@ const summary = {
   replay_available: true,
 };
 
-const frame = (index: number, event: string, auxiliary_events: Array<Record<string, unknown>> = []) => ({
+const frame = (
+  index: number,
+  event: string,
+  auxiliary_events: Array<Record<string, unknown>> = [],
+  hands: number[][] = [[0, 1, 2], [0, 1, 2], [0, 1, 2], [0, 1, 2]],
+) => ({
   event_index: index,
   visible_event: { type: event },
   visible_state: {
@@ -46,7 +53,7 @@ const frame = (index: number, event: string, auxiliary_events: Array<Record<stri
     mode: "FourPlayerRedEast",
     round: "East",
     kyoku: index < 2 ? 1 : 2,
-    players: [0, 1, 2, 3].map((seat) => ({ seat, participant_id: `P${seat}`, display_name: `Seat ${seat}`, kind: "BuiltInBot", score: 25000, hand: [0, 1, 2], concealed_count: 3, discards: [], melds: [], riichi: false })),
+    players: [0, 1, 2, 3].map((seat) => ({ seat, participant_id: `P${seat}`, display_name: `Seat ${seat}`, kind: "BuiltInBot", score: 25000, hand: hands[seat], concealed_count: hands[seat]?.length ?? 0, discards: [], melds: [], riichi: false })),
     dora_indicators: [0],
     decision: null,
   },
@@ -66,6 +73,7 @@ const replay = {
 describe("Replay Admin workspace", () => {
   beforeEach(() => {
     mockPlayVoices.mockReset();
+    mockThreeTable.mockReset();
     mockDecodeCharacterAsset.mockReset().mockResolvedValue(undefined);
     window.history.replaceState({}, "", "/admin/replays");
     vi.stubGlobal("fetch", vi.fn().mockImplementation((input, init) => {
@@ -282,6 +290,40 @@ describe("Replay Admin workspace", () => {
     expect(screen.getByRole("button", { name: "2x" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.change(screen.getByRole("combobox", { name: /jump to kyoku/i }), { target: { value: "2" } });
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
+  });
+
+  it("passes only the authoritative hands from the current Replay frame while stepping events", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const steppedReplay = {
+      ...replay,
+      frames: [
+        frame(0, "start_game", [], [[0, 16, 52], [3, 17, 53], [6, 18, 88], [9, 19, 89]]),
+        frame(1, "tsumo", [], [[0, 16, 52], [4, 20, 54], [7, 21, 55], [10, 22, 56]]),
+      ],
+    };
+    fetchMock.mockImplementation((input, init) => {
+      const path = String(input);
+      if (path.endsWith("/admin/replays") && (!init || !init.method)) return Promise.resolve(response({ replays: [summary], offset: 0, limit: 50, total: 1, has_more: false }));
+      if (path.endsWith("/admin/replays/MATCH15")) return Promise.resolve(response(steppedReplay));
+      if (path.endsWith("/admin/tokens") || path.endsWith("/admin/rooms")) return Promise.resolve(response([]));
+      return Promise.resolve(response([]));
+    });
+    const currentHands = () => {
+      const props = mockThreeTable.mock.lastCall?.[0] as { projection: { players?: Array<{ seat: number; hand?: number[] }> }; surface?: string } | undefined;
+      return {
+        surface: props?.surface,
+        opponent: props?.projection.players?.find((player) => player.seat === 1)?.hand,
+      };
+    };
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("link", { name: /view replay match15/i }));
+    await screen.findByRole("heading", { name: /night market replay/i });
+    await waitFor(() => expect(currentHands()).toEqual({ surface: "replay", opponent: [3, 17, 53] }));
+    fireEvent.click(screen.getByRole("button", { name: /next event/i }));
+    await waitFor(() => expect(currentHands()).toEqual({ surface: "replay", opponent: [4, 20, 54] }));
+    fireEvent.click(screen.getByRole("button", { name: /previous event/i }));
+    await waitFor(() => expect(currentHands()).toEqual({ surface: "replay", opponent: [3, 17, 53] }));
   });
 
   it("confirms safe deletion and refreshes the list", async () => {
