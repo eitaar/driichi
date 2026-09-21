@@ -1006,7 +1006,7 @@ test("shows the authoritative Mangan post-match results surface", async ({
   await expect(table).toHaveAttribute("data-render-ready", "true");
   await expect(page.getByTestId("results-panel")).toBeVisible();
   await expect(page.getByText("Permanent Auto")).toHaveCount(3);
-  await expect(page.getByTestId("results-panel").getByAltText("Mika portrait")).toBeVisible();
+  await expect(page.getByTestId("results-panel").locator(".results-winner-hero-portrait")).toHaveAttribute("alt", "Mika portrait");
   await page.screenshot({
     path: "test-results/task-12/results-portrait-state.png",
     fullPage: false,
