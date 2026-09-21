@@ -1,5 +1,9 @@
+/// <reference types="node" />
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  FELT_MATERIAL_TINT,
   TABLE_TEXTURE_URLS,
   TABLE_TEXTURE_SPECS,
   configureTableTexture,
@@ -33,8 +37,26 @@ describe("table material assets", () => {
 
   it("defines restrained color-space, filtering, and wrapping for the sampled material", () => {
     expect(TABLE_TEXTURE_SPECS.felt.wrap).toBe("repeat");
+    expect(TABLE_TEXTURE_SPECS.felt.repeat).toEqual([1.5, 1]);
     expect(TABLE_TEXTURE_SPECS.felt.colorSpace).toBe("srgb");
     expect(TABLE_TEXTURE_SPECS.felt.minFilter).toBe("mipmap");
+  });
+
+  it("keeps felt direct-loaded and deep-green without a derived canvas texture", () => {
+    const sceneSource = readFileSync(
+      resolve(process.cwd(), "src/game/three-table-scene.tsx"),
+      "utf8",
+    );
+
+    expect(FELT_MATERIAL_TINT).toBe("#225d44");
+    expect(sceneSource).not.toContain("CanvasTexture");
+    expect(sceneSource).not.toContain("tintFeltTexture");
+    expect(sceneSource).toContain(
+      "(texture) => resolve(configureTableTexture(texture, TABLE_TEXTURE_SPECS[key]))",
+    );
+    expect(sceneSource).not.toMatch(
+      /<meshBasicMaterial\s+color="#ffffff"\s+map=\{texture\}/,
+    );
   });
 
   it("applies texture sampling settings without relying on defaults", () => {
