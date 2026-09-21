@@ -15,7 +15,7 @@ import type { AnimationItem } from "./animation";
 import { MatchTableScene, type SceneRenderStats } from "./three-table-scene";
 import { nextSceneMotion, type SceneMotion } from "./three-table-motion";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
-import { buildMatchSceneLayout, CAMERA } from "./three-table-layout";
+import { buildMatchSceneLayout, CAMERA, type TableSurface } from "./three-table-layout";
 import { tileLabel } from "./tiles";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 
@@ -37,13 +37,13 @@ export interface ThreeTableProps {
   portraitEffect?: PortraitEffect | null;
   onAnimationConsumed?: (id: number) => void;
   onAnimationCancelled?: (id: number) => void;
-  surface?: "live" | "replay";
+  surface?: TableSurface;
 }
 
 export interface TablePlayerOverlayProps {
   projection: ProjectedState;
   room: RoomSnapshot | null;
-  surface: "live" | "replay";
+  surface: TableSurface;
 }
 
 interface BoundaryProps {
@@ -183,7 +183,7 @@ export function TablePlayerOverlay({
   room,
   surface,
 }: TablePlayerOverlayProps) {
-  const layout = useMemo(() => buildMatchSceneLayout(projection, room), [projection, room]);
+  const layout = useMemo(() => buildMatchSceneLayout(projection, room, surface), [projection, room, surface]);
   return (
     <div
       className="table-player-overlays"
@@ -258,8 +258,8 @@ export function ThreeTable({
   onAnimationCancelledRef.current = _onAnimationCancelled;
   const hasProjection = projection !== null;
   const layout = useMemo(
-    () => (projection ? buildMatchSceneLayout(projection, room) : null),
-    [projection],
+    () => (projection ? buildMatchSceneLayout(projection, room, surface) : null),
+    [projection, surface],
   );
 
   useEffect(() => {

@@ -206,8 +206,10 @@ for (const viewport of [
     }
     await expect(page.locator(".replay-table-wrap + .replay-controls")).toHaveCount(0);
     const table = page.getByTestId("three-table");
+    await expect(table).toHaveAttribute("data-surface", "replay");
     await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
     await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
+    await page.screenshot({ path: `test-results/task-15/replay-all-hands-${viewport.label}.png`, fullPage: false });
     await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
     const tableHeightRatio = Number(await table.getAttribute("data-table-height-ratio"));
     const tableWidthRatio = Number(await table.getAttribute("data-table-width-ratio"));
