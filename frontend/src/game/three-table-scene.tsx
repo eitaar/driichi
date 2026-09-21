@@ -4,14 +4,13 @@ import {
   Box3,
   BoxGeometry,
   Color,
-  DoubleSide,
   Euler,
   InstancedBufferAttribute,
   Group,
   InstancedMesh,
   Matrix4,
   MeshBasicMaterial,
-  MeshStandardMaterial,
+  MeshLambertMaterial,
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
@@ -119,7 +118,6 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
   const material = new MeshBasicMaterial({
     color: new Color("#ffffff"),
     map: atlas.texture,
-    side: DoubleSide,
     toneMapped: false,
   });
   material.onBeforeCompile = (shader) => {
@@ -219,8 +217,7 @@ function updateAtlasCells(
 function InstancedTiles({
   layout,
   atlas,
-  motionActive,
-}: Pick<MatchTableSceneProps, "layout" | "atlas"> & { motionActive: boolean }) {
+}: Pick<MatchTableSceneProps, "layout" | "atlas">) {
   const invalidate = useThree((state) => state.invalidate);
   const frontTiles = useMemo(
     () => layout.tiles.filter((tile) => tile.face === "front" && tile.tile !== null),
@@ -250,11 +247,12 @@ function InstancedTiles({
       // Keeping one material also makes ownership/disposal unambiguous.
       bodyMaterial: new MeshBasicMaterial({
         color: new Color("#ead9bd"),
+        toneMapped: false,
       }),
       faceMaterial: atlasMaterial(atlas),
       backMaterial: new MeshBasicMaterial({
         color: new Color("#c38c4b"),
-        side: DoubleSide,
+        toneMapped: false,
       }),
     };
   }, [atlas]);
@@ -288,7 +286,6 @@ function InstancedTiles({
         userData={{ tileBodies: true }}
         args={[resources.bodyGeometry, resources.bodyMaterial, MAX_TILE_INSTANCES]}
         frustumCulled={false}
-        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -304,7 +301,6 @@ function InstancedTiles({
         userData={{ tileBodies: true }}
         args={[resources.bodyGeometry, resources.bodyMaterial, MAX_TILE_INSTANCES]}
         frustumCulled={false}
-        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -459,22 +455,33 @@ function applyTableParts(mesh: InstancedMesh | null, parts: readonly TablePart[]
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-function TableRails({ motionActive }: { motionActive: boolean }) {
+function TableRails() {
   const invalidate = useThree((state) => state.invalidate);
   const resources = useMemo(() => {
     const geometry = new BoxGeometry(1, 1, 1);
-    const chassisMaterial = new MeshBasicMaterial({ color: new Color("#687679") });
+    const chassisMaterial = new MeshBasicMaterial({
+      color: new Color("#687679"),
+      toneMapped: false,
+    });
     return {
       geometry,
       chassisMaterial,
-      walnutMaterial: new MeshBasicMaterial({ color: new Color("#75462e") }),
-      bronzeMaterial: new MeshStandardMaterial({
-        color: new Color("#c38a49"),
-        roughness: 0.2,
-        metalness: 0.56,
+      walnutMaterial: new MeshBasicMaterial({
+        color: new Color("#75462e"),
+        toneMapped: false,
       }),
-      capMaterial: new MeshBasicMaterial({ color: new Color("#697477") }),
-      capAccentMaterial: new MeshBasicMaterial({ color: new Color("#d0a15b") }),
+      bronzeMaterial: new MeshLambertMaterial({
+        color: new Color("#c38a49"),
+        toneMapped: false,
+      }),
+      capMaterial: new MeshBasicMaterial({
+        color: new Color("#697477"),
+        toneMapped: false,
+      }),
+      capAccentMaterial: new MeshBasicMaterial({
+        color: new Color("#d0a15b"),
+        toneMapped: false,
+      }),
     };
   }, []);
 
@@ -497,7 +504,6 @@ function TableRails({ motionActive }: { motionActive: boolean }) {
         }}
         args={[resources.geometry, resources.chassisMaterial, 4]}
         frustumCulled={false}
-        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -508,7 +514,6 @@ function TableRails({ motionActive }: { motionActive: boolean }) {
         }}
         args={[resources.geometry, resources.walnutMaterial, 4]}
         frustumCulled={false}
-        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -519,7 +524,6 @@ function TableRails({ motionActive }: { motionActive: boolean }) {
         }}
         args={[resources.geometry, resources.bronzeMaterial, 4]}
         frustumCulled={false}
-        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -530,7 +534,6 @@ function TableRails({ motionActive }: { motionActive: boolean }) {
         }}
         args={[resources.geometry, resources.capMaterial, 4]}
         frustumCulled={false}
-        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -541,7 +544,6 @@ function TableRails({ motionActive }: { motionActive: boolean }) {
         }}
         args={[resources.geometry, resources.capAccentMaterial, 4]}
         frustumCulled={false}
-        visible={!motionActive}
         dispose={null}
       />
     </group>
@@ -554,6 +556,7 @@ function FeltSeams() {
     geometry: new BoxGeometry(1, 1, 1),
     material: new MeshBasicMaterial({
       color: new Color("#2d634b"),
+      toneMapped: false,
     }),
   }), []);
 
@@ -670,7 +673,10 @@ function CenterTrim() {
   const meshRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
-    material: new MeshBasicMaterial({ color: new Color("#c28a4c") }),
+    material: new MeshBasicMaterial({
+      color: new Color("#c28a4c"),
+      toneMapped: false,
+    }),
   }), []);
 
   useLayoutEffect(() => {
@@ -706,57 +712,55 @@ function CenterTrim() {
 
 function FeltMaterial({ texture }: { texture: Texture | undefined }) {
   return texture ? (
-    <meshBasicMaterial color={FELT_MATERIAL_TINT} map={texture} />
+    <meshBasicMaterial color={FELT_MATERIAL_TINT} map={texture} toneMapped={false} />
   ) : (
-    <meshBasicMaterial color={FELT_MATERIAL_TINT} />
+    <meshBasicMaterial color={FELT_MATERIAL_TINT} toneMapped={false} />
   );
 }
 
 function CenterMaterial() {
   // The approved center reads as machined graphite with bronze edges. Keep
   // the console material procedural so readiness depends only on sampled art.
-  return <meshBasicMaterial color="#6d777a" side={DoubleSide} />;
+  return <meshBasicMaterial color="#6d777a" toneMapped={false} />;
 }
 
 function ProceduralTable({
   textures,
-  motionActive,
 }: {
   textures: TableTextures | null;
-  motionActive: boolean;
 }) {
   return (
     <group name="table-body-root">
       {/* The deep chassis is the structural shadow line beneath the assembled rails. */}
-      <mesh position={[0, -0.48, 0]} visible={!motionActive}>
+      <mesh position={[0, -0.48, 0]}>
         <boxGeometry args={[TABLE_SIZE.width, 0.72, TABLE_SIZE.depth]} />
-        <meshBasicMaterial color="#3c4b4e" />
+        <meshBasicMaterial color="#3c4b4e" toneMapped={false} />
       </mesh>
-      <mesh position={[0, -0.075, 0]} visible={!motionActive}>
+      <mesh position={[0, -0.075, 0]}>
         <boxGeometry args={[13.28, 0.17, 8.88]} />
-        <meshBasicMaterial color="#5e6c6d" />
+        <meshBasicMaterial color="#5e6c6d" toneMapped={false} />
       </mesh>
       {/* A recessed, textile-covered playfield leaves the perimeter visibly built up. */}
-      <mesh position={[0, 0.075, 0]} visible={!motionActive}>
+      <mesh position={[0, 0.075, 0]}>
         <boxGeometry args={[11.58, 0.12, 8.58]} />
-        <FeltMaterial texture={motionActive ? undefined : textures?.felt} />
+        <FeltMaterial texture={textures?.felt} />
       </mesh>
-      {!motionActive && <FeltSeams />}
+      <FeltSeams />
       {/* Machined center console: dark housing, bronze frame, restrained material inset. */}
-      <mesh position={[0, 0.255, 0]} visible={!motionActive}>
+      <mesh position={[0, 0.255, 0]}>
         <boxGeometry args={[3.3, 0.32, 2.68]} />
-        <meshBasicMaterial color="#627074" />
+        <meshBasicMaterial color="#627074" toneMapped={false} />
       </mesh>
-      <mesh position={[0, 0.43, 0]} visible={!motionActive}>
+      <mesh position={[0, 0.43, 0]}>
         <boxGeometry args={[3.02, 0.055, 2.4]} />
-        <meshStandardMaterial color="#86785d" roughness={0.2} metalness={0.42} />
+        <meshLambertMaterial color="#86785d" toneMapped={false} />
       </mesh>
-      <mesh position={[0, 0.464, 0]} rotation={[-Math.PI / 2, 0, 0]} visible={!motionActive}>
+      <mesh position={[0, 0.464, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[2.5, 1.88]} />
         <CenterMaterial />
       </mesh>
-      {!motionActive && <CenterTrim />}
-      <TableRails motionActive={motionActive} />
+      <CenterTrim />
+      <TableRails />
     </group>
   );
 }
@@ -800,9 +804,9 @@ export function MatchTableScene({
       />
       <FixedCamera />
       <group position={TABLE_RENDER_OFFSET}>
-        <ProceduralTable textures={textures} motionActive={motion !== null} />
+        <ProceduralTable textures={textures} />
         <group ref={tileGroupRef}>
-          <InstancedTiles layout={layout} atlas={atlas} motionActive={motion !== null} />
+          <InstancedTiles layout={layout} atlas={atlas} />
         </group>
       </group>
       <SceneReadiness
