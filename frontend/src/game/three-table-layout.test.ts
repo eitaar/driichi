@@ -49,9 +49,9 @@ describe("three-dimensional table layout", () => {
   it("exposes the exact table and camera constants", () => {
     expect(TABLE_SIZE).toEqual({ width: 13.6, depth: 11 });
     expect(CAMERA).toEqual({
-      fov: 32.25,
-      position: [0, 12.8, 13.8],
-      target: [0, 0.15, 0.25],
+      fov: 34,
+      position: [0, 12.8, 12.3],
+      target: [0, 0.15, 1],
       near: 0.1,
       far: 60,
     });

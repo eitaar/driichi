@@ -24,7 +24,7 @@ export interface TableTextureSpec {
 export const TABLE_TEXTURE_SPECS: Record<TableTextureKey, TableTextureSpec> = {
   felt: {
     wrap: "repeat",
-    repeat: [4, 3],
+    repeat: [1.5, 1],
     minFilter: "mipmap",
     colorSpace: "srgb",
     anisotropy: 1,

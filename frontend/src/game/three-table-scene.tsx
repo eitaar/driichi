@@ -3,6 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import {
   Box3,
   BoxGeometry,
+  CanvasTexture,
   Color,
   DoubleSide,
   Euler,
@@ -11,6 +12,7 @@ import {
   InstancedMesh,
   Matrix4,
   MeshBasicMaterial,
+  MeshStandardMaterial,
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
@@ -19,6 +21,7 @@ import {
   TextureLoader,
   Vector3,
 } from "three";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 
 import type { TileAtlas } from "./tile-atlas";
 import {
@@ -141,6 +144,30 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
   return material;
 }
 
+function tintFeltTexture(texture: Texture): Texture {
+  if (typeof document === "undefined" || !texture.image) return texture;
+  const image = texture.image as CanvasImageSource;
+  const width = "width" in image && typeof image.width === "number" ? image.width : 0;
+  const height = "height" in image && typeof image.height === "number" ? image.height : 0;
+  if (!width || !height) return texture;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) return texture;
+  context.drawImage(image, 0, 0, width, height);
+  const pixels = context.getImageData(0, 0, width, height);
+  for (let index = 0; index < pixels.data.length; index += 4) {
+    const luminance = (pixels.data[index] * 0.2126 + pixels.data[index + 1] * 0.7152 + pixels.data[index + 2] * 0.0722) / 255;
+    pixels.data[index] = Math.round(24 + luminance * 58);
+    pixels.data[index + 1] = Math.round(66 + luminance * 104);
+    pixels.data[index + 2] = Math.round(42 + luminance * 66);
+  }
+  context.putImageData(pixels, 0, 0);
+  texture.dispose();
+  return new CanvasTexture(canvas);
+}
+
 function loadTexture(
   loader: TextureLoader,
   key: TableTextureKey,
@@ -148,7 +175,11 @@ function loadTexture(
   return new Promise((resolve, reject) => {
     loader.load(
       TABLE_TEXTURE_URLS[key],
-      (texture) => resolve(configureTableTexture(texture, TABLE_TEXTURE_SPECS[key])),
+      (texture) => {
+        const configured = configureTableTexture(texture, TABLE_TEXTURE_SPECS[key]);
+        const next = key === "felt" ? tintFeltTexture(configured) : configured;
+        resolve(key === "felt" ? configureTableTexture(next, TABLE_TEXTURE_SPECS[key]) : next);
+      },
       undefined,
       reject,
     );
@@ -216,7 +247,8 @@ function updateAtlasCells(
 function InstancedTiles({
   layout,
   atlas,
-}: Pick<MatchTableSceneProps, "layout" | "atlas">) {
+  motionActive,
+}: Pick<MatchTableSceneProps, "layout" | "atlas"> & { motionActive: boolean }) {
   const invalidate = useThree((state) => state.invalidate);
   const frontTiles = useMemo(
     () => layout.tiles.filter((tile) => tile.face === "front" && tile.tile !== null),
@@ -232,9 +264,9 @@ function InstancedTiles({
   const backFaces = useRef<InstancedMesh>(null);
 
   const resources = useMemo(() => {
-    // A plain box already supplies the authored sidewall; avoid redundant
-    // subdivision work across every instanced tile during motion.
-    const bodyGeometry = new BoxGeometry(...BODY_SIZE, 1, 1, 1);
+    // One shared, low-segment bevel supplies a real highlight on every tile
+    // body without multiplying geometry or draw calls during motion.
+    const bodyGeometry = new RoundedBoxGeometry(...BODY_SIZE, 1, 0.045);
     const faceGeometry = new PlaneGeometry(...FACE_SIZE);
     const faceCells = new Float32Array(MAX_TILE_INSTANCES * 2);
     faceGeometry.setAttribute("atlasCell", new InstancedBufferAttribute(faceCells, 2));
@@ -245,11 +277,11 @@ function InstancedTiles({
       // Front and concealed tiles share one warm ivory ceramic sidewall.
       // Keeping one material also makes ownership/disposal unambiguous.
       bodyMaterial: new MeshBasicMaterial({
-        color: new Color("#d9cbb3"),
+        color: new Color("#ead9bd"),
       }),
       faceMaterial: atlasMaterial(atlas),
       backMaterial: new MeshBasicMaterial({
-        color: new Color("#b07a3d"),
+        color: new Color("#c38c4b"),
         side: DoubleSide,
       }),
     };
@@ -284,6 +316,7 @@ function InstancedTiles({
         userData={{ tileBodies: true }}
         args={[resources.bodyGeometry, resources.bodyMaterial, MAX_TILE_INSTANCES]}
         frustumCulled={false}
+        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -299,6 +332,7 @@ function InstancedTiles({
         userData={{ tileBodies: true }}
         args={[resources.bodyGeometry, resources.bodyMaterial, MAX_TILE_INSTANCES]}
         frustumCulled={false}
+        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -453,18 +487,22 @@ function applyTableParts(mesh: InstancedMesh | null, parts: readonly TablePart[]
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-function TableRails() {
+function TableRails({ motionActive }: { motionActive: boolean }) {
   const invalidate = useThree((state) => state.invalidate);
   const resources = useMemo(() => {
     const geometry = new BoxGeometry(1, 1, 1);
-    const chassisMaterial = new MeshBasicMaterial({ color: new Color("#50595b") });
+    const chassisMaterial = new MeshBasicMaterial({ color: new Color("#687679") });
     return {
       geometry,
       chassisMaterial,
-      walnutMaterial: new MeshBasicMaterial({ color: new Color("#633925") }),
-      bronzeMaterial: new MeshBasicMaterial({ color: new Color("#a77645") }),
-      capMaterial: new MeshBasicMaterial({ color: new Color("#53585a") }),
-      capAccentMaterial: new MeshBasicMaterial({ color: new Color("#b0824f") }),
+      walnutMaterial: new MeshBasicMaterial({ color: new Color("#75462e") }),
+      bronzeMaterial: new MeshStandardMaterial({
+        color: new Color("#c38a49"),
+        roughness: 0.2,
+        metalness: 0.56,
+      }),
+      capMaterial: new MeshBasicMaterial({ color: new Color("#697477") }),
+      capAccentMaterial: new MeshBasicMaterial({ color: new Color("#d0a15b") }),
     };
   }, []);
 
@@ -487,6 +525,7 @@ function TableRails() {
         }}
         args={[resources.geometry, resources.chassisMaterial, 4]}
         frustumCulled={false}
+        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -497,6 +536,7 @@ function TableRails() {
         }}
         args={[resources.geometry, resources.walnutMaterial, 4]}
         frustumCulled={false}
+        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -507,6 +547,7 @@ function TableRails() {
         }}
         args={[resources.geometry, resources.bronzeMaterial, 4]}
         frustumCulled={false}
+        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -517,6 +558,7 @@ function TableRails() {
         }}
         args={[resources.geometry, resources.capMaterial, 4]}
         frustumCulled={false}
+        visible={!motionActive}
         dispose={null}
       />
       <instancedMesh
@@ -527,6 +569,7 @@ function TableRails() {
         }}
         args={[resources.geometry, resources.capAccentMaterial, 4]}
         frustumCulled={false}
+        visible={!motionActive}
         dispose={null}
       />
     </group>
@@ -538,7 +581,7 @@ function FeltSeams() {
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
     material: new MeshBasicMaterial({
-      color: new Color("#17392f"),
+      color: new Color("#2d634b"),
     }),
   }), []);
 
@@ -655,9 +698,7 @@ function CenterTrim() {
   const meshRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
-    material: new MeshBasicMaterial({
-      color: new Color("#ac7d49"),
-    }),
+    material: new MeshBasicMaterial({ color: new Color("#c28a4c") }),
   }), []);
 
   useLayoutEffect(() => {
@@ -693,16 +734,16 @@ function CenterTrim() {
 
 function FeltMaterial({ texture }: { texture: Texture | undefined }) {
   return texture ? (
-    <meshBasicMaterial color="#225d44" map={texture} />
+    <meshBasicMaterial color="#ffffff" map={texture} />
   ) : (
-    <meshBasicMaterial color="#225d44" />
+    <meshBasicMaterial color="#5e9b70" />
   );
 }
 
 function CenterMaterial() {
   // The approved center reads as machined graphite with bronze edges. Keep
   // the console material procedural so readiness depends only on sampled art.
-  return <meshBasicMaterial color="#596366" side={DoubleSide} />;
+  return <meshBasicMaterial color="#6d777a" side={DoubleSide} />;
 }
 
 function ProceduralTable({
@@ -717,11 +758,11 @@ function ProceduralTable({
       {/* The deep chassis is the structural shadow line beneath the assembled rails. */}
       <mesh position={[0, -0.48, 0]} visible={!motionActive}>
         <boxGeometry args={[TABLE_SIZE.width, 0.72, TABLE_SIZE.depth]} />
-        <meshBasicMaterial color="#2a3438" />
+        <meshBasicMaterial color="#3c4b4e" />
       </mesh>
       <mesh position={[0, -0.075, 0]} visible={!motionActive}>
         <boxGeometry args={[13.28, 0.17, 8.88]} />
-        <meshBasicMaterial color="#4a5557" />
+        <meshBasicMaterial color="#5e6c6d" />
       </mesh>
       {/* A recessed, textile-covered playfield leaves the perimeter visibly built up. */}
       <mesh position={[0, 0.075, 0]} visible={!motionActive}>
@@ -730,20 +771,20 @@ function ProceduralTable({
       </mesh>
       {!motionActive && <FeltSeams />}
       {/* Machined center console: dark housing, bronze frame, restrained material inset. */}
-      <mesh position={[0, 0.255, 0]}>
+      <mesh position={[0, 0.255, 0]} visible={!motionActive}>
         <boxGeometry args={[3.3, 0.32, 2.68]} />
-        <meshBasicMaterial color="#485257" />
+        <meshBasicMaterial color="#627074" />
       </mesh>
-      <mesh position={[0, 0.43, 0]}>
+      <mesh position={[0, 0.43, 0]} visible={!motionActive}>
         <boxGeometry args={[3.02, 0.055, 2.4]} />
-        <meshBasicMaterial color="#625d50" />
+        <meshStandardMaterial color="#86785d" roughness={0.2} metalness={0.42} />
       </mesh>
-      <mesh position={[0, 0.464, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+      <mesh position={[0, 0.464, 0]} rotation={[-Math.PI / 2, 0, 0]} visible={!motionActive}>
         <planeGeometry args={[2.5, 1.88]} />
         <CenterMaterial />
       </mesh>
       {!motionActive && <CenterTrim />}
-      <TableRails />
+      <TableRails motionActive={motionActive} />
     </group>
   );
 }
@@ -761,7 +802,7 @@ export function MatchTableScene({
   return (
     <>
       <color attach="background" args={["#050709"]} />
-      <hemisphereLight args={["#dce8e0", "#17231f", 0.48]} />
+      <hemisphereLight args={["#dce8e0", "#17231f", 0.62]} />
       <directionalLight
         position={[-5.5, 10.5, 6.5]}
         color="#ffe2bd"
@@ -776,11 +817,11 @@ export function MatchTableScene({
         shadow-camera-top={7}
         shadow-camera-bottom={-7}
       />
-      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.46} />
+      <pointLight position={[6.5, 5.2, -2.8]} color="#a7c7dc" intensity={0.62} />
       <spotLight
         position={[0, 3.8, 8.5]}
         color="#d8a873"
-        intensity={0.64}
+        intensity={0.82}
         angle={0.48}
         penumbra={0.9}
         distance={18}
@@ -789,7 +830,7 @@ export function MatchTableScene({
       <group position={TABLE_RENDER_OFFSET}>
         <ProceduralTable textures={textures} motionActive={motion !== null} />
         <group ref={tileGroupRef}>
-          <InstancedTiles layout={layout} atlas={atlas} />
+          <InstancedTiles layout={layout} atlas={atlas} motionActive={motion !== null} />
         </group>
       </group>
       <SceneReadiness
