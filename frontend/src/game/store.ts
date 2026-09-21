@@ -133,16 +133,12 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     const send = transport ?? state.transport;
     if (!send) return false;
     const message = { type: "submit_action", decision_id: decisionId, action_id: actionId };
-    set({ pendingAction: { decisionId, actionId }, actionError: "", commandError: "" });
     try {
-      if (send(message) === false) {
-        set({ pendingAction: null });
-        return false;
-      }
+      if (send(message) === false) return false;
     } catch {
-      set({ pendingAction: null });
       return false;
     }
+    set({ pendingAction: { decisionId, actionId }, actionError: "", commandError: "" });
     return true;
   },
   receiveSnapshot: (room, projection) => set((state) => {

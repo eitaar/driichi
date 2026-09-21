@@ -108,19 +108,45 @@ describe("Task 12 table invariants", () => {
     expect(useGameStore.getState().pendingAction).toBeNull();
   });
 
-  it("does not create pending state when transport rejects a disconnected send", () => {
+  it("does not publish pending state when transport rejects a disconnected send", () => {
     useGameStore.getState().receiveSnapshot(null, {
       audience: "player", viewer_seat: 0, mode: "4p-red-east", players: [],
       decision: { decision_id: "offline-decision", kind: "turn", actions: [
         { action_id: "offline-action", action: { discard: { tile: 16 } } },
       ] },
     });
+    const pendingHistory: Array<{ decisionId: string; actionId: string } | null> = [];
+    const unsubscribe = useGameStore.subscribe((state) => {
+      pendingHistory.push(state.pendingAction);
+    });
     expect(useGameStore.getState().submitAction(
       "offline-decision",
       "offline-action",
       () => false,
     )).toBe(false);
+    unsubscribe();
+    expect(pendingHistory).toEqual([]);
     expect(useGameStore.getState().pendingAction).toBeNull();
+  });
+
+  it("publishes the exact action identity only after a connected send succeeds", () => {
+    const pendingHistory: Array<{ decisionId: string; actionId: string } | null> = [];
+    const unsubscribe = useGameStore.subscribe((state) => {
+      pendingHistory.push(state.pendingAction);
+    });
+    expect(useGameStore.getState().submitAction(
+      "connected-decision",
+      "connected-action",
+      () => true,
+    )).toBe(true);
+    unsubscribe();
+    expect(pendingHistory).toEqual([
+      { decisionId: "connected-decision", actionId: "connected-action" },
+    ]);
+    expect(useGameStore.getState().pendingAction).toEqual({
+      decisionId: "connected-decision",
+      actionId: "connected-action",
+    });
   });
 
   it("groups compound candidates and persists safe audio settings", () => {

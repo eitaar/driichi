@@ -134,6 +134,9 @@ async function expectRenderedTable(page: Page) {
   );
   const tableHeightRatio = Number(await table.getAttribute("data-table-height-ratio"));
   const tableWidthRatio = Number(await table.getAttribute("data-table-width-ratio"));
+  const rendererPixelRatio = Number(await table.getAttribute("data-renderer-pixel-ratio"));
+  expect(rendererPixelRatio).toBeGreaterThanOrEqual(1);
+  expect(rendererPixelRatio).toBeLessThanOrEqual(1.5);
   expect(tableWidthRatio).toBeGreaterThanOrEqual(0.82);
   expect(tableWidthRatio).toBeLessThanOrEqual(0.9);
   expect(tableHeightRatio).toBeGreaterThanOrEqual(0.78);
@@ -289,6 +292,8 @@ for (const viewport of requiredViewports) {
       await expect(page.locator(".gameplay-controls")).toBeVisible();
       await expect(page.getByTestId("action-deck")).toBeVisible();
       await expect(page.locator(".table-hit-layer")).toBeVisible();
+      await expect(page.locator(".table-player-overlays[data-surface=\"live\"]")).toHaveAttribute("aria-hidden", "true");
+      await expect(page.locator(".gameplay-toast-stack")).not.toHaveAttribute("aria-live");
       await expect(table).toHaveAttribute(
         "data-wall-tile-count",
         String(projectionFixture.acceptance.wall_tile_counts[mode]),
@@ -556,7 +561,12 @@ test("accepts a 60fps-class motion budget at both required desktop resolutions",
         });
       });
       await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
+      const activeDpr = Number(await table.getAttribute("data-renderer-pixel-ratio"));
+      expect(activeDpr).toBeGreaterThanOrEqual(1);
+      expect(activeDpr).toBeLessThanOrEqual(1.5);
       await expect(table).toHaveAttribute("data-animation-state", "idle", { timeout: 5_000 });
+      const idleDpr = Number(await table.getAttribute("data-renderer-pixel-ratio"));
+      expect(idleDpr).toBe(activeDpr);
     };
     await page.evaluate(() => {
       performance.clearMeasures("three-table-motion-event");
