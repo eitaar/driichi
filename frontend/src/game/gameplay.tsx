@@ -22,7 +22,7 @@ import type {
   RoomSnapshot,
   VisibleAction,
 } from "./types";
-import { tileLabel } from "./tiles";
+import { tileAssetUrl, tileIdsFromValue, tileLabel } from "./tiles";
 import { useGameplayViewportSupport } from "./viewport";
 
 export interface GameplayProps {
@@ -96,15 +96,6 @@ export function preloadRosterAssets(ids: string[]): Promise<AssetState> {
   ).then((entries) => Object.fromEntries(entries));
 }
 
-function winLimitLabel(han: number): string | undefined {
-  if (han >= 13) return "Yakuman";
-  if (han >= 11) return "Sanbaiman";
-  if (han >= 8) return "Baiman";
-  if (han >= 6) return "Haneman";
-  if (han >= 5) return "Mangan";
-  return undefined;
-}
-
 function isManganOrHigher(event: Record<string, unknown>): boolean {
   const han = typeof event.han === "number" ? event.han : 0;
   const limit =
@@ -136,39 +127,127 @@ function eventKind(event: unknown): string | undefined {
   return Object.keys(object)[0]?.toLowerCase();
 }
 
+export interface RoundWinYaku {
+  name: string;
+  han?: number;
+}
+
+export interface RoundWinEffect extends PortraitEffect {
+  /** The physical winning tile from the authoritative Hora event, when exposed. */
+  winningTile?: number;
+  /** The winner's visible concealed hand, plus the winning tile when it is exposed. */
+  hand?: number[];
+  /** Visible meld tiles kept separate from the concealed hand. */
+  melds?: number[][];
+  /** Yaku pairs are copied from the authoritative Hora event without translation. */
+  yaku?: RoundWinYaku[];
+  scores?: number[];
+  delta?: number[];
+}
+
+function numericArray(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const numbers = value.filter(
+    (entry): entry is number => typeof entry === "number" && Number.isFinite(entry),
+  );
+  return numbers.length === value.length ? numbers : undefined;
+}
+
+function roundWinYaku(value: unknown): RoundWinYaku[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries = value.flatMap((entry): RoundWinYaku[] => {
+    if (Array.isArray(entry)) {
+      const [name, han] = entry;
+      if (typeof name !== "string" || !name.trim()) return [];
+      return [{
+        name: name.trim(),
+        ...(typeof han === "number" && Number.isFinite(han) ? { han } : {}),
+      }];
+    }
+    if (entry && typeof entry === "object") {
+      const object = entry as Record<string, unknown>;
+      const name = typeof object.name === "string"
+        ? object.name
+        : typeof object.yaku === "string"
+          ? object.yaku
+          : "";
+      if (!name.trim()) return [];
+      const han = typeof object.han === "number" && Number.isFinite(object.han)
+        ? object.han
+        : undefined;
+      return [{ name: name.trim(), ...(han === undefined ? {} : { han }) }];
+    }
+    return [];
+  });
+  return entries.length > 0 ? entries : undefined;
+}
+
+function visibleWinnerHand(
+  projection: ProjectedState | null | undefined,
+  actor: number,
+  winningTile: number | undefined,
+): { hand?: number[]; melds?: number[][] } {
+  const player = projection?.players?.find((candidate) => candidate.seat === actor);
+  const hand = tileIdsFromValue(player?.hand).filter((tile) => tile >= 0 && tile < 136);
+  const melds = Array.isArray(player?.melds)
+    ? player.melds
+        .map((meld) => tileIdsFromValue(meld?.tiles).filter((tile) => tile >= 0 && tile < 136))
+        .filter((tiles) => tiles.length > 0)
+    : [];
+  if (hand.length === 0) {
+    return melds.length > 0 ? { melds } : {};
+  }
+  const visibleHand = hand.slice();
+  // A private projection can expose the concealed tiles while the Hora event carries
+  // the final tile. Add that tile only when the server has not already included it.
+  if (winningTile !== undefined && visibleHand.length < 14 && !visibleHand.includes(winningTile)) {
+    visibleHand.push(winningTile);
+  }
+  return { hand: visibleHand, ...(melds.length > 0 ? { melds } : {}) };
+}
+
 function portraitFromEvents(
   events: unknown[],
   room: RoomSnapshot | null,
-): PortraitEffect | null {
-  // The server's event array is already audience-filtered. First qualifying event is
-  // the only centered result moment; event order is the multi-Ron resolution order.
+  projection?: ProjectedState | null,
+): RoundWinEffect | null {
+  // The server's event array is already audience-filtered. The first Hora is the
+  // only centered result moment; event order is the multi-Ron resolution order.
   for (const event of events) {
     if (eventKind(event) !== "hora") continue;
     const payload = eventPayload(event);
-    if (!isManganOrHigher(payload)) continue;
-    const actor = typeof payload.actor === "number" ? payload.actor : 0;
-    const characterId = characterForSeat(room, actor);
-    if (!characterId) return null;
-    const target = typeof payload.target === "number" ? payload.target : actor;
+    const actor = typeof payload.actor === "number" ? payload.actor : undefined;
+    const target = typeof payload.target === "number" ? payload.target : undefined;
+    if (actor === undefined || target === undefined) continue;
+    const winningTile = typeof payload.pai === "number"
+      ? payload.pai
+      : typeof payload.tile === "number"
+        ? payload.tile
+        : undefined;
+    const winner = roster(room).find((player) => player.seat === actor);
+    const delta = numericArray(payload.delta ?? payload.deltas);
+    const details = visibleWinnerHand(projection, actor, winningTile);
     return {
-      characterId,
-      displayName:
-        roster(room).find((player) => player.seat === actor)?.display_name ??
-        "",
+      // Keep the result visible even when the Character Pack asset is missing.
+      characterId: winner?.character_id ?? "",
+      displayName: winner?.display_name ?? `Player ${actor + 1}`,
       result: target === actor ? "Tsumo" : "Ron",
       han: typeof payload.han === "number" ? payload.han : undefined,
       fu: typeof payload.fu === "number" ? payload.fu : undefined,
-      limit:
-        typeof payload.limit === "string"
-          ? payload.limit
-          : winLimitLabel(typeof payload.han === "number" ? payload.han : 0),
+      ...(typeof payload.limit === "string" && payload.limit.trim().length > 0
+        ? { limit: payload.limit.trim() }
+        : {}),
       points:
         typeof payload.points === "number"
           ? payload.points
-          : Array.isArray(payload.delta) &&
-              typeof payload.delta[actor] === "number"
-            ? (payload.delta[actor] as number)
+          : delta && typeof delta[actor] === "number"
+            ? delta[actor]
             : undefined,
+      winningTile,
+      ...details,
+      yaku: roundWinYaku(payload.yaku),
+      scores: numericArray(payload.scores),
+      delta,
     };
   }
   return null;
@@ -740,24 +819,29 @@ function ResultPortrait({
   characterId,
   name,
   available,
+  className = "",
 }: {
   characterId: string | null | undefined;
   name: string;
   available: boolean;
+  className?: string;
 }) {
   const [failed, setFailed] = useState(false);
+  const portraitClass = `results-winner-portrait${className ? ` ${className}` : ""}`;
+  const initial = Array.from(name.trim())[0]?.toUpperCase() ?? "?";
   if (!characterId || !available || failed)
     return (
       <span
-        className="results-winner-portrait asset-fallback"
+        className={`${portraitClass} asset-fallback`}
+        role="img"
         aria-label={`${name} portrait unavailable`}
       >
-        {name.slice(0, 1).toUpperCase()}
+        {initial}
       </span>
     );
   return (
     <img
-      className="results-winner-portrait"
+      className={portraitClass}
       src={`/assets/characters/${encodeURIComponent(characterId)}/portrait.webp`}
       alt={`${name} portrait`}
       onError={() => setFailed(true)}
@@ -765,7 +849,174 @@ function ResultPortrait({
   );
 }
 
-function ResultsPanel({
+function yakuLabel(name: string): string {
+  return name
+    .replaceAll("_", " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
+}
+
+function roundPoints(value: number | undefined): string {
+  return value === undefined ? "—" : value.toLocaleString();
+}
+
+function RoundWinTiles({
+  hand,
+  melds,
+  winningTile,
+}: {
+  hand?: number[];
+  melds?: number[][];
+  winningTile?: number;
+}) {
+  if (!hand?.length && !melds?.length && winningTile === undefined) return null;
+  return (
+    <div className="round-win-hand" role="group" aria-label="Winning hand">
+      <div className="round-win-hand-label">
+        <span className="state-label">VISIBLE HAND</span>
+        {!hand?.length && <span className="round-win-hand-note">Some tiles remain private.</span>}
+      </div>
+      {hand && hand.length > 0 && (
+        <div
+          className="round-win-tile-row"
+          role="group"
+          aria-label={`${hand.length} visible winning hand tiles`}
+        >
+          {hand.map((tile, index) => (
+            <span
+              className={`round-win-tile${tile === winningTile ? " is-winning" : ""}`}
+              key={`${tile}-${index}`}
+            >
+              <img src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+            </span>
+          ))}
+        </div>
+      )}
+      {melds && melds.length > 0 && (
+        <div className="round-win-melds" role="group" aria-label="Visible melds">
+          {melds.map((meld, meldIndex) => (
+            <span className="round-win-meld" key={`meld-${meldIndex}`}>
+              {meld.map((tile, tileIndex) => (
+                <img key={`${tile}-${tileIndex}`} src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+              ))}
+            </span>
+          ))}
+        </div>
+      )}
+      {!hand?.length && winningTile !== undefined && (
+        <span className="round-win-hand-note">Winning tile: {tileLabel(winningTile)}</span>
+      )}
+    </div>
+  );
+}
+
+export function RoundWinSurface({
+  effect,
+  assets,
+  reducedMotion = false,
+}: {
+  effect: RoundWinEffect;
+  assets: AssetState;
+  reducedMotion?: boolean;
+}) {
+  const yaku = effect.yaku ?? [];
+  return (
+    <section
+      className="round-win-surface"
+      data-testid="round-win-surface"
+      data-motion={reducedMotion ? "static" : "cinematic"}
+      aria-labelledby="round-win-heading"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="round-win-identity">
+        <ResultPortrait
+          characterId={effect.characterId}
+          name={effect.displayName}
+          available={effect.characterId ? assets[effect.characterId] !== false : false}
+          className="round-win-portrait"
+        />
+        <div className="round-win-copy">
+          <p className="eyebrow">ROUND WIN / {effect.result}</p>
+          <h2 id="round-win-heading">{effect.displayName}</h2>
+          <span className="round-win-method">{effect.result === "Tsumo" ? "Self-draw" : "Discard win"}</span>
+        </div>
+      </div>
+      <dl className="round-win-facts" aria-label="Round win facts">
+        {effect.han !== undefined && <div><dt>Han</dt><dd>{effect.han}</dd></div>}
+        {effect.fu !== undefined && <div><dt>Fu</dt><dd>{effect.fu}</dd></div>}
+        {effect.limit && <div><dt>Limit</dt><dd>{effect.limit}</dd></div>}
+        {effect.points !== undefined && <div><dt>Points</dt><dd>{roundPoints(effect.points)}</dd></div>}
+      </dl>
+      {yaku.length > 0 && (
+        <div className="round-win-yaku" role="group" aria-label="Authoritative yaku">
+          <span className="state-label">YAKU</span>
+          <ul>
+            {yaku.map((entry, index) => (
+              <li key={`${entry.name}-${index}`}>
+                {yakuLabel(entry.name)}{entry.han === undefined ? "" : ` · ${entry.han} han`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <RoundWinTiles hand={effect.hand} melds={effect.melds} winningTile={effect.winningTile} />
+    </section>
+  );
+}
+
+function resultNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function resultSeat(
+  player: Record<string, unknown>,
+  fallbackSeat: number | undefined,
+  index: number,
+): number {
+  const seat = resultNumber(player.seat);
+  return typeof seat === "number" && Number.isInteger(seat) && seat >= 0
+    ? seat
+    : fallbackSeat ?? index;
+}
+
+function resultDelta(
+  player: Record<string, unknown>,
+  index: number,
+  result: Record<string, unknown> | null,
+  fallbackSeat?: number,
+): number | undefined {
+  for (const key of ["delta", "deltas", "final_delta", "score_delta"]) {
+    const direct = resultNumber(player[key]);
+    if (direct !== undefined) return direct;
+  }
+  const seat = resultSeat(player, fallbackSeat, index);
+  for (const key of ["deltas", "delta", "final_deltas", "score_deltas"]) {
+    const values = result?.[key];
+    if (Array.isArray(values)) {
+      const delta = resultNumber(values[seat]) ?? resultNumber(values[index]);
+      if (delta !== undefined) return delta;
+    }
+  }
+  return undefined;
+}
+
+function resultScore(
+  player: Record<string, unknown>,
+  index: number,
+  result: Record<string, unknown> | null,
+  fallbackSeat?: number,
+): number | undefined {
+  const direct = resultNumber(player.final_score);
+  if (direct !== undefined) return direct;
+  const scores = result?.final_scores;
+  if (!Array.isArray(scores)) return undefined;
+  const seat = resultSeat(player, fallbackSeat, index);
+  return resultNumber(scores[seat]) ?? resultNumber(scores[index]);
+}
+
+export function ResultsPanel({
   room,
   assets,
 }: {
@@ -784,9 +1035,9 @@ function ResultsPanel({
     : [];
   if (!players.length)
     return (
-      <section className="results-panel" data-testid="results-panel">
+      <section className="results-panel" data-testid="results-panel" aria-labelledby="results-heading">
         <p className="eyebrow">POST-MATCH</p>
-        <h2>Match complete</h2>
+        <h2 id="results-heading">Match complete</h2>
         <p className="field-hint">
           Final standings are not available in this projection yet.
         </p>
@@ -798,26 +1049,56 @@ function ResultsPanel({
   const first = ordered[0];
   const firstId =
     typeof first.participant_id === "string" ? first.participant_id : "";
-  const firstRoster = roster(room).find(
+  const roomRoster = roster(room);
+  const firstRoster = roomRoster.find(
     (entry) => entry.participant_id === firstId,
   );
   const firstName =
     typeof first.display_name === "string" ? first.display_name : "First place";
   const firstAsset = firstRoster?.character_id;
+  const firstSeat = firstRoster?.seat;
+  const firstScore = resultScore(first, 0, result, firstSeat);
+  const firstDelta = resultDelta(first, 0, result, firstSeat);
+  const mode =
+    typeof room?.game_mode === "string" && room.game_mode.trim().length > 0
+      ? room.game_mode
+      : typeof result?.mode === "string"
+        ? result.mode
+        : undefined;
   return (
-    <section className="results-panel" data-testid="results-panel">
+    <section className="results-panel" data-testid="results-panel" aria-labelledby="results-heading">
       <div className="results-heading">
         <div>
           <p className="eyebrow">POST-MATCH / FINAL</p>
-          <h2>Standings</h2>
+          <h2 id="results-heading">Standings</h2>
         </div>
+        <span className="state-label">{ordered.length} PLAYERS</span>
+      </div>
+      <div
+        className="results-winner"
+        role="group"
+        aria-label={`First place: ${firstName}`}
+      >
         <ResultPortrait
           characterId={firstAsset}
           name={firstName}
           available={firstAsset ? assets[firstAsset] !== false : false}
+          className="results-winner-hero-portrait"
         />
+        <div className="results-winner-copy">
+          <span className="results-winner-rank">01 / FIRST PLACE</span>
+          <h3>{firstName}</h3>
+          <strong>{firstScore === undefined ? "—" : firstScore.toLocaleString()}</strong>
+          <span>FINAL POINTS{firstDelta === undefined ? "" : ` · ${firstDelta >= 0 ? "+" : ""}${firstDelta.toLocaleString()} DELTA`}</span>
+        </div>
       </div>
-      <ol className="results-list">
+      <dl className="results-facts" aria-label="Final match facts">
+        {mode && <div><dt>Mode</dt><dd>{mode}</dd></div>}
+        {typeof room?.replay_available === "boolean" && (
+          <div><dt>Replay</dt><dd>{room.replay_available ? "Available" : "Not saved"}</dd></div>
+        )}
+      </dl>
+      <ol className="results-list" aria-label="Final standings">
         {ordered.map((player, index) => {
           const id =
             typeof player.participant_id === "string"
@@ -827,32 +1108,38 @@ function ResultsPanel({
             typeof player.display_name === "string"
               ? player.display_name
               : "Unknown player";
-          const score =
-            typeof player.final_score === "number"
-              ? player.final_score
-              : Array.isArray(result?.final_scores) &&
-                  typeof result?.final_scores[index] === "number"
-                ? (result.final_scores[index] as number)
-                : "—";
-          const controller =
-            roster(room).find((entry) => entry.participant_id === id)?.controller ?? "";
+          const rosterEntry = roomRoster.find(
+            (entry) => entry.participant_id === id,
+          );
+          const score = resultScore(player, index, result, rosterEntry?.seat);
+          const delta = resultDelta(player, index, result, rosterEntry?.seat);
+          const controller = rosterEntry?.controller ?? "";
+          const characterId = rosterEntry?.character_id;
           const autoLabel = controller.includes("permanent_auto")
             ? "Permanent Auto"
             : controller.includes("temporary_auto")
               ? "Temporary Auto"
               : undefined;
+          const rank = Number(player.rank ?? index + 1);
           return (
-            <li key={id}>
-              <span className="result-rank">
-                {String(Number(player.rank ?? index + 1)).padStart(2, "0")}
+            <li key={id} className={rank === 1 ? "is-first" : undefined}>
+              <span className="result-rank" aria-label={`Rank ${rank}`}>
+                {String(rank).padStart(2, "0")}
               </span>
+              <ResultPortrait
+                characterId={characterId}
+                name={name}
+                available={characterId ? assets[characterId] !== false : false}
+                className="results-list-portrait"
+              />
               <span className="result-name">
                 {name}
                 {autoLabel && <small>{autoLabel}</small>}
               </span>
-              <strong>
-                {typeof score === "number" ? score.toLocaleString() : score}
-              </strong>
+              <span className="result-score">
+                <strong>{score === undefined ? "—" : score.toLocaleString()}</strong>
+                {delta !== undefined && <small className={delta >= 0 ? "is-positive" : "is-negative"}>{delta >= 0 ? "+" : ""}{delta.toLocaleString()}</small>}
+              </span>
             </li>
           );
         })}
@@ -935,16 +1222,16 @@ export function GameplaySurface({
   const legalDiscardActions = riichiMode
     ? grouped.riichiDiscard
     : grouped.discard;
-  const [portraitEffect, setPortraitEffect] = useState<PortraitEffect | null>(
+  const [portraitEffect, setPortraitEffect] = useState<RoundWinEffect | null>(
     null,
   );
   const portraitEventRef = useRef<number | null>(null);
   useEffect(() => {
     if (portraitEventRef.current === eventToken) return;
     portraitEventRef.current = eventToken;
-    const candidate = portraitFromEvents(storeEvents, room);
+    const candidate = portraitFromEvents(storeEvents, room, projection);
     if (candidate) setPortraitEffect(candidate);
-  }, [eventToken, room, storeEvents]);
+  }, [eventToken, projection, room, storeEvents]);
   useEffect(() => {
     if (!portraitEffect) return;
     const timeout = window.setTimeout(() => setPortraitEffect(null), 12000);
@@ -1056,6 +1343,15 @@ export function GameplaySurface({
               disabled={inputDisabled}
               onAction={submit}
             />
+            {portraitEffect && room?.phase !== "post_match" && (
+              <div className="round-win-overlay">
+                <RoundWinSurface
+                  effect={portraitEffect}
+                  assets={assets}
+                  reducedMotion={reducedMotion}
+                />
+              </div>
+            )}
             {room?.phase !== "post_match" && (
               <ActionDeck
                 decision={decision}

@@ -1,7 +1,13 @@
 import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { GameplaySurface, handActionMap } from "./gameplay";
+import {
+  GameplaySurface,
+  ResultsPanel,
+  RoundWinSurface,
+  handActionMap,
+  type RoundWinEffect,
+} from "./gameplay";
 import { useGameStore } from "./store";
 import type { ProjectedState } from "./types";
 
@@ -13,6 +19,90 @@ function player(seat: number, display_name: string) {
     score: 25_000,
   };
 }
+
+describe("result surfaces", () => {
+  it("renders a compact accessible round win with a neutral portrait fallback", () => {
+    const effect: RoundWinEffect = {
+      characterId: "missing-character",
+      displayName: "Mika",
+      result: "Ron",
+      han: 3,
+      fu: 40,
+      points: 8_000,
+      winningTile: 16,
+      hand: [0, 4, 8, 12, 20, 24, 28, 32, 36, 40, 44, 48, 52],
+      yaku: [{ name: "riichi", han: 1 }],
+    };
+    render(<RoundWinSurface effect={effect} assets={{ "missing-character": false }} reducedMotion />);
+
+    expect(screen.getByTestId("round-win-surface")).toHaveAttribute("data-motion", "static");
+    expect(screen.getByRole("heading", { name: "Mika" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "Mika portrait unavailable" })).toBeVisible();
+    expect(screen.getByText("Discard win")).toBeVisible();
+    expect(screen.getByText("Riichi · 1 han")).toBeVisible();
+    expect(screen.getAllByRole("img")).toHaveLength(14);
+  });
+
+  it("keeps final standings semantic while showing portraits, auto labels, and supplied deltas", () => {
+    const room = {
+      game_mode: "4p-red-east",
+      replay_available: true,
+      roster: [
+        { participant_id: "p1", display_name: "Mika", kind: "human", seat: 0, character_id: "player-red", controller: "interactive" },
+        { participant_id: "p2", display_name: "Nori", kind: "built_in_bot", seat: 1, character_id: "tsumogiri-bot", controller: "permanent_auto_built_in_bot" },
+      ],
+      match_players: [],
+      result: {
+        // Room snapshots use the normalized game_mode for display; MatchResult
+        // mode remains the serialized engine enum on the live socket.
+        mode: "FourPlayerRedEast",
+        players: [
+          { participant_id: "p1", display_name: "Mika", rank: 1, final_score: 45_000, delta: 5_000 },
+          { participant_id: "p2", display_name: "Nori", rank: 2, final_score: 30_000, delta: -5_000 },
+        ],
+      },
+    } as never;
+    render(<ResultsPanel room={room} assets={{ "player-red": true, "tsumogiri-bot": true }} />);
+
+    const standings = screen.getByRole("list", { name: "Final standings" });
+    expect(within(standings).getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByText("Permanent Auto")).toBeVisible();
+    expect(screen.getByText("+5,000")).toBeVisible();
+    expect(screen.getByText("-5,000")).toBeVisible();
+    expect(screen.getAllByAltText("Mika portrait")).toHaveLength(2);
+    expect(screen.getByAltText("Nori portrait")).toBeVisible();
+    expect(screen.getByText("Available")).toBeVisible();
+    expect(screen.getByText("4p-red-east")).toBeVisible();
+  });
+
+  it("maps seat-ordered final scores to ranked players without inventing deltas", () => {
+    const room = {
+      game_mode: "4p-red-east",
+      roster: [
+        { participant_id: "p1", display_name: "Mika", kind: "human", seat: 0, character_id: null, controller: "interactive" },
+        { participant_id: "p2", display_name: "Nori", kind: "human", seat: 1, character_id: null, controller: "interactive" },
+      ],
+      match_players: [],
+      result: {
+        mode: "FourPlayerRedEast",
+        players: [
+          { participant_id: "p2", display_name: "Nori", seat: 1, rank: 1 },
+          { participant_id: "p1", display_name: "Mika", seat: 0, rank: 2 },
+        ],
+        final_scores: [20_000, 40_000],
+      },
+    } as never;
+    render(<ResultsPanel room={room} assets={{}} />);
+
+    const standings = screen.getByRole("list", { name: "Final standings" });
+    const rows = within(standings).getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Nori");
+    expect(rows[0]).toHaveTextContent("40,000");
+    expect(rows[1]).toHaveTextContent("Mika");
+    expect(rows[1]).toHaveTextContent("20,000");
+    expect(screen.queryByText(/DELTA/)).not.toBeInTheDocument();
+  });
+});
 
 describe("GameplayPlayerStatus", () => {
   beforeEach(() => {

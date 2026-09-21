@@ -215,9 +215,11 @@ describe("Task 12 table invariants", () => {
     expect(wallTileCount(Number.NaN)).toBe(0);
   });
 
-  it("derives a visible Mangan result from the projected resolution event", () => {
+  it("keeps result facts authoritative instead of deriving a limit from han", () => {
     const room = { roster: [{ seat: 0, participant_id: "p1", display_name: "Mika", kind: "human", character_id: "player-red", controller: "interactive" }] } as never;
-    expect(portraitFromEvents([{ hora: { actor: 0, target: 1, han: 5, fu: 30, delta: [8000, -8000] } }], room)).toMatchObject({ displayName: "Mika", result: "Ron", limit: "Mangan" });
+    const result = portraitFromEvents([{ hora: { actor: 0, target: 1, han: 5, fu: 30, delta: [8000, -8000], yaku: [["riichi", 1]] } }], room);
+    expect(result).toMatchObject({ displayName: "Mika", result: "Ron", han: 5, fu: 30, points: 8000, yaku: [{ name: "riichi", han: 1 }] });
+    expect(result).not.toHaveProperty("limit");
   });
 
   it("advances the voice queue when playback throws synchronously", () => {
