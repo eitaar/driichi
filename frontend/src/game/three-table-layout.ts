@@ -31,9 +31,9 @@ export const TABLE_SIZE = { width: 13.6, depth: 11 } as const;
 export const CAMERA = {
   // The fixed lens stays inside the approved envelope while the authored table
   // depth keeps the complete world frame within the 16:9 safe composition.
-  fov: 32.25,
-  position: [0, 12.8, 13.8] as Vec3,
-  target: [0, 0.15, 0.25] as Vec3,
+  fov: 34,
+  position: [0, 12.8, 12.3] as Vec3,
+  target: [0, 0.15, 1] as Vec3,
   near: 0.1,
   far: 60,
 } as const;

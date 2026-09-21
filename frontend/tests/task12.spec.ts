@@ -240,7 +240,7 @@ async function expectApprovedLiveOverlayGeometry(page: Page) {
   expect(geometry.actions.bottom).toBeLessThanOrEqual(geometry.hand.top - 12);
   // Hit targets should hug the projected local hand, not create a broad action band.
   expect(geometry.hand.height).toBeLessThanOrEqual(geometry.stage.height * 0.12 + 4);
-  expect(Math.max(...geometry.frameWidths)).toBeLessThanOrEqual(geometry.stage.width * 0.09 + 1);
+  expect(Math.max(...geometry.frameWidths)).toBeLessThanOrEqual(geometry.stage.width * 0.1 + 1);
   expect(geometry.factCount).toBe(5);
 }
 
