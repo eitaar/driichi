@@ -249,30 +249,37 @@ function InstancedTiles({
       bodyGeometry,
       faceGeometry,
       backGeometry: new PlaneGeometry(...FACE_SIZE),
-      ivoryMaterial: new MeshStandardMaterial({
+      frontBodyMaterial: new MeshStandardMaterial({
         color: new Color("#d9cbb3"),
         metalness: 0.02,
         roughness: 0.52,
       }),
+      // Concealed tiles use a ceramic edge rather than the old navy/gold
+      // atlas. The amber edge keeps the individual tiles separated at range.
+      backBodyMaterial: new MeshStandardMaterial({
+        color: new Color("#c38a46"),
+        metalness: 0.05,
+        roughness: 0.46,
+        emissive: new Color("#2b1608"),
+        emissiveIntensity: 0.12,
+      }),
       faceMaterial: atlasMaterial(atlas),
-      backMaterial: (() => {
-        const material = new MeshBasicMaterial({
-          color: new Color("#ffffff"),
-          side: DoubleSide,
-          toneMapped: false,
-        });
-        if (textures?.back) material.map = textures.back;
-        return material;
-      })(),
+      backMaterial: new MeshStandardMaterial({
+        color: new Color("#eed8ad"),
+        metalness: 0.02,
+        roughness: 0.42,
+        side: DoubleSide,
+      }),
     };
-  }, [atlas, textures?.back]);
+  }, [atlas]);
 
   useEffect(
     () => () => {
       resources.bodyGeometry.dispose();
       resources.faceGeometry.dispose();
       resources.backGeometry.dispose();
-      resources.ivoryMaterial.dispose();
+      resources.frontBodyMaterial.dispose();
+      resources.backBodyMaterial.dispose();
       resources.faceMaterial.dispose();
       resources.backMaterial.dispose();
     },
@@ -294,7 +301,7 @@ function InstancedTiles({
         ref={frontBody}
         name="tile-front-bodies"
         userData={{ tileBodies: true }}
-        args={[resources.bodyGeometry, resources.ivoryMaterial, MAX_TILE_INSTANCES]}
+        args={[resources.bodyGeometry, resources.frontBodyMaterial, MAX_TILE_INSTANCES]}
         castShadow
         receiveShadow
         frustumCulled={false}
@@ -311,7 +318,7 @@ function InstancedTiles({
         ref={backBody}
         name="tile-back-bodies"
         userData={{ tileBodies: true }}
-        args={[resources.bodyGeometry, resources.ivoryMaterial, MAX_TILE_INSTANCES]}
+        args={[resources.bodyGeometry, resources.backBodyMaterial, MAX_TILE_INSTANCES]}
         receiveShadow
         frustumCulled={false}
         dispose={null}
@@ -442,6 +449,35 @@ type TablePart = {
   rotation?: readonly [number, number, number];
 };
 
+const OUTER_CHASSIS_PARTS: readonly TablePart[] = [
+  { position: [0, 0.02, 4.05], scale: [12.85, 0.2, 0.68] },
+  { position: [0, 0.02, -4.05], scale: [12.85, 0.2, 0.68] },
+  { position: [6.18, 0.02, 0], scale: [0.68, 0.2, 7.72] },
+  { position: [-6.18, 0.02, 0], scale: [0.68, 0.2, 7.72] },
+];
+const WALNUT_RAIL_PARTS: readonly TablePart[] = [
+  { position: [0, 0.15, 3.73], scale: [12.15, 0.22, 0.5] },
+  { position: [0, 0.15, -3.73], scale: [12.15, 0.22, 0.5] },
+  { position: [5.86, 0.15, 0], scale: [0.5, 0.22, 7.14] },
+  { position: [-5.86, 0.15, 0], scale: [0.5, 0.22, 7.14] },
+];
+const BRONZE_INLAY_PARTS: readonly TablePart[] = [
+  { position: [0, 0.29, 3.56], scale: [11.98, 0.045, 0.06] },
+  { position: [0, 0.29, -3.56], scale: [11.98, 0.045, 0.06] },
+  { position: [5.66, 0.29, 0], scale: [0.06, 0.045, 6.9] },
+  { position: [-5.66, 0.29, 0], scale: [0.06, 0.045, 6.9] },
+];
+const CORNER_CAP_PARTS: readonly TablePart[] = [
+  { position: [-5.72, 0.26, -3.46], scale: [0.74, 0.16, 0.46] },
+  { position: [5.72, 0.26, -3.46], scale: [0.74, 0.16, 0.46] },
+  { position: [5.72, 0.26, 3.46], scale: [0.74, 0.16, 0.46] },
+  { position: [-5.72, 0.26, 3.46], scale: [0.74, 0.16, 0.46] },
+];
+const CORNER_ACCENT_PARTS: readonly TablePart[] = CORNER_CAP_PARTS.map(({ position }) => ({
+  position: [position[0], 0.36, position[2]],
+  scale: [0.34, 0.035, 0.07],
+}));
+
 function applyTableParts(mesh: InstancedMesh | null, parts: readonly TablePart[]): void {
   if (!mesh) return;
   mesh.count = parts.length;
@@ -460,81 +496,48 @@ function applyTableParts(mesh: InstancedMesh | null, parts: readonly TablePart[]
 
 function TableRails({ textures }: { textures: TableTextures | null }) {
   const invalidate = useThree((state) => state.invalidate);
-  const chassisRef = useRef<InstancedMesh>(null);
-  const walnutRef = useRef<InstancedMesh>(null);
-  const bronzeRef = useRef<InstancedMesh>(null);
-  const capsRef = useRef<InstancedMesh>(null);
-  const capAccentsRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => {
     const geometry = new BoxGeometry(1, 1, 1);
     const chassisMaterial = new MeshStandardMaterial({
-      color: new Color("#30383a"),
-      metalness: 0.4,
-      roughness: 0.4,
+      color: new Color("#50595b"),
+      metalness: 0.34,
+      roughness: 0.42,
+      emissive: new Color("#3e4a4d"),
+      emissiveIntensity: 0.42,
     });
-    if (textures?.rail) chassisMaterial.map = textures.rail;
     return {
       geometry,
       chassisMaterial,
       walnutMaterial: new MeshStandardMaterial({
-        color: new Color("#704023"),
-        metalness: 0.06,
-        roughness: 0.56,
+        color: new Color("#985b32"),
+        metalness: 0.08,
+        roughness: 0.48,
+        emissive: new Color("#6c3517"),
+        emissiveIntensity: 0.3,
       }),
       bronzeMaterial: new MeshStandardMaterial({
-        color: new Color("#cf9753"),
-        metalness: 0.66,
-        roughness: 0.3,
+        color: new Color("#d69f58"),
+        metalness: 0.58,
+        roughness: 0.32,
+        emissive: new Color("#85501b"),
+        emissiveIntensity: 0.36,
       }),
       capMaterial: new MeshStandardMaterial({
-        color: new Color("#343638"),
-        metalness: 0.48,
-        roughness: 0.38,
+        color: new Color("#53585a"),
+        metalness: 0.42,
+        roughness: 0.4,
+        emissive: new Color("#3e484b"),
+        emissiveIntensity: 0.58,
       }),
       capAccentMaterial: new MeshStandardMaterial({
-        color: new Color("#c18e51"),
-        metalness: 0.68,
-        roughness: 0.28,
+        color: new Color("#d9a55d"),
+        metalness: 0.58,
+        roughness: 0.3,
+        emissive: new Color("#85501b"),
+        emissiveIntensity: 0.38,
       }),
     };
   }, [textures?.rail]);
-
-  useLayoutEffect(() => {
-    const outerChassis: readonly TablePart[] = [
-      { position: [0, 0.02, 4.05], scale: [12.85, 0.2, 0.68] },
-      { position: [0, 0.02, -4.05], scale: [12.85, 0.2, 0.68] },
-      { position: [6.18, 0.02, 0], scale: [0.68, 0.2, 7.72] },
-      { position: [-6.18, 0.02, 0], scale: [0.68, 0.2, 7.72] },
-    ];
-    const walnutRails: readonly TablePart[] = [
-      { position: [0, 0.15, 3.73], scale: [12.15, 0.22, 0.5] },
-      { position: [0, 0.15, -3.73], scale: [12.15, 0.22, 0.5] },
-      { position: [5.86, 0.15, 0], scale: [0.5, 0.22, 7.14] },
-      { position: [-5.86, 0.15, 0], scale: [0.5, 0.22, 7.14] },
-    ];
-    const bronzeInlays: readonly TablePart[] = [
-      { position: [0, 0.29, 3.56], scale: [11.98, 0.045, 0.06] },
-      { position: [0, 0.29, -3.56], scale: [11.98, 0.045, 0.06] },
-      { position: [5.66, 0.29, 0], scale: [0.06, 0.045, 6.9] },
-      { position: [-5.66, 0.29, 0], scale: [0.06, 0.045, 6.9] },
-    ];
-    const corners: readonly TablePart[] = [
-      { position: [-5.72, 0.26, -3.46], scale: [0.74, 0.16, 0.46] },
-      { position: [5.72, 0.26, -3.46], scale: [0.74, 0.16, 0.46] },
-      { position: [5.72, 0.26, 3.46], scale: [0.74, 0.16, 0.46] },
-      { position: [-5.72, 0.26, 3.46], scale: [0.74, 0.16, 0.46] },
-    ];
-    const cornerAccents: readonly TablePart[] = corners.map(({ position }) => ({
-      position: [position[0], 0.36, position[2]],
-      scale: [0.34, 0.035, 0.07],
-    }));
-    applyTableParts(chassisRef.current, outerChassis);
-    applyTableParts(walnutRef.current, walnutRails);
-    applyTableParts(bronzeRef.current, bronzeInlays);
-    applyTableParts(capsRef.current, corners);
-    applyTableParts(capAccentsRef.current, cornerAccents);
-    invalidate();
-  }, [invalidate]);
 
   useEffect(() => () => {
     resources.geometry.dispose();
@@ -548,40 +551,55 @@ function TableRails({ textures }: { textures: TableTextures | null }) {
   return (
     <group name="layered-table-perimeter">
       <instancedMesh
-        ref={chassisRef}
         name="table-rails"
+        onUpdate={(mesh) => {
+          applyTableParts(mesh, OUTER_CHASSIS_PARTS);
+          invalidate();
+        }}
         args={[resources.geometry, resources.chassisMaterial, 4]}
         frustumCulled={false}
         receiveShadow
         dispose={null}
       />
       <instancedMesh
-        ref={walnutRef}
         name="table-walnut-inner-rail"
+        onUpdate={(mesh) => {
+          applyTableParts(mesh, WALNUT_RAIL_PARTS);
+          invalidate();
+        }}
         args={[resources.geometry, resources.walnutMaterial, 4]}
         frustumCulled={false}
         receiveShadow
         dispose={null}
       />
       <instancedMesh
-        ref={bronzeRef}
         name="table-bronze-inlay"
+        onUpdate={(mesh) => {
+          applyTableParts(mesh, BRONZE_INLAY_PARTS);
+          invalidate();
+        }}
         args={[resources.geometry, resources.bronzeMaterial, 4]}
         frustumCulled={false}
         receiveShadow
         dispose={null}
       />
       <instancedMesh
-        ref={capsRef}
         name="table-corner-caps"
+        onUpdate={(mesh) => {
+          applyTableParts(mesh, CORNER_CAP_PARTS);
+          invalidate();
+        }}
         args={[resources.geometry, resources.capMaterial, 4]}
         frustumCulled={false}
         receiveShadow
         dispose={null}
       />
       <instancedMesh
-        ref={capAccentsRef}
         name="table-corner-accents"
+        onUpdate={(mesh) => {
+          applyTableParts(mesh, CORNER_ACCENT_PARTS);
+          invalidate();
+        }}
         args={[resources.geometry, resources.capAccentMaterial, 4]}
         frustumCulled={false}
         receiveShadow
@@ -716,9 +734,11 @@ function CenterTrim() {
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
     material: new MeshStandardMaterial({
-      color: new Color("#a77842"),
-      metalness: 0.62,
-      roughness: 0.3,
+      color: new Color("#dda661"),
+      metalness: 0.56,
+      roughness: 0.28,
+      emissive: new Color("#6e3d12"),
+      emissiveIntensity: 0.22,
     }),
   }), []);
 
@@ -767,19 +787,19 @@ function FeltMaterial({ texture }: { texture: Texture | undefined }) {
   );
 }
 
-function CenterMaterial({ texture }: { texture: Texture | undefined }) {
-  return texture ? (
+function CenterMaterial({ texture: _texture }: { texture: Texture | undefined }) {
+  // The approved center reads as machined graphite with bronze edges. Keep
+  // the local texture request alive for the shared table bundle, but avoid
+  // letting its near-black navy field swallow the console silhouette.
+  return (
     <meshStandardMaterial
-      color="#ffffff"
-      map={texture}
-      metalness={0.38}
-      roughness={0.42}
+      color="#596366"
+      metalness={0.42}
+      roughness={0.34}
+      emissive="#293235"
+      emissiveIntensity={0.35}
       side={DoubleSide}
-      transparent
-      depthWrite={false}
     />
-  ) : (
-    <meshStandardMaterial color="#1b2328" metalness={0.42} roughness={0.4} />
   );
 }
 
@@ -804,11 +824,23 @@ function ProceduralTable({ textures }: { textures: TableTextures | null }) {
       {/* Machined center console: dark housing, bronze frame, restrained material inset. */}
       <mesh position={[0, 0.255, 0]} receiveShadow>
         <boxGeometry args={[3.3, 0.32, 2.68]} />
-        <meshStandardMaterial color="#1d2529" metalness={0.56} roughness={0.36} />
+        <meshStandardMaterial
+          color="#485257"
+          metalness={0.48}
+          roughness={0.38}
+          emissive="#293235"
+          emissiveIntensity={0.4}
+        />
       </mesh>
       <mesh position={[0, 0.43, 0]} receiveShadow>
         <boxGeometry args={[3.02, 0.055, 2.4]} />
-        <meshStandardMaterial color="#2b3030" metalness={0.48} roughness={0.4} />
+        <meshStandardMaterial
+          color="#625d50"
+          metalness={0.42}
+          roughness={0.36}
+          emissive="#3b2814"
+          emissiveIntensity={0.3}
+        />
       </mesh>
       <mesh position={[0, 0.464, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[2.5, 1.88]} />
