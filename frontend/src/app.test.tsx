@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./app";
+import { useGameStore } from "./game/store";
 
 vi.mock("./pixi-vignette", () => ({
   TileVignette: () => <div data-testid="tile-vignette" aria-hidden="true" />,
@@ -518,6 +519,58 @@ describe("human lobby websocket", () => {
     socket.emit({ type: "error", code: "not_ready" });
     expect(await screen.findByText(/not_ready/i)).toBeVisible();
     expect(screen.getByText(/^connected$/i)).toBeVisible();
+  });
+
+  it("does not send an action after an error leaves the OPEN socket unusable", async () => {
+    class FakeWebSocket {
+      static OPEN = 1;
+      readyState = FakeWebSocket.OPEN;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      sent: string[] = [];
+      send(value: string) { this.sent.push(value); }
+      close() {}
+      emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
+    }
+    const instance = new FakeWebSocket();
+    vi.stubGlobal("WebSocket", Object.assign(vi.fn(function () { return instance; }), { OPEN: FakeWebSocket.OPEN }));
+
+    render(<App />);
+    await waitFor(() => expect(instance.onopen).not.toBeNull());
+    act(() => {
+      instance.onopen?.();
+      instance.emit({
+        type: "snapshot",
+        room: {
+          join_code: "123456", room_name: "Night Market", game_mode: "4p-red-east", phase: "playing", revision: 1,
+          participants: [], match_players: [], roster: [], result: null,
+        },
+        state: {
+          audience: "player", viewer_seat: 0, mode: "4p-red-east", player_count: 4,
+          players: [
+            { seat: 0, participant_id: "P1", display_name: "Mika", hand: [0], score: 25_000 },
+            { seat: 1, participant_id: "P2", display_name: "Nori", concealed_count: 1, score: 25_000 },
+            { seat: 2, participant_id: "P3", display_name: "Ren", concealed_count: 1, score: 25_000 },
+            { seat: 3, participant_id: "P4", display_name: "Sora", concealed_count: 1, score: 25_000 },
+          ],
+          decision: {
+            decision_id: "decision-1", kind: "turn",
+            actions: [{ action_id: "action-1", action: { discard: { tile: 0 } } }],
+          },
+        },
+      });
+    });
+
+    const discard = await screen.findByRole("button", { name: /discard 1m/i });
+    fireEvent.pointerDown(discard);
+    act(() => instance.onerror?.());
+    fireEvent.click(discard);
+
+    expect(instance.readyState).toBe(FakeWebSocket.OPEN);
+    expect(instance.sent).toEqual([]);
+    expect(useGameStore.getState().pendingAction).toBeNull();
   });
 
   it("does not send Ready until selected Character assets finish preloading", async () => {

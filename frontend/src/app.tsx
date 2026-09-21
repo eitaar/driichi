@@ -205,7 +205,7 @@ function useHumanSocket(joinCode: string) {
   const [sessionReady, setSessionReady] = useState(false);
   const send = useCallback<Transport>((value) => {
     const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    if (!socket || socket.readyState !== WebSocket.OPEN || useGameStore.getState().status !== "connected") return false;
     socket.send(JSON.stringify(value));
     return true;
   }, []);

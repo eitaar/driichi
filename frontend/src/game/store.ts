@@ -185,24 +185,24 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     };
   }),
   receiveActionResult: (result) => set((state) => {
-    const matching = !state.pendingAction
-      || (result.action_id
-        ? result.action_id === state.pendingAction.actionId
-        : (!result.decision_id || result.decision_id === state.pendingAction.decisionId));
+    const pending = state.pendingAction;
+    const matching = pending !== null
+      && typeof result.decision_id === "string"
+      && typeof result.action_id === "string"
+      && result.decision_id === pending.decisionId
+      && result.action_id === pending.actionId;
     if (!matching) return state;
     if (result.status === "accepted") {
-      const actionResultHistory = result.action_id
-        ? [
-            ...state.actionResultHistory.filter(
-              (entry) => entry.action_id !== result.action_id,
-            ),
-            {
-              decision_id: state.pendingAction?.decisionId ?? result.decision_id,
-              action_id: result.action_id,
-              status: result.status,
-            },
-          ].slice(-64)
-        : state.actionResultHistory;
+      const actionResultHistory = [
+        ...state.actionResultHistory.filter(
+          (entry) => entry.action_id !== result.action_id,
+        ),
+        {
+          decision_id: result.decision_id,
+          action_id: result.action_id,
+          status: result.status,
+        },
+      ].slice(-64);
       return {
         pendingAction: null,
         actionError: "",
@@ -212,18 +212,16 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       };
     }
     if (result.status === "rejected") {
-      const actionResultHistory = result.action_id
-        ? [
-            ...state.actionResultHistory.filter(
-              (entry) => entry.action_id !== result.action_id,
-            ),
-            {
-              decision_id: state.pendingAction?.decisionId ?? result.decision_id,
-              action_id: result.action_id,
-              status: result.status,
-            },
-          ].slice(-64)
-        : state.actionResultHistory;
+      const actionResultHistory = [
+        ...state.actionResultHistory.filter(
+          (entry) => entry.action_id !== result.action_id,
+        ),
+        {
+          decision_id: result.decision_id,
+          action_id: result.action_id,
+          status: result.status,
+        },
+      ].slice(-64);
       return {
         pendingAction: null,
         actionError: result.code ?? "action_rejected",

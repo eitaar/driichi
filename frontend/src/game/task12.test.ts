@@ -108,6 +108,50 @@ describe("Task 12 table invariants", () => {
     expect(useGameStore.getState().pendingAction).toBeNull();
   });
 
+  it("ignores action results without an exact pending decision and action identity", () => {
+    const accepted = (decision_id?: string, action_id?: string) =>
+      useGameStore.getState().receiveActionResult({ decision_id, action_id, status: "accepted" });
+
+    accepted("orphan-decision", "orphan-action");
+    expect(useGameStore.getState().pendingAction).toBeNull();
+    expect(useGameStore.getState().lastActionResult).toBeNull();
+    expect(useGameStore.getState().actionResultHistory).toEqual([]);
+
+    useGameStore.getState().receiveSnapshot(null, {
+      audience: "player", viewer_seat: 0, mode: "4p-red-east", players: [],
+      decision: { decision_id: "pending-decision", kind: "turn", actions: [] },
+    });
+    expect(useGameStore.getState().submitAction("pending-decision", "pending-action", () => true)).toBe(true);
+
+    for (const result of [
+      { decision_id: "pending-decision", status: "accepted" },
+      { action_id: "pending-action", status: "accepted" },
+      { decision_id: "pending-decision", action_id: "other-action", status: "accepted" },
+      { decision_id: "other-decision", action_id: "pending-action", status: "accepted" },
+    ]) {
+      accepted(result.decision_id, result.action_id);
+      expect(useGameStore.getState().pendingAction).toEqual({
+        decisionId: "pending-decision",
+        actionId: "pending-action",
+      });
+      expect(useGameStore.getState().lastActionResult).toBeNull();
+      expect(useGameStore.getState().actionResultHistory).toEqual([]);
+    }
+
+    accepted("pending-decision", "pending-action");
+    expect(useGameStore.getState().pendingAction).toBeNull();
+    expect(useGameStore.getState().lastActionResult).toEqual({
+      decision_id: "pending-decision",
+      action_id: "pending-action",
+      status: "accepted",
+    });
+    expect(useGameStore.getState().actionResultHistory).toEqual([{
+      decision_id: "pending-decision",
+      action_id: "pending-action",
+      status: "accepted",
+    }]);
+  });
+
   it("does not publish pending state when transport rejects a disconnected send", () => {
     useGameStore.getState().receiveSnapshot(null, {
       audience: "player", viewer_seat: 0, mode: "4p-red-east", players: [],
