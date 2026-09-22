@@ -567,15 +567,16 @@ const CORNER_ACCENT_PARTS: readonly TablePart[] = CORNER_CAP_PARTS.map(({ positi
   position: [position[0], 0.36, position[2]],
   scale: [0.34, 0.035, 0.07],
 }));
-// Keep the hardware dark and material-led without letting it collapse into the
-// near-black surround. These values intentionally stay below the warm ivory
-// tiles and use bronze as an accent, not as an all-over plastic gold.
+// Keep the hardware warm and material-led while separating it decisively from
+// the #050709 surround. The shared tone-mapped-off material makes these
+// authored rail colors deterministic in the screenshot surface; bronze stays an
+// accent rather than becoming an all-over plastic gold.
 export const TABLE_RAIL_PALETTE = {
-  chassis: "#2a2e30",
-  walnut: "#402b20",
-  bronze: "#a97948",
-  cornerCaps: "#263033",
-  cornerAccents: "#a97948",
+  chassis: "#403830",
+  walnut: "#5a3522",
+  bronze: "#b17e4f",
+  cornerCaps: "#38322e",
+  cornerAccents: "#b17e4f",
 } as const;
 const RAIL_BATCHES = [
   { parts: OUTER_CHASSIS_PARTS, color: TABLE_RAIL_PALETTE.chassis },
@@ -624,15 +625,11 @@ function TableRails() {
   const invalidate = useThree((state) => state.invalidate);
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
-    // One shared lit material keeps the merged rail population responsive to
-    // the studio rig while preserving its single draw call.
-    material: new MeshLambertMaterial({
+    // One shared unlit material keeps the authored rail palette deterministic
+    // under the software WebGL gate while preserving its single draw call.
+    material: new MeshBasicMaterial({
       color: new Color("#ffffff"),
       vertexColors: true,
-      // A restrained graphite emission keeps the near-facing chassis readable
-      // while the diffuse term still separates walnut and bronze under the fill.
-      emissive: new Color("#2a241f"),
-      emissiveIntensity: 0.22,
       toneMapped: false,
     }),
   }), []);
