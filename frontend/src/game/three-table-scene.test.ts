@@ -6,7 +6,7 @@ import { Group } from "three";
 import { TILE_BODY_SIZE } from "./three-table-layout";
 import { describe, expect, it } from "vitest";
 
-import { applyMotionAccentFrame } from "./three-table-scene";
+import { applyMotionAccentFrame, TABLE_RAIL_PALETTE } from "./three-table-scene";
 
 const sceneSource = readFileSync(
   resolve(process.cwd(), "src/game/three-table-scene.tsx"),
@@ -49,6 +49,30 @@ describe("persistent motion scene contents", () => {
     expect(tileSource).toContain("new MeshLambertMaterial");
     expect(tileSource).toContain("args={[resources.bodyGeometry, resources.bodyMaterial, MAX_TILE_INSTANCES]}");
     expect(tileSource).not.toMatch(/new\s+Mesh\s*\(/);
+  });
+
+  it("keeps rail materials distinct from the surround in one persistent shared population", () => {
+    const railsSource = componentSource("function TableRails", "function FeltSeams");
+    const colors = Object.values(TABLE_RAIL_PALETTE);
+    const channelLuminance = (hex: string) => {
+      const channels = [0, 2, 4].map((offset) => Number.parseInt(hex.slice(offset + 1, offset + 3), 16) / 255);
+      const linear = channels.map((channel) => (
+        channel <= 0.04045
+          ? channel / 12.92
+          : ((channel + 0.055) / 1.055) ** 2.4
+      ));
+      return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    };
+
+    expect(colors).toHaveLength(5);
+    expect(new Set(colors)).toHaveLength(4);
+    expect(colors.every((color) => channelLuminance(color) > channelLuminance("#050709") * 4)).toBe(true);
+    expect(railsSource).toContain("new MeshLambertMaterial");
+    expect(railsSource).toContain("const resources = useMemo");
+    expect(railsSource).toContain("vertexColors: true");
+    expect(railsSource).toContain("args={[resources.geometry, resources.material, RAIL_PART_COUNT]}");
+    expect(railsSource.match(/<instancedMesh\b/g)).toHaveLength(1);
+    expect(railsSource).not.toContain("new MeshBasicMaterial");
   });
 
   it("keeps the felt map independent of the active motion prop", () => {

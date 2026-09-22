@@ -567,12 +567,22 @@ const CORNER_ACCENT_PARTS: readonly TablePart[] = CORNER_CAP_PARTS.map(({ positi
   position: [position[0], 0.36, position[2]],
   scale: [0.34, 0.035, 0.07],
 }));
+// Keep the hardware dark and material-led without letting it collapse into the
+// near-black surround. These values intentionally stay below the warm ivory
+// tiles and use bronze as an accent, not as an all-over plastic gold.
+export const TABLE_RAIL_PALETTE = {
+  chassis: "#2a2e30",
+  walnut: "#402b20",
+  bronze: "#a97948",
+  cornerCaps: "#263033",
+  cornerAccents: "#a97948",
+} as const;
 const RAIL_BATCHES = [
-  { parts: OUTER_CHASSIS_PARTS, color: "#171c20" },
-  { parts: WALNUT_RAIL_PARTS, color: "#221b18" },
-  { parts: BRONZE_INLAY_PARTS, color: "#9a7042" },
-  { parts: CORNER_CAP_PARTS, color: "#0b0e11" },
-  { parts: CORNER_ACCENT_PARTS, color: "#9a7042" },
+  { parts: OUTER_CHASSIS_PARTS, color: TABLE_RAIL_PALETTE.chassis },
+  { parts: WALNUT_RAIL_PARTS, color: TABLE_RAIL_PALETTE.walnut },
+  { parts: BRONZE_INLAY_PARTS, color: TABLE_RAIL_PALETTE.bronze },
+  { parts: CORNER_CAP_PARTS, color: TABLE_RAIL_PALETTE.cornerCaps },
+  { parts: CORNER_ACCENT_PARTS, color: TABLE_RAIL_PALETTE.cornerAccents },
 ] as const;
 const RAIL_PART_COUNT = RAIL_BATCHES.reduce((count, batch) => count + batch.parts.length, 0);
 
@@ -614,7 +624,17 @@ function TableRails() {
   const invalidate = useThree((state) => state.invalidate);
   const resources = useMemo(() => ({
     geometry: new BoxGeometry(1, 1, 1),
-    material: new MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
+    // One shared lit material keeps the merged rail population responsive to
+    // the studio rig while preserving its single draw call.
+    material: new MeshLambertMaterial({
+      color: new Color("#ffffff"),
+      vertexColors: true,
+      // A restrained graphite emission keeps the near-facing chassis readable
+      // while the diffuse term still separates walnut and bronze under the fill.
+      emissive: new Color("#2a241f"),
+      emissiveIntensity: 0.22,
+      toneMapped: false,
+    }),
   }), []);
 
   useEffect(() => () => {
@@ -865,9 +885,9 @@ export function MatchTableScene({
   return (
     <>
       <color attach="background" args={["#050709"]} />
-      {/* One stable studio fill gives the shared ceramic body a dimensional
-          response without adding per-tile lights or shadow passes. */}
-      <hemisphereLight args={["#fff4df", "#173a33", 0.62]} />
+      {/* One stable studio fill keeps the shared ceramic and hardware
+          dimensional without shadow/post-processing cost. */}
+      <hemisphereLight args={["#fff4df", "#173a33", 0.5]} />
       <FixedCamera />
       <group position={TABLE_RENDER_OFFSET}>
         <ProceduralTable textures={textures} />
