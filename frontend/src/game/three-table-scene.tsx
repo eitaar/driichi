@@ -12,6 +12,7 @@ import {
   InstancedMesh,
   Matrix4,
   MeshBasicMaterial,
+  MeshLambertMaterial,
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
@@ -20,9 +21,12 @@ import {
   TextureLoader,
   Vector3,
 } from "three";
-import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-
-import type { TileAtlas } from "./tile-atlas";
+import {
+  ATLAS_CELL_HEIGHT,
+  ATLAS_CELL_INSET_TEXELS,
+  ATLAS_CELL_WIDTH,
+  type TileAtlas,
+} from "./tile-atlas";
 import {
   configureTableTexture,
   disposeTableTextures,
@@ -33,7 +37,9 @@ import {
 } from "./table-materials";
 import {
   CAMERA,
+  LOCAL_TILE_SIZE,
   TABLE_RENDER_OFFSET,
+  TILE_BODY_HEIGHTS,
   TILE_BODY_SIZE,
   type MatchSceneLayout,
   type SceneTile,
@@ -66,9 +72,10 @@ interface MatchTableSceneProps {
 // This is a framing translation only. Geometry remains in the authored world
 // dimensions; in particular, no axis is scaled at runtime.
 const BODY_SIZE = [TILE_BODY_SIZE.width, TILE_BODY_SIZE.height, TILE_BODY_SIZE.depth] as const;
-const FACE_SIZE = [0.58, 0.82] as const;
+// The vendored 300:400 source face is preserved on a smaller plane so the
+// shared ivory body reads as an intentional ceramic rim instead of a hairline.
+export const FACE_SIZE = [0.54, 0.72] as const;
 export const BACK_FACE_SIZE = [0.54, 0.78] as const;
-const FACE_Y = BODY_SIZE[1] / 2 + 0.003;
 const MAX_TILE_INSTANCES = 256;
 
 export function createBackFaceGeometry(): PlaneGeometry {
@@ -76,9 +83,9 @@ export function createBackFaceGeometry(): PlaneGeometry {
 }
 
 /**
- * Tile faces already provide the complete top surface. Keep only the four
- * vertical sidewalls for the shared body so the ceramic edge reads in profile
- * without rasterizing an occluded top and bottom box face every frame.
+ * Keep one shared top-rim and four vertical sidewalls for every tile. The
+ * face plane is intentionally inset, so the top rim is part of the visible
+ * ivory material; the occluded bottom surface remains omitted.
  */
 export function createTileSideGeometry(): BufferGeometry {
   const halfWidth = BODY_SIZE[0] / 2;
@@ -101,6 +108,12 @@ export function createTileSideGeometry(): BufferGeometry {
     -halfWidth, -halfHeight, halfDepth,
     -halfWidth, halfHeight, halfDepth,
     -halfWidth, halfHeight, -halfDepth,
+    // The shared top closes the rim beneath the inset face. No bottom is
+    // needed because the table-facing surface is never visible.
+    -halfWidth, halfHeight, halfDepth,
+    halfWidth, halfHeight, halfDepth,
+    halfWidth, halfHeight, -halfDepth,
+    -halfWidth, halfHeight, -halfDepth,
   ];
   const geometry = new BufferGeometry();
   geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
@@ -109,7 +122,9 @@ export function createTileSideGeometry(): BufferGeometry {
     4, 5, 6, 4, 6, 7,
     8, 9, 10, 8, 10, 11,
     12, 13, 14, 12, 14, 15,
+    16, 17, 18, 16, 18, 19,
   ]);
+  geometry.computeVertexNormals();
   return geometry;
 }
 
@@ -136,17 +151,22 @@ function instanceMatrix(tile: SceneTile, face = false): Matrix4 {
   // shared tile geometry still does the work, but the ivory sidewalls can be
   // read as individual pieces instead of one continuous strip at distance.
   const tileScale = tile.group === "wall" ? tile.scale * 0.84 : tile.scale;
+  const bodyHeight = tile.scale === LOCAL_TILE_SIZE
+    ? TILE_BODY_HEIGHTS.local
+    : TILE_BODY_HEIGHTS.remote;
   const orientation = face
     ? tileFaceQuaternion(tile.rotation)
     : new Quaternion().setFromEuler(new Euler(...tile.rotation));
   return new Matrix4().compose(
     new Vector3(
       tile.position[0],
-      tile.position[1] + (face ? FACE_Y * tileScale : 0),
+      tile.position[1] + (face ? bodyHeight / 2 + 0.003 : 0),
       tile.position[2],
     ),
     orientation,
-    new Vector3(tileScale, tileScale, tileScale),
+    face
+      ? new Vector3(tileScale, tileScale, tileScale)
+      : new Vector3(tileScale, bodyHeight / BODY_SIZE[1], tileScale),
   );
 }
 
@@ -169,6 +189,11 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
     map: atlas.texture,
     toneMapped: false,
   });
+  const cellInset = [
+    ATLAS_CELL_INSET_TEXELS / ATLAS_CELL_WIDTH,
+    ATLAS_CELL_INSET_TEXELS / ATLAS_CELL_HEIGHT,
+  ] as const;
+  const inset = `vec2(${cellInset[0].toFixed(8)}, ${cellInset[1].toFixed(8)})`;
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -181,7 +206,8 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
       .replace(
         "#include <map_fragment>",
         `#ifdef USE_MAP
-          vec2 atlasUv = (vec2(vMapUv.x, 1.0 - vMapUv.y) + vAtlasCell) / vec2(${atlas.columns.toFixed(1)}, ${atlas.rows.toFixed(1)});
+          vec2 localAtlasUv = vec2(vMapUv.x, 1.0 - vMapUv.y);
+          vec2 atlasUv = (vAtlasCell + ${inset} + localAtlasUv * (vec2(1.0) - 2.0 * ${inset})) / vec2(${atlas.columns.toFixed(1)}, ${atlas.rows.toFixed(1)});
           vec4 sampledDiffuseColor = texture2D(map, atlasUv);
           diffuseColor *= sampledDiffuseColor;
         #endif`,
@@ -282,8 +308,8 @@ function InstancedTiles({
   const backFaces = useRef<InstancedMesh>(null);
 
   const resources = useMemo(() => {
-    // Shared sidewalls preserve the physical tile edge without drawing an
-    // occluded top and bottom surface beneath the atlas faces.
+    // One shared sidewall population restores a readable ceramic body without
+    // multiplying geometry, meshes, or draw calls per tile.
     const bodyGeometry = createTileSideGeometry();
     const faceGeometry = new PlaneGeometry(...FACE_SIZE);
     const faceCells = new Float32Array(MAX_TILE_INSTANCES * 2);
@@ -292,16 +318,18 @@ function InstancedTiles({
       bodyGeometry,
       faceGeometry,
       backGeometry: createBackFaceGeometry(),
-      // Front and concealed tiles share one warm ivory ceramic sidewall.
-      // A single ceramic sidewall material keeps ownership and draw cost clear.
-      bodyMaterial: new MeshBasicMaterial({
+      // Front and concealed tiles share one persistent, lit ceramic body.
+      // A single material keeps ownership and draw cost clear.
+      bodyMaterial: new MeshLambertMaterial({
         color: new Color("#eee5d2"),
-        toneMapped: false,
+        emissive: new Color("#18140e"),
+        emissiveIntensity: 0.12,
       }),
       faceMaterial: atlasMaterial(atlas),
-      backMaterial: new MeshBasicMaterial({
+      backMaterial: new MeshLambertMaterial({
         color: new Color("#173a33"),
-        toneMapped: false,
+        emissive: new Color("#07130f"),
+        emissiveIntensity: 0.08,
       }),
     };
   }, [atlas]);
@@ -837,9 +865,9 @@ export function MatchTableScene({
   return (
     <>
       <color attach="background" args={["#050709"]} />
-      {/* Materials are intentionally unlit: depth is authored into the ceramic,
-          felt, graphite, and bronze palettes so motion never pays for unused
-          light traversal or shadow-map work. */}
+      {/* One stable studio fill gives the shared ceramic body a dimensional
+          response without adding per-tile lights or shadow passes. */}
+      <hemisphereLight args={["#fff4df", "#173a33", 0.62]} />
       <FixedCamera />
       <group position={TABLE_RENDER_OFFSET}>
         <ProceduralTable textures={textures} />

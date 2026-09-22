@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import { Vector3 } from "three";
 import {
   BACK_FACE_SIZE,
+  FACE_SIZE,
   createBackFaceGeometry,
+  createTileSideGeometry,
   tileFaceQuaternion,
 } from "./three-table-scene";
 import type { ProjectedState } from "./types";
@@ -15,6 +17,8 @@ import {
   LOCAL_TILE_SIZE,
   REMOTE_TILE_SIZE,
   TABLE_SIZE,
+  TILE_BODY_HEIGHTS,
+  TILE_BODY_SIZE,
   aabbIntersects,
   buildMatchSceneLayout,
   sceneTileAabb,
@@ -86,18 +90,82 @@ describe("three-dimensional table layout", () => {
     backGeometry.dispose();
   });
 
-  it("lays side-seat face and back planes flat without twisting their UV axes", () => {
-    const right = tileFaceQuaternion([0, -Math.PI / 2, 0]);
-    const left = tileFaceQuaternion([0, Math.PI / 2, 0]);
+  it("keeps a shared top-rim surface beneath the inset face", () => {
+    const bodyGeometry = createTileSideGeometry();
+    expect(bodyGeometry.getAttribute("normal")).toBeDefined();
+    expect(bodyGeometry.getIndex()?.count).toBe(30);
+    bodyGeometry.dispose();
+  });
+
+  it("preserves the source aspect ratio and a visible ivory face rim", () => {
+    expect(FACE_SIZE[0] / FACE_SIZE[1]).toBeCloseTo(300 / 400, 6);
+    expect((TILE_BODY_SIZE.width - FACE_SIZE[0]) / 2).toBeGreaterThan(0.03);
+    expect((TILE_BODY_SIZE.depth - FACE_SIZE[1]) / 2).toBeGreaterThan(0.06);
+    expect(FACE_SIZE[0]).toBeLessThan(0.58);
+    expect(FACE_SIZE[1]).toBeLessThan(0.82);
+    expect(TILE_BODY_HEIGHTS).toEqual({ local: 0.18, remote: 0.16 });
+    expect(TILE_BODY_SIZE.height).toBe(TILE_BODY_HEIGHTS.local);
+  });
+
+  it("orients every visible seat group with glyph tops toward the table center", () => {
+    const expected = {
+      bottom: [0, 0, -1],
+      right: [-1, 0, 0],
+      top: [0, 0, 1],
+      left: [1, 0, 0],
+    } as const;
+    const source = projection({
+      audience: "replay_admin",
+      players: [
+        player(0, "bottom", { hand: [0], discards: [1], melds: [{ tiles: [2] }] }),
+        player(1, "right", { hand: [3], discards: [4], melds: [{ tiles: [5] }] }),
+        player(2, "top", { hand: [6], discards: [7], melds: [{ tiles: [8] }] }),
+        player(3, "left", { hand: [9], discards: [10], melds: [{ tiles: [11] }] }),
+      ],
+    });
+    const layout = buildMatchSceneLayout(source, null, "replay");
+    const glyphTop = new Vector3(0, 1, 0);
     const normal = new Vector3(0, 0, 1);
-    expect(normal.clone().applyQuaternion(right).y).toBeCloseTo(1);
-    expect(normal.clone().applyQuaternion(left).y).toBeCloseTo(1);
-    expect(new Vector3(1, 0, 0).applyQuaternion(right).z).toBeCloseTo(1);
-    expect(new Vector3(1, 0, 0).applyQuaternion(left).z).toBeCloseTo(-1);
-    expect(new Vector3(0, 1, 0).applyQuaternion(right).x).toBeCloseTo(1);
-    expect(new Vector3(0, 1, 0).applyQuaternion(left).x).toBeCloseTo(-1);
-    expect(new Vector3(1, 0, 0).applyQuaternion(tileFaceQuaternion([0, 0, 0])).x).toBeCloseTo(1);
-    expect(new Vector3(1, 0, 0).applyQuaternion(tileFaceQuaternion([0, Math.PI, 0])).x).toBeCloseTo(-1);
+    const exactDirection = (value: Vector3): number[] => value.toArray().map((component) => {
+      const rounded = Math.round(component * 1e6) / 1e6;
+      return Object.is(rounded, -0) ? 0 : rounded;
+    });
+    for (const [position, vector] of Object.entries(expected) as Array<[
+      keyof typeof expected,
+      readonly [number, number, number],
+    ]>) {
+      const tiles = layout.tiles.filter((tile) =>
+        tile.key.includes(`-${position}-`) &&
+        (tile.group === "hand" || tile.group === "discard" || tile.group === "meld"),
+      );
+      expect(tiles).toHaveLength(3);
+      for (const tile of tiles) {
+        const orientation = tileFaceQuaternion(tile.rotation);
+        expect(exactDirection(glyphTop.clone().applyQuaternion(orientation))).toEqual(vector);
+        expect(exactDirection(normal.clone().applyQuaternion(orientation))).toEqual([0, 1, 0]);
+      }
+    }
+  });
+
+  it("keeps ownerless Dora bottom-readable while preserving its upward normal", () => {
+    const layout = buildMatchSceneLayout(projection({ dora_indicators: [16] }), null, "replay");
+    const dora = layout.tiles.find(({ group }) => group === "dora");
+    expect(dora).toBeDefined();
+    const orientation = tileFaceQuaternion(dora!.rotation);
+    expect(new Vector3(0, 1, 0).applyQuaternion(orientation).toArray().map((component) => Math.round(component * 1e6) / 1e6)).toEqual([0, 0, -1]);
+    expect(new Vector3(0, 0, 1).applyQuaternion(orientation).toArray().map((component) => Math.round(component * 1e6) / 1e6)).toEqual([0, 1, 0]);
+  });
+
+  it("lays seat faces flat without twisting their UV axes", () => {
+    for (const rotation of [
+      [0, 0, 0],
+      [0, Math.PI / 2, 0],
+      [0, Math.PI, 0],
+      [0, -Math.PI / 2, 0],
+    ] as const) {
+      const orientation = tileFaceQuaternion(rotation);
+      expect(new Vector3(0, 0, 1).applyQuaternion(orientation).y).toBeCloseTo(1);
+    }
   });
 
   it("keeps right and left hand backs and front tiles on the same seat frame", () => {
@@ -112,7 +180,7 @@ describe("three-dimensional table layout", () => {
       }),
       null,
     );
-    for (const [position, rotation] of [["right", -Math.PI / 2], ["left", Math.PI / 2]] as const) {
+    for (const [position, rotation] of [["right", Math.PI / 2], ["left", -Math.PI / 2]] as const) {
       const sideTiles = layout.tiles.filter((tile) => tile.key.includes(`-${position}-`));
       expect(sideTiles.filter(({ group }) => group === "hand").every(({ face }) => face === "back")).toBe(true);
       expect(sideTiles.filter(({ group }) => group === "discard" || group === "meld").every(({ face }) => face === "front")).toBe(true);
