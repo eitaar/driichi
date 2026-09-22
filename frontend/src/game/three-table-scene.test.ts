@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Group } from "three";
+import { TILE_BODY_SIZE } from "./three-table-layout";
 import { describe, expect, it } from "vitest";
 
 import { applyMotionAccentFrame } from "./three-table-scene";
@@ -39,6 +40,15 @@ describe("persistent motion scene contents", () => {
     expect(tableSource).toContain("<CenterTrim />");
     expect(sceneSource).toContain("<ProceduralTable textures={textures} />");
     expect(sceneSource).toContain("<InstancedTiles layout={layout} atlas={atlas} />");
+  });
+
+  it("restores a shared dimensional body resource with lighting-responsive material", () => {
+    const tileSource = componentSource("function InstancedTiles", "function resetMotionGroup");
+    expect(TILE_BODY_SIZE.height).toBeGreaterThanOrEqual(0.18);
+    expect(tileSource).toContain("createTileSideGeometry()");
+    expect(tileSource).toContain("new MeshLambertMaterial");
+    expect(tileSource).toContain("args={[resources.bodyGeometry, resources.bodyMaterial, MAX_TILE_INSTANCES]}");
+    expect(tileSource).not.toMatch(/new\s+Mesh\s*\(/);
   });
 
   it("keeps the felt map independent of the active motion prop", () => {

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CanvasTexture, LinearFilter, SRGBColorSpace } from "three";
 
-import { createTileAtlas } from "./tile-atlas";
+import {
+  ATLAS_CELL_HEIGHT,
+  ATLAS_CELL_INSET_TEXELS,
+  ATLAS_CELL_WIDTH,
+  ATLAS_COLUMNS,
+  atlasCellUvBounds,
+  createTileAtlas,
+} from "./tile-atlas";
 import { tileFileName } from "./tiles";
 
 type ImageMode = "load" | "error" | "pending";
@@ -75,8 +82,8 @@ describe("createTileAtlas", () => {
     const representatives = uniqueRepresentativeTiles();
     const atlas = await createTileAtlas();
 
-    expect(atlas.columns).toBe(8);
-    expect(atlas.rows).toBe(Math.ceil(representatives.length / 8));
+    expect(atlas.columns).toBe(ATLAS_COLUMNS);
+    expect(atlas.rows).toBe(Math.ceil(representatives.length / ATLAS_COLUMNS));
     expect(loadedUrls).toHaveLength(representatives.length);
     expect(new Set(loadedUrls).size).toBe(representatives.length);
     expect(fillStyle).toBe("#eee5d2");
@@ -88,6 +95,21 @@ describe("createTileAtlas", () => {
     const cells = representatives.map((tile) => JSON.stringify(atlas.cellFor(tile)));
     expect(new Set(cells).size).toBe(representatives.length);
     expect(atlas.cellFor(0)).toEqual([0, 0]);
+  });
+
+  it("keeps every atlas UV sample inside its cell by a half-texel boundary", () => {
+    const rows = 5;
+    const bounds = atlasCellUvBounds([3, 2], rows);
+    const atlasWidth = ATLAS_COLUMNS * ATLAS_CELL_WIDTH;
+    const atlasHeight = rows * ATLAS_CELL_HEIGHT;
+    expect(bounds.minU).toBeCloseTo((3 * ATLAS_CELL_WIDTH + ATLAS_CELL_INSET_TEXELS) / atlasWidth, 12);
+    expect(bounds.maxU).toBeCloseTo((4 * ATLAS_CELL_WIDTH - ATLAS_CELL_INSET_TEXELS) / atlasWidth, 12);
+    expect(bounds.minV).toBeCloseTo((2 * ATLAS_CELL_HEIGHT + ATLAS_CELL_INSET_TEXELS) / atlasHeight, 12);
+    expect(bounds.maxV).toBeCloseTo((3 * ATLAS_CELL_HEIGHT - ATLAS_CELL_INSET_TEXELS) / atlasHeight, 12);
+    expect(bounds.minU).toBeGreaterThan(3 / ATLAS_COLUMNS);
+    expect(bounds.maxU).toBeLessThan(4 / ATLAS_COLUMNS);
+    expect(bounds.minV).toBeGreaterThan(2 / rows);
+    expect(bounds.maxV).toBeLessThan(3 / rows);
   });
 
   it("shares normal copies, separates red fives, and uses the fallback cell", async () => {

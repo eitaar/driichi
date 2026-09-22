@@ -45,7 +45,8 @@ export const LOCAL_TILE_SIZE = 1;
 // tile footprint. The remote scale remains the visual/replay value from the
 // authoritative-motion integration.
 export const REMOTE_TILE_SIZE = 0.78;
-export const TILE_BODY_SIZE = { width: 0.62, height: 0.12, depth: 0.86 } as const;
+export const TILE_BODY_HEIGHTS = { local: 0.18, remote: 0.16 } as const;
+export const TILE_BODY_SIZE = { width: 0.62, height: TILE_BODY_HEIGHTS.local, depth: 0.86 } as const;
 export const CENTER_DEVICE_AABB = {
   minX: -1.65,
   maxX: 1.65,
@@ -91,9 +92,11 @@ const HAND_ANCHORS: Record<SceneSeat, Vec3> = {
 
 const SEAT_ROTATIONS: Record<SceneSeat, Vec3> = {
   bottom: [0, 0, 0],
-  right: [0, -Math.PI / 2, 0],
+  // A tile's physical glyph top points toward the table center. Side seats
+  // therefore use the opposite yaw from a screen-upright presentation.
+  right: [0, Math.PI / 2, 0],
   top: [0, Math.PI, 0],
-  left: [0, Math.PI / 2, 0],
+  left: [0, -Math.PI / 2, 0],
 };
 
 const WALL_EDGE_ORDER: readonly SceneSeat[] = ["bottom", "right", "top", "left"];
