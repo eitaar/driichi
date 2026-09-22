@@ -568,8 +568,8 @@ const CORNER_ACCENT_PARTS: readonly TablePart[] = CORNER_CAP_PARTS.map(({ positi
   scale: [0.34, 0.035, 0.07],
 }));
 // Keep the hardware warm and material-led while separating it decisively from
-// the #050709 surround. The shared tone-mapped-off material makes these
-// authored rail colors deterministic in the screenshot surface; bronze stays an
+// the #050709 surround. Uniform tone-mapped-off materials make these authored
+// rail colors deterministic in the screenshot surface; bronze stays an
 // accent rather than becoming an all-over plastic gold.
 export const TABLE_RAIL_PALETTE = {
   chassis: "#403830",
@@ -579,26 +579,25 @@ export const TABLE_RAIL_PALETTE = {
   cornerAccents: "#b17e4f",
 } as const;
 const RAIL_BATCHES = [
-  { parts: OUTER_CHASSIS_PARTS, color: TABLE_RAIL_PALETTE.chassis },
-  { parts: WALNUT_RAIL_PARTS, color: TABLE_RAIL_PALETTE.walnut },
-  { parts: BRONZE_INLAY_PARTS, color: TABLE_RAIL_PALETTE.bronze },
-  { parts: CORNER_CAP_PARTS, color: TABLE_RAIL_PALETTE.cornerCaps },
-  { parts: CORNER_ACCENT_PARTS, color: TABLE_RAIL_PALETTE.cornerAccents },
+  { name: "table-rails", parts: OUTER_CHASSIS_PARTS, material: "chassis" },
+  { name: "table-walnut-inner-rail", parts: WALNUT_RAIL_PARTS, material: "walnut" },
+  { name: "table-bronze-inlay", parts: BRONZE_INLAY_PARTS, material: "bronze" },
+  { name: "table-corner-caps", parts: CORNER_CAP_PARTS, material: "cornerCaps" },
+  { name: "table-corner-accents", parts: CORNER_ACCENT_PARTS, material: "bronze" },
 ] as const;
-const RAIL_PART_COUNT = RAIL_BATCHES.reduce((count, batch) => count + batch.parts.length, 0);
+const RAIL_BATCH_NAMES = RAIL_BATCHES.map(({ name }) => name);
 
 function applyTableParts(
   mesh: InstancedMesh | null,
   parts: readonly TablePart[],
-  offset = 0,
 ): void {
   if (!mesh) return;
-  if (offset === 0) mesh.count = parts.length;
+  mesh.count = parts.length;
   parts.forEach((part, index) => {
     const rotation = part.rotation
       ? new Quaternion().setFromEuler(new Euler(...part.rotation))
       : new Quaternion();
-    mesh.setMatrixAt(offset + index, new Matrix4().compose(
+    mesh.setMatrixAt(index, new Matrix4().compose(
       new Vector3(...part.position),
       rotation,
       new Vector3(...part.scale),
@@ -607,61 +606,101 @@ function applyTableParts(
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-function applyRailBatches(mesh: InstancedMesh | null): void {
-  if (!mesh) return;
-  let offset = 0;
-  for (const batch of RAIL_BATCHES) {
-    applyTableParts(mesh, batch.parts, offset);
-    for (let index = 0; index < batch.parts.length; index += 1) {
-      mesh.setColorAt(offset + index, new Color(batch.color));
-    }
-    offset += batch.parts.length;
-  }
-  mesh.count = RAIL_PART_COUNT;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-}
-
 function TableRails() {
   const invalidate = useThree((state) => state.invalidate);
+  const chassisRef = useRef<InstancedMesh>(null);
+  const walnutRef = useRef<InstancedMesh>(null);
+  const bronzeInlayRef = useRef<InstancedMesh>(null);
+  const cornerCapsRef = useRef<InstancedMesh>(null);
+  const cornerAccentsRef = useRef<InstancedMesh>(null);
   const resources = useMemo(() => ({
+    // Every rail batch shares this persistent unit box; only each batch's
+    // instance matrices and count vary. Uniform materials avoid the broken
+    // per-instance color path in SwiftShader while keeping the palette explicit.
     geometry: new BoxGeometry(1, 1, 1),
-    // One shared unlit material keeps the authored rail palette deterministic
-    // under the software WebGL gate while preserving its single draw call.
-    material: new MeshBasicMaterial({
-      color: new Color("#ffffff"),
-      vertexColors: true,
-      toneMapped: false,
-    }),
+    materials: {
+      chassis: new MeshBasicMaterial({
+        color: new Color(TABLE_RAIL_PALETTE.chassis),
+        toneMapped: false,
+      }),
+      walnut: new MeshBasicMaterial({
+        color: new Color(TABLE_RAIL_PALETTE.walnut),
+        toneMapped: false,
+      }),
+      bronze: new MeshBasicMaterial({
+        color: new Color(TABLE_RAIL_PALETTE.bronze),
+        toneMapped: false,
+      }),
+      cornerCaps: new MeshBasicMaterial({
+        color: new Color(TABLE_RAIL_PALETTE.cornerCaps),
+        toneMapped: false,
+      }),
+    },
   }), []);
 
   useEffect(() => () => {
     resources.geometry.dispose();
-    resources.material.dispose();
+    resources.materials.chassis.dispose();
+    resources.materials.walnut.dispose();
+    resources.materials.bronze.dispose();
+    resources.materials.cornerCaps.dispose();
   }, [resources]);
 
+  useLayoutEffect(() => {
+    applyTableParts(chassisRef.current, OUTER_CHASSIS_PARTS);
+    applyTableParts(walnutRef.current, WALNUT_RAIL_PARTS);
+    applyTableParts(bronzeInlayRef.current, BRONZE_INLAY_PARTS);
+    applyTableParts(cornerCapsRef.current, CORNER_CAP_PARTS);
+    applyTableParts(cornerAccentsRef.current, CORNER_ACCENT_PARTS);
+    invalidate();
+  }, [invalidate]);
+
   return (
-    <instancedMesh
-      name="table-rails"
+    <group
+      name="table-rail-batches"
       userData={{
-        // The merged population keeps the legacy names (name="table-walnut-inner-rail",
-        // name="table-bronze-inlay", name="table-corner-caps", name="table-corner-accents")
-        // available to scene diagnostics without multiplying draw calls.
-        railBatches: [
-          "table-rails",
-          "table-walnut-inner-rail",
-          "table-bronze-inlay",
-          "table-corner-caps",
-          "table-corner-accents",
-        ],
+        // Five bounded batches retain the legacy diagnostic names while the
+        // bronze material is intentionally shared by both bronze batches.
+        railBatches: RAIL_BATCH_NAMES,
       }}
-      onUpdate={(mesh) => {
-        applyRailBatches(mesh);
-        invalidate();
-      }}
-      args={[resources.geometry, resources.material, RAIL_PART_COUNT]}
-      frustumCulled={false}
       dispose={null}
-    />
+    >
+      <instancedMesh
+        ref={chassisRef}
+        name="table-rails"
+        args={[resources.geometry, resources.materials.chassis, OUTER_CHASSIS_PARTS.length]}
+        frustumCulled={false}
+        dispose={null}
+      />
+      <instancedMesh
+        ref={walnutRef}
+        name="table-walnut-inner-rail"
+        args={[resources.geometry, resources.materials.walnut, WALNUT_RAIL_PARTS.length]}
+        frustumCulled={false}
+        dispose={null}
+      />
+      <instancedMesh
+        ref={bronzeInlayRef}
+        name="table-bronze-inlay"
+        args={[resources.geometry, resources.materials.bronze, BRONZE_INLAY_PARTS.length]}
+        frustumCulled={false}
+        dispose={null}
+      />
+      <instancedMesh
+        ref={cornerCapsRef}
+        name="table-corner-caps"
+        args={[resources.geometry, resources.materials.cornerCaps, CORNER_CAP_PARTS.length]}
+        frustumCulled={false}
+        dispose={null}
+      />
+      <instancedMesh
+        ref={cornerAccentsRef}
+        name="table-corner-accents"
+        args={[resources.geometry, resources.materials.bronze, CORNER_ACCENT_PARTS.length]}
+        frustumCulled={false}
+        dispose={null}
+      />
+    </group>
   );
 }
 function FeltSeams() {
