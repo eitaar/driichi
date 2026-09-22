@@ -51,7 +51,7 @@ describe("persistent motion scene contents", () => {
     expect(tileSource).not.toMatch(/new\s+Mesh\s*\(/);
   });
 
-  it("enforces meaningful rail luminance and delta from the surround in one shared population", () => {
+  it("uses persistent uniform rail batches instead of per-instance colors", () => {
     const railsSource = componentSource("function TableRails", "function FeltSeams");
     const colors = Object.values(TABLE_RAIL_PALETTE);
     const channelLuminance = (hex: string) => {
@@ -79,12 +79,28 @@ describe("persistent motion scene contents", () => {
     expect(channelLuminance(TABLE_RAIL_PALETTE.bronze) - backgroundLuminance).toBeGreaterThanOrEqual(minimumBronzeLuminance);
     expect(channelDelta(TABLE_RAIL_PALETTE.walnut, background)).toEqual([85, 46, 25]);
     expect(channelDelta(TABLE_RAIL_PALETTE.bronze, background)).toEqual([172, 119, 70]);
-    expect(railsSource).toContain("new MeshBasicMaterial");
-    expect(railsSource).toContain("toneMapped: false");
     expect(railsSource).toContain("const resources = useMemo");
-    expect(railsSource).toContain("vertexColors: true");
-    expect(railsSource).toContain("args={[resources.geometry, resources.material, RAIL_PART_COUNT]}");
-    expect(railsSource.match(/<instancedMesh\b/g)).toHaveLength(1);
+    expect(railsSource).toContain("geometry: new BoxGeometry(1, 1, 1)");
+    expect(railsSource.match(/new MeshBasicMaterial/g)).toHaveLength(4);
+    expect(railsSource.match(/toneMapped: false/g)).toHaveLength(4);
+    expect(railsSource.match(/<instancedMesh\b/g)).toHaveLength(5);
+    expect(railsSource.match(/args=\{\[resources\.geometry,/g)).toHaveLength(5);
+    expect(railsSource).toContain("resources.materials.bronze");
+    expect(railsSource).not.toContain("vertexColors");
+    expect(railsSource).not.toContain("setColorAt");
+    expect(railsSource).not.toContain("instanceColor");
+    expect(railsSource).not.toContain("onUpdate");
+  });
+
+  it("updates rail matrices once and disposes the shared geometry/materials once", () => {
+    const railsSource = componentSource("function TableRails", "function FeltSeams");
+
+    expect(railsSource).toContain("useLayoutEffect");
+    expect(railsSource).not.toContain("useFrame");
+    expect(railsSource.match(/applyTableParts\([^)]*Ref\.current/g)).toHaveLength(5);
+    expect(railsSource.match(/resources\.geometry\.dispose\(\)/g)).toHaveLength(1);
+    expect(railsSource.match(/resources\.materials\.[a-zA-Z]+\.dispose\(\)/g)).toHaveLength(4);
+    expect(railsSource).toContain("resources.materials.bronze");
   });
 
   it("keeps the felt map independent of the active motion prop", () => {
