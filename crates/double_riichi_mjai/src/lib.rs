@@ -252,7 +252,7 @@ pub enum ServerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         names: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
+        id: Option<u8>,
     },
     StartKyoku {
         bakaze: String,
@@ -296,6 +296,7 @@ pub enum ServerEvent {
     Kakan {
         actor: u8,
         pai: WireTile,
+        consumed: Vec<WireTile>,
     },
     Ankan {
         actor: u8,
@@ -346,7 +347,10 @@ pub enum ServerEvent {
         actor: u8,
     },
     EndKyoku,
-    EndGame,
+    EndGame {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scores: Option<Vec<i32>>,
+    },
 }
 
 /// Parsed server input.  Opaque events retain only their bounded type name;
@@ -507,7 +511,7 @@ fn validate_server_event(
                     .try_for_each(|name| bounded_string(name, MAX_FIELD_STRING_BYTES))?;
             }
             if let Some(id) = id {
-                bounded_string(id, MAX_FIELD_STRING_BYTES)?;
+                validate_seat_if_needed(*id)?;
             }
         }
         ServerEvent::StartKyoku {
@@ -565,9 +569,14 @@ fn validate_server_event(
             validate_known_tile(*pai)?;
             validate_tile_list(consumed, mode, false, 3)?;
         }
-        ServerEvent::Kakan { actor, pai } => {
+        ServerEvent::Kakan {
+            actor,
+            pai,
+            consumed,
+        } => {
             validate_seat_if_needed(*actor)?;
             validate_known_tile(*pai)?;
+            validate_tile_list(consumed, mode, false, 3)?;
         }
         ServerEvent::Ankan { actor, consumed } => {
             validate_seat_if_needed(*actor)?;
@@ -645,7 +654,15 @@ fn validate_server_event(
                 }
             }
         }
-        ServerEvent::EndKyoku | ServerEvent::EndGame => {}
+        ServerEvent::EndKyoku => {}
+        ServerEvent::EndGame { scores } => {
+            if let Some(scores) = scores {
+                bounded_vec(scores, 4)?;
+                if enforce_mode && scores.len() != mode.seat_count() {
+                    return Err(ProtocolError::InvalidModeValue);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -675,9 +692,9 @@ pub fn event_for_player(
 ) -> Result<ServerEvent, ProtocolError> {
     validate_seat(viewer.index(), mode)?;
     let event = match event {
-        GameEvent::StartGame { names, id } => ServerEvent::StartGame {
+        GameEvent::StartGame { names, .. } => ServerEvent::StartGame {
             names: names.clone(),
-            id: id.clone(),
+            id: Some(viewer.index()),
         },
         GameEvent::StartKyoku {
             bakaze,
@@ -773,9 +790,14 @@ pub fn event_for_player(
             pai: wire_tile(*called, mode)?,
             consumed: wire_tiles(consumed, mode)?,
         },
-        GameEvent::Kakan { actor, called } => ServerEvent::Kakan {
+        GameEvent::Kakan {
+            actor,
+            called,
+            consumed,
+        } => ServerEvent::Kakan {
             actor: actor.index(),
             pai: wire_tile(*called, mode)?,
+            consumed: wire_tiles(consumed, mode)?,
         },
         GameEvent::Ankan { actor, consumed } => ServerEvent::Ankan {
             actor: actor.index(),
@@ -844,7 +866,7 @@ pub fn event_for_player(
             actor: actor.index(),
         },
         GameEvent::EndKyoku => ServerEvent::EndKyoku,
-        GameEvent::EndGame => ServerEvent::EndGame,
+        GameEvent::EndGame => ServerEvent::EndGame { scores: None },
     };
     validate_server_event(&event, mode, true)?;
     Ok(event)
@@ -857,6 +879,25 @@ pub fn encode_event(
     mode: GameMode,
 ) -> Result<String, ProtocolError> {
     let event = event_for_player(event, viewer, mode)?;
+    serde_json::to_string(&event).map_err(|_| ProtocolError::Observation)
+}
+
+/// Serialize a server event, adding the final score payload required by
+/// riichi.dev when the event ends the match.
+pub fn encode_compat_event(
+    event: &GameEvent,
+    viewer: Seat,
+    mode: GameMode,
+    scores: &[i32],
+) -> Result<String, ProtocolError> {
+    let mut event = event_for_player(event, viewer, mode)?;
+    if let ServerEvent::EndGame { scores: output } = &mut event {
+        bounded_vec(scores, 4)?;
+        if scores.len() != mode.seat_count() {
+            return Err(ProtocolError::InvalidModeValue);
+        }
+        *output = Some(scores.to_vec());
+    }
     serde_json::to_string(&event).map_err(|_| ProtocolError::Observation)
 }
 
@@ -968,9 +1009,9 @@ impl PossibleAction {
     }
 }
 
-/// Strict client action DTO.  Unknown fields are rejected at this boundary.
+/// Client action DTO. Unknown fields are ignored for riichi.dev forward compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientAction {
     Dahai {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2956,6 +2997,21 @@ mod tests {
     }
 
     #[test]
+    fn start_game_identifies_the_recipient_seat() {
+        let encoded = encode_event(
+            &GameEvent::StartGame {
+                names: None,
+                id: None,
+            },
+            seat(2),
+            GameMode::FourPlayerRedEast,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value, serde_json::json!({"type":"start_game","id":2}));
+    }
+
+    #[test]
     fn event_encoding_masks_start_hands_and_opponent_draws() {
         let event = GameEvent::StartKyoku {
             bakaze: double_riichi_core::Wind::East,
@@ -2989,7 +3045,31 @@ mod tests {
     }
 
     #[test]
-    fn unknown_server_event_is_tolerated_but_unknown_client_field_is_not() {
+    fn kakan_event_includes_existing_pon_tiles() {
+        let encoded = encode_event(
+            &GameEvent::Kakan {
+                actor: seat(3),
+                called: tile(32),
+                consumed: vec![tile(33), tile(34), tile(35)],
+            },
+            seat(0),
+            GameMode::FourPlayerRedEast,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).unwrap(),
+            serde_json::json!({
+                "type": "kakan",
+                "actor": 3,
+                "pai": "9m",
+                "consumed": ["9m", "9m", "9m"]
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_server_event_and_client_fields_are_tolerated() {
         let unknown = parse_server_message(
             br#"{"type":"future_event","private_state":{"hand":[1,2,3]}}"#,
             GameMode::FourPlayerRedEast,
@@ -3001,11 +3081,12 @@ mod tests {
                 event_type: "future_event".into()
             }
         );
-        let bad = parse_client_action(
-            br#"{"type":"none","extra":"reject"}"#,
+        let action = parse_client_action(
+            br#"{"type":"none","extra":"ignored"}"#,
             GameMode::FourPlayerRedEast,
-        );
-        assert!(bad.is_err());
+        )
+        .unwrap();
+        assert!(matches!(action, ClientAction::None { request_id: None }));
     }
 
     #[test]

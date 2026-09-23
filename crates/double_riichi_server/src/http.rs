@@ -3811,6 +3811,16 @@ pub(crate) fn server_busy(request_id: &RequestId) -> Response {
     .response(request_id)
 }
 
+pub(crate) fn already_connected(request_id: &RequestId) -> Response {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "Already connected",
+        "This bot is already queued or playing.",
+        "already_connected",
+    )
+    .response(request_id)
+}
+
 pub(crate) fn rate_limited(request_id: &RequestId, window: Duration) -> Response {
     let mut response = ApiError::new(
         StatusCode::TOO_MANY_REQUESTS,

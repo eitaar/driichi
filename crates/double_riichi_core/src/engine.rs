@@ -59,7 +59,7 @@ impl EngineAdapter {
             state,
             log_cursor: 0,
         };
-        let events = adapter.drain_events()?;
+        let events = adapter.drain_events(&[])?;
         Ok((adapter, events))
     }
 
@@ -122,7 +122,7 @@ impl EngineAdapter {
         while self.needs_initialize_next_round() {
             self.step_once_without_action()?;
         }
-        self.drain_events()
+        self.drain_events(&[(seat, action)])
     }
 
     pub(crate) fn apply_simultaneous(
@@ -130,6 +130,7 @@ impl EngineAdapter {
         actions: &[(Seat, GameAction)],
     ) -> Result<Vec<GameEvent>, EngineError> {
         let mut commands = HashMap::new();
+        let mut applied_actions = Vec::with_capacity(actions.len());
         let mut seen = HashMap::new();
         for (seat, action) in actions {
             if seen.insert(*seat, ()).is_some() {
@@ -156,6 +157,7 @@ impl EngineAdapter {
                     ));
                 }
             }
+            applied_actions.push((*seat, action));
         }
         step_variant(&mut self.state, &commands);
         if let Some(error) = last_error(&self.state) {
@@ -164,7 +166,7 @@ impl EngineAdapter {
         while self.needs_initialize_next_round() {
             self.step_once_without_action()?;
         }
-        self.drain_events()
+        self.drain_events(&applied_actions)
     }
 
     pub(crate) fn table_state(
@@ -540,7 +542,10 @@ impl EngineAdapter {
         }
     }
 
-    fn drain_events(&mut self) -> Result<Vec<GameEvent>, EngineError> {
+    fn drain_events(
+        &mut self,
+        applied_actions: &[(Seat, GameAction)],
+    ) -> Result<Vec<GameEvent>, EngineError> {
         let logs = match &self.state {
             GameStateVariant::FourPlayer(state) => &state.mjai_log,
             GameStateVariant::ThreePlayer(state) => &state.mjai_log,
@@ -548,7 +553,7 @@ impl EngineAdapter {
         let new_logs = logs.get(self.log_cursor..).unwrap_or_default();
         let mut events = Vec::with_capacity(new_logs.len());
         for log in new_logs {
-            events.push(parse_event(log, self.mode)?);
+            events.push(parse_event(log, self.mode, applied_actions)?);
         }
         self.log_cursor = logs.len();
         Ok(events)
@@ -683,7 +688,11 @@ fn action_sort_key(action: &GameAction) -> (u8, u8, u8, Vec<u8>) {
     }
 }
 
-fn parse_event(line: &str, mode: GameMode) -> Result<GameEvent, EngineError> {
+fn parse_event(
+    line: &str,
+    mode: GameMode,
+    applied_actions: &[(Seat, GameAction)],
+) -> Result<GameEvent, EngineError> {
     let parse_seat_for_mode = |value: usize| parse_seat(value, mode);
     let parse_tile_for_mode = |value: &str| parse_tile(value, mode);
     let raw: MjaiEvent = serde_json::from_str(line)
@@ -767,10 +776,23 @@ fn parse_event(line: &str, mode: GameMode) -> Result<GameEvent, EngineError> {
                 .map(|tile| parse_tile_for_mode(tile))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
-        MjaiEvent::Kakan { actor, pai } => Ok(GameEvent::Kakan {
-            actor: parse_seat_for_mode(actor)?,
-            called: parse_tile_for_mode(&pai)?,
-        }),
+        MjaiEvent::Kakan { actor, pai } => {
+            let actor = parse_seat_for_mode(actor)?;
+            let consumed = applied_actions
+                .iter()
+                .find_map(|(seat, action)| match action {
+                    GameAction::Kakan { consumed, .. } if *seat == actor => Some(consumed.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    EngineError::Divergence("kakan event has no matching applied action".into())
+                })?;
+            Ok(GameEvent::Kakan {
+                actor,
+                called: parse_tile_for_mode(&pai)?,
+                consumed,
+            })
+        }
         MjaiEvent::Ankan { actor, consumed } => Ok(GameEvent::Ankan {
             actor: parse_seat_for_mode(actor)?,
             consumed: consumed
@@ -883,6 +905,38 @@ mod tests {
         assert!(matches!(
             adapter.to_neutral_action(&action, None),
             Err(EngineError::InvalidTile(_))
+        ));
+    }
+
+    #[test]
+    fn kakan_parser_restores_consumed_tiles_from_the_applied_action() {
+        let actor = Seat::new(3).unwrap();
+        let consumed = vec![
+            Tile::from_id(33).unwrap(),
+            Tile::from_id(34).unwrap(),
+            Tile::from_id(35).unwrap(),
+        ];
+
+        let event = parse_event(
+            r#"{"type":"kakan","actor":3,"pai":"9m"}"#,
+            GameMode::FourPlayerRedEast,
+            &[(
+                actor,
+                GameAction::Kakan {
+                    called: Tile::from_id(32).unwrap(),
+                    consumed: consumed.clone(),
+                },
+            )],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            event,
+            GameEvent::Kakan {
+                actor: event_actor,
+                consumed: event_consumed,
+                ..
+            } if event_actor == actor && event_consumed == consumed
         ));
     }
 

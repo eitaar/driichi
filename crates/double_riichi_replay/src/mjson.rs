@@ -195,10 +195,18 @@ pub(crate) fn event_value(event: &CanonicalEvent) -> Value {
             called,
             consumed,
         } => call_value(&mut object, "kan", *actor, *target, *called, consumed),
-        GameEvent::Kakan { actor, called } => {
+        GameEvent::Kakan {
+            actor,
+            called,
+            consumed,
+        } => {
             object.insert("type".into(), json!("kakan"));
             object.insert("actor".into(), json!(actor.index()));
             object.insert("pai".into(), json!(tile_name(*called)));
+            object.insert(
+                "consumed".into(),
+                json!(consumed.iter().copied().map(tile_name).collect::<Vec<_>>()),
+            );
         }
         GameEvent::Ankan { actor, consumed } => {
             object.insert("type".into(), json!("ankan"));
@@ -388,10 +396,11 @@ fn parse_value(value: &Value) -> Result<CanonicalEvent, String> {
             }
         }
         "kakan" => {
-            check_fields(object, &["type", "actor", "pai"])?;
+            check_fields(object, &["type", "actor", "pai", "consumed"])?;
             Ok(GameEvent::Kakan {
                 actor: parse_seat(required_usize(object, "actor")?)?,
                 called: parse_tile(required_string(object, "pai")?)?,
+                consumed: required_tiles(object, "consumed")?,
             })
         }
         "ankan" => {
@@ -558,9 +567,18 @@ pub(crate) fn validate_event(event: &CanonicalEvent, mode: GameMode) -> Result<(
             }
             Ok(())
         }
-        GameEvent::Kakan { actor, called } => {
+        GameEvent::Kakan {
+            actor,
+            called,
+            consumed,
+        } => {
             seat(*actor)?;
-            tile(*called)
+            tile(*called)?;
+            tiles(consumed)?;
+            if consumed.len() != 3 {
+                return Err("kakan consumed must contain three tiles".into());
+            }
+            Ok(())
         }
         GameEvent::Ankan { actor, consumed } => {
             seat(*actor)?;
