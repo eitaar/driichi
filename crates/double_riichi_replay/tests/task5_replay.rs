@@ -84,6 +84,28 @@ fn start_events() -> Vec<CanonicalEvent> {
 }
 
 #[test]
+fn canonical_mjson_accepts_and_preserves_kakan_consumed_tiles() {
+    let line = r#"{"type":"kakan","actor":3,"pai":"9m","consumed":["9m","9m","9m"]}"#;
+    let text = start_events()
+        .iter()
+        .map(serialize_event)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join("\n")
+        + "\n"
+        + line
+        + "\n{\"type\":\"end_kyoku\"}\n{\"type\":\"end_game\"}";
+
+    let events = parse_mjson(&text).unwrap();
+    let kakan = events
+        .iter()
+        .find(|event| matches!(event, GameEvent::Kakan { .. }))
+        .unwrap();
+
+    assert_eq!(serialize_event(kakan).unwrap(), line);
+}
+
+#[test]
 fn canonical_mjson_is_ordered_json_lines_and_round_trips_calls_kans_riichi_scores_and_draws() {
     let mut events = start_events();
     events.extend([
@@ -125,6 +147,7 @@ fn canonical_mjson_is_ordered_json_lines_and_round_trips_calls_kans_riichi_score
         GameEvent::Kakan {
             actor: Seat::new(1).unwrap(),
             called: Tile::from_id(12).unwrap(),
+            consumed: vec![Tile::from_id(12).unwrap(); 3],
         },
         GameEvent::Dora {
             dora_marker: Tile::from_id(13).unwrap(),
@@ -620,6 +643,7 @@ fn reconstructed_frames_include_calls_kans_riichi_multi_ron_draws_and_score_upda
         GameEvent::Kakan {
             actor: Seat::new(1).unwrap(),
             called: Tile::from_id(0).unwrap(),
+            consumed: vec![Tile::from_id(0).unwrap(); 3],
         },
         GameEvent::Reach {
             actor: Seat::new(2).unwrap(),

@@ -512,6 +512,7 @@ pub enum GameEvent {
     Kakan {
         actor: Seat,
         called: Tile,
+        consumed: Vec<Tile>,
     },
     Ankan {
         actor: Seat,

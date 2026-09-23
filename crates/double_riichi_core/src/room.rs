@@ -348,6 +348,7 @@ pub enum RoomHistoryEvent {
     Kakan {
         actor: Seat,
         called: Tile,
+        consumed: Vec<Tile>,
     },
     Ankan {
         actor: Seat,
@@ -561,9 +562,14 @@ fn project_history_event(event: &GameEvent, audience: Audience) -> Option<RoomHi
             called: *called,
             consumed: consumed.clone(),
         },
-        GameEvent::Kakan { actor, called } => RoomHistoryEvent::Kakan {
+        GameEvent::Kakan {
+            actor,
+            called,
+            consumed,
+        } => RoomHistoryEvent::Kakan {
             actor: *actor,
             called: *called,
+            consumed: consumed.clone(),
         },
         GameEvent::Ankan { actor, consumed } => RoomHistoryEvent::Ankan {
             actor: *actor,

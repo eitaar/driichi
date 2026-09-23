@@ -172,7 +172,7 @@ impl ReplayState {
                     called_tile: Some(*called),
                 });
             }
-            GameEvent::Kakan { actor, called } => {
+            GameEvent::Kakan { actor, called, .. } => {
                 let player = self.player_mut(*actor)?;
                 remove_required_tile(player.hand, *called)?;
                 let Some(meld) = player.melds.iter_mut().find(|meld| {

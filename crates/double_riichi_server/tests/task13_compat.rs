@@ -109,11 +109,15 @@ async fn play_bot(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     illegal_first: bool,
-) -> (bool, bool, Option<String>) {
+    timeout_first: bool,
+) -> (bool, bool, Option<String>, Option<u64>, Option<Vec<i64>>) {
     let mut saw_end = false;
     let mut saw_ack = false;
     let mut validation = None;
+    let mut start_id = None;
+    let mut end_scores = None;
     let mut sent_illegal = false;
+    let mut timed_out = false;
     let mut retry = None;
     loop {
         let message = match tokio::time::timeout(Duration::from_secs(45), socket.next()).await {
@@ -130,7 +134,12 @@ async fn play_bot(
             continue;
         };
         match value["type"].as_str() {
+            Some("start_game") => start_id = value["id"].as_u64(),
             Some("request_action") => {
+                if timeout_first && !timed_out {
+                    timed_out = true;
+                    continue;
+                }
                 let request_id = value["request_id"].clone();
                 let actions = value["possible_actions"].as_array().unwrap();
                 let mut action = actions.first().cloned().unwrap();
@@ -164,7 +173,12 @@ async fn play_bot(
                         .unwrap();
                 }
             }
-            Some("end_game") => saw_end = true,
+            Some("end_game") => {
+                saw_end = true;
+                end_scores = value["scores"]
+                    .as_array()
+                    .map(|scores| scores.iter().map(|score| score.as_i64().unwrap()).collect());
+            }
             Some("validation_result") => {
                 validation = value["passed"].as_bool().map(|passed| {
                     if passed {
@@ -180,7 +194,7 @@ async fn play_bot(
             break;
         }
     }
-    (saw_end, saw_ack, validation)
+    (saw_end, saw_ack, validation, start_id, end_scores)
 }
 
 #[tokio::test]
@@ -434,8 +448,10 @@ async fn live_ranked_bot_completes_and_persists_mjson_metadata() {
     let (state, _service, storage, raw) = fixture("ranked").await;
     let (base, server) = serve(state.clone()).await;
     let socket = ws(&base, "/ws/ranked", Some(&raw), None).await.unwrap();
-    let (saw_end, saw_ack, validation) = play_bot(socket, false).await;
+    let (saw_end, saw_ack, validation, start_id, end_scores) = play_bot(socket, false, false).await;
+    assert!(matches!(start_id, Some(0..=3)));
     assert!(saw_end, "production-style bot did not receive end_game");
+    assert_eq!(end_scores.as_ref().map(Vec::len), Some(4));
     assert!(
         saw_ack,
         "production-style bot did not receive an accepted ack"
@@ -474,7 +490,9 @@ async fn live_validate_reports_illegal_action_but_completes_match() {
     let (state, _service, storage, raw) = fixture("validate").await;
     let (base, server) = serve(state.clone()).await;
     let socket = ws(&base, "/ws/validate", Some(&raw), None).await.unwrap();
-    let (saw_end, saw_ack, validation) = play_bot(socket, true).await;
+    let (saw_end, saw_ack, validation, start_id, end_scores) = play_bot(socket, true, false).await;
+    assert_eq!(start_id, Some(0));
+    assert_eq!(end_scores.as_ref().map(Vec::len), Some(4));
     assert!(saw_end);
     assert!(saw_ack);
     assert_eq!(validation.as_deref(), Some("illegal_action"));
@@ -485,6 +503,42 @@ async fn live_validate_reports_illegal_action_but_completes_match() {
             .unwrap(),
         0
     );
+    server.abort();
+    state.shutdown().await;
+    storage.close().await;
+}
+
+#[tokio::test]
+async fn live_validate_allows_a_timeout_and_defaults_the_action() {
+    let (state, _service, storage, raw) = fixture("validate-timeout").await;
+    let (base, server) = serve(state.clone()).await;
+    let socket = ws(&base, "/ws/validate", Some(&raw), None).await.unwrap();
+    let (saw_end, saw_ack, validation, _, _) = play_bot(socket, false, true).await;
+    assert!(saw_end);
+    assert!(saw_ack);
+    assert_eq!(validation.as_deref(), Some("passed"));
+    server.abort();
+    state.shutdown().await;
+    storage.close().await;
+}
+
+#[tokio::test]
+async fn duplicate_bot_connection_is_rejected_while_playing() {
+    let (state, _service, storage, raw) = fixture("duplicate-bot").await;
+    let (base, server) = serve(state.clone()).await;
+    let mut first = ws(&base, "/ws/validate", Some(&raw), None).await.unwrap();
+    let start = tokio::time::timeout(Duration::from_secs(2), first.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let WsMessage::Text(start) = start else {
+        panic!("expected start_game");
+    };
+    let start: Value = serde_json::from_str(&start).unwrap();
+    assert_eq!(start, json!({"type":"start_game","id":0}));
+    assert!(ws(&base, "/ws/validate", Some(&raw), None).await.is_err());
+    drop(first);
     server.abort();
     state.shutdown().await;
     storage.close().await;
@@ -528,7 +582,7 @@ async fn shutdown_closes_waiters_and_rejects_new_compat_admission() {
 
 #[tokio::test]
 async fn health_reports_active_compat_count_while_ranked_match_waits() {
-    let (state, _service, storage, raw) = fixture("health-count").await;
+    let (state, service, storage, raw) = fixture("health-count").await;
     let app = server_router(state.clone());
     let login = app
         .oneshot(
@@ -548,9 +602,21 @@ async fn health_reports_active_compat_count_while_ranked_match_waits() {
     assert_eq!(login.status(), StatusCode::OK);
     let cookie = login.headers()["set-cookie"].to_str().unwrap().to_owned();
     let (base, server) = serve(state.clone()).await;
+    let mut tokens = vec![raw];
+    for index in 1..4 {
+        tokens.push(
+            service
+                .create(&format!("runner-{index}"), index + 1, "task13")
+                .await
+                .unwrap()
+                .secret()
+                .expose()
+                .to_owned(),
+        );
+    }
     let mut sockets = Vec::new();
-    for _ in 0..4 {
-        sockets.push(ws(&base, "/ws/ranked", Some(&raw), None).await.unwrap());
+    for token in &tokens {
+        sockets.push(ws(&base, "/ws/ranked", Some(token), None).await.unwrap());
     }
 
     let (status, body) = tokio::time::timeout(Duration::from_secs(2), async {

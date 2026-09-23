@@ -22,7 +22,7 @@ use double_riichi_core::{
 };
 use double_riichi_mjai::{
     AckStatus, ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition,
-    RequestTime, TimingBudget, TimingOutcome, encode_event, match_legal_action,
+    RequestTime, TimingBudget, TimingOutcome, encode_compat_event, match_legal_action,
     parse_client_action, request_id_from_frame,
 };
 use double_riichi_replay::ReplayWriter;
@@ -37,9 +37,9 @@ use tokio::{
 use url::Url;
 
 use crate::http::{
-    ConnectionPermit, RequestId, ServerState, generate_ulid, invalid_credentials, invalid_request,
-    json_response, origin_not_allowed, rate_limited, room_error_response, room_not_found,
-    server_busy,
+    ConnectionPermit, RequestId, ServerState, already_connected, generate_ulid,
+    invalid_credentials, invalid_request, json_response, origin_not_allowed, rate_limited,
+    room_error_response, room_not_found, server_busy,
 };
 use crate::{BotTokenRecord, BotTokenService, Storage, TokenRevoked};
 
@@ -109,6 +109,7 @@ enum MatchInput {
 }
 
 struct ActiveCompat {
+    token_ids: Vec<String>,
     controls: Vec<(String, mpsc::Sender<CompatControl>)>,
     task: Option<JoinHandle<()>>,
     released: Arc<AtomicBool>,
@@ -244,6 +245,18 @@ impl CompatState {
             .is_none_or(|service| service.is_active_token_id(token_id))
     }
 
+    async fn token_in_use(&self, token_id: &str) -> bool {
+        let inner = self.inner.lock().await;
+        inner
+            .queue
+            .iter()
+            .any(|bot| bot.token.token_id() == token_id)
+            || inner
+                .active
+                .values()
+                .any(|active| active.token_ids.iter().any(|id| id == token_id))
+    }
+
     fn release_slot(&self, released: &AtomicBool) {
         if released
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -277,6 +290,17 @@ impl CompatState {
         {
             let mut inner = self.inner.lock().await;
             if inner.shutting_down || self.shutting_down.load(Ordering::Acquire) {
+                return Err(());
+            }
+            if inner
+                .queue
+                .iter()
+                .any(|bot| bot.token.token_id() == token.token_id())
+                || inner
+                    .active
+                    .values()
+                    .any(|active| active.token_ids.iter().any(|id| id == token.token_id()))
+            {
                 return Err(());
             }
             if inner.queue.len() >= self.max_queue.load(Ordering::Acquire) {
@@ -330,6 +354,14 @@ impl CompatState {
                 || self.shutting_down.load(Ordering::Acquire)
                 || self.active_matches.load(Ordering::Acquire)
                     >= self.max_active.load(Ordering::Acquire)
+                || inner
+                    .queue
+                    .iter()
+                    .any(|bot| bot.token.token_id() == token.token_id())
+                || inner
+                    .active
+                    .values()
+                    .any(|active| active.token_ids.iter().any(|id| id == token.token_id()))
             {
                 return Err(());
             }
@@ -422,12 +454,22 @@ impl CompatState {
         if batch.is_empty() {
             return;
         }
+        let token_ids = batch
+            .iter()
+            .map(|bot| bot.token.token_id().to_owned())
+            .collect::<Vec<_>>();
         let start = {
             let mut inner = self.inner.lock().await;
             if inner.shutting_down
                 || self.shutting_down.load(Ordering::Acquire)
                 || self.active_matches.load(Ordering::Acquire)
                     >= self.max_active.load(Ordering::Acquire)
+                || inner.active.values().any(|active| {
+                    active
+                        .token_ids
+                        .iter()
+                        .any(|id| token_ids.iter().any(|candidate| candidate == id))
+                })
             {
                 None
             } else {
@@ -438,6 +480,7 @@ impl CompatState {
                 inner.active.insert(
                     id,
                     ActiveCompat {
+                        token_ids: token_ids.clone(),
                         controls: Vec::new(),
                         task: None,
                         released: Arc::clone(&released),
@@ -880,6 +923,9 @@ pub(crate) async fn ranked_upgrade(
         Ok(token) => token,
         Err(_) => return invalid_credentials(&request_id),
     };
+    if state.compat.token_in_use(token.token_id()).await {
+        return already_connected(&request_id);
+    }
     let display_name = query_param(uri.query(), "display_name")
         .as_deref()
         .and_then(normalize_name)
@@ -922,6 +968,9 @@ pub(crate) async fn validate_upgrade(
         Ok(token) => token,
         Err(_) => return invalid_credentials(&request_id),
     };
+    if state.compat.token_in_use(token.token_id()).await {
+        return already_connected(&request_id);
+    }
     let Some(permit) = state.connection_permit() else {
         return server_busy(&request_id);
     };
@@ -1606,8 +1655,6 @@ impl CompatMatch {
                     {
                         let _ = self.send_ack(seat, outcome.ack);
                     }
-                    self.validation_failed = true;
-                    self.validation_reason.get_or_insert("timeout");
                 }
                 continue;
             }
@@ -1687,13 +1734,18 @@ impl CompatMatch {
 
     async fn broadcast(&mut self, events: &[GameEvent]) -> bool {
         self.record_replay(events);
+        let final_scores = self
+            .machine
+            .result()
+            .map(|result| result.final_scores.clone())
+            .unwrap_or_default();
         let mut healthy = true;
         for event in events {
             for seat in self.players.keys().copied().collect::<Vec<_>>() {
                 if !self.players.get(&seat).is_some_and(|player| player.active) {
                     continue;
                 }
-                match encode_event(event, seat, self.mode) {
+                match encode_compat_event(event, seat, self.mode, &final_scores) {
                     Ok(text) if self.send(seat, Message::text(text.clone())) => {}
                     _ => {
                         healthy = false;
@@ -2083,8 +2135,13 @@ async fn sync_room(
         _ => return true,
     };
     let seat = projection.viewer_seat;
+    let scores = projection
+        .players
+        .iter()
+        .map(|player| player.score)
+        .collect::<Vec<_>>();
     for event in events.get(*cursor..).unwrap_or_default() {
-        let Ok(text) = encode_event(event, seat, mode) else {
+        let Ok(text) = encode_compat_event(event, seat, mode, &scores) else {
             return false;
         };
         if !queue_output(output, Message::text(text)) {
@@ -2837,6 +2894,7 @@ mod tests {
             inner.active.insert(
                 1,
                 ActiveCompat {
+                    token_ids: Vec::new(),
                     controls: Vec::new(),
                     task: None,
                     released: Arc::new(AtomicBool::new(false)),
