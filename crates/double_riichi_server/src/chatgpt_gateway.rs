@@ -10,7 +10,11 @@ use axum::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::{ServerState, mcp::{MCP_MAX_BODY_BYTES, McpRuntime}, oauth::OAuthError};
+use crate::{
+    ServerState,
+    mcp::{MCP_MAX_BODY_BYTES, McpRuntime},
+    oauth::OAuthError,
+};
 
 const CHATGPT_TOOL_SCOPE: &str = "driichi:play";
 const CHATGPT_RESPONSE_BODY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -87,7 +91,10 @@ pub(crate) async fn mcp_endpoint(
         Ok(message) => message,
         Err(response) => return response,
     };
-    let rpc_method = message.as_ref().and_then(json_rpc_method).map(str::to_owned);
+    let rpc_method = message
+        .as_ref()
+        .and_then(json_rpc_method)
+        .map(str::to_owned);
     let rpc_id = message.as_ref().and_then(json_rpc_id);
     let is_tool_call = rpc_method.as_deref() == Some("tools/call");
     let is_tools_list = rpc_method.as_deref() == Some("tools/list");
@@ -105,7 +112,11 @@ pub(crate) async fn mcp_endpoint(
         Some(access_token) => {
             let grant = match oauth
                 .grants
-                .validate_access(access_token, oauth.config.resource.as_str(), CHATGPT_TOOL_SCOPE)
+                .validate_access(
+                    access_token,
+                    oauth.config.resource.as_str(),
+                    CHATGPT_TOOL_SCOPE,
+                )
                 .await
             {
                 Ok(grant) => grant,
@@ -136,7 +147,11 @@ pub(crate) async fn mcp_endpoint(
                     return unauthorized(&oauth.config.resource, "invalid_token");
                 }
                 Err(OAuthError::Storage) => {
-                    return gateway_error(StatusCode::SERVICE_UNAVAILABLE, "oauth_unavailable", None);
+                    return gateway_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "oauth_unavailable",
+                        None,
+                    );
                 }
             };
             if grant.subject != "admin"
@@ -330,11 +345,7 @@ async fn decorate_tools_list_response(response: Response, request_id: &Value) ->
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    let media_type = content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim();
+    let media_type = content_type.split(';').next().unwrap_or("").trim();
     let is_json = media_type.eq_ignore_ascii_case("application/json");
     let is_sse = media_type.eq_ignore_ascii_case("text/event-stream");
     if !is_json && !is_sse {
@@ -466,9 +477,10 @@ fn decorate_tools_list_message(message: &mut Value, request_id: &Value) -> Optio
 fn invalid_tools_list_response(mut parts: axum::http::response::Parts) -> Response {
     parts.status = StatusCode::BAD_GATEWAY;
     parts.headers.remove(header::CONTENT_LENGTH);
-    parts
-        .headers
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     parts
         .headers
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
