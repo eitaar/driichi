@@ -194,6 +194,8 @@ pub enum ServerInitError {
     Characters(#[source] CharacterRegistryError),
     #[error("trusted proxy CIDR is invalid")]
     TrustedProxy,
+    #[error("ChatGPT OAuth client could not be initialized")]
+    ChatgptOAuth(#[source] crate::oauth::CimdError),
 }
 
 #[derive(Clone)]
@@ -220,6 +222,7 @@ pub struct ServerState {
     storage_maintenance_started: Arc<AtomicBool>,
     storage: Option<Arc<Storage>>,
     bot_tokens: Option<Arc<BotTokenService>>,
+    pub(crate) chatgpt_oauth: Option<Arc<crate::oauth::OAuthGatewayState>>,
     pub(crate) compat: Arc<CompatState>,
     mcp_session_idle_seconds: u64,
     mcp_character: String,
@@ -418,6 +421,12 @@ impl ServerState {
                 .map_err(ServerInitError::Storage)?,
         ));
         let token_service = Arc::new(BotTokenService::new(storage.clone(), token_authority));
+        let chatgpt_oauth_requested = config.chatgpt_oauth.is_some();
+        let chatgpt_oauth_config = config.chatgpt_oauth.clone().filter(|_| {
+            std::env::var("DRIICHI_CHATGPT_BOT_TOKEN")
+                .ok()
+                .is_some_and(|token| token_service.authenticate(&token).is_ok())
+        });
         let trusted_proxy_cidrs = config
             .network
             .trusted_proxy_cidrs
@@ -466,6 +475,16 @@ impl ServerState {
             state.rooms.clone(),
         );
         state.bot_tokens = Some(token_service);
+        state.chatgpt_oauth = chatgpt_oauth_config
+            .map(crate::oauth::OAuthGatewayState::new)
+            .transpose()
+            .map_err(ServerInitError::ChatgptOAuth)?
+            .map(Arc::new);
+        if chatgpt_oauth_requested && state.chatgpt_oauth.is_none() {
+            tracing::warn!(
+                "ChatGPT OAuth discovery is disabled because DRIICHI_CHATGPT_BOT_TOKEN is missing or inactive"
+            );
+        }
         state.start_storage_maintenance();
         Ok(state)
     }
@@ -511,6 +530,7 @@ impl ServerState {
             admission_open: Arc::new(AtomicBool::new(true)),
             storage: None,
             bot_tokens: None,
+            chatgpt_oauth: None,
             compat,
             mcp_session_idle_seconds: 30 * 60,
             mcp_character,
@@ -1074,7 +1094,7 @@ async fn frontend_fallback(
 
 pub fn server_router(state: Arc<ServerState>) -> Router {
     let mcp_runtime = crate::mcp::McpRuntime::new(state.clone());
-    Router::new()
+    let mut router = Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/admin/openapi.yaml", get(openapi_document))
         .route("/api/v1/characters/human", get(human_characters))
@@ -1159,7 +1179,21 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
         .route("/ws/ranked", any(crate::compat::ranked_upgrade))
         .route("/ws/validate", any(crate::compat::validate_upgrade))
         .route("/status", get(crate::compat::status))
-        .route("/mcp", any(crate::mcp::mcp_endpoint))
+        .route("/mcp", any(crate::mcp::mcp_endpoint));
+
+    if state.chatgpt_oauth.is_some() {
+        router = router
+            .route(
+                "/.well-known/oauth-protected-resource/chatgpt/mcp",
+                get(crate::oauth::get_protected_resource_metadata),
+            )
+            .route(
+                "/.well-known/oauth-authorization-server",
+                get(crate::oauth::get_authorization_server_metadata),
+            );
+    }
+
+    router
         .fallback(frontend_fallback)
         .layer(DefaultBodyLimit::max(state.limits.http_json_limit))
         .layer(middleware::from_fn(request_context))
@@ -4589,4 +4623,95 @@ mod tests {
             "198.51.100.7".parse::<IpAddr>().unwrap()
         );
     }
+
+    #[tokio::test]
+    async fn oauth_metadata_routes_publish_matching_issuer_and_resource() {
+        let issuer = Url::parse("https://driichi.example/").unwrap();
+        let mut resource = issuer.clone();
+        resource.set_path("/chatgpt/mcp");
+        let oauth = crate::config::ChatgptOAuthConfig {
+            issuer,
+            resource,
+            client_id: Url::parse("https://chatgpt.com/oauth/client.json").unwrap(),
+            redirect_uri: Url::parse(
+                "https://chatgpt.com/connector_platform_oauth_redirect",
+            )
+            .unwrap(),
+            allowed_origins: vec![Url::parse("https://chatgpt.com/").unwrap()],
+        };
+        let admin = Arc::new(
+            AdminAuthenticator::new(
+                "admin",
+                crate::hash_password("a sufficiently long test password").unwrap(),
+            )
+            .unwrap(),
+        );
+        let mut state = ServerState::for_tests(
+            "https://driichi.example",
+            admin,
+            RoomRegistry::new(),
+        );
+        state.chatgpt_oauth = Some(Arc::new(
+            crate::oauth::OAuthGatewayState::new(oauth).unwrap(),
+        ));
+        let app = server_router(Arc::new(state));
+
+        use tower::ServiceExt;
+        let resource_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-protected-resource/chatgpt/mcp")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resource_response.status(), StatusCode::OK);
+        let resource_body = axum::body::to_bytes(resource_response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let resource_metadata: Value = serde_json::from_slice(&resource_body).unwrap();
+        assert_eq!(
+            resource_metadata["resource"],
+            "https://driichi.example/chatgpt/mcp"
+        );
+        assert_eq!(
+            resource_metadata["authorization_servers"][0],
+            "https://driichi.example"
+        );
+
+        let authorization_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authorization_response.status(), StatusCode::OK);
+        let authorization_body =
+            axum::body::to_bytes(authorization_response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+        let authorization_metadata: Value = serde_json::from_slice(&authorization_body).unwrap();
+        assert_eq!(
+            authorization_metadata["issuer"],
+            resource_metadata["authorization_servers"][0]
+        );
+        assert_eq!(
+            authorization_metadata["code_challenge_methods_supported"],
+            json!(["S256"])
+        );
+        assert_eq!(
+            authorization_metadata["token_endpoint_auth_methods_supported"],
+            json!(["none"])
+        );
+        assert_eq!(
+            authorization_metadata["client_id_metadata_document_supported"],
+            json!(true)
+        );
+    }
+
 }

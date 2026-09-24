@@ -1,0 +1,51 @@
+name: chatgpt-oauth-task2-lock
+on:
+  push:
+    branches:
+      - feat/chatgpt-oauth-gateway
+    paths:
+      - '.github/workflows/chatgpt-oauth-task2-lock.yml'
+      - 'Cargo.toml'
+      - 'crates/double_riichi_server/**'
+      - 'config.toml.example'
+permissions:
+  contents: read
+jobs:
+  lock-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - name: Format Rust sources
+        run: cargo fmt --all
+      - name: Resolve and verify the lockfile
+        run: |
+          cargo generate-lockfile
+          cargo test --locked -p double_riichi_server --test chatgpt_oauth
+      - name: Collect formatted sources and lockfile
+        if: always()
+        run: |
+          mkdir -p /tmp/task2-artifact
+          cp Cargo.lock /tmp/task2-artifact/Cargo.lock
+          for path in \
+            crates/double_riichi_server/Cargo.toml \
+            crates/double_riichi_server/src/config.rs \
+            crates/double_riichi_server/src/http.rs \
+            crates/double_riichi_server/src/lib.rs \
+            crates/double_riichi_server/src/oauth.rs \
+            crates/double_riichi_server/tests/chatgpt_oauth.rs \
+            crates/double_riichi_server/tests/task6_config_auth_storage.rs \
+            config.toml.example
+          do
+            mkdir -p "/tmp/task2-artifact/$(dirname "$path")"
+            cp "$path" "/tmp/task2-artifact/$path"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chatgpt-oauth-task2-lock
+          path: /tmp/task2-artifact
+          if-no-files-found: error
+          retention-days: 1

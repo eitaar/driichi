@@ -595,3 +595,103 @@ async fn bot_token_authority_reload_preserves_revoked_state_and_emits_seat_signa
     storage.close().await;
     let _ = fs::remove_dir_all(root);
 }
+
+
+#[test]
+fn chatgpt_oauth_is_opt_in_and_requires_trusted_https_configuration() {
+    let root = temp_root("chatgpt-oauth-config");
+    let disabled_path = write_config(
+        &root,
+        "public_origin = \"http://127.0.0.1:3000\"\n",
+    );
+    let disabled = RuntimeConfig::from_path(&disabled_path).unwrap();
+    assert!(disabled.chatgpt_oauth.is_none());
+
+    let valid_oauth = r#"
+        enabled = true
+        client_id = "https://chatgpt.com/oauth/client.json"
+        redirect_uri = "https://chatgpt.com/connector_platform_oauth_redirect"
+        allowed_origins = ["https://chatgpt.com"]
+    "#;
+    let enabled_path = write_config(
+        &root,
+        &format!("public_origin = \"https://driichi.com\"\n[chatgpt_oauth]\n{valid_oauth}"),
+    );
+    let enabled = RuntimeConfig::from_path(&enabled_path)
+        .unwrap()
+        .chatgpt_oauth
+        .unwrap();
+    assert_eq!(enabled.resource.as_str(), "https://driichi.com/chatgpt/mcp");
+    assert_eq!(enabled.issuer_identifier(), "https://driichi.com");
+    assert_eq!(
+        enabled.client_id.as_str(),
+        "https://chatgpt.com/oauth/client.json"
+    );
+    assert_eq!(
+        enabled.redirect_uri.as_str(),
+        "https://chatgpt.com/connector_platform_oauth_redirect"
+    );
+    assert_eq!(enabled.allowed_origins.len(), 1);
+
+    for public_origin in [
+        "http://driichi.com",
+        "https://localhost",
+        "https://driichi.localhost",
+        "https://127.0.0.1",
+        "https://10.2.3.4",
+        "https://192.168.1.10",
+        "https://[::1]",
+    ] {
+        let path = write_config(
+            &root,
+            &format!("public_origin = \"{public_origin}\"\n[chatgpt_oauth]\n{valid_oauth}"),
+        );
+        assert!(
+            RuntimeConfig::from_path(&path).is_err(),
+            "{public_origin}"
+        );
+    }
+
+    for invalid in [
+        valid_oauth.replace(
+            "https://chatgpt.com/oauth/client.json",
+            "https://localhost/oauth/client.json",
+        ),
+        valid_oauth.replace(
+            "https://chatgpt.com/oauth/client.json",
+            "https://127.0.0.1/oauth/client.json",
+        ),
+        valid_oauth.replace(
+            "https://chatgpt.com/oauth/client.json",
+            "https://untrusted.example/oauth/client.json",
+        ),
+        valid_oauth.replace(
+            "https://chatgpt.com/connector_platform_oauth_redirect",
+            "http://chatgpt.com/connector_platform_oauth_redirect",
+        ),
+        valid_oauth.replace(
+            "https://chatgpt.com/connector_platform_oauth_redirect",
+            "https://chatgpt.com/connector_platform_oauth_redirect#fragment",
+        ),
+        valid_oauth.replace(
+            "https://chatgpt.com/oauth/client.json",
+            "https://user@chatgpt.com/oauth/client.json",
+        ),
+        valid_oauth.replace(
+            "https://chatgpt.com/oauth/client.json",
+            "https://chatgpt.com.evil.example/oauth/client.json",
+        ),
+        valid_oauth.replace(
+            "allowed_origins = [\"https://chatgpt.com\"]",
+            "allowed_origins = [\"http://chatgpt.com\"]",
+        ),
+    ] {
+        let path = write_config(
+            &root,
+            &format!("public_origin = \"https://driichi.com\"\n[chatgpt_oauth]\n{invalid}"),
+        );
+        assert!(RuntimeConfig::from_path(&path).is_err(), "{invalid}");
+    }
+
+    let _ = fs::remove_dir_all(root);
+}

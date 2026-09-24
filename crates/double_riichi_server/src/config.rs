@@ -71,6 +71,8 @@ struct RawRuntimeConfig {
     shutdown_seconds: u64,
     #[serde(default)]
     network: RawNetworkConfig,
+    #[serde(default)]
+    chatgpt_oauth: Option<RawChatgptOAuthConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +153,15 @@ impl Default for RawNetworkConfig {
             max_ranked_queue: default_max_ranked_queue(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawChatgptOAuthConfig {
+    enabled: bool,
+    client_id: String,
+    redirect_uri: String,
+    allowed_origins: Vec<String>,
 }
 
 impl Default for RawCasualTimeControl {
@@ -267,6 +278,25 @@ pub struct NetworkConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatgptOAuthConfig {
+    pub issuer: Url,
+    pub resource: Url,
+    pub client_id: Url,
+    pub redirect_uri: Url,
+    pub allowed_origins: Vec<Url>,
+}
+
+impl ChatgptOAuthConfig {
+    pub fn issuer_identifier(&self) -> String {
+        self.issuer
+            .as_str()
+            .strip_suffix('/')
+            .unwrap_or(self.issuer.as_str())
+            .to_owned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub bind: String,
     pub public_origin: String,
@@ -279,6 +309,7 @@ pub struct RuntimeConfig {
     pub empty_room_cleanup_seconds: u64,
     pub shutdown_seconds: u64,
     pub network: NetworkConfig,
+    pub chatgpt_oauth: Option<ChatgptOAuthConfig>,
     data_root: PathBuf,
 }
 
@@ -296,6 +327,12 @@ impl RuntimeConfig {
         validate_duration(raw.empty_room_cleanup_seconds, 1, 86_400)?;
         validate_duration(raw.shutdown_seconds, 1, 86_400)?;
         validate_network(&raw.network)?;
+        let chatgpt_oauth = raw
+            .chatgpt_oauth
+            .as_ref()
+            .filter(|oauth| oauth.enabled)
+            .map(|oauth| validate_chatgpt_oauth(oauth, &raw.public_origin))
+            .transpose()?;
 
         let data_root = path
             .parent()
@@ -337,6 +374,7 @@ impl RuntimeConfig {
                 max_compat_matches: raw.network.max_compat_matches,
                 max_ranked_queue: raw.network.max_ranked_queue,
             },
+            chatgpt_oauth,
             data_root,
         })
     }
@@ -397,6 +435,168 @@ fn validate_origin(origin: &str) -> Result<(), ConfigError> {
         return Err(ConfigError::Invalid("public_origin must be an origin"));
     }
     Ok(())
+}
+
+
+fn is_public_oauth_origin(origin: &Url) -> bool {
+    let Some(host) = origin.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "localhost"
+        || [".localhost", ".local", ".internal", ".test", ".example", ".invalid", ".onion"]
+            .iter()
+            .any(|suffix| host.ends_with(*suffix))
+    {
+        return false;
+    }
+
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(address)) => is_public_ipv4(address),
+        Ok(std::net::IpAddr::V6(address)) => {
+            if let Some(mapped) = address.to_ipv4() {
+                return is_public_ipv4(mapped);
+            }
+            let segments = address.segments();
+            !(address.is_unspecified()
+                || address.is_loopback()
+                || address.is_multicast()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
+        Err(_) => true,
+    }
+}
+
+fn is_public_ipv4(address: std::net::Ipv4Addr) -> bool {
+    let octets = address.octets();
+    !(address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_unspecified()
+        || address.is_broadcast()
+        || address.is_multicast()
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 0)
+        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+        || octets[0] >= 240)
+}
+
+fn validate_chatgpt_oauth(
+    config: &RawChatgptOAuthConfig,
+    public_origin: &str,
+) -> Result<ChatgptOAuthConfig, ConfigError> {
+    let public_origin =
+        Url::parse(public_origin).map_err(|_| ConfigError::Invalid("public_origin is invalid"))?;
+    if public_origin.scheme() != "https" || !is_public_oauth_origin(&public_origin) {
+        return Err(ConfigError::Invalid(
+            "ChatGPT OAuth requires an HTTPS public_origin",
+        ));
+    }
+
+    let mut issuer = public_origin;
+    issuer.set_path("/");
+    issuer.set_query(None);
+    issuer.set_fragment(None);
+    let mut resource = issuer.clone();
+    resource.set_path("/chatgpt/mcp");
+
+    let client_id = Url::parse(&config.client_id)
+        .map_err(|_| ConfigError::Invalid("ChatGPT OAuth client metadata URL is invalid"))?;
+    if client_id.as_str() != config.client_id || !is_trusted_chatgpt_metadata_url(&client_id) {
+        return Err(ConfigError::Invalid(
+            "ChatGPT OAuth client metadata URL is not trusted",
+        ));
+    }
+
+    let redirect_uri = Url::parse(&config.redirect_uri)
+        .map_err(|_| ConfigError::Invalid("ChatGPT OAuth redirect URI is invalid"))?;
+    if redirect_uri.as_str() != config.redirect_uri
+        || !is_trusted_chatgpt_redirect_uri(&redirect_uri)
+    {
+        return Err(ConfigError::Invalid(
+            "ChatGPT OAuth redirect URI is not trusted",
+        ));
+    }
+
+    let allowed_origins = config
+        .allowed_origins
+        .iter()
+        .map(|origin| {
+            let parsed = Url::parse(origin)
+                .map_err(|_| ConfigError::Invalid("ChatGPT OAuth allowed origin is invalid"))?;
+            if parsed.as_str() != origin || !is_trusted_chatgpt_origin(&parsed) {
+                return Err(ConfigError::Invalid(
+                    "ChatGPT OAuth allowed origin is not trusted",
+                ));
+            }
+            Ok(parsed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if allowed_origins.is_empty() {
+        return Err(ConfigError::Invalid(
+            "ChatGPT OAuth requires at least one allowed origin",
+        ));
+    }
+
+    Ok(ChatgptOAuthConfig {
+        issuer,
+        resource,
+        client_id,
+        redirect_uri,
+        allowed_origins,
+    })
+}
+
+pub(crate) fn is_trusted_chatgpt_metadata_url(url: &Url) -> bool {
+    if url.scheme() != "https"
+        || url.host_str() != Some("chatgpt.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let segments: Vec<_> = url
+        .path_segments()
+        .map(|segments| segments.collect())
+        .unwrap_or_default();
+    segments == ["oauth", "client.json"]
+        || (segments.len() == 3
+            && segments[0] == "oauth"
+            && !segments[1].is_empty()
+            && segments[1]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            && segments[2] == "client.json")
+}
+
+pub(crate) fn is_trusted_chatgpt_redirect_uri(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some("chatgpt.com")
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path() != "/"
+}
+
+pub(crate) fn is_trusted_chatgpt_origin(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some("chatgpt.com")
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && (url.path().is_empty() || url.path() == "/")
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 fn validate_character_config(config: &RawCharacterConfig) -> Result<(), ConfigError> {

@@ -9,6 +9,7 @@ mod compat;
 mod config;
 mod http;
 mod mcp;
+mod oauth;
 mod storage;
 
 pub use auth::{
@@ -23,7 +24,7 @@ pub use characters::{
     is_safe_character_id, starter_version,
 };
 pub use config::{
-    CasualTimeControl, CharacterConfig, ConfigError, NetworkConfig, RuntimeConfig, TimeControls,
+    CasualTimeControl, CharacterConfig, ChatgptOAuthConfig, ConfigError, NetworkConfig, RuntimeConfig, TimeControls,
     TracingFormat,
 };
 pub use http::{IpCidr, ServerInitError, ServerLimits, ServerState, server_router};
