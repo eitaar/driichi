@@ -14,7 +14,9 @@ use url::Url;
 
 #[path = "oauth_store.rs"]
 mod oauth_store;
-pub(crate) use oauth_store::{AccessGrant, CodeExchange, OAuthError, OAuthService, RefreshExchange, TokenPair};
+pub(crate) use oauth_store::{
+    AccessGrant, CodeExchange, OAuthError, OAuthService, RefreshExchange, TokenPair,
+};
 
 use crate::{
     config::{
@@ -441,7 +443,6 @@ mod tests {
         );
     }
 
-
     const RESOURCE: &str = "https://driichi.example/chatgpt/mcp";
     const CLIENT_ID: &str = "https://chatgpt.com/oauth/client.json";
     const REDIRECT_URI: &str = "https://chatgpt.com/connector_platform_oauth_redirect";
@@ -459,7 +460,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("driichi-oauth-{name}-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "driichi-oauth-{name}-{}-{nonce}",
+            std::process::id()
+        ))
     }
 
     async fn test_service(name: &str) -> (std::path::PathBuf, Arc<crate::Storage>, OAuthService) {
@@ -505,7 +509,10 @@ mod tests {
         let (root, storage, service) = test_service("code-exchange").await;
         let code = issue_test_code(&service).await;
 
-        let wrong_verifier = code_exchange(code.clone(), "another-verifier-with-more-than-43-characters");
+        let wrong_verifier = code_exchange(
+            code.clone(),
+            "another-verifier-with-more-than-43-characters",
+        );
         assert!(service.exchange_code(wrong_verifier).await.is_err());
 
         let mut wrong_client = code_exchange(code.clone(), TEST_VERIFIER);
@@ -526,10 +533,12 @@ mod tests {
             .exchange_code(code_exchange(code.clone(), TEST_VERIFIER))
             .await
             .unwrap();
-        assert!(service
-            .exchange_code(code_exchange(code.clone(), TEST_VERIFIER))
-            .await
-            .is_err());
+        assert!(
+            service
+                .exchange_code(code_exchange(code.clone(), TEST_VERIFIER))
+                .await
+                .is_err()
+        );
         assert_eq!(
             service
                 .validate_access(&pair.access_token, RESOURCE, "driichi:play")
@@ -538,14 +547,22 @@ mod tests {
                 .subject,
             "admin"
         );
-        assert!(service
-            .validate_access(&pair.access_token, "https://foreign.example/mcp", "driichi:play")
-            .await
-            .is_err());
-        assert!(service
-            .validate_access(&pair.access_token, RESOURCE, "driichi:other")
-            .await
-            .is_err());
+        assert!(
+            service
+                .validate_access(
+                    &pair.access_token,
+                    "https://foreign.example/mcp",
+                    "driichi:play"
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .validate_access(&pair.access_token, RESOURCE, "driichi:other")
+                .await
+                .is_err()
+        );
 
         let code_hash: Vec<u8> = sqlx::query_scalar("SELECT code_hash FROM oauth_codes LIMIT 1")
             .fetch_one(storage.pool())
@@ -553,18 +570,16 @@ mod tests {
             .unwrap();
         assert_eq!(code_hash.len(), 32);
         assert_ne!(code_hash.as_slice(), code.as_bytes());
-        let refresh_hash: Vec<u8> = sqlx::query_scalar(
-            "SELECT token_hash FROM oauth_refresh_tokens LIMIT 1",
-        )
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
-        let access_hash: Vec<u8> = sqlx::query_scalar(
-            "SELECT token_hash FROM oauth_access_tokens LIMIT 1",
-        )
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let refresh_hash: Vec<u8> =
+            sqlx::query_scalar("SELECT token_hash FROM oauth_refresh_tokens LIMIT 1")
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        let access_hash: Vec<u8> =
+            sqlx::query_scalar("SELECT token_hash FROM oauth_access_tokens LIMIT 1")
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert_eq!(refresh_hash.len(), 32);
         assert_eq!(access_hash.len(), 32);
         assert_ne!(refresh_hash.as_slice(), pair.refresh_token.as_bytes());
@@ -632,18 +647,22 @@ mod tests {
             .execute(storage.pool())
             .await
             .unwrap();
-        assert!(service
-            .validate_access(&pair.access_token, RESOURCE, "driichi:play")
-            .await
-            .is_err());
+        assert!(
+            service
+                .validate_access(&pair.access_token, RESOURCE, "driichi:play")
+                .await
+                .is_err()
+        );
         sqlx::query("UPDATE oauth_refresh_families SET expires_at = 0")
             .execute(storage.pool())
             .await
             .unwrap();
-        assert!(service
-            .rotate_refresh(refresh_exchange(pair.refresh_token))
-            .await
-            .is_err());
+        assert!(
+            service
+                .rotate_refresh(refresh_exchange(pair.refresh_token))
+                .await
+                .is_err()
+        );
 
         storage.close().await;
         let _ = std::fs::remove_dir_all(root);
@@ -678,14 +697,18 @@ mod tests {
             (Ok(pair), Err(_)) | (Err(_), Ok(pair)) => pair,
             _ => panic!("exactly one concurrent refresh must win"),
         };
-        assert!(service
-            .validate_access(&winner.access_token, RESOURCE, "driichi:play")
-            .await
-            .is_err());
-        assert!(service
-            .rotate_refresh(refresh_exchange(winner.refresh_token))
-            .await
-            .is_err());
+        assert!(
+            service
+                .validate_access(&winner.access_token, RESOURCE, "driichi:play")
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .rotate_refresh(refresh_exchange(winner.refresh_token))
+                .await
+                .is_err()
+        );
 
         storage.close().await;
         let _ = std::fs::remove_dir_all(root);
@@ -715,13 +738,14 @@ mod tests {
             .rotate_refresh(refresh_exchange(pair.refresh_token))
             .await
             .unwrap();
-        assert!(service
-            .validate_access(&next.access_token, RESOURCE, "driichi:play")
-            .await
-            .is_ok());
+        assert!(
+            service
+                .validate_access(&next.access_token, RESOURCE, "driichi:play")
+                .await
+                .is_ok()
+        );
 
         storage.close().await;
         let _ = std::fs::remove_dir_all(root);
     }
-
 }

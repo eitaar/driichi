@@ -207,7 +207,10 @@ impl OAuthStore {
         .map_err(|_| OAuthError::Storage)?;
 
         let Some(row) = row else {
-            transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| OAuthError::Storage)?;
             return Err(OAuthError::InvalidGrant);
         };
         let scope: String = row.try_get("scope").map_err(|_| OAuthError::Storage)?;
@@ -215,7 +218,10 @@ impl OAuthStore {
             .try_get("pkce_challenge")
             .map_err(|_| OAuthError::Storage)?;
         if scope != OAUTH_SCOPE || s256_challenge(&exchange.verifier) != challenge {
-            transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| OAuthError::Storage)?;
             return Err(OAuthError::InvalidGrant);
         }
 
@@ -237,8 +243,19 @@ impl OAuthStore {
         .execute(&mut *transaction)
         .await
         .map_err(|_| OAuthError::Storage)?;
-        insert_token_rows(&mut transaction, &family_id, &pair, &exchange.resource, now, family_expires_at).await?;
-        transaction.commit().await.map_err(|_| OAuthError::Storage)?;
+        insert_token_rows(
+            &mut transaction,
+            &family_id,
+            &pair,
+            &exchange.resource,
+            now,
+            family_expires_at,
+        )
+        .await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| OAuthError::Storage)?;
         Ok(pair)
     }
 
@@ -285,17 +302,32 @@ impl OAuthStore {
             .await
             .map_err(|_| OAuthError::Storage)?;
             let Some(family) = family else {
-                transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|_| OAuthError::Storage)?;
                 return Err(OAuthError::InvalidGrant);
             };
 
-            let family_id: String = family.try_get("family_id").map_err(|_| OAuthError::Storage)?;
-            let client_id: String = family.try_get("client_id").map_err(|_| OAuthError::Storage)?;
-            let resource: String = family.try_get("resource").map_err(|_| OAuthError::Storage)?;
+            let family_id: String = family
+                .try_get("family_id")
+                .map_err(|_| OAuthError::Storage)?;
+            let client_id: String = family
+                .try_get("client_id")
+                .map_err(|_| OAuthError::Storage)?;
+            let resource: String = family
+                .try_get("resource")
+                .map_err(|_| OAuthError::Storage)?;
             let scope: String = family.try_get("scope").map_err(|_| OAuthError::Storage)?;
-            let family_expires_at: i64 = family.try_get("expires_at").map_err(|_| OAuthError::Storage)?;
-            let revoked_at: Option<i64> = family.try_get("revoked_at").map_err(|_| OAuthError::Storage)?;
-            let consumed_at: Option<i64> = family.try_get("consumed_at").map_err(|_| OAuthError::Storage)?;
+            let family_expires_at: i64 = family
+                .try_get("expires_at")
+                .map_err(|_| OAuthError::Storage)?;
+            let revoked_at: Option<i64> = family
+                .try_get("revoked_at")
+                .map_err(|_| OAuthError::Storage)?;
+            let consumed_at: Option<i64> = family
+                .try_get("consumed_at")
+                .map_err(|_| OAuthError::Storage)?;
             let token_expires_at: i64 = family
                 .try_get("token_expires_at")
                 .map_err(|_| OAuthError::Storage)?;
@@ -304,7 +336,10 @@ impl OAuthStore {
                 || resource != exchange.resource
                 || scope != OAUTH_SCOPE
             {
-                transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|_| OAuthError::Storage)?;
                 return Err(OAuthError::InvalidGrant);
             }
             if consumed_at.is_some() {
@@ -316,31 +351,46 @@ impl OAuthStore {
                 .execute(&mut *transaction)
                 .await
                 .map_err(|_| OAuthError::Storage)?;
-                transaction.commit().await.map_err(|_| OAuthError::Storage)?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|_| OAuthError::Storage)?;
                 return Err(OAuthError::InvalidGrant);
             }
             if revoked_at.is_some() || family_expires_at <= now || token_expires_at <= now {
-                transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|_| OAuthError::Storage)?;
                 return Err(OAuthError::InvalidGrant);
             }
 
-            transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| OAuthError::Storage)?;
             return Err(OAuthError::InvalidGrant);
         };
 
-        let family_id: String = consumed.try_get("family_id").map_err(|_| OAuthError::Storage)?;
-        let family = sqlx::query(
-            "SELECT expires_at FROM oauth_refresh_families WHERE family_id = ?",
-        )
-        .bind(&family_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|_| OAuthError::Storage)?;
+        let family_id: String = consumed
+            .try_get("family_id")
+            .map_err(|_| OAuthError::Storage)?;
+        let family =
+            sqlx::query("SELECT expires_at FROM oauth_refresh_families WHERE family_id = ?")
+                .bind(&family_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|_| OAuthError::Storage)?;
         let Some(family) = family else {
-            transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| OAuthError::Storage)?;
             return Err(OAuthError::InvalidGrant);
         };
-        let family_expires_at: i64 = family.try_get("expires_at").map_err(|_| OAuthError::Storage)?;
+        let family_expires_at: i64 = family
+            .try_get("expires_at")
+            .map_err(|_| OAuthError::Storage)?;
 
         let pair = new_token_pair();
         insert_token_rows(
@@ -352,7 +402,10 @@ impl OAuthStore {
             family_expires_at,
         )
         .await?;
-        transaction.commit().await.map_err(|_| OAuthError::Storage)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| OAuthError::Storage)?;
         Ok(pair)
     }
 
@@ -459,9 +512,9 @@ fn valid_s256_challenge(challenge: &str) -> bool {
 
 fn valid_code_verifier(verifier: &str) -> bool {
     (43..=128).contains(&verifier.len())
-        && verifier.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
-        })
+        && verifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
 }
 
 fn now_unix_seconds() -> i64 {
