@@ -584,7 +584,14 @@ async fn live_mcp_exposes_only_bound_private_state() {
     let state_result = tool_call(&app, &token, &session_id, 72, "get_my_state", json!({})).await;
     let my_state = tool_value(&state_result);
     assert_eq!(my_state["state_uri"], state_uri);
-    assert!(my_state["hand"].is_array(), "private hand is missing: {my_state}");
+    let owner_hand = my_state["players"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|player| player["participant_id"].as_str() == Some(participant_id.as_str()))
+        .expect("owner is present in the private state projection")["hand"]
+        .clone();
+    assert!(owner_hand.is_array(), "private hand is missing: {my_state}");
 
     let resource_state = read_resource(
         &app,
@@ -594,7 +601,14 @@ async fn live_mcp_exposes_only_bound_private_state() {
         my_state["state_uri"].as_str().unwrap(),
     )
     .await;
-    assert_eq!(my_state["hand"], resource_state["hand"]);
+    let resource_hand = resource_state["players"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|player| player["participant_id"].as_str() == Some(participant_id.as_str()))
+        .expect("owner is present in the private resource projection")["hand"]
+        .clone();
+    assert_eq!(owner_hand, resource_hand);
     assert_eq!(my_state["legal_actions"], resource_state["legal_actions"]);
 
     let (unjoined_session, _) = initialize(&app, &token, 74).await;
