@@ -754,6 +754,51 @@ test("keeps motion within hardware and software renderer budgets", async ({ page
   }
 });
 
+for (const { deviceScaleFactor, expectedPixelRatio } of [
+  { deviceScaleFactor: 0.75, expectedPixelRatio: 1 },
+  { deviceScaleFactor: 3, expectedPixelRatio: 2 },
+] as const) {
+  test(`clamps browser DPR ${deviceScaleFactor} to ${expectedPixelRatio} at 1920x1080`, async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:4173",
+      viewport: { width: 1920, height: 1080 },
+      deviceScaleFactor,
+    });
+    const page = await context.newPage();
+
+    try {
+      await installCharacterFixtures(page);
+      await installSocket(page, "4p-red-east");
+      await page.goto("/room/123456/lobby");
+      const table = await expectRenderedTable(page);
+      await expect(table).toHaveAttribute(
+        "data-renderer-pixel-ratio",
+        String(expectedPixelRatio),
+      );
+      const drawingBuffer = await table.locator("canvas").evaluate((element) => {
+        const canvas = element as HTMLCanvasElement;
+        const rect = canvas.getBoundingClientRect();
+        return {
+          clientWidth: rect.width,
+          clientHeight: rect.height,
+          pixelWidth: canvas.width,
+          pixelHeight: canvas.height,
+        };
+      });
+      expect(Math.abs(
+        drawingBuffer.pixelWidth - drawingBuffer.clientWidth * expectedPixelRatio,
+      )).toBeLessThanOrEqual(1);
+      expect(Math.abs(
+        drawingBuffer.pixelHeight - drawingBuffer.clientHeight * expectedPixelRatio,
+      )).toBeLessThanOrEqual(1);
+      expect(drawingBuffer.pixelWidth).toBeLessThanOrEqual(1920 * expectedPixelRatio);
+      expect(drawingBuffer.pixelHeight).toBeLessThanOrEqual(1080 * expectedPixelRatio);
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 test("keeps DPR 2 fixed through active and idle rendering", async ({ browser }) => {
   const context = await browser.newContext({
     baseURL: "http://127.0.0.1:4173",

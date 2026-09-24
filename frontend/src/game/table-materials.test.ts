@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { LinearMipmapLinearFilter } from "three";
 import { describe, expect, it } from "vitest";
 import {
   FELT_MATERIAL_TINT,
@@ -60,12 +61,15 @@ describe("table material assets", () => {
     );
   });
 
-  it("applies texture sampling settings without relying on defaults", () => {
+  it("configures trilinear mipmaps so felt anisotropy is effective", () => {
     configureTableTexture(texture, TABLE_TEXTURE_SPECS.felt);
     expect(texture.colorSpace).toBe("srgb");
     expect(texture.wrapS).not.toBe(0);
     expect(texture.wrapT).not.toBe(0);
+    expect(texture.minFilter).toBe(LinearMipmapLinearFilter);
     expect(texture.magFilter).not.toBe(0);
+    expect(texture.generateMipmaps).toBe(true);
+    expect(texture.anisotropy).toBe(4);
     expect(texture.needsUpdate).toBe(true);
   });
 

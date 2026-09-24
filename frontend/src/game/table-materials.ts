@@ -1,7 +1,7 @@
 import {
   ClampToEdgeWrapping,
   LinearFilter,
-  LinearMipmapNearestFilter,
+  LinearMipmapLinearFilter,
   RepeatWrapping,
   SRGBColorSpace,
   type Texture,
@@ -43,7 +43,7 @@ export function configureTableTexture(
   texture.wrapS = spec.wrap === "repeat" ? RepeatWrapping : ClampToEdgeWrapping;
   texture.wrapT = spec.wrap === "repeat" ? RepeatWrapping : ClampToEdgeWrapping;
   texture.minFilter = spec.minFilter === "mipmap"
-    ? LinearMipmapNearestFilter
+    ? LinearMipmapLinearFilter
     : LinearFilter;
   texture.magFilter = LinearFilter;
   texture.generateMipmaps = spec.minFilter === "mipmap";
