@@ -572,7 +572,11 @@ async fn gateway_requires_oauth_for_discovery_but_challenges_tool_calls() {
             .unwrap()
             .contains("resource_metadata")
     );
-    assert!(!anonymous_initialize.headers().contains_key("mcp-session-id"));
+    assert!(
+        !anonymous_initialize
+            .headers()
+            .contains_key("mcp-session-id")
+    );
 
     let anonymous_initialized = fixture
         .app
@@ -935,10 +939,9 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
     let scope_tool_body = rpc_body(scope_tool).await;
     assert_eq!(scope_tool_body["id"], 60);
     assert_eq!(scope_tool_body["result"]["isError"], true);
-    let scope_challenge =
-        scope_tool_body["result"]["_meta"]["mcp/www_authenticate"][0]
-            .as_str()
-            .unwrap();
+    let scope_challenge = scope_tool_body["result"]["_meta"]["mcp/www_authenticate"][0]
+        .as_str()
+        .unwrap();
     assert!(scope_challenge.contains("error=\"insufficient_scope\""));
     assert!(scope_challenge.contains("error_description="));
     assert!(scope_challenge.contains("scope=\"driichi:play\""));
