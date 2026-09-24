@@ -454,7 +454,7 @@ async fn expire_access(storage: &Storage, access_token: &str) {
 async fn startup_disables_oauth_routes_without_an_active_dedicated_token() {
     let root = root("startup-disabled");
     std::fs::create_dir_all(&root).unwrap();
-    let characters = root.join("characters");
+    let characters = root.join("character-packs");
     for (id, usage, name) in [
         ("player-red", "human", "Player Red"),
         ("player-blue", "human", "Player Blue"),
