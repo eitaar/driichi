@@ -901,6 +901,26 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
     )
     .await;
     assert_eq!(scope_response.status(), StatusCode::FORBIDDEN);
+    let scope_tool = rpc(
+        &fixture.app,
+        &wrong_scope,
+        None,
+        Some(60),
+        "tools/call",
+        json!({"name":"get_my_state","arguments":{}}),
+    )
+    .await;
+    assert_eq!(scope_tool.status(), StatusCode::OK);
+    let scope_tool_body = rpc_body(scope_tool).await;
+    assert_eq!(scope_tool_body["id"], 60);
+    assert_eq!(scope_tool_body["result"]["isError"], true);
+    let scope_challenge =
+        scope_tool_body["result"]["_meta"]["mcp/www_authenticate"][0]
+            .as_str()
+            .unwrap();
+    assert!(scope_challenge.contains("error=\"insufficient_scope\""));
+    assert!(scope_challenge.contains("error_description="));
+    assert!(scope_challenge.contains("scope=\"driichi:play\""));
 
     let expired = mint_access(&fixture.app, RESOURCE, "expired").await;
     expire_access(&fixture.storage, &expired).await;
@@ -923,6 +943,25 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
             .headers()
             .get(header::WWW_AUTHENTICATE)
             .is_some()
+    );
+    let expired_tool = rpc(
+        &fixture.app,
+        &expired,
+        None,
+        Some(61),
+        "tools/call",
+        json!({"name":"get_my_state","arguments":{}}),
+    )
+    .await;
+    assert_eq!(expired_tool.status(), StatusCode::OK);
+    let expired_tool_body = rpc_body(expired_tool).await;
+    assert_eq!(expired_tool_body["id"], 61);
+    assert_eq!(expired_tool_body["result"]["isError"], true);
+    assert!(
+        expired_tool_body["result"]["_meta"]["mcp/www_authenticate"][0]
+            .as_str()
+            .unwrap()
+            .contains("error=\"invalid_token\"")
     );
 
     fixture.state.shutdown().await;
