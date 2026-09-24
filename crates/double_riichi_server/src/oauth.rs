@@ -690,17 +690,16 @@ mod tests {
             .rotate_refresh(refresh_exchange(original.refresh_token))
             .await
             .unwrap();
-        let (access_issued, access_expires, family_expires): (i64, i64, i64) =
-            sqlx::query_as(
-                "SELECT a.issued_at, a.expires_at, f.expires_at \
-                 FROM oauth_access_tokens a \
-                 JOIN oauth_refresh_families f ON f.family_id = a.family_id \
-                 WHERE a.token_hash = ?",
-            )
-            .bind(sha2::Sha256::digest(refreshed.access_token.as_bytes()).to_vec())
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
+        let (access_issued, access_expires, family_expires): (i64, i64, i64) = sqlx::query_as(
+            "SELECT a.issued_at, a.expires_at, f.expires_at \
+             FROM oauth_access_tokens a \
+             JOIN oauth_refresh_families f ON f.family_id = a.family_id \
+             WHERE a.token_hash = ?",
+        )
+        .bind(sha2::Sha256::digest(refreshed.access_token.as_bytes()).to_vec())
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
 
         assert!(access_expires <= family_expires);
         assert_eq!(access_expires, family_expires);
