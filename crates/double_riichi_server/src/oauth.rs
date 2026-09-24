@@ -12,6 +12,10 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use url::Url;
 
+#[path = "oauth_store.rs"]
+mod oauth_store;
+pub(crate) use oauth_store::{AccessGrant, CodeExchange, OAuthError, OAuthService, RefreshExchange, TokenPair};
+
 use crate::{
     config::{
         ChatgptOAuthConfig, is_trusted_chatgpt_metadata_url, is_trusted_chatgpt_redirect_uri,
@@ -179,11 +183,16 @@ impl CimdClientMetadataVerifier {
 pub(crate) struct OAuthGatewayState {
     pub(crate) config: ChatgptOAuthConfig,
     pub(crate) client_metadata: CimdClientMetadataVerifier,
+    pub(crate) grants: OAuthService,
 }
 
 impl OAuthGatewayState {
-    pub(crate) fn new(config: ChatgptOAuthConfig) -> Result<Self, CimdError> {
+    pub(crate) fn new(
+        config: ChatgptOAuthConfig,
+        storage: std::sync::Arc<crate::Storage>,
+    ) -> Result<Self, CimdError> {
         Ok(Self {
+            grants: OAuthService::new(config.clone(), storage),
             config,
             client_metadata: CimdClientMetadataVerifier::new_default()?,
         })
@@ -430,4 +439,267 @@ mod tests {
             Err(CimdError::TooLarge)
         );
     }
+
+
+    const RESOURCE: &str = "https://driichi.example/chatgpt/mcp";
+    const CLIENT_ID: &str = "https://chatgpt.com/oauth/client.json";
+    const REDIRECT_URI: &str = "https://chatgpt.com/connector_platform_oauth_redirect";
+    const TEST_VERIFIER: &str = "a-very-long-test-verifier-which-is-at-least-43-characters";
+
+    fn test_challenge(verifier: &str) -> String {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use sha2::{Digest, Sha256};
+        URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+    }
+
+    fn test_data_root(name: &str) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("driichi-oauth-{name}-{}-{nonce}", std::process::id()))
+    }
+
+    async fn test_service(name: &str) -> (std::path::PathBuf, Arc<crate::Storage>, OAuthService) {
+        let root = test_data_root(name);
+        let storage = Arc::new(crate::Storage::connect(&root).await.unwrap());
+        let service = OAuthService::new(test_config(), storage.clone());
+        (root, storage, service)
+    }
+
+    async fn issue_test_code(service: &OAuthService) -> String {
+        service
+            .issue_authorization_code(
+                CLIENT_ID,
+                REDIRECT_URI,
+                RESOURCE,
+                "driichi:play",
+                &test_challenge(TEST_VERIFIER),
+            )
+            .await
+            .unwrap()
+    }
+
+    fn code_exchange(code: String, verifier: &str) -> CodeExchange {
+        CodeExchange {
+            client_id: CLIENT_ID.to_owned(),
+            redirect_uri: REDIRECT_URI.to_owned(),
+            code,
+            verifier: verifier.to_owned(),
+            resource: RESOURCE.to_owned(),
+        }
+    }
+
+    fn refresh_exchange(refresh_token: String) -> RefreshExchange {
+        RefreshExchange {
+            client_id: CLIENT_ID.to_owned(),
+            refresh_token,
+            resource: RESOURCE.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn code_exchange_enforces_pkce_client_redirect_resource_and_single_use() {
+        let (root, storage, service) = test_service("code-exchange").await;
+        let code = issue_test_code(&service).await;
+
+        let mut wrong_verifier = code_exchange(code.clone(), "another-verifier-with-more-than-43-characters");
+        assert!(service.exchange_code(wrong_verifier).await.is_err());
+
+        let mut wrong_client = code_exchange(code.clone(), TEST_VERIFIER);
+        wrong_client.client_id = "https://chatgpt.com/other/client.json".to_owned();
+        assert!(service.exchange_code(wrong_client).await.is_err());
+
+        let mut wrong_redirect = code_exchange(code.clone(), TEST_VERIFIER);
+        wrong_redirect.redirect_uri = "https://chatgpt.com/other/callback".to_owned();
+        assert!(service.exchange_code(wrong_redirect).await.is_err());
+
+        for resource in ["", "https://foreign.example/mcp"] {
+            let mut wrong_resource = code_exchange(code.clone(), TEST_VERIFIER);
+            wrong_resource.resource = resource.to_owned();
+            assert!(service.exchange_code(wrong_resource).await.is_err());
+        }
+
+        let pair = service
+            .exchange_code(code_exchange(code.clone(), TEST_VERIFIER))
+            .await
+            .unwrap();
+        assert!(service
+            .exchange_code(code_exchange(code, TEST_VERIFIER))
+            .await
+            .is_err());
+        assert_eq!(
+            service
+                .validate_access(&pair.access_token, RESOURCE, "driichi:play")
+                .await
+                .unwrap()
+                .subject,
+            "admin"
+        );
+        assert!(service
+            .validate_access(&pair.access_token, "https://foreign.example/mcp", "driichi:play")
+            .await
+            .is_err());
+        assert!(service
+            .validate_access(&pair.access_token, RESOURCE, "driichi:other")
+            .await
+            .is_err());
+
+        let code_hash: Vec<u8> = sqlx::query_scalar("SELECT code_hash FROM oauth_codes LIMIT 1")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(code_hash.len(), 32);
+        assert_ne!(code_hash.as_slice(), code.as_bytes());
+        let refresh_hash: Vec<u8> = sqlx::query_scalar(
+            "SELECT token_hash FROM oauth_refresh_tokens LIMIT 1",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        let access_hash: Vec<u8> = sqlx::query_scalar(
+            "SELECT token_hash FROM oauth_access_tokens LIMIT 1",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(refresh_hash.len(), 32);
+        assert_eq!(access_hash.len(), 32);
+        assert_ne!(refresh_hash.as_slice(), pair.refresh_token.as_bytes());
+        assert_ne!(access_hash.as_slice(), pair.access_token.as_bytes());
+
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn access_expires_in_ten_minutes_and_refresh_family_in_thirty_days() {
+        let (root, storage, service) = test_service("lifetimes").await;
+        let code = issue_test_code(&service).await;
+        let pair = service
+            .exchange_code(code_exchange(code, TEST_VERIFIER))
+            .await
+            .unwrap();
+        let access = sqlx::query(
+            "SELECT issued_at, expires_at FROM oauth_access_tokens WHERE token_hash = ?",
+        )
+        .bind(sha2::Sha256::digest(pair.access_token.as_bytes()).to_vec())
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        let access_issued: i64 = access.try_get("issued_at").unwrap();
+        let access_expires: i64 = access.try_get("expires_at").unwrap();
+        assert_eq!(access_expires - access_issued, 10 * 60);
+
+        let family = sqlx::query(
+            "SELECT f.issued_at, f.expires_at \
+             FROM oauth_refresh_families f \
+             JOIN oauth_refresh_tokens r ON r.family_id = f.family_id \
+             WHERE r.token_hash = ?",
+        )
+        .bind(sha2::Sha256::digest(pair.refresh_token.as_bytes()).to_vec())
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        let family_issued: i64 = family.try_get("issued_at").unwrap();
+        let family_expires: i64 = family.try_get("expires_at").unwrap();
+        assert_eq!(family_expires - family_issued, 30 * 24 * 60 * 60);
+
+        sqlx::query("UPDATE oauth_access_tokens SET expires_at = 0")
+            .execute(storage.pool())
+            .await
+            .unwrap();
+        assert!(service
+            .validate_access(&pair.access_token, RESOURCE, "driichi:play")
+            .await
+            .is_err());
+        sqlx::query("UPDATE oauth_refresh_families SET expires_at = 0")
+            .execute(storage.pool())
+            .await
+            .unwrap();
+        assert!(service
+            .rotate_refresh(refresh_exchange(pair.refresh_token))
+            .await
+            .is_err());
+
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn simultaneous_refresh_redeems_once_and_replay_revokes_the_family() {
+        let (root, storage, service) = test_service("refresh-replay").await;
+        let code = issue_test_code(&service).await;
+        let original = service
+            .exchange_code(code_exchange(code, TEST_VERIFIER))
+            .await
+            .unwrap();
+
+        let wrong_client = RefreshExchange {
+            client_id: "https://chatgpt.com/other/client.json".to_owned(),
+            refresh_token: original.refresh_token.clone(),
+            resource: RESOURCE.to_owned(),
+        };
+        assert!(service.rotate_refresh(wrong_client).await.is_err());
+        let wrong_resource = RefreshExchange {
+            client_id: CLIENT_ID.to_owned(),
+            refresh_token: original.refresh_token.clone(),
+            resource: "https://foreign.example/mcp".to_owned(),
+        };
+        assert!(service.rotate_refresh(wrong_resource).await.is_err());
+
+        let first = service.rotate_refresh(refresh_exchange(original.refresh_token.clone()));
+        let second = service.rotate_refresh(refresh_exchange(original.refresh_token.clone()));
+        let (first, second) = tokio::join!(first, second);
+        let winner = match (first, second) {
+            (Ok(pair), Err(_)) | (Err(_), Ok(pair)) => pair,
+            _ => panic!("exactly one concurrent refresh must win"),
+        };
+        assert!(service
+            .validate_access(&winner.access_token, RESOURCE, "driichi:play")
+            .await
+            .is_err());
+        assert!(service
+            .rotate_refresh(refresh_exchange(winner.refresh_token))
+            .await
+            .is_err());
+
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn authorization_code_and_refresh_grant_survive_storage_restarts() {
+        let (root, storage, service) = test_service("restart").await;
+        let code = issue_test_code(&service).await;
+        storage.close().await;
+        drop(service);
+        drop(storage);
+
+        let storage = Arc::new(crate::Storage::connect(&root).await.unwrap());
+        let service = OAuthService::new(test_config(), storage.clone());
+        let pair = service
+            .exchange_code(code_exchange(code, TEST_VERIFIER))
+            .await
+            .unwrap();
+        storage.close().await;
+        drop(service);
+        drop(storage);
+
+        let storage = Arc::new(crate::Storage::connect(&root).await.unwrap());
+        let service = OAuthService::new(test_config(), storage.clone());
+        let next = service
+            .rotate_refresh(refresh_exchange(pair.refresh_token))
+            .await
+            .unwrap();
+        assert!(service
+            .validate_access(&next.access_token, RESOURCE, "driichi:play")
+            .await
+            .is_ok());
+
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
 }

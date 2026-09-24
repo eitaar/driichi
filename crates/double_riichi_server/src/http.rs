@@ -476,7 +476,7 @@ impl ServerState {
         );
         state.bot_tokens = Some(token_service);
         state.chatgpt_oauth = chatgpt_oauth_config
-            .map(crate::oauth::OAuthGatewayState::new)
+            .map(|config| crate::oauth::OAuthGatewayState::new(config, storage.clone()))
             .transpose()
             .map_err(|_| ServerInitError::ChatgptOAuth)?
             .map(Arc::new);
