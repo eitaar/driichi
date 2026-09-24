@@ -17,6 +17,7 @@ use crate::{
 };
 
 const CHATGPT_TOOL_SCOPE: &str = "driichi:play";
+const CHATGPT_REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const CHATGPT_RESPONSE_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct DedicatedBotToken {
@@ -98,9 +99,6 @@ pub(crate) async fn mcp_endpoint(
     let rpc_id = message.as_ref().and_then(json_rpc_id);
     let is_tool_call = rpc_method.as_deref() == Some("tools/call");
     let is_tools_list = rpc_method.as_deref() == Some("tools/list");
-    let anonymous_discovery = rpc_method
-        .as_deref()
-        .is_some_and(|method| anonymous_discovery_method(method, rpc_id.as_ref()));
     let authorization_supplied = request
         .headers()
         .get_all(header::AUTHORIZATION)
@@ -170,7 +168,6 @@ pub(crate) async fn mcp_endpoint(
                 };
             }
         }
-        None if !authorization_supplied && anonymous_discovery => {}
         None if is_tool_call => {
             let failure = if authorization_supplied {
                 ToolAuthFailure::Invalid
@@ -218,12 +215,24 @@ async fn request_json_message(request: &mut Request<Body>) -> Result<Option<Valu
     }
 
     let body = std::mem::replace(request.body_mut(), Body::empty());
-    let bytes = match to_bytes(body, MCP_MAX_BODY_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
+    let bytes = match tokio::time::timeout(
+        CHATGPT_REQUEST_BODY_TIMEOUT,
+        to_bytes(body, MCP_MAX_BODY_BYTES),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => {
             return Err(gateway_error(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "request_too_large",
+                None,
+            ));
+        }
+        Err(_) => {
+            return Err(gateway_error(
+                StatusCode::REQUEST_TIMEOUT,
+                "request_timeout",
                 None,
             ));
         }
@@ -242,14 +251,6 @@ fn json_rpc_method(message: &Value) -> Option<&str> {
 fn json_rpc_id(message: &Value) -> Option<Value> {
     let id = message.get("id")?;
     matches!(id, Value::Null | Value::String(_) | Value::Number(_)).then(|| id.clone())
-}
-
-fn anonymous_discovery_method(method: &str, id: Option<&Value>) -> bool {
-    match method {
-        "initialize" | "tools/list" => id.is_some(),
-        "notifications/initialized" => id.is_none(),
-        _ => false,
-    }
 }
 
 #[derive(Clone, Copy)]

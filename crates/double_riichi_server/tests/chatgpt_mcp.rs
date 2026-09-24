@@ -541,10 +541,10 @@ allowed_origins = ["{CHATGPT_ORIGIN}"]
 }
 
 #[tokio::test]
-async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
-    let fixture = fixture("anonymous-discovery", RESOURCE).await;
+async fn gateway_requires_oauth_for_discovery_but_challenges_tool_calls() {
+    let fixture = fixture("oauth-discovery", RESOURCE).await;
 
-    let initialize = fixture
+    let anonymous_initialize = fixture
         .app
         .clone()
         .oneshot(rpc_request(
@@ -562,49 +562,71 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
         ))
         .await
         .unwrap();
-    assert_eq!(initialize.status(), StatusCode::OK);
-    let session = initialize
-        .headers()
-        .get("mcp-session-id")
-        .expect("anonymous initialize creates a bounded MCP session")
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(rpc_body(initialize).await["id"], 20);
+    assert_eq!(anonymous_initialize.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        anonymous_initialize
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("resource_metadata=\\"https://driichi.example/.well-known/oauth-protected-resource/chatgpt/mcp\\"")
+    );
+    assert!(!anonymous_initialize.headers().contains_key("mcp-session-id"));
 
-    let initialized = fixture
+    let anonymous_initialized = fixture
         .app
         .clone()
         .oneshot(rpc_request(
             "/chatgpt/mcp",
             "POST",
             None,
-            Some(&session),
+            None,
             None,
             "notifications/initialized",
             json!({}),
         ))
         .await
         .unwrap();
-    assert!(initialized.status().is_success());
+    assert_eq!(anonymous_initialized.status(), StatusCode::UNAUTHORIZED);
 
-    let listing = fixture
+    let anonymous_listing = fixture
         .app
         .clone()
         .oneshot(rpc_request(
             "/chatgpt/mcp",
             "POST",
             None,
-            Some(&session),
+            None,
             Some(21),
             "tools/list",
             json!({}),
         ))
         .await
         .unwrap();
+    assert_eq!(anonymous_listing.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        anonymous_listing
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .is_some()
+    );
+    assert!(!anonymous_listing.headers().contains_key("mcp-session-id"));
+
+    let access = mint_access(&fixture.app, RESOURCE, "tool-challenges").await;
+    let session = initialize(&fixture.app, &access).await;
+    let listing = rpc(
+        &fixture.app,
+        &access,
+        Some(&session),
+        Some(22),
+        "tools/list",
+        json!({}),
+    )
+    .await;
     assert_eq!(listing.status(), StatusCode::OK);
     let listing_body = rpc_body(listing).await;
-    assert_eq!(listing_body["id"], 21);
+    assert_eq!(listing_body["id"], 22);
     let tools = listing_body["result"]["tools"].as_array().unwrap();
     assert!(!tools.is_empty());
     for tool in tools {
@@ -621,7 +643,7 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
             "POST",
             None,
             Some(&session),
-            Some(22),
+            Some(23),
             "tools/call",
             json!({"name":"get_my_state","arguments":{}}),
         ))
@@ -636,7 +658,7 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
         Some(session.as_str())
     );
     let missing_body = rpc_body(missing).await;
-    assert_eq!(missing_body["id"], 22);
+    assert_eq!(missing_body["id"], 23);
     assert_eq!(missing_body["result"]["isError"], true);
     let challenge = missing_body["result"]["_meta"]["mcp/www_authenticate"][0]
         .as_str()
@@ -649,14 +671,14 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
         &fixture.app,
         "invalid-access-token",
         Some(&session),
-        Some(23),
+        Some(24),
         "tools/call",
         json!({"name":"get_my_state","arguments":{}}),
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::OK);
     let invalid_body = rpc_body(invalid).await;
-    assert_eq!(invalid_body["id"], 23);
+    assert_eq!(invalid_body["id"], 24);
     assert_eq!(invalid_body["result"]["isError"], true);
     assert!(
         invalid_body["result"]["_meta"]["mcp/www_authenticate"][0]
@@ -665,7 +687,6 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
             .contains("error=\"invalid_token\"")
     );
 
-    let access = mint_access(&fixture.app, RESOURCE, "duplicate-bearer").await;
     let duplicate = Request::builder()
         .method("POST")
         .uri("/chatgpt/mcp")
@@ -679,7 +700,7 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
         .body(Body::from(
             json!({
                 "jsonrpc":"2.0",
-                "id":24,
+                "id":25,
                 "method":"tools/call",
                 "params":{"name":"get_my_state","arguments":{}}
             })
@@ -689,7 +710,7 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
     let duplicate = fixture.app.clone().oneshot(duplicate).await.unwrap();
     assert_eq!(duplicate.status(), StatusCode::OK);
     let duplicate_body = rpc_body(duplicate).await;
-    assert_eq!(duplicate_body["id"], 24);
+    assert_eq!(duplicate_body["id"], 25);
     assert_eq!(duplicate_body["result"]["isError"], true);
     assert!(
         duplicate_body["result"]["_meta"]["mcp/www_authenticate"][0]
@@ -722,7 +743,7 @@ async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
             "POST",
             None,
             Some(&session),
-            Some(25),
+            Some(26),
             "resources/list",
             json!({}),
         ))
