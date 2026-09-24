@@ -4633,10 +4633,8 @@ mod tests {
             issuer,
             resource,
             client_id: Url::parse("https://chatgpt.com/oauth/client.json").unwrap(),
-            redirect_uri: Url::parse(
-                "https://chatgpt.com/connector_platform_oauth_redirect",
-            )
-            .unwrap(),
+            redirect_uri: Url::parse("https://chatgpt.com/connector_platform_oauth_redirect")
+                .unwrap(),
             allowed_origins: vec![Url::parse("https://chatgpt.com/").unwrap()],
         };
         let admin = Arc::new(
@@ -4646,11 +4644,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let mut state = ServerState::for_tests(
-            "https://driichi.example",
-            admin,
-            RoomRegistry::new(),
-        );
+        let mut state =
+            ServerState::for_tests("https://driichi.example", admin, RoomRegistry::new());
         state.chatgpt_oauth = Some(Arc::new(
             crate::oauth::OAuthGatewayState::new(oauth).unwrap(),
         ));
@@ -4721,5 +4716,4 @@ mod tests {
             json!(true)
         );
     }
-
 }

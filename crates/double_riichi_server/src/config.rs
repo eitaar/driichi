@@ -437,7 +437,6 @@ fn validate_origin(origin: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-
 fn is_public_oauth_origin(origin: &Url) -> bool {
     match origin.host() {
         Some(url::Host::Ipv4(address)) => is_public_ipv4(address),
@@ -533,8 +532,8 @@ fn validate_chatgpt_oauth(
         .map(|origin| {
             let parsed = Url::parse(origin)
                 .map_err(|_| ConfigError::Invalid("ChatGPT OAuth allowed origin is invalid"))?;
-            let matches_canonical_form = parsed.as_str() == origin
-                || parsed.as_str().strip_suffix('/') == Some(origin);
+            let matches_canonical_form =
+                parsed.as_str() == origin || parsed.as_str().strip_suffix('/') == Some(origin);
             if !matches_canonical_form || !is_trusted_chatgpt_origin(&parsed) {
                 return Err(ConfigError::Invalid(
                     "ChatGPT OAuth allowed origin is not trusted",

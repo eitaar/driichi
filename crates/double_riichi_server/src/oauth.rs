@@ -209,11 +209,7 @@ pub(crate) fn validate_client_document(
         })
         && document["token_endpoint_auth_methods_supported"]
             .as_array()
-            .is_some_and(|methods| {
-                methods
-                    .iter()
-                    .any(|value| value.as_str() == Some("none"))
-            })
+            .is_some_and(|methods| methods.iter().any(|value| value.as_str() == Some("none")))
 }
 
 fn protected_resource_document(config: &ChatgptOAuthConfig) -> Value {
@@ -264,9 +260,7 @@ pub(crate) async fn get_authorization_server_metadata(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -307,10 +301,8 @@ mod tests {
             issuer,
             resource,
             client_id: Url::parse("https://chatgpt.com/oauth/client.json").unwrap(),
-            redirect_uri: Url::parse(
-                "https://chatgpt.com/connector_platform_oauth_redirect",
-            )
-            .unwrap(),
+            redirect_uri: Url::parse("https://chatgpt.com/connector_platform_oauth_redirect")
+                .unwrap(),
             allowed_origins: vec![Url::parse("https://chatgpt.com/").unwrap()],
         }
     }
@@ -322,6 +314,19 @@ mod tests {
             "token_endpoint_auth_method": "private_key_jwt",
             "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"]
         })
+    }
+
+    #[test]
+    fn accepts_callback_id_scoped_client_metadata_urls() {
+        let mut config = test_config();
+        config.client_id =
+            Url::parse("https://chatgpt.com/oauth/callback_123/client.json").unwrap();
+        let document = client_document(&config);
+        assert!(validate_client_document(
+            &config,
+            &document,
+            &config.redirect_uri
+        ));
     }
 
     #[test]
@@ -365,10 +370,8 @@ mod tests {
         let fetcher = Arc::new(FakeFetcher::new(
             serde_json::to_vec(&client_document(&config)).unwrap(),
         ));
-        let verifier = CimdClientMetadataVerifier::with_fetcher(
-            fetcher.clone(),
-            Duration::from_secs(60),
-        );
+        let verifier =
+            CimdClientMetadataVerifier::with_fetcher(fetcher.clone(), Duration::from_secs(60));
 
         assert!(
             verifier
@@ -419,8 +422,7 @@ mod tests {
 
         let config = test_config();
         let too_large = Arc::new(FakeFetcher::new(vec![b'x'; MAX_CLIENT_METADATA_BYTES + 1]));
-        let verifier =
-            CimdClientMetadataVerifier::with_fetcher(too_large, Duration::from_secs(60));
+        let verifier = CimdClientMetadataVerifier::with_fetcher(too_large, Duration::from_secs(60));
         assert_eq!(
             verifier
                 .validate_client(&config, &config.client_id, &config.redirect_uri)

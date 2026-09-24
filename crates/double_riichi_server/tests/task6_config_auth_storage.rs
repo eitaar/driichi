@@ -596,14 +596,10 @@ async fn bot_token_authority_reload_preserves_revoked_state_and_emits_seat_signa
     let _ = fs::remove_dir_all(root);
 }
 
-
 #[test]
 fn chatgpt_oauth_is_opt_in_and_requires_trusted_https_configuration() {
     let root = temp_root("chatgpt-oauth-config");
-    let disabled_path = write_config(
-        &root,
-        "public_origin = \"http://127.0.0.1:3000\"\n",
-    );
+    let disabled_path = write_config(&root, "public_origin = \"http://127.0.0.1:3000\"\n");
     let disabled = RuntimeConfig::from_path(&disabled_path).unwrap();
     assert!(disabled.chatgpt_oauth.is_none());
 
@@ -662,10 +658,7 @@ fn chatgpt_oauth_is_opt_in_and_requires_trusted_https_configuration() {
             &root,
             &format!("public_origin = \"{public_origin}\"\n[chatgpt_oauth]\n{valid_oauth}"),
         );
-        assert!(
-            RuntimeConfig::from_path(&path).is_err(),
-            "{public_origin}"
-        );
+        assert!(RuntimeConfig::from_path(&path).is_err(), "{public_origin}");
     }
 
     for invalid in [

@@ -24,8 +24,8 @@ pub use characters::{
     is_safe_character_id, starter_version,
 };
 pub use config::{
-    CasualTimeControl, CharacterConfig, ChatgptOAuthConfig, ConfigError, NetworkConfig, RuntimeConfig, TimeControls,
-    TracingFormat,
+    CasualTimeControl, CharacterConfig, ChatgptOAuthConfig, ConfigError, NetworkConfig,
+    RuntimeConfig, TimeControls, TracingFormat,
 };
 pub use http::{IpCidr, ServerInitError, ServerLimits, ServerState, server_router};
 pub use storage::{Storage, StorageError, spawn_room_effect_worker};
