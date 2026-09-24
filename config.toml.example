@@ -11,14 +11,17 @@ mcp_session_idle_seconds = 1800
 empty_room_cleanup_seconds = 3600
 shutdown_seconds = 10
 
-# ChatGPT OAuth is disabled unless this table is configured and
-# DRIICHI_CHATGPT_BOT_TOKEN is an active, separate Bot Token in the process environment.
-# Copy the exact client URL and callback from ChatGPT's connection management page.
-# [chatgpt_oauth]
-# enabled = true
-# client_id = "https://chatgpt.com/oauth/client.json"
-# redirect_uri = "https://chatgpt.com/connector_platform_oauth_redirect"
-# allowed_origins = ["https://chatgpt.com"]
+# The localhost HTTP public_origin above cannot enable a live ChatGPT gateway.
+# Use a stable, publicly reachable HTTPS origin before setting enabled = true.
+# Keep DRIICHI_CHATGPT_BOT_TOKEN in the server process environment, never in
+# this file or the config-root .env. It must be an active, dedicated Bot Token.
+# Replace these example client values with the exact values from ChatGPT's
+# connection management page before enabling the gateway.
+[chatgpt_oauth]
+enabled = false
+client_id = "https://chatgpt.com/oauth/client.json"
+redirect_uri = "https://chatgpt.com/connector_platform_oauth_redirect"
+allowed_origins = ["https://chatgpt.com"]
 
 [network]
 max_connections = 256
