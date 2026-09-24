@@ -656,6 +656,7 @@ fn chatgpt_oauth_is_opt_in_and_requires_trusted_https_configuration() {
         "https://10.2.3.4",
         "https://192.168.1.10",
         "https://[::1]",
+        "https://[::ffff:127.0.0.1]",
     ] {
         let path = write_config(
             &root,

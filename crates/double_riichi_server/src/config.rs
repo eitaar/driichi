@@ -439,21 +439,9 @@ fn validate_origin(origin: &str) -> Result<(), ConfigError> {
 
 
 fn is_public_oauth_origin(origin: &Url) -> bool {
-    let Some(host) = origin.host_str() else {
-        return false;
-    };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if host == "localhost"
-        || [".localhost", ".local", ".internal", ".test", ".example", ".invalid", ".onion"]
-            .iter()
-            .any(|suffix| host.ends_with(*suffix))
-    {
-        return false;
-    }
-
-    match host.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(address)) => is_public_ipv4(address),
-        Ok(std::net::IpAddr::V6(address)) => {
+    match origin.host() {
+        Some(url::Host::Ipv4(address)) => is_public_ipv4(address),
+        Some(url::Host::Ipv6(address)) => {
             if let Some(mapped) = address.to_ipv4() {
                 return is_public_ipv4(mapped);
             }
@@ -465,7 +453,23 @@ fn is_public_oauth_origin(origin: &Url) -> bool {
                 || address.is_unicast_link_local()
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8))
         }
-        Err(_) => true,
+        Some(url::Host::Domain(host)) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            host.contains('.')
+                && host != "localhost"
+                && ![
+                    ".localhost",
+                    ".local",
+                    ".internal",
+                    ".test",
+                    ".example",
+                    ".invalid",
+                    ".onion",
+                ]
+                .iter()
+                .any(|suffix| host.ends_with(*suffix))
+        }
+        None => false,
     }
 }
 
