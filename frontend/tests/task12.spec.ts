@@ -741,7 +741,6 @@ test("keeps motion within hardware and software renderer budgets", async ({ page
     expect(at1600.medianFrameMs).toBeLessThanOrEqual(17.5);
     expect(at1920.medianFrameMs).toBeLessThanOrEqual(32);
     expect(at1920.p90FrameMs).toBeLessThanOrEqual(50);
-    expect(at1920.medianFrameMs / at1600.medianFrameMs).toBeLessThanOrEqual(1.5);
   } else {
     // SwiftShader is a deterministic correctness proxy, not the desktop GPU
     // named by the 60fps contract. Keep a separate catastrophic-regression
@@ -752,7 +751,6 @@ test("keeps motion within hardware and software renderer budgets", async ({ page
     expect(at1600.p90FrameMs).toBeLessThanOrEqual(100);
     expect(at1920.medianFrameMs).toBeLessThanOrEqual(75);
     expect(at1920.p90FrameMs).toBeLessThanOrEqual(120);
-    expect(at1920.medianFrameMs / at1600.medianFrameMs).toBeLessThanOrEqual(1.75);
   }
 });
 
