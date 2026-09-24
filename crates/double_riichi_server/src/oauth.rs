@@ -670,6 +670,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refreshed_access_lifetime_stops_at_family_expiry() {
+        let (root, storage, service) = test_service("family-deadline").await;
+        let code = issue_test_code(&service).await;
+        let original = service
+            .exchange_code(code_exchange(code, TEST_VERIFIER))
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "UPDATE oauth_refresh_families \
+             SET expires_at = CAST(strftime('%s', 'now') AS INTEGER) + 300",
+        )
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        let refreshed = service
+            .rotate_refresh(refresh_exchange(original.refresh_token))
+            .await
+            .unwrap();
+        let (access_issued, access_expires, family_expires): (i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT a.issued_at, a.expires_at, f.expires_at \
+                 FROM oauth_access_tokens a \
+                 JOIN oauth_refresh_families f ON f.family_id = a.family_id \
+                 WHERE a.token_hash = ?",
+            )
+            .bind(sha2::Sha256::digest(refreshed.access_token.as_bytes()).to_vec())
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+
+        assert!(access_expires <= family_expires);
+        assert_eq!(access_expires, family_expires);
+        assert_eq!(
+            refreshed.expires_in,
+            (family_expires - access_issued) as u64
+        );
+        assert!(refreshed.expires_in < 10 * 60);
+
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn simultaneous_refresh_redeems_once_and_replay_revokes_the_family() {
         let (root, storage, service) = test_service("refresh-replay").await;
         let code = issue_test_code(&service).await;
