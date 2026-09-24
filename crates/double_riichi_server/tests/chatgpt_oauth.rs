@@ -453,6 +453,81 @@ async fn approved_consent_mints_single_use_code_and_token_endpoint_is_form_encod
     finish_test_server(server).await;
 }
 
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn issuer_metadata_matches_safe_authorization_redirects() {
+    let server = test_server("issuer").await;
+    let metadata = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/oauth-authorization-server")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(metadata.status(), StatusCode::OK);
+    let metadata: Value = serde_json::from_str(&body_text(metadata).await).unwrap();
+    assert_eq!(metadata["issuer"], ISSUER);
+    assert_eq!(metadata["authorization_response_iss_parameter_supported"], true);
+
+    let mut wrong_resource = authorization_fields(TEST_STATE);
+    wrong_resource
+        .iter_mut()
+        .find(|(key, _)| key == "resource")
+        .unwrap()
+        .1 = "https://foreign.example/chatgpt/mcp".into();
+    let request_uri = format!(
+        "/api/v1/admin/oauth/authorize?{}",
+        encoded_form(&wrong_resource)
+    );
+    let error = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(request_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(error.status(), StatusCode::SEE_OTHER);
+    let location = error.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(location.starts_with(&format!("{REDIRECT_URI}?")));
+    assert_eq!(redirect_value(&error, "error").as_deref(), Some("invalid_request"));
+    assert_eq!(redirect_value(&error, "state").as_deref(), Some(TEST_STATE));
+    assert_eq!(redirect_value(&error, "iss").as_deref(), Some(ISSUER));
+
+    let mut untrusted_redirect = authorization_fields(TEST_STATE);
+    untrusted_redirect
+        .iter_mut()
+        .find(|(key, _)| key == "redirect_uri")
+        .unwrap()
+        .1 = "https://foreign.example/callback".into();
+    let request_uri = format!(
+        "/api/v1/admin/oauth/authorize?{}",
+        encoded_form(&untrusted_redirect)
+    );
+    let rejected = server
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(request_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert!(!rejected.headers().contains_key(header::LOCATION));
+
+    finish_test_server(server).await;
+}
+
 #[tokio::test]
 async fn discovery_routes_remain_absent_when_oauth_is_omitted() {
     let admin = Arc::new(
