@@ -33,6 +33,10 @@ jobs:
           --component rustfmt
       - name: Run task14 MCP integration tests
         run: cargo +"$RUST_TOOLCHAIN" test -p double_riichi_server --test task14_mcp
+      - name: Run ChatGPT OAuth HTTP integration tests
+        run: cargo +"$RUST_TOOLCHAIN" test -p double_riichi_server --test chatgpt_oauth
+      - name: Run admin HTTP regression tests
+        run: cargo +"$RUST_TOOLCHAIN" test -p double_riichi_server --test task9_http
       - name: Run server library tests
         run: cargo +"$RUST_TOOLCHAIN" test -p double_riichi_server --lib
 

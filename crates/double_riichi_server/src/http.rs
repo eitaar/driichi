@@ -55,6 +55,7 @@ const HUMAN_WS_MESSAGE_LIMIT: usize = 64 * 1024;
 const ADMIN_SESSION_COOKIE: &str = "driichi_admin";
 const GUEST_COOKIE_PREFIX: &str = "driichi_guest_";
 const ADMIN_SESSION_MAX_AGE: u64 = 12 * 60 * 60;
+const OAUTH_CSRF_COOKIE: &str = "driichi_oauth_csrf";
 const GUEST_SESSION_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 const GUEST_SESSION_MAX_ENTRIES: usize = 8_192;
 const HUMAN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
@@ -246,6 +247,21 @@ impl ServerState {
         state.storage = None;
         state.bot_tokens = None;
         state
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn with_chatgpt_oauth_for_tests(
+        mut self,
+        config: crate::ChatgptOAuthConfig,
+        storage: Arc<Storage>,
+    ) -> Self {
+        self.chatgpt_oauth = Some(Arc::new(
+            crate::oauth::OAuthGatewayState::new_for_tests(config, storage.clone())
+                .expect("test OAuth configuration is valid"),
+        ));
+        self.storage = Some(storage);
+        self
     }
 
     pub fn with_bot_token_service(mut self, service: Arc<BotTokenService>) -> Self {
@@ -1190,7 +1206,16 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
             .route(
                 "/.well-known/oauth-authorization-server",
                 get(crate::oauth::get_authorization_server_metadata),
-            );
+            )
+            .route(
+                "/api/v1/admin/oauth/authorize",
+                get(crate::oauth::get_authorize).post(crate::oauth::post_consent),
+            )
+            .route(
+                "/api/v1/admin/oauth/login",
+                post(crate::oauth::post_login),
+            )
+            .route("/oauth/token", post(crate::oauth::post_token));
     }
 
     router
@@ -1285,7 +1310,7 @@ fn authentication_required(request_id: &RequestId) -> Response {
     .response(request_id)
 }
 
-fn require_admin(
+pub(crate) fn require_admin(
     state: &ServerState,
     headers: &HeaderMap,
     request_id: &RequestId,
@@ -1401,7 +1426,7 @@ fn redact_audit_target_id(_target_type: &str, target_id: &str) -> String {
     crate::storage::redact_audit_target_id(target_id)
 }
 
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
     cookies.split(';').find_map(|part| {
         let (key, value) = part.trim().split_once('=')?;
@@ -1411,6 +1436,109 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 fn secure_cookie_suffix(state: &ServerState) -> &'static str {
     if state.secure_cookies { "; Secure" } else { "" }
+}
+
+pub(crate) fn oauth_csrf_cookie(
+    state: &ServerState,
+    value: &str,
+    max_age_seconds: u64,
+) -> HeaderValue {
+    let cookie = format!(
+        "{OAUTH_CSRF_COOKIE}={value}; HttpOnly; SameSite=Strict; Path=/api/v1/admin; Max-Age={max_age_seconds}{}",
+        secure_cookie_suffix(state)
+    );
+    HeaderValue::from_str(&cookie).expect("OAuth CSRF cookie is valid")
+}
+
+pub(crate) struct AdminLoginOutcome {
+    pub(crate) expires_at: String,
+    pub(crate) cookie: HeaderValue,
+}
+
+pub(crate) async fn authenticate_admin_login<F>(
+    state: &ServerState,
+    headers: &HeaderMap,
+    request_id: &RequestId,
+    peer: Option<SocketAddr>,
+    parse_credentials: F,
+) -> Result<AdminLoginOutcome, Response>
+where
+    F: FnOnce() -> Result<(String, String), Response>,
+{
+    if !unsafe_admin_origin_allowed(headers, state) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(request_id));
+    }
+    let ip = request_ip(headers, peer, &state.limits.trusted_proxy_cidrs);
+    if !state.rate_limiter.available(
+        RateKind::AdminLoginFailure,
+        ip,
+        state.limits.admin_login_failure_limit,
+        state.limits.admin_login_window,
+    ) {
+        return Err(rate_limited(request_id, state.limits.admin_login_window));
+    }
+    let (username, password) = parse_credentials()?;
+    let _operation = state.admin_mutation_lock.lock().await;
+    let session = match state.admin.login(&username, &password, SystemTime::now()) {
+        Ok(session) => session,
+        Err(CredentialError::InvalidCredentials) => {
+            state.rate_limiter.record(
+                RateKind::AdminLoginFailure,
+                ip,
+                state.limits.admin_login_window,
+            );
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "The username or password is invalid.",
+                "invalid_credentials",
+            )
+            .response(request_id));
+        }
+        Err(_) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error",
+                "The server could not complete the request.",
+                "internal_error",
+            )
+            .response(request_id));
+        }
+    };
+    let summary = json!({});
+    if let Err(error) =
+        prepare_admin_audit(state, request_id, "login", "admin", "admin", &summary).await
+    {
+        state.admin.sessions().revoke(session.credential());
+        return Err(audit_failure(request_id, "login", "admin", "admin", &error));
+    }
+    if let Err(error) = complete_admin_audit(state, request_id).await {
+        if rollback_admin_audit(state, request_id).await.is_ok() {
+            state.admin.sessions().revoke(session.credential());
+        } else {
+            tracing::error!(
+                request_id = %request_id.0,
+                "failed to durably mark the login audit rolled back"
+            );
+        }
+        return Err(audit_failure(request_id, "login", "admin", "admin", &error));
+    }
+    let value = URL_SAFE_NO_PAD.encode(session.credential().as_bytes());
+    let expires_at = session.expires_at();
+    let cookie = format!(
+        "{ADMIN_SESSION_COOKIE}={value}; HttpOnly; SameSite=Strict; Path=/api/v1/admin; Max-Age={ADMIN_SESSION_MAX_AGE}{}",
+        secure_cookie_suffix(state)
+    );
+    Ok(AdminLoginOutcome {
+        expires_at: system_time_rfc3339(expires_at),
+        cookie: HeaderValue::from_str(&cookie).expect("session cookie is valid"),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1427,89 +1555,28 @@ async fn admin_login(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    if !unsafe_admin_origin_allowed(&headers, &state) {
-        return ApiError::new(
-            StatusCode::FORBIDDEN,
-            "Origin not allowed",
-            "The request origin is not allowed.",
-            "origin_not_allowed",
-        )
-        .response(&request_id);
-    }
-    let ip = request_ip(
+    let login = authenticate_admin_login(
+        &state,
         &headers,
+        &request_id,
         peer.as_ref().map(|value| value.0.0),
-        &state.limits.trusted_proxy_cidrs,
-    );
-    if !state.rate_limiter.available(
-        RateKind::AdminLoginFailure,
-        ip,
-        state.limits.admin_login_failure_limit,
-        state.limits.admin_login_window,
-    ) {
-        return rate_limited(&request_id, state.limits.admin_login_window);
-    }
-    let payload: LoginRequest = match parse_json(&headers, body, &request_id) {
-        Ok(payload) => payload,
+        || {
+            let payload: LoginRequest = parse_json(&headers, body, &request_id)?;
+            Ok((payload.username, payload.password))
+        },
+    )
+    .await;
+    let login = match login {
+        Ok(login) => login,
         Err(response) => return response,
     };
-    let _operation = state.admin_mutation_lock.lock().await;
-    let now = SystemTime::now();
-    let session = match state.admin.login(&payload.username, &payload.password, now) {
-        Ok(session) => session,
-        Err(CredentialError::InvalidCredentials) => {
-            state.rate_limiter.record(
-                RateKind::AdminLoginFailure,
-                ip,
-                state.limits.admin_login_window,
-            );
-            return ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "Unauthorized",
-                "The username or password is invalid.",
-                "invalid_credentials",
-            )
-            .response(&request_id);
-        }
-        Err(_) => {
-            return ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error",
-                "The server could not complete the request.",
-                "internal_error",
-            )
-            .response(&request_id);
-        }
-    };
-    let summary = json!({});
-    if let Err(error) =
-        prepare_admin_audit(&state, &request_id, "login", "admin", "admin", &summary).await
-    {
-        state.admin.sessions().revoke(session.credential());
-        return audit_failure(&request_id, "login", "admin", "admin", &error);
-    }
-    if let Err(error) = complete_admin_audit(&state, &request_id).await {
-        if rollback_admin_audit(&state, &request_id).await.is_ok() {
-            state.admin.sessions().revoke(session.credential());
-        } else {
-            tracing::error!(
-                request_id = %request_id.0,
-                "failed to durably mark the login audit rolled back"
-            );
-        }
-        return audit_failure(&request_id, "login", "admin", "admin", &error);
-    }
-    let value = URL_SAFE_NO_PAD.encode(session.credential().as_bytes());
-    let expires_at = system_time_rfc3339(session.expires_at());
-    let cookie = format!(
-        "{ADMIN_SESSION_COOKIE}={value}; HttpOnly; SameSite=Strict; Path=/api/v1/admin; Max-Age={ADMIN_SESSION_MAX_AGE}{}",
-        secure_cookie_suffix(&state)
+    let mut response = json_response(
+        StatusCode::OK,
+        json!({"expires_at": login.expires_at}),
     );
-    let mut response = json_response(StatusCode::OK, json!({"expires_at": expires_at}));
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie).expect("session cookie is valid"),
-    );
+    response
+        .headers_mut()
+        .insert(header::SET_COOKIE, login.cookie);
     response
 }
 

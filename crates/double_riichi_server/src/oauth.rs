@@ -1,13 +1,28 @@
 use std::{
+    collections::HashMap,
     future::Future,
+    net::SocketAddr,
     pin::Pin,
+    str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    body::{Body, Bytes},
+    extract::{
+        ConnectInfo, Extension, RawQuery, State,
+        rejection::BytesRejection,
+    },
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::Response,
+};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::StreamExt;
+use rand::random;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use url::Url;
@@ -22,7 +37,7 @@ use crate::{
     config::{
         ChatgptOAuthConfig, is_trusted_chatgpt_metadata_url, is_trusted_chatgpt_redirect_uri,
     },
-    http::ServerState,
+    http::{self, RequestId, ServerState},
 };
 
 const CLIENT_METADATA_TIMEOUT: Duration = Duration::from_secs(3);
@@ -148,6 +163,18 @@ impl CimdClientMetadataVerifier {
         }
     }
 
+    pub(crate) async fn client_display_name(
+        &self,
+        config: &ChatgptOAuthConfig,
+    ) -> Result<String, CimdError> {
+        let document = self.validated_document(config).await?;
+        let name = document["client_name"]
+            .as_str()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("ChatGPT");
+        Ok(name.chars().filter(|character| !character.is_control()).take(120).collect())
+    }
+
     async fn validated_document(&self, config: &ChatgptOAuthConfig) -> Result<Value, CimdError> {
         if !is_trusted_chatgpt_metadata_url(&config.client_id)
             || !is_trusted_chatgpt_redirect_uri(&config.redirect_uri)
@@ -182,10 +209,30 @@ impl CimdClientMetadataVerifier {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthorizationRequest {
+    client_id: String,
+    redirect_uri: String,
+    response_type: String,
+    state: String,
+    scope: String,
+    resource: String,
+    code_challenge: String,
+    code_challenge_method: String,
+}
+
+#[derive(Clone)]
+struct PendingAuthorization {
+    request: AuthorizationRequest,
+    client_name: String,
+    expires_at: Instant,
+}
+
 pub(crate) struct OAuthGatewayState {
     pub(crate) config: ChatgptOAuthConfig,
     pub(crate) client_metadata: CimdClientMetadataVerifier,
     pub(crate) grants: OAuthService,
+    pending_authorizations: Mutex<HashMap<[u8; 32], PendingAuthorization>>,
 }
 
 impl OAuthGatewayState {
@@ -197,7 +244,45 @@ impl OAuthGatewayState {
             grants: OAuthService::new(config.clone(), storage),
             config,
             client_metadata: CimdClientMetadataVerifier::new_default()?,
+            pending_authorizations: Mutex::new(HashMap::new()),
         })
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn new_for_tests(
+        config: ChatgptOAuthConfig,
+        storage: std::sync::Arc<crate::Storage>,
+    ) -> Result<Self, CimdError> {
+        let document = json!({
+            "client_id": config.client_id.as_str(),
+            "redirect_uris": [config.redirect_uri.as_str()],
+            "token_endpoint_auth_methods_supported": ["none"],
+            "client_name": "ChatGPT <Driichi>"
+        });
+        let fetcher = Arc::new(StaticCimdMetadataFetcher {
+            body: serde_json::to_vec(&document).map_err(|_| CimdError::InvalidDocument)?,
+        });
+        Ok(Self {
+            grants: OAuthService::new(config.clone(), storage),
+            client_metadata: CimdClientMetadataVerifier::with_fetcher(
+                fetcher,
+                CLIENT_METADATA_CACHE_TTL,
+            ),
+            config,
+            pending_authorizations: Mutex::new(HashMap::new()),
+        })
+    }
+}
+
+#[cfg(debug_assertions)]
+struct StaticCimdMetadataFetcher {
+    body: Vec<u8>,
+}
+
+#[cfg(debug_assertions)]
+impl CimdMetadataFetcher for StaticCimdMetadataFetcher {
+    fn fetch<'a>(&'a self, _url: &'a Url) -> BoxFuture<'a, Result<Vec<u8>, CimdError>> {
+        Box::pin(async move { Ok(self.body.clone()) })
     }
 }
 
@@ -245,6 +330,632 @@ fn authorization_server_document(config: &ChatgptOAuthConfig) -> Value {
         "token_endpoint_auth_methods_supported": ["none"],
         "client_id_metadata_document_supported": true
     })
+}
+
+
+const AUTHORIZATION_FLOW_LIFETIME: Duration = Duration::from_secs(10 * 60);
+const OAUTH_CSRF_COOKIE_LIFETIME_SECONDS: u64 = 10 * 60;
+const MAX_PENDING_AUTHORIZATIONS: usize = 1024;
+const MAX_OAUTH_FORM_BYTES: usize = 16 * 1024;
+const MAX_OAUTH_QUERY_BYTES: usize = 8 * 1024;
+const AUTHORIZATION_FIELDS: [&str; 8] = [
+    "client_id",
+    "redirect_uri",
+    "response_type",
+    "state",
+    "scope",
+    "resource",
+    "code_challenge",
+    "code_challenge_method",
+];
+
+fn parse_urlencoded_fields(input: &[u8], limit: usize) -> Result<HashMap<String, String>, ()> {
+    if input.len() > limit {
+        return Err(());
+    }
+    let mut fields = HashMap::new();
+    for (key, value) in url::form_urlencoded::parse(input) {
+        if key.is_empty() || key.len() > 128 || value.len() > 4096 {
+            return Err(());
+        }
+        if fields.insert(key.into_owned(), value.into_owned()).is_some() {
+            return Err(());
+        }
+    }
+    Ok(fields)
+}
+
+fn form_body(
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<HashMap<String, String>, ()> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !content_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/x-www-form-urlencoded"))
+    {
+        return Err(());
+    }
+    let body = body.map_err(|_| ())?;
+    parse_urlencoded_fields(body.as_ref(), MAX_OAUTH_FORM_BYTES)
+}
+
+fn authorization_request(fields: &HashMap<String, String>) -> Option<AuthorizationRequest> {
+    if fields.keys().any(|key| !AUTHORIZATION_FIELDS.contains(&key.as_str())) {
+        return None;
+    }
+    let request = AuthorizationRequest {
+        client_id: fields.get("client_id")?.clone(),
+        redirect_uri: fields.get("redirect_uri")?.clone(),
+        response_type: fields.get("response_type")?.clone(),
+        state: fields.get("state")?.clone(),
+        scope: fields.get("scope")?.clone(),
+        resource: fields.get("resource")?.clone(),
+        code_challenge: fields.get("code_challenge")?.clone(),
+        code_challenge_method: fields.get("code_challenge_method")?.clone(),
+    };
+    let challenge_is_s256 = request.code_challenge.len() == 43
+        && request
+            .code_challenge
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+    if request.response_type != "code"
+        || request.state.is_empty()
+        || request.state.len() > 2048
+        || request.scope != "driichi:play"
+        || request.code_challenge_method != "S256"
+        || !challenge_is_s256
+    {
+        return None;
+    }
+    Some(request)
+}
+
+fn authorization_fields_from_form(
+    fields: &HashMap<String, String>,
+    extra_allowed: &[&str],
+) -> Option<AuthorizationRequest> {
+    if fields.keys().any(|key| {
+        !AUTHORIZATION_FIELDS.contains(&key.as_str()) && !extra_allowed.contains(&key.as_str())
+    }) {
+        return None;
+    }
+    let auth_fields = fields
+        .iter()
+        .filter(|(key, _)| AUTHORIZATION_FIELDS.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    authorization_request(&auth_fields)
+}
+
+fn redirect_is_configured(
+    fields: &HashMap<String, String>,
+    config: &ChatgptOAuthConfig,
+) -> Option<String> {
+    (fields.get("client_id").map(String::as_str) == Some(config.client_id.as_str())
+        && fields.get("redirect_uri").map(String::as_str) == Some(config.redirect_uri.as_str()))
+    .then(|| fields.get("state").filter(|state| !state.is_empty() && state.len() <= 2048).cloned())
+    .flatten()
+}
+
+fn oauth_redirect(
+    config: &ChatgptOAuthConfig,
+    state: &str,
+    code: Option<&str>,
+    error: Option<&str>,
+) -> Response {
+    let mut target = config.redirect_uri.clone();
+    {
+        let mut query = target.query_pairs_mut();
+        if let Some(code) = code {
+            query.append_pair("code", code);
+        }
+        if let Some(error) = error {
+            query.append_pair("error", error);
+        }
+        query.append_pair("state", state);
+        query.append_pair("iss", &config.issuer_identifier());
+    }
+    redirect_to(target)
+}
+
+fn redirect_to(target: Url) -> Response {
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, HeaderValue::from_str(target.as_str()).expect("redirect URL is valid"))
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::PRAGMA, "no-cache")
+        .body(Body::empty())
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn oauth_json_error(status: StatusCode, error: &'static str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::PRAGMA, "no-cache")
+        .body(Body::from(json!({"error": error}).to_string()))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn strict_same_origin(headers: &HeaderMap, state: &ServerState) -> bool {
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let Some(value) = origins.next() else {
+        return false;
+    };
+    if origins.next().is_some() {
+        return false;
+    }
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let Ok(origin) = Url::parse(value) else {
+        return false;
+    };
+    origin.path() == "/"
+        && origin.query().is_none()
+        && origin.fragment().is_none()
+        && http::same_origin(&origin, state.public_origin_url())
+}
+
+fn csrf_digest(value: &str) -> [u8; 32] {
+    Sha256::digest(value.as_bytes()).into()
+}
+
+fn new_csrf_token() -> String {
+    URL_SAFE_NO_PAD.encode(random::<[u8; 32]>())
+}
+
+fn csrf_cookie_matches(headers: &HeaderMap, submitted: &str) -> bool {
+    http::cookie_value(headers, "driichi_oauth_csrf")
+        .is_some_and(|cookie| cookie == submitted && !submitted.is_empty())
+}
+
+async fn register_pending_authorization(
+    gateway: &OAuthGatewayState,
+    csrf: &str,
+    request: AuthorizationRequest,
+    client_name: String,
+) {
+    let now = Instant::now();
+    let mut pending = gateway.pending_authorizations.lock().await;
+    pending.retain(|_, flow| flow.expires_at > now);
+    let key = csrf_digest(csrf);
+    if pending.len() >= MAX_PENDING_AUTHORIZATIONS && !pending.contains_key(&key) {
+        if let Some(oldest) = pending
+            .iter()
+            .min_by_key(|(_, flow)| flow.expires_at)
+            .map(|(key, _)| *key)
+        {
+            pending.remove(&oldest);
+        }
+    }
+    pending.insert(
+        key,
+        PendingAuthorization {
+            request,
+            client_name,
+            expires_at: now + AUTHORIZATION_FLOW_LIFETIME,
+        },
+    );
+}
+
+async fn pending_authorization(
+    gateway: &OAuthGatewayState,
+    csrf: &str,
+) -> Option<PendingAuthorization> {
+    let now = Instant::now();
+    let mut pending = gateway.pending_authorizations.lock().await;
+    pending.retain(|_, flow| flow.expires_at > now);
+    pending.get(&csrf_digest(csrf)).cloned()
+}
+
+async fn consume_pending_authorization(
+    gateway: &OAuthGatewayState,
+    csrf: &str,
+    request: &AuthorizationRequest,
+) -> Option<PendingAuthorization> {
+    let mut pending = gateway.pending_authorizations.lock().await;
+    let key = csrf_digest(csrf);
+    if pending
+        .get(&key)
+        .is_some_and(|flow| flow.expires_at > Instant::now() && flow.request == *request)
+    {
+        pending.remove(&key)
+    } else {
+        None
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn hidden_field(name: &str, value: &str) -> String {
+    format!(
+        "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+        html_escape(name),
+        html_escape(value)
+    )
+}
+
+fn authorization_hidden_fields(request: &AuthorizationRequest, csrf: &str) -> String {
+    let mut fields = hidden_field("csrf", csrf);
+    for (name, value) in [
+        ("client_id", request.client_id.as_str()),
+        ("redirect_uri", request.redirect_uri.as_str()),
+        ("response_type", request.response_type.as_str()),
+        ("state", request.state.as_str()),
+        ("scope", request.scope.as_str()),
+        ("resource", request.resource.as_str()),
+        ("code_challenge", request.code_challenge.as_str()),
+        ("code_challenge_method", request.code_challenge_method.as_str()),
+    ] {
+        fields.push_str(&hidden_field(name, value));
+    }
+    fields
+}
+
+fn html_response(body: String) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::PRAGMA, "no-cache")
+        .header(
+            "content-security-policy",
+            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        .header("x-content-type-options", "nosniff")
+        .header("referrer-policy", "no-referrer")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn sign_in_page(request: &AuthorizationRequest, client_name: &str, csrf: &str) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Sign in</title><main><h1>Sign in to Driichi</h1><p>{} is requesting access to this server.</p><form method=\"post\" action=\"/api/v1/admin/oauth/login\">{}<label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">Sign in</button></form></main></html>",
+        html_escape(client_name),
+        authorization_hidden_fields(request, csrf)
+    )
+}
+
+fn consent_page(request: &AuthorizationRequest, client_name: &str, csrf: &str) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Authorize ChatGPT</title><main><h1>Authorize connection</h1><p><strong>{}</strong> is requesting:</p><ul><li>Scope: <code>{}</code></li><li>Resource: <code>{}</code></li><li>Access: play games and read match state on this server</li></ul><form method=\"post\" action=\"/api/v1/admin/oauth/authorize\">{}<button name=\"decision\" value=\"approve\" type=\"submit\">Approve</button><button name=\"decision\" value=\"deny\" type=\"submit\">Deny</button></form></main></html>",
+        html_escape(client_name),
+        html_escape(&request.scope),
+        html_escape(&request.resource),
+        authorization_hidden_fields(request, csrf)
+    )
+}
+
+fn with_csrf_cookie(mut response: Response, state: &ServerState, csrf: &str) -> Response {
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        http::oauth_csrf_cookie(state, csrf, OAUTH_CSRF_COOKIE_LIFETIME_SECONDS),
+    );
+    response
+}
+
+fn clear_csrf_cookie(response: &mut Response, state: &ServerState) {
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        http::oauth_csrf_cookie(state, "", 0),
+    );
+}
+
+pub(crate) async fn get_authorize(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    RawQuery(raw_query): RawQuery,
+) -> Response {
+    let Some(gateway) = &state.chatgpt_oauth else {
+        return oauth_json_error(StatusCode::NOT_FOUND, "not_found");
+    };
+    let Some(raw_query) = raw_query else {
+        return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let fields = match parse_urlencoded_fields(raw_query.as_bytes(), MAX_OAUTH_QUERY_BYTES) {
+        Ok(fields) => fields,
+        Err(()) => return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    let safe_state = redirect_is_configured(&fields, &gateway.config);
+    let Some(request) = authorization_request(&fields) else {
+        return safe_state
+            .map(|state| oauth_redirect(&gateway.config, &state, None, Some("invalid_request")))
+            .unwrap_or_else(|| oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request"));
+    };
+    if request.client_id != gateway.config.client_id.as_str()
+        || request.redirect_uri != gateway.config.redirect_uri.as_str()
+    {
+        return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if request.resource != gateway.config.resource.as_str() {
+        return oauth_redirect(
+            &gateway.config,
+            &request.state,
+            None,
+            Some("invalid_request"),
+        );
+    }
+    let client_id = Url::parse(&request.client_id).expect("configured client URL is valid");
+    let redirect_uri = Url::parse(&request.redirect_uri).expect("configured redirect URL is valid");
+    if gateway
+        .client_metadata
+        .validate_client(&gateway.config, &client_id, &redirect_uri)
+        .await
+        .is_err()
+    {
+        return oauth_redirect(
+            &gateway.config,
+            &request.state,
+            None,
+            Some("server_error"),
+        );
+    }
+    let client_name = gateway
+        .client_metadata
+        .client_display_name(&gateway.config)
+        .await
+        .unwrap_or_else(|_| "ChatGPT".to_owned());
+    let csrf = new_csrf_token();
+    register_pending_authorization(gateway, &csrf, request.clone(), client_name.clone()).await;
+    let is_admin = http::require_admin(&state, &headers, &request_id).is_ok();
+    let page = if is_admin {
+        consent_page(&request, &client_name, &csrf)
+    } else {
+        sign_in_page(&request, &client_name, &csrf)
+    };
+    with_csrf_cookie(html_response(page), &state, &csrf)
+}
+
+
+pub(crate) async fn post_login(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if !strict_same_origin(&headers, &state) {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let mut fields = match form_body(&headers, body) {
+        Ok(fields) => fields,
+        Err(()) => return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    let Some(csrf) = fields.get("csrf").cloned() else {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    };
+    if !csrf_cookie_matches(&headers, &csrf) {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(request) =
+        authorization_fields_from_form(&fields, &["csrf", "username", "password"])
+    else {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    };
+    let Some(username) = fields.get("username").filter(|value| value.len() <= 256) else {
+        return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(password) = fields.get("password").filter(|value| value.len() <= 4096) else {
+        return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(gateway) = &state.chatgpt_oauth else {
+        return oauth_json_error(StatusCode::NOT_FOUND, "not_found");
+    };
+    let Some(pending) = pending_authorization(gateway, &csrf).await else {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    };
+    if pending.request != request {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+
+    let username = username.clone();
+    let password = password.clone();
+    let login = http::authenticate_admin_login(
+        &state,
+        &headers,
+        &request_id,
+        peer.as_ref().map(|value| value.0.0),
+        move || Ok((username, password)),
+    )
+    .await;
+    let login = match login {
+        Ok(login) => login,
+        Err(response) => return response,
+    };
+    let mut response = html_response(consent_page(&request, &pending.client_name, &csrf));
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, login.cookie);
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        http::oauth_csrf_cookie(&state, &csrf, OAUTH_CSRF_COOKIE_LIFETIME_SECONDS),
+    );
+    response
+}
+
+pub(crate) async fn post_consent(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if !strict_same_origin(&headers, &state) {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let fields = match form_body(&headers, body) {
+        Ok(fields) => fields,
+        Err(()) => return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    let Some(csrf) = fields.get("csrf").cloned() else {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    };
+    if !csrf_cookie_matches(&headers, &csrf) {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(request) = authorization_fields_from_form(&fields, &["csrf", "decision"]) else {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    };
+    let Some(decision) = fields.get("decision").map(String::as_str) else {
+        return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(gateway) = &state.chatgpt_oauth else {
+        return oauth_json_error(StatusCode::NOT_FOUND, "not_found");
+    };
+    if http::require_admin(&state, &headers, &request_id).is_err() {
+        return oauth_json_error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let Some(pending) = consume_pending_authorization(gateway, &csrf, &request).await else {
+        return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
+    };
+    let mut response = match decision {
+        "deny" => oauth_redirect(
+            &gateway.config,
+            &pending.request.state,
+            None,
+            Some("access_denied"),
+        ),
+        "approve" => match gateway
+            .grants
+            .issue_authorization_code(
+                &pending.request.client_id,
+                &pending.request.redirect_uri,
+                &pending.request.resource,
+                &pending.request.scope,
+                &pending.request.code_challenge,
+            )
+            .await
+        {
+            Ok(code) => oauth_redirect(
+                &gateway.config,
+                &pending.request.state,
+                Some(&code),
+                None,
+            ),
+            Err(_) => oauth_redirect(
+                &gateway.config,
+                &pending.request.state,
+                None,
+                Some("server_error"),
+            ),
+        },
+        _ => oauth_redirect(
+            &gateway.config,
+            &pending.request.state,
+            None,
+            Some("invalid_request"),
+        ),
+    };
+    clear_csrf_cookie(&mut response, &state);
+    response
+}
+
+pub(crate) async fn post_token(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Some(gateway) = &state.chatgpt_oauth else {
+        return oauth_json_error(StatusCode::NOT_FOUND, "not_found");
+    };
+    if raw_query.as_deref().is_some_and(|query| !query.is_empty()) {
+        return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let fields = match form_body(&headers, body) {
+        Ok(fields) => fields,
+        Err(()) => return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    let Some(grant_type) = fields.get("grant_type").map(String::as_str) else {
+        return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let pair = match grant_type {
+        "authorization_code" => {
+            if fields.keys().any(|key| {
+                !["grant_type", "client_id", "resource", "code", "redirect_uri", "code_verifier"]
+                    .contains(&key.as_str())
+            }) {
+                return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+            }
+            let (Some(client_id), Some(resource), Some(code), Some(redirect_uri), Some(verifier)) = (
+                fields.get("client_id"),
+                fields.get("resource"),
+                fields.get("code"),
+                fields.get("redirect_uri"),
+                fields.get("code_verifier"),
+            ) else {
+                return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            gateway
+                .grants
+                .exchange_code(CodeExchange {
+                    client_id: client_id.clone(),
+                    redirect_uri: redirect_uri.clone(),
+                    resource: resource.clone(),
+                    code: code.clone(),
+                    verifier: verifier.clone(),
+                })
+                .await
+        }
+        "refresh_token" => {
+            if fields.keys().any(|key| {
+                !["grant_type", "client_id", "resource", "refresh_token"]
+                    .contains(&key.as_str())
+            }) {
+                return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+            }
+            let (Some(client_id), Some(resource), Some(refresh_token)) = (
+                fields.get("client_id"),
+                fields.get("resource"),
+                fields.get("refresh_token"),
+            ) else {
+                return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            gateway
+                .grants
+                .rotate_refresh(RefreshExchange {
+                    client_id: client_id.clone(),
+                    resource: resource.clone(),
+                    refresh_token: refresh_token.clone(),
+                })
+                .await
+        }
+        _ => return oauth_json_error(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
+    };
+    match pair {
+        Ok(pair) => {
+            let body = serde_json::to_vec(&pair)
+                .expect("OAuth token response can be serialized");
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CACHE_CONTROL, "no-store")
+                .header(header::PRAGMA, "no-cache")
+                .body(Body::from(body))
+                .unwrap_or_else(|_| Response::new(Body::empty()))
+        }
+        Err(_) => oauth_json_error(StatusCode::BAD_REQUEST, "invalid_grant"),
+    }
 }
 
 pub(crate) async fn get_protected_resource_metadata(
