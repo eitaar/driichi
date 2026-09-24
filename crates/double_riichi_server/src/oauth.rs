@@ -272,6 +272,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use sha2::Digest;
 
     struct FakeFetcher {
         body: Vec<u8>,
@@ -504,7 +505,7 @@ mod tests {
         let (root, storage, service) = test_service("code-exchange").await;
         let code = issue_test_code(&service).await;
 
-        let mut wrong_verifier = code_exchange(code.clone(), "another-verifier-with-more-than-43-characters");
+        let wrong_verifier = code_exchange(code.clone(), "another-verifier-with-more-than-43-characters");
         assert!(service.exchange_code(wrong_verifier).await.is_err());
 
         let mut wrong_client = code_exchange(code.clone(), TEST_VERIFIER);
@@ -526,7 +527,7 @@ mod tests {
             .await
             .unwrap();
         assert!(service
-            .exchange_code(code_exchange(code, TEST_VERIFIER))
+            .exchange_code(code_exchange(code.clone(), TEST_VERIFIER))
             .await
             .is_err());
         assert_eq!(
@@ -568,6 +569,27 @@ mod tests {
         assert_eq!(access_hash.len(), 32);
         assert_ne!(refresh_hash.as_slice(), pair.refresh_token.as_bytes());
         assert_ne!(access_hash.as_slice(), pair.access_token.as_bytes());
+
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn simultaneous_code_redemptions_have_one_winner() {
+        let (root, storage, service) = test_service("code-replay").await;
+        let code = issue_test_code(&service).await;
+        let first = service.exchange_code(code_exchange(code.clone(), TEST_VERIFIER));
+        let second = service.exchange_code(code_exchange(code, TEST_VERIFIER));
+        let (first, second) = tokio::join!(first, second);
+        match (first, second) {
+            (Ok(_), Err(_)) | (Err(_), Ok(_)) => {}
+            _ => panic!("exactly one concurrent code redemption must win"),
+        }
+        let families: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_refresh_families")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(families, 1);
 
         storage.close().await;
         let _ = std::fs::remove_dir_all(root);

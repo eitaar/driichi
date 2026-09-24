@@ -246,14 +246,93 @@ impl OAuthStore {
         let now = now_unix_seconds();
         let mut transaction = self.pool.begin().await.map_err(|_| OAuthError::Storage)?;
         let token_hash = hash_secret(&exchange.refresh_token);
-        let family = sqlx::query(
-            "SELECT f.family_id, f.client_id, f.resource, f.scope, f.expires_at, f.revoked_at, \
-                    r.consumed_at, r.expires_at AS token_expires_at \
-             FROM oauth_refresh_tokens r \
-             JOIN oauth_refresh_families f ON f.family_id = r.family_id \
-             WHERE r.token_hash = ?",
+
+        // Make the conditional update the transaction's first statement. In
+        // SQLite this reserves the writer before reading, so a concurrent
+        // redemption waits and then observes the consumed token as a replay.
+        let consumed = sqlx::query(
+            "UPDATE oauth_refresh_tokens SET consumed_at = ? \
+             WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > ? \
+               AND EXISTS ( \
+                 SELECT 1 FROM oauth_refresh_families f \
+                 WHERE f.family_id = oauth_refresh_tokens.family_id \
+                   AND f.client_id = ? AND f.resource = ? AND f.scope = ? \
+                   AND f.revoked_at IS NULL AND f.expires_at > ? \
+               ) \
+             RETURNING family_id",
         )
+        .bind(now)
         .bind(&token_hash)
+        .bind(now)
+        .bind(&exchange.client_id)
+        .bind(&exchange.resource)
+        .bind(OAUTH_SCOPE)
+        .bind(now)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| OAuthError::Storage)?;
+
+        let Some(consumed) = consumed else {
+            let family = sqlx::query(
+                "SELECT f.family_id, f.client_id, f.resource, f.scope, f.expires_at, f.revoked_at, \
+                        r.consumed_at, r.expires_at AS token_expires_at \
+                 FROM oauth_refresh_tokens r \
+                 JOIN oauth_refresh_families f ON f.family_id = r.family_id \
+                 WHERE r.token_hash = ?",
+            )
+            .bind(&token_hash)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| OAuthError::Storage)?;
+            let Some(family) = family else {
+                transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+                return Err(OAuthError::InvalidGrant);
+            };
+
+            let family_id: String = family.try_get("family_id").map_err(|_| OAuthError::Storage)?;
+            let client_id: String = family.try_get("client_id").map_err(|_| OAuthError::Storage)?;
+            let resource: String = family.try_get("resource").map_err(|_| OAuthError::Storage)?;
+            let scope: String = family.try_get("scope").map_err(|_| OAuthError::Storage)?;
+            let family_expires_at: i64 = family.try_get("expires_at").map_err(|_| OAuthError::Storage)?;
+            let revoked_at: Option<i64> = family.try_get("revoked_at").map_err(|_| OAuthError::Storage)?;
+            let consumed_at: Option<i64> = family.try_get("consumed_at").map_err(|_| OAuthError::Storage)?;
+            let token_expires_at: i64 = family
+                .try_get("token_expires_at")
+                .map_err(|_| OAuthError::Storage)?;
+
+            if client_id != exchange.client_id
+                || resource != exchange.resource
+                || scope != OAUTH_SCOPE
+            {
+                transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+                return Err(OAuthError::InvalidGrant);
+            }
+            if consumed_at.is_some() {
+                sqlx::query(
+                    "UPDATE oauth_refresh_families SET revoked_at = COALESCE(revoked_at, ?) WHERE family_id = ?",
+                )
+                .bind(now)
+                .bind(&family_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| OAuthError::Storage)?;
+                transaction.commit().await.map_err(|_| OAuthError::Storage)?;
+                return Err(OAuthError::InvalidGrant);
+            }
+            if revoked_at.is_some() || family_expires_at <= now || token_expires_at <= now {
+                transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+                return Err(OAuthError::InvalidGrant);
+            }
+
+            transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
+            return Err(OAuthError::InvalidGrant);
+        };
+
+        let family_id: String = consumed.try_get("family_id").map_err(|_| OAuthError::Storage)?;
+        let family = sqlx::query(
+            "SELECT expires_at FROM oauth_refresh_families WHERE family_id = ?",
+        )
+        .bind(&family_id)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(|_| OAuthError::Storage)?;
@@ -261,64 +340,7 @@ impl OAuthStore {
             transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
             return Err(OAuthError::InvalidGrant);
         };
-
-        let family_id: String = family.try_get("family_id").map_err(|_| OAuthError::Storage)?;
-        let client_id: String = family.try_get("client_id").map_err(|_| OAuthError::Storage)?;
-        let resource: String = family.try_get("resource").map_err(|_| OAuthError::Storage)?;
-        let scope: String = family.try_get("scope").map_err(|_| OAuthError::Storage)?;
         let family_expires_at: i64 = family.try_get("expires_at").map_err(|_| OAuthError::Storage)?;
-        let revoked_at: Option<i64> = family.try_get("revoked_at").map_err(|_| OAuthError::Storage)?;
-        let consumed_at: Option<i64> = family.try_get("consumed_at").map_err(|_| OAuthError::Storage)?;
-        let token_expires_at: i64 = family
-            .try_get("token_expires_at")
-            .map_err(|_| OAuthError::Storage)?;
-
-        if client_id != exchange.client_id || resource != exchange.resource || scope != OAUTH_SCOPE {
-            transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
-            return Err(OAuthError::InvalidGrant);
-        }
-        if revoked_at.is_some() || family_expires_at <= now || token_expires_at <= now {
-            transaction.rollback().await.map_err(|_| OAuthError::Storage)?;
-            return Err(OAuthError::InvalidGrant);
-        }
-        if consumed_at.is_some() {
-            sqlx::query(
-                "UPDATE oauth_refresh_families SET revoked_at = COALESCE(revoked_at, ?) WHERE family_id = ?",
-            )
-            .bind(now)
-            .bind(&family_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| OAuthError::Storage)?;
-            transaction.commit().await.map_err(|_| OAuthError::Storage)?;
-            return Err(OAuthError::InvalidGrant);
-        }
-
-        let consumed = sqlx::query(
-            "UPDATE oauth_refresh_tokens SET consumed_at = ? \
-             WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > ? \
-             RETURNING family_id",
-        )
-        .bind(now)
-        .bind(&token_hash)
-        .bind(now)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|_| OAuthError::Storage)?;
-        if consumed.is_none() {
-            // The conditional update is the single-winner point. A token which
-            // changed state after the initial read is treated as a replay.
-            sqlx::query(
-                "UPDATE oauth_refresh_families SET revoked_at = COALESCE(revoked_at, ?) WHERE family_id = ?",
-            )
-            .bind(now)
-            .bind(&family_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| OAuthError::Storage)?;
-            transaction.commit().await.map_err(|_| OAuthError::Storage)?;
-            return Err(OAuthError::InvalidGrant);
-        }
 
         let pair = new_token_pair();
         insert_token_rows(
