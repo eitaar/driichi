@@ -806,7 +806,7 @@ async fn gateway_delegates_sessions_streams_and_keeps_legacy_pi_tokens_independe
         .as_str()
         .unwrap()
         .to_owned();
-    room.send(RoomCommand::select(&participant_id))
+    room.send(RoomCommand::select(participant_id.as_str()))
         .await
         .unwrap();
     room.send(RoomCommand::fill_with_bots()).await.unwrap();
