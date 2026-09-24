@@ -275,6 +275,7 @@ mod tests {
 
     use super::*;
     use sha2::Digest;
+    use sqlx::Row;
 
     struct FakeFetcher {
         body: Vec<u8>,

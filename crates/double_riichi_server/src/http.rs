@@ -4644,10 +4644,19 @@ mod tests {
             )
             .unwrap(),
         );
+        let root = std::env::temp_dir().join(format!(
+            "driichi-oauth-metadata-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storage = Arc::new(crate::Storage::connect(&root).await.unwrap());
         let mut state =
             ServerState::for_tests("https://driichi.example", admin, RoomRegistry::new());
         state.chatgpt_oauth = Some(Arc::new(
-            crate::oauth::OAuthGatewayState::new(oauth).unwrap(),
+            crate::oauth::OAuthGatewayState::new(oauth, storage.clone()).unwrap(),
         ));
         let app = server_router(Arc::new(state));
 
@@ -4677,6 +4686,7 @@ mod tests {
         );
 
         let authorization_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/.well-known/oauth-authorization-server")
@@ -4715,5 +4725,9 @@ mod tests {
             authorization_metadata["client_id_metadata_document_supported"],
             json!(true)
         );
+
+        drop(app);
+        storage.close().await;
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
