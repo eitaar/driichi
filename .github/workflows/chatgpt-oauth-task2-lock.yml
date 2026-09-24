@@ -15,15 +15,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
       - name: Format Rust sources
         run: cargo fmt --all
-      - name: Resolve and verify the lockfile
+      - name: Update lockfile minimally and run focused tests
         run: |
-          cargo generate-lockfile
-          cargo test --locked -p double_riichi_server --test chatgpt_oauth
+          git checkout HEAD^ -- Cargo.lock
+          cargo test -p double_riichi_server --test chatgpt_oauth --test task6_config_auth_storage
       - name: Collect formatted sources and lockfile
         if: always()
         run: |

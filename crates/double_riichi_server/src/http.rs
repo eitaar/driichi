@@ -4701,6 +4701,14 @@ mod tests {
             resource_metadata["authorization_servers"][0]
         );
         assert_eq!(
+            authorization_metadata["authorization_endpoint"],
+            "https://driichi.example/api/v1/admin/oauth/authorize"
+        );
+        assert_eq!(
+            authorization_metadata["token_endpoint"],
+            "https://driichi.example/oauth/token"
+        );
+        assert_eq!(
             authorization_metadata["code_challenge_methods_supported"],
             json!(["S256"])
         );

@@ -229,7 +229,7 @@ fn authorization_server_document(config: &ChatgptOAuthConfig) -> Value {
     let issuer = config.issuer_identifier();
     json!({
         "issuer": issuer,
-        "authorization_endpoint": format!("{issuer}/oauth/authorize"),
+        "authorization_endpoint": format!("{issuer}/api/v1/admin/oauth/authorize"),
         "token_endpoint": format!("{issuer}/oauth/token"),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
