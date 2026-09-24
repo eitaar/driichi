@@ -21,6 +21,8 @@ const ADMIN_SUBJECT: &str = "admin";
 pub(crate) enum OAuthError {
     #[error("invalid OAuth grant")]
     InvalidGrant,
+    #[error("OAuth access token has insufficient scope")]
+    InsufficientScope,
     #[error("OAuth storage is unavailable")]
     Storage,
 }
@@ -138,10 +140,14 @@ impl OAuthService {
         resource: &str,
         scope: &str,
     ) -> Result<AccessGrant, OAuthError> {
-        if resource != self.resource || scope != OAUTH_SCOPE {
+        if resource != self.resource {
             return Err(OAuthError::InvalidGrant);
         }
-        self.store.validate_access(token, resource, scope).await
+        let grant = self.store.validate_access(token, resource).await?;
+        if scope != OAUTH_SCOPE || grant.scope != scope {
+            return Err(OAuthError::InsufficientScope);
+        }
+        Ok(grant)
     }
 }
 
@@ -413,19 +419,17 @@ impl OAuthStore {
         &self,
         token: &str,
         resource: &str,
-        scope: &str,
     ) -> Result<AccessGrant, OAuthError> {
         let now = now_unix_seconds();
         let row = sqlx::query(
-            "SELECT f.client_id, f.subject, a.resource, a.scope \
+            "SELECT f.client_id, f.subject, f.scope AS family_scope, a.resource, a.scope \
              FROM oauth_access_tokens a \
              JOIN oauth_refresh_families f ON f.family_id = a.family_id \
-             WHERE a.token_hash = ? AND a.resource = ? AND a.scope = ? \
+             WHERE a.token_hash = ? AND a.resource = ? \
                AND a.expires_at > ? AND f.expires_at > ? AND f.revoked_at IS NULL",
         )
         .bind(hash_secret(token))
         .bind(resource)
-        .bind(scope)
         .bind(now)
         .bind(now)
         .fetch_optional(&self.pool)
@@ -434,11 +438,16 @@ impl OAuthStore {
         let Some(row) = row else {
             return Err(OAuthError::InvalidGrant);
         };
+        let scope: String = row.try_get("scope").map_err(|_| OAuthError::Storage)?;
+        let family_scope: String = row.try_get("family_scope").map_err(|_| OAuthError::Storage)?;
+        if scope != family_scope {
+            return Err(OAuthError::InvalidGrant);
+        }
         Ok(AccessGrant {
             client_id: row.try_get("client_id").map_err(|_| OAuthError::Storage)?,
             subject: row.try_get("subject").map_err(|_| OAuthError::Storage)?,
             resource: row.try_get("resource").map_err(|_| OAuthError::Storage)?,
-            scope: row.try_get("scope").map_err(|_| OAuthError::Storage)?,
+            scope,
         })
     }
 }

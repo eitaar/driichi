@@ -223,6 +223,7 @@ pub struct ServerState {
     storage_maintenance_started: Arc<AtomicBool>,
     storage: Option<Arc<Storage>>,
     bot_tokens: Option<Arc<BotTokenService>>,
+    pub(crate) chatgpt_bot_token: Option<Arc<crate::chatgpt_gateway::DedicatedBotToken>>,
     pub(crate) chatgpt_oauth: Option<Arc<crate::oauth::OAuthGatewayState>>,
     pub(crate) compat: Arc<CompatState>,
     mcp_session_idle_seconds: u64,
@@ -261,6 +262,20 @@ impl ServerState {
                 .expect("test OAuth configuration is valid"),
         ));
         self.storage = Some(storage);
+        self
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn with_chatgpt_bot_token_for_tests(mut self, raw_token: &str) -> Self {
+        let record = self.bot_tokens.as_ref()
+            .and_then(|service| service.authenticate(raw_token).ok())
+            .expect("test ChatGPT Bot Token is active");
+        self.chatgpt_bot_token = Some(Arc::new(
+            crate::chatgpt_gateway::DedicatedBotToken::for_tests(
+                raw_token.to_owned(), record.token_id().to_owned(),
+            ),
+        ));
         self
     }
 
@@ -322,6 +337,10 @@ impl ServerState {
 
     pub(crate) fn public_origin_url(&self) -> &Url {
         &self.public_origin_url
+    }
+
+    pub(crate) fn bot_token_record_for_chatgpt(&self, raw_token: &str) -> Option<crate::BotTokenRecord> {
+        self.bot_tokens.as_ref()?.authenticate(raw_token).ok()
     }
 
     pub(crate) fn bot_token_active(&self, token_id: &str) -> bool {
@@ -438,11 +457,18 @@ impl ServerState {
         ));
         let token_service = Arc::new(BotTokenService::new(storage.clone(), token_authority));
         let chatgpt_oauth_requested = config.chatgpt_oauth.is_some();
-        let chatgpt_oauth_config = config.chatgpt_oauth.clone().filter(|_| {
+        let dedicated_chatgpt_token = config.chatgpt_oauth.as_ref().and_then(|_| {
             std::env::var("DRIICHI_CHATGPT_BOT_TOKEN")
                 .ok()
-                .is_some_and(|token| token_service.authenticate(&token).is_ok())
+                .and_then(|raw| token_service.authenticate(&raw).ok().map(|record| {
+                    Arc::new(crate::chatgpt_gateway::DedicatedBotToken::for_process(
+                        raw, record.token_id().to_owned(),
+                    ))
+                }))
         });
+        let chatgpt_oauth_config = dedicated_chatgpt_token
+            .as_ref()
+            .and(config.chatgpt_oauth.clone());
         let trusted_proxy_cidrs = config
             .network
             .trusted_proxy_cidrs
@@ -491,6 +517,7 @@ impl ServerState {
             state.rooms.clone(),
         );
         state.bot_tokens = Some(token_service);
+        state.chatgpt_bot_token = dedicated_chatgpt_token;
         state.chatgpt_oauth = chatgpt_oauth_config
             .map(|config| crate::oauth::OAuthGatewayState::new(config, storage.clone()))
             .transpose()
@@ -546,6 +573,7 @@ impl ServerState {
             admission_open: Arc::new(AtomicBool::new(true)),
             storage: None,
             bot_tokens: None,
+            chatgpt_bot_token: None,
             chatgpt_oauth: None,
             compat,
             mcp_session_idle_seconds: 30 * 60,
@@ -1216,6 +1244,9 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
                 post(crate::oauth::post_login),
             )
             .route("/oauth/token", post(crate::oauth::post_token));
+    }
+    if state.chatgpt_oauth.is_some() && state.chatgpt_bot_token.is_some() {
+        router = router.route("/chatgpt/mcp", any(crate::chatgpt_gateway::mcp_endpoint));
     }
 
     router

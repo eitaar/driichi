@@ -5,6 +5,7 @@ pub const BUILD_COMMIT: &str = env!("GIT_COMMIT");
 
 mod auth;
 mod characters;
+mod chatgpt_gateway;
 mod compat;
 mod config;
 mod http;
