@@ -195,7 +195,7 @@ pub enum ServerInitError {
     #[error("trusted proxy CIDR is invalid")]
     TrustedProxy,
     #[error("ChatGPT OAuth client could not be initialized")]
-    ChatgptOAuth(#[source] crate::oauth::CimdError),
+    ChatgptOAuth,
 }
 
 #[derive(Clone)]
@@ -478,7 +478,7 @@ impl ServerState {
         state.chatgpt_oauth = chatgpt_oauth_config
             .map(crate::oauth::OAuthGatewayState::new)
             .transpose()
-            .map_err(ServerInitError::ChatgptOAuth)?
+            .map_err(|_| ServerInitError::ChatgptOAuth)?
             .map(Arc::new);
         if chatgpt_oauth_requested && state.chatgpt_oauth.is_none() {
             tracing::warn!(
