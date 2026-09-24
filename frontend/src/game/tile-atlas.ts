@@ -8,8 +8,8 @@ import {
 import { tileAssetUrl, tileFileName } from "./tiles";
 
 export const ATLAS_COLUMNS = 8;
-export const ATLAS_CELL_WIDTH = 128;
-export const ATLAS_CELL_HEIGHT = 171;
+export const ATLAS_CELL_WIDTH = 256;
+export const ATLAS_CELL_HEIGHT = 342;
 export const ATLAS_CELL_INSET_TEXELS = 0.5;
 const CELL_WIDTH = ATLAS_CELL_WIDTH;
 const CELL_HEIGHT = ATLAS_CELL_HEIGHT;

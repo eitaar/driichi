@@ -31,7 +31,7 @@ export const TABLE_TEXTURE_SPECS: Record<TableTextureKey, TableTextureSpec> = {
     repeat: [1.5, 1],
     minFilter: "mipmap",
     colorSpace: "srgb",
-    anisotropy: 1,
+    anisotropy: 4,
   },
 };
 

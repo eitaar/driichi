@@ -40,7 +40,7 @@ describe("table material assets", () => {
     expect(TABLE_TEXTURE_SPECS.felt.repeat).toEqual([1.5, 1]);
     expect(TABLE_TEXTURE_SPECS.felt.colorSpace).toBe("srgb");
     expect(TABLE_TEXTURE_SPECS.felt.minFilter).toBe("mipmap");
-    expect(TABLE_TEXTURE_SPECS.felt.anisotropy).toBe(1);
+    expect(TABLE_TEXTURE_SPECS.felt.anisotropy).toBe(4);
   });
 
   it("keeps felt direct-loaded and deep-green without a derived canvas texture", () => {

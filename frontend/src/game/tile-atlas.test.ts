@@ -84,11 +84,25 @@ describe("createTileAtlas", () => {
 
     expect(atlas.columns).toBe(ATLAS_COLUMNS);
     expect(atlas.rows).toBe(Math.ceil(representatives.length / ATLAS_COLUMNS));
+    expect(ATLAS_CELL_WIDTH).toBe(256);
+    expect(ATLAS_CELL_HEIGHT).toBe(342);
+    expect((atlas.texture.image as HTMLCanvasElement).width).toBe(
+      ATLAS_COLUMNS * ATLAS_CELL_WIDTH,
+    );
+    expect((atlas.texture.image as HTMLCanvasElement).height).toBe(
+      atlas.rows * ATLAS_CELL_HEIGHT,
+    );
     expect(loadedUrls).toHaveLength(representatives.length);
     expect(new Set(loadedUrls).size).toBe(representatives.length);
     expect(fillStyle).toBe("#eee5d2");
     expect(fillRect).toHaveBeenCalledTimes(representatives.length);
-    expect(fillRect).toHaveBeenNthCalledWith(1, 0, 0, 128, 171);
+    expect(fillRect).toHaveBeenNthCalledWith(
+      1,
+      0,
+      0,
+      ATLAS_CELL_WIDTH,
+      ATLAS_CELL_HEIGHT,
+    );
     expect(drawImage).toHaveBeenCalledTimes(representatives.length);
     expect(fillRect.mock.invocationCallOrder[0]).toBeLessThan(drawImage.mock.invocationCallOrder[0]);
 
