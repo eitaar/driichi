@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE — Round Win / Double Riichi</title>
+<style>
+/* THROWAWAY: three win-result layouts on the existing Match stage, not production UI. */
+@font-face{font-family:Geist;src:url('/frontend/src/assets/fonts/Geist-Variable.woff2')}
+@font-face{font-family:'Geist Mono';src:url('/frontend/src/assets/fonts/GeistMono-Variable.woff2')}
+:root{font-family:Geist,system-ui,sans-serif;background:#090b0d;color:#f1f0eb;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;min-width:950px}button{cursor:pointer;font:inherit}:focus-visible{outline:3px solid #ef8d84;outline-offset:3px}
+header{height:54px;padding:0 28px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #30363b;font:10px 'Geist Mono',monospace;letter-spacing:.12em;color:#aab0b4}
+header strong{color:#ef8d84;font-size:12px}header span{color:#d7d0c3}
+main{min-height:calc(100dvh - 54px);display:grid;place-items:center;padding:10px 16px 94px}
+.stage{position:relative;width:min(100%,calc((100dvh - 170px)*1.7778));aspect-ratio:16/9;overflow:hidden;border:1px solid #9a7042;background:#18352f;box-shadow:0 20px 60px #000a}
+.stage:before{content:"";position:absolute;inset:0;background:url('/docs/design/concepts/live-4p-v2.png') center/cover;filter:brightness(.32) saturate(.65)}
+.stage:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,#05080e48,transparent 52%,#05080e48);pointer-events:none}
+.panel{position:absolute;z-index:1;overflow:hidden;background:linear-gradient(125deg,#0d1530f7,#101316f9);border:1px solid #9a7042;box-shadow:0 20px 50px #000b}
+.overline{font:10px 'Geist Mono',monospace;letter-spacing:.16em;color:#f0c76c;text-transform:uppercase}
+h1{font-size:clamp(26px,3.2vw,46px);letter-spacing:-.055em;margin:8px 0 2px;line-height:1.05}.method{font:11px 'Geist Mono',monospace;letter-spacing:.12em;color:#c8c9c4}
+.portrait{position:relative;display:grid;place-items:center;overflow:hidden;border:1px solid #9a7042;background:linear-gradient(140deg,#2d5967,#15232b 76%);min-height:0}.portrait img{display:block;width:100%;height:100%;object-fit:contain}.portrait:after{content:'CHARACTER PACK · MOCK ASSET';position:absolute;bottom:5px;left:6px;right:6px;font:7px 'Geist Mono';letter-spacing:.05em;text-align:center;color:#fff;background:#101316bc}
+.label{display:block;margin-bottom:8px;color:#aab0b4;font:9px 'Geist Mono';letter-spacing:.14em;text-transform:uppercase}.tiles{display:flex;align-items:flex-end;gap:3px;min-width:0}.tile{width:clamp(20px,2.8vw,40px);aspect-ratio:0.73;display:grid;place-items:center;flex:0 1 auto;border:1px solid #c4ad7b;border-radius:3px;background:#eee5d2;overflow:hidden}.tile img{display:block;width:100%;height:100%;object-fit:contain}.tile.winning{outline:2px solid #ef8d84;outline-offset:2px;margin-left:5px}
+.melds{display:flex;align-items:center;gap:6px;margin-top:10px;color:#aab0b4;font:10px 'Geist Mono'}.melds .tile{width:23px}.yaku{margin:0;padding:0;list-style:none}.yaku li{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #455059;padding:7px 0;font-size:clamp(11px,1.1vw,16px)}.yaku b{white-space:nowrap;color:#f0c76c;font:600 13px 'Geist Mono'}
+.totals{display:grid;align-content:center}.totals strong{display:block;color:#fff4d7;font:650 clamp(28px,4vw,60px) 'Geist Mono';letter-spacing:-.06em;white-space:nowrap}.totals small{font:12px 'Geist Mono';color:#c8c9c4}.totals .grade{color:#f0c76c;font:600 clamp(16px,2vw,26px) Geist;margin:2px 0 9px}.facts{margin:10px 0;color:#c8c9c4;font:11px 'Geist Mono'}
+.foot{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #495158;padding-top:12px;font:11px 'Geist Mono';color:#c8c9c4}.foot button{min-width:106px;background:#b93a35;color:#fff;border:1px solid #db5550;padding:9px 17px}.foot button:focus-visible{outline-color:#fff}.foot em{font-style:normal;color:#f0c76c}
+/* A: theatrical hero on the left; hand and yaku across the center; points on the right. */
+.variant-a{inset:10% 4% 13%;display:grid;grid-template-columns:20% 1fr 22%;grid-template-rows:1fr auto;gap:14px;padding:18px 22px}.variant-a .hero{display:grid;grid-template-rows:1fr auto;gap:9px}.variant-a .hero .portrait{min-height:180px}.variant-a .hero h1{font-size:clamp(23px,2.6vw,35px)}.variant-a .body{display:flex;flex-direction:column;justify-content:space-around;min-width:0}.variant-a .yaku{max-width:380px}.variant-a .tile{width:clamp(17px,2.2vw,30px)}.variant-a .totals{padding-left:14px;border-left:1px solid #495158}.variant-a .foot{grid-column:1/-1}
+/* B: symmetrical editorial scorecard, hand first, portrait reduced to a badge. */
+.variant-b{inset:7% 15% 10%;padding:19px 25px;display:grid;grid-template-rows:auto auto 1fr auto;gap:11px}.variant-b .head{display:flex;align-items:center;gap:13px}.variant-b .portrait{width:63px;height:69px;flex:none}.variant-b .head h1{margin:2px 0}.variant-b .hand{border-top:1px solid #495158;border-bottom:1px solid #495158;padding:11px 0}.variant-b .tile{width:clamp(18px,2.45vw,34px)}.variant-b .lower{display:grid;grid-template-columns:1fr auto;gap:22px;min-height:0}.variant-b .totals{text-align:right;justify-items:end}.variant-b .foot{margin-top:0}
+/* C: anchored scoreboard, live table stays visible over it. */
+.variant-c{inset:auto 2% 8%;height:55%;display:grid;grid-template-columns:15% minmax(0,1.4fr) minmax(0,.9fr) 20%;grid-template-rows:1fr auto;gap:13px;padding:14px 17px}.variant-c .hero{display:grid;grid-template-rows:1fr auto;gap:4px}.variant-c .hero h1{font-size:clamp(19px,2vw,31px);white-space:nowrap}.variant-c .hero .portrait{min-height:0}.variant-c .overline{font-size:8px;letter-spacing:.06em;white-space:nowrap}.variant-c .body{display:grid;align-content:center;gap:15px;min-width:0}.variant-c .tile{width:clamp(16px,1.5vw,18px)}.variant-c>div:nth-child(3){align-self:center}.variant-c .yaku li{font-size:11px}.variant-c .totals{padding-left:12px;border-left:1px solid #495158}.variant-c .totals strong{font-size:clamp(25px,3vw,45px)}.variant-c .grade{font-size:clamp(16px,1.6vw,21px);white-space:nowrap}.variant-c .foot{grid-column:1/-1}
+.tools{position:fixed;z-index:5;bottom:8px;left:50%;transform:translateX(-50%);width:min(920px,calc(100% - 32px));padding:8px 12px;background:#15191d;border:1px solid #495158;box-shadow:0 8px 24px #000;display:flex;align-items:center;justify-content:space-between;gap:16px;font:11px 'Geist Mono';color:#d7d0c3}.tools button{background:#1a1f23;color:#f1f0eb;border:1px solid #495158;padding:8px 10px}.tools button:hover{border-color:#f0c76c}.tools .note{max-width:360px;color:#aab0b4;line-height:1.35}.tools .switch{display:flex;align-items:center;gap:9px;white-space:nowrap}.tools .switch b{min-width:145px;text-align:center;color:#f0c76c}
+@media(max-height:710px){main{padding-bottom:76px}.stage{width:min(100%,calc((100dvh - 137px)*1.7778))}.panel{gap:8px}.variant-a{padding:12px}.variant-b{padding:10px 16px;gap:5px}.variant-c{padding:9px}.variant-c .hero .portrait{max-height:105px}.variant-c .hero h1{font-size:19px}.tiles{gap:2px}.yaku li{padding:3px 0}.foot{padding-top:6px}.foot button{padding:5px 9px}.label{margin-bottom:3px}.melds{margin-top:4px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header><strong>DOUBLE RIICHI / PROTOTYPE ONLY</strong><span>LIVE MATCH · EAST 2 · RON · 5s MAX</span><span>Not a production screen</span></header>
+<main><div class="stage" id="stage" aria-live="polite"></div></main>
+<div class="tools"><span class="note" id="state-note"></span><div class="switch"><button id="prev" aria-label="Previous variant">←</button><b id="variant-label"></b><button id="next" aria-label="Next variant">→</button></div></div>
+<script>
+const tiles=['Man2','Man3','Man4','Pin4','Pin5-Dora','Pin6','Sou2','Sou3','Sou4','Chun','Chun','Chun','Man7','Man7'];
+const tile=(name,index)=>`<span class="tile${index===13?' winning':''}"><img src="/frontend/src/assets/tiles/Regular/${name}.svg" alt="${name}"></span>`;
+const hand=`<div><span class="label">Winning hand · highlighted tile: 7 man</span><div class="tiles">${tiles.map(tile).join('')}</div><div class="melds">Melds <span>— closed hand</span>　Dora indicator: 1 pin · Red five: 1</div></div>`;
+const yaku=`<div><span class="label">Yaku and bonuses</span><ul class="yaku"><li>Riichi <b>1 HAN</b></li><li>Dragon triplet <b>1 HAN</b></li><li>Red five <b>1 HAN</b></li></ul></div>`;
+const totals=`<div class="totals"><span class="overline">Win · Ron</span><span class="grade">3 HAN · 40 FU</span><strong>5,200</strong><small>POINTS · DISCARDER PAYS</small><div class="facts">Next: score transfer</div></div>`;
+const portrait='<div class="portrait"><img src="/frontend/tests/fixtures/task12-characters/player-red/portrait.webp" alt="Mock Character portrait"></div>';
+const hero=`<div class="hero">${portrait}<div><span class="overline">RON · WINNER 1 / 2</span><h1>Mika</h1><span class="method">WEST SEAT</span></div></div>`;
+const foot='<div class="foot"><span>Winner 1 of 2 · next: Nori</span><span>STEP ENDS IN <em>05</em> SEC</span><button type="button" onclick="this.disabled=true;this.textContent=\'Waiting for others\'">Confirm</button></div>';
+const variants={
+ a:{label:'A · Cinematic split',note:'Character leads; hand and yaku occupy the center; points sit on the right. Does the portrait crowd the table?',html:`<section class="panel variant-a" aria-label="Cinematic split result">${hero}<div class="body">${hand}${yaku}</div>${totals}${foot}</section>`},
+ b:{label:'B · Scorecard',note:'Hand first, then yaku; compact Character badge and a strong point total. Does this feel celebratory enough?',html:`<section class="panel variant-b" aria-label="Scorecard result"><div class="head">${portrait}<div><span class="overline">RON · WINNER 1 / 2 · WEST SEAT</span><h1>Mika</h1></div></div><div class="hand">${hand}</div><div class="lower">${yaku}${totals}</div>${foot}</section>`},
+ c:{label:'C · Table-side rail',note:'The upper table remains visible; information stays on a compact lower band. Is anything too cramped?',html:`<section class="panel variant-c" aria-label="Table-side result">${hero}<div class="body">${hand}</div>${yaku}${totals}${foot}</section>`}
+};
+const keys=Object.keys(variants);
+function show(key){const current=keys.includes(key)?key:'a';history.replaceState(null,'',`?variant=${current}`);document.querySelector('#stage').innerHTML=variants[current].html;document.querySelector('#variant-label').textContent=variants[current].label;document.querySelector('#state-note').textContent=variants[current].note;}
+function step(n){const i=keys.indexOf(new URLSearchParams(location.search).get('variant'));show(keys[(i+n+keys.length)%keys.length]);}
+document.querySelector('#prev').onclick=()=>step(-1);document.querySelector('#next').onclick=()=>step(1);
+addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)||document.activeElement.isContentEditable)return;if(e.key==='ArrowLeft')step(-1);if(e.key==='ArrowRight')step(1)});
+addEventListener('popstate',()=>show(new URLSearchParams(location.search).get('variant')));
+show(new URLSearchParams(location.search).get('variant'));
+</script>
+</body>
+</html>
