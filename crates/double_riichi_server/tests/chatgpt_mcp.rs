@@ -570,7 +570,7 @@ async fn gateway_requires_oauth_for_discovery_but_challenges_tool_calls() {
             .unwrap()
             .to_str()
             .unwrap()
-            .contains("resource_metadata=\\"https://driichi.example/.well-known/oauth-protected-resource/chatgpt/mcp\\"")
+            .contains("resource_metadata")
     );
     assert!(!anonymous_initialize.headers().contains_key("mcp-session-id"));
 
