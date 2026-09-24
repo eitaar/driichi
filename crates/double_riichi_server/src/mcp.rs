@@ -1453,7 +1453,9 @@ impl McpHandler {
 
 #[tool_router]
 impl McpHandler {
-    #[tool(description = "Read only your bound participant's private Room state and legal actions.")]
+    #[tool(
+        description = "Read only your bound participant's private Room state and legal actions."
+    )]
     async fn get_my_state(
         &self,
         Extension(parts): Extension<axum::http::request::Parts>,
@@ -2284,7 +2286,13 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            ["get_my_state", "join_room", "leave_room", "submit_action", "wait_for_turn"]
+            [
+                "get_my_state",
+                "join_room",
+                "leave_room",
+                "submit_action",
+                "wait_for_turn"
+            ]
         );
 
         let templates = resource_templates();

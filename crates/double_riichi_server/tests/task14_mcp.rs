@@ -412,7 +412,13 @@ async fn live_mcp_discovers_joins_reads_and_keeps_room_binding_permanent() {
     tools.sort();
     assert_eq!(
         tools,
-        ["get_my_state", "join_room", "leave_room", "submit_action", "wait_for_turn"]
+        [
+            "get_my_state",
+            "join_room",
+            "leave_room",
+            "submit_action",
+            "wait_for_turn"
+        ]
     );
 
     let join = tool_call(
@@ -573,8 +579,12 @@ async fn live_mcp_exposes_only_bound_private_state() {
         .to_owned();
     assert_ne!(participant_id, other_participant);
 
-    room.send(RoomCommand::select(participant_id.as_str())).await.unwrap();
-    room.send(RoomCommand::select(other_participant.as_str())).await.unwrap();
+    room.send(RoomCommand::select(participant_id.as_str()))
+        .await
+        .unwrap();
+    room.send(RoomCommand::select(other_participant.as_str()))
+        .await
+        .unwrap();
     room.send(RoomCommand::fill_with_bots()).await.unwrap();
     assert!(matches!(
         room.send(RoomCommand::start()).await.unwrap(),
@@ -636,7 +646,10 @@ async fn live_mcp_exposes_only_bound_private_state() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["jsonrpc"], "2.0");
-    assert!(!body["error"].is_null(), "a different token read the private state");
+    assert!(
+        !body["error"].is_null(),
+        "a different token read the private state"
+    );
     assert!(body["result"].is_null());
 
     state.shutdown().await;
@@ -1002,7 +1015,13 @@ async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
         tool_names.sort();
         assert_eq!(
             tool_names,
-            ["get_my_state", "join_room", "leave_room", "submit_action", "wait_for_turn"]
+            [
+                "get_my_state",
+                "join_room",
+                "leave_room",
+                "submit_action",
+                "wait_for_turn"
+            ]
         );
 
         let templates = timeout(REQUEST_TIMEOUT, peer.list_resource_templates(None))
