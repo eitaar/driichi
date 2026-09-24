@@ -10,18 +10,16 @@ use axum::{
     http::{Request, StatusCode, header},
     response::Response,
 };
-use double_riichi_core::{
-    GameMode, RoomCommand, RoomConfig, RoomRegistry,
-};
+use double_riichi_core::{GameMode, RoomCommand, RoomConfig, RoomRegistry};
 use double_riichi_server::{
-    AdminAuthenticator, BotTokenAuthority, BotTokenService, ChatgptOAuthConfig, ServerState,
-    RuntimeConfig, Storage, hash_password, server_router,
+    AdminAuthenticator, BotTokenAuthority, BotTokenService, ChatgptOAuthConfig, RuntimeConfig,
+    ServerState, Storage, hash_password, server_router,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     Row,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use tower::ServiceExt;
 use url::Url;
@@ -74,9 +72,12 @@ async fn fixture(label: &str, resource: &str) -> Fixture {
     let dedicated_token = dedicated.secret().expose().to_owned();
     let pi = service.create("Pi", 1, "task5-pi").await.unwrap();
     let pi_token = pi.secret().expose().to_owned();
-    let state = Arc::new(
-        gateway_state(&service, &storage, &dedicated_token, resource),
-    );
+    let state = Arc::new(gateway_state(
+        &service,
+        &storage,
+        &dedicated_token,
+        resource,
+    ));
     let app = server_router(state.clone());
     Fixture {
         state,
@@ -97,9 +98,7 @@ fn gateway_state(
 ) -> ServerState {
     ServerState::for_tests(
         ISSUER,
-        Arc::new(
-            AdminAuthenticator::new("admin", hash_password(TEST_PASSWORD).unwrap()).unwrap(),
-        ),
+        Arc::new(AdminAuthenticator::new("admin", hash_password(TEST_PASSWORD).unwrap()).unwrap()),
         RoomRegistry::with_max_rooms(8),
     )
     .with_bot_token_service(service.clone())
@@ -192,13 +191,15 @@ fn redirect_value(response: &Response, name: &str) -> Option<String> {
 async fn mint_access(app: &Router, resource: &str, label: &str) -> String {
     let state = format!("state-{label}");
     let fields = authorization_fields(resource, &state);
-    let authorize_uri = format!(
-        "/api/v1/admin/oauth/authorize?{}",
-        encoded_form(&fields)
-    );
+    let authorize_uri = format!("/api/v1/admin/oauth/authorize?{}", encoded_form(&fields));
     let initial = app
         .clone()
-        .oneshot(Request::builder().uri(authorize_uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(authorize_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(initial.status(), StatusCode::OK);
@@ -251,12 +252,7 @@ async fn mint_access(app: &Router, resource: &str, label: &str) -> String {
     ];
     let token_response = app
         .clone()
-        .oneshot(request_with_form(
-            "/oauth/token",
-            &exchange,
-            &[],
-            None,
-        ))
+        .oneshot(request_with_form("/oauth/token", &exchange, &[], None))
         .await
         .unwrap();
     assert_eq!(token_response.status(), StatusCode::OK);
@@ -414,13 +410,11 @@ async fn mutate_scope(storage: &Storage, access_token: &str) {
         .await
         .unwrap();
     let hash = Sha256::digest(access_token.as_bytes()).to_vec();
-    let row = sqlx::query(
-        "SELECT family_id FROM oauth_access_tokens WHERE token_hash = ?",
-    )
-    .bind(hash.as_slice())
-    .fetch_one(&mut *connection)
-    .await
-    .unwrap();
+    let row = sqlx::query("SELECT family_id FROM oauth_access_tokens WHERE token_hash = ?")
+        .bind(hash.as_slice())
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
     let family_id: String = row.try_get("family_id").unwrap();
     sqlx::query("UPDATE oauth_access_tokens SET scope = ? WHERE token_hash = ?")
         .bind("driichi:other")
@@ -481,8 +475,11 @@ async fn startup_disables_oauth_routes_without_an_active_dedicated_token() {
         std::fs::write(pack.join("portrait.webp"), &webp).unwrap();
         std::fs::write(pack.join("icon.webp"), &webp).unwrap();
         for voice in ["chi", "pon", "kan", "riichi", "ron", "tsumo"] {
-            std::fs::write(pack.join("voices").join(format!("{voice}.ogg")), b"OggS\0starter")
-                .unwrap();
+            std::fs::write(
+                pack.join("voices").join(format!("{voice}.ogg")),
+                b"OggS\0starter",
+            )
+            .unwrap();
         }
     }
     let password_hash = hash_password(TEST_PASSWORD).unwrap();
@@ -552,12 +549,23 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
         .app
         .clone()
         .oneshot(rpc_request(
-            "/chatgpt/mcp", "POST", None, None, Some(1), "initialize", json!({})
+            "/chatgpt/mcp",
+            "POST",
+            None,
+            None,
+            Some(1),
+            "initialize",
+            json!({}),
         ))
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
-    let challenge = missing.headers().get(header::WWW_AUTHENTICATE).unwrap().to_str().unwrap();
+    let challenge = missing
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(
         challenge.contains(
             "resource_metadata=\"https://driichi.example/.well-known/oauth-protected-resource/chatgpt/mcp\""
@@ -572,11 +580,18 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
         .header(header::AUTHORIZATION, format!("Bearer {valid_access}"))
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"jsonrpc":"2.0","id":8,"method":"initialize","params":{}}"#))
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","id":8,"method":"initialize","params":{}}"#,
+        ))
         .unwrap();
     let duplicate_response = fixture.app.clone().oneshot(duplicate_bearer).await.unwrap();
     assert_eq!(duplicate_response.status(), StatusCode::UNAUTHORIZED);
-    assert!(duplicate_response.headers().get(header::WWW_AUTHENTICATE).is_some());
+    assert!(
+        duplicate_response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .is_some()
+    );
 
     let foreign_origin = Request::builder()
         .method("POST")
@@ -586,10 +601,18 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
         .header(header::AUTHORIZATION, format!("Bearer {valid_access}"))
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}"#))
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}"#,
+        ))
         .unwrap();
     assert_eq!(
-        fixture.app.clone().oneshot(foreign_origin).await.unwrap().status(),
+        fixture
+            .app
+            .clone()
+            .oneshot(foreign_origin)
+            .await
+            .unwrap()
+            .status(),
         StatusCode::FORBIDDEN
     );
 
@@ -601,10 +624,18 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
         .header(header::AUTHORIZATION, format!("Bearer {valid_access}"))
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"jsonrpc":"2.0","id":3,"method":"initialize","params":{}}"#))
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","id":3,"method":"initialize","params":{}}"#,
+        ))
         .unwrap();
     assert_eq!(
-        fixture.app.clone().oneshot(spoofed_identity).await.unwrap().status(),
+        fixture
+            .app
+            .clone()
+            .oneshot(spoofed_identity)
+            .await
+            .unwrap()
+            .status(),
         StatusCode::FORBIDDEN
     );
 
@@ -616,8 +647,12 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
         wrong_audience_resource,
     ));
     let wrong_audience_app = server_router(wrong_audience_state.clone());
-    let wrong_audience =
-        mint_access(&wrong_audience_app, wrong_audience_resource, "wrong-audience").await;
+    let wrong_audience = mint_access(
+        &wrong_audience_app,
+        wrong_audience_resource,
+        "wrong-audience",
+    )
+    .await;
     let accepted_at_issuer = rpc(
         &wrong_audience_app,
         &wrong_audience,
@@ -647,7 +682,12 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
     .await;
     assert_eq!(rejected_audience.status(), StatusCode::UNAUTHORIZED);
     assert!(!rejected_audience.headers().contains_key("mcp-session-id"));
-    assert!(rejected_audience.headers().get(header::WWW_AUTHENTICATE).is_some());
+    assert!(
+        rejected_audience
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .is_some()
+    );
 
     let wrong_scope = mint_access(&fixture.app, RESOURCE, "wrong-scope").await;
     mutate_scope(&fixture.storage, &wrong_scope).await;
@@ -682,7 +722,12 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
     )
     .await;
     assert_eq!(expired_response.status(), StatusCode::UNAUTHORIZED);
-    assert!(expired_response.headers().get(header::WWW_AUTHENTICATE).is_some());
+    assert!(
+        expired_response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .is_some()
+    );
 
     fixture.state.shutdown().await;
     wrong_audience_state.shutdown().await;
@@ -761,7 +806,9 @@ async fn gateway_delegates_sessions_streams_and_keeps_legacy_pi_tokens_independe
         .as_str()
         .unwrap()
         .to_owned();
-    room.send(RoomCommand::select(&participant_id)).await.unwrap();
+    room.send(RoomCommand::select(&participant_id))
+        .await
+        .unwrap();
     room.send(RoomCommand::fill_with_bots()).await.unwrap();
     assert!(matches!(
         room.send(RoomCommand::start()).await.unwrap(),
@@ -836,7 +883,11 @@ async fn gateway_delegates_sessions_streams_and_keeps_legacy_pi_tokens_independe
     fixture
         .service
         .revoke(
-            fixture.service.authenticate(&fixture.dedicated_token).unwrap().token_id(),
+            fixture
+                .service
+                .authenticate(&fixture.dedicated_token)
+                .unwrap()
+                .token_id(),
             2,
             "task5-revoke-chatgpt",
         )
@@ -897,7 +948,13 @@ async fn initialize_legacy(app: &Router, token: &str) -> String {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let session = response.headers().get("mcp-session-id").unwrap().to_str().unwrap().to_owned();
+    let session = response
+        .headers()
+        .get("mcp-session-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let notification = app
         .clone()
         .oneshot(rpc_request(

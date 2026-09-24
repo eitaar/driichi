@@ -11,10 +11,7 @@ use std::{
 use axum::{
     Json,
     body::{Body, Bytes},
-    extract::{
-        ConnectInfo, Extension, RawQuery, State,
-        rejection::BytesRejection,
-    },
+    extract::{ConnectInfo, Extension, RawQuery, State, rejection::BytesRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
 };
@@ -172,7 +169,11 @@ impl CimdClientMetadataVerifier {
             .as_str()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or("ChatGPT");
-        Ok(name.chars().filter(|character| !character.is_control()).take(120).collect())
+        Ok(name
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(120)
+            .collect())
     }
 
     async fn validated_document(&self, config: &ChatgptOAuthConfig) -> Result<Value, CimdError> {
@@ -333,7 +334,6 @@ fn authorization_server_document(config: &ChatgptOAuthConfig) -> Value {
     })
 }
 
-
 const AUTHORIZATION_FLOW_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const OAUTH_CSRF_COOKIE_LIFETIME_SECONDS: u64 = 10 * 60;
 const MAX_PENDING_AUTHORIZATIONS: usize = 1024;
@@ -359,7 +359,10 @@ fn parse_urlencoded_fields(input: &[u8], limit: usize) -> Result<HashMap<String,
         if key.is_empty() || key.len() > 128 || value.len() > 4096 {
             return Err(());
         }
-        if fields.insert(key.into_owned(), value.into_owned()).is_some() {
+        if fields
+            .insert(key.into_owned(), value.into_owned())
+            .is_some()
+        {
             return Err(());
         }
     }
@@ -374,11 +377,11 @@ fn form_body(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
-    if !content_type
-        .split(';')
-        .next()
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/x-www-form-urlencoded"))
-    {
+    if !content_type.split(';').next().is_some_and(|value| {
+        value
+            .trim()
+            .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+    }) {
         return Err(());
     }
     let body = body.map_err(|_| ())?;
@@ -386,7 +389,10 @@ fn form_body(
 }
 
 fn authorization_request(fields: &HashMap<String, String>) -> Option<AuthorizationRequest> {
-    if fields.keys().any(|key| !AUTHORIZATION_FIELDS.contains(&key.as_str())) {
+    if fields
+        .keys()
+        .any(|key| !AUTHORIZATION_FIELDS.contains(&key.as_str()))
+    {
         return None;
     }
     let request = AuthorizationRequest {
@@ -439,7 +445,12 @@ fn redirect_is_configured(
 ) -> Option<String> {
     (fields.get("client_id").map(String::as_str) == Some(config.client_id.as_str())
         && fields.get("redirect_uri").map(String::as_str) == Some(config.redirect_uri.as_str()))
-    .then(|| fields.get("state").filter(|state| !state.is_empty() && state.len() <= 2048).cloned())
+    .then(|| {
+        fields
+            .get("state")
+            .filter(|state| !state.is_empty() && state.len() <= 2048)
+            .cloned()
+    })
     .flatten()
 }
 
@@ -467,7 +478,10 @@ fn oauth_redirect(
 fn redirect_to(target: Url) -> Response {
     Response::builder()
         .status(StatusCode::SEE_OTHER)
-        .header(header::LOCATION, HeaderValue::from_str(target.as_str()).expect("redirect URL is valid"))
+        .header(
+            header::LOCATION,
+            HeaderValue::from_str(target.as_str()).expect("redirect URL is valid"),
+        )
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::PRAGMA, "no-cache")
         .body(Body::empty())
@@ -606,7 +620,10 @@ fn authorization_hidden_fields(request: &AuthorizationRequest, csrf: &str) -> St
         ("scope", request.scope.as_str()),
         ("resource", request.resource.as_str()),
         ("code_challenge", request.code_challenge.as_str()),
-        ("code_challenge_method", request.code_challenge_method.as_str()),
+        (
+            "code_challenge_method",
+            request.code_challenge_method.as_str(),
+        ),
     ] {
         fields.push_str(&hidden_field(name, value));
     }
@@ -656,10 +673,9 @@ fn with_csrf_cookie(mut response: Response, state: &ServerState, csrf: &str) -> 
 }
 
 fn clear_csrf_cookie(response: &mut Response, state: &ServerState) {
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        http::oauth_csrf_cookie(state, "", 0),
-    );
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, http::oauth_csrf_cookie(state, "", 0));
 }
 
 pub(crate) async fn get_authorize(
@@ -705,12 +721,7 @@ pub(crate) async fn get_authorize(
         .await
         .is_err()
     {
-        return oauth_redirect(
-            &gateway.config,
-            &request.state,
-            None,
-            Some("server_error"),
-        );
+        return oauth_redirect(&gateway.config, &request.state, None, Some("server_error"));
     }
     let client_name = gateway
         .client_metadata
@@ -727,7 +738,6 @@ pub(crate) async fn get_authorize(
     };
     with_csrf_cookie(html_response(page), &state, &csrf)
 }
-
 
 pub(crate) async fn post_login(
     State(state): State<Arc<ServerState>>,
@@ -749,8 +759,7 @@ pub(crate) async fn post_login(
     if !csrf_cookie_matches(&headers, &csrf) {
         return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
     }
-    let Some(request) =
-        authorization_fields_from_form(&fields, &["csrf", "username", "password"])
+    let Some(request) = authorization_fields_from_form(&fields, &["csrf", "username", "password"])
     else {
         return oauth_json_error(StatusCode::FORBIDDEN, "forbidden");
     };
@@ -847,12 +856,7 @@ pub(crate) async fn post_consent(
             )
             .await
         {
-            Ok(code) => oauth_redirect(
-                &gateway.config,
-                &pending.request.state,
-                Some(&code),
-                None,
-            ),
+            Ok(code) => oauth_redirect(&gateway.config, &pending.request.state, Some(&code), None),
             Err(_) => oauth_redirect(
                 &gateway.config,
                 &pending.request.state,
@@ -893,8 +897,15 @@ pub(crate) async fn post_token(
     let pair = match grant_type {
         "authorization_code" => {
             if fields.keys().any(|key| {
-                !["grant_type", "client_id", "resource", "code", "redirect_uri", "code_verifier"]
-                    .contains(&key.as_str())
+                ![
+                    "grant_type",
+                    "client_id",
+                    "resource",
+                    "code",
+                    "redirect_uri",
+                    "code_verifier",
+                ]
+                .contains(&key.as_str())
             }) {
                 return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
             }
@@ -920,8 +931,7 @@ pub(crate) async fn post_token(
         }
         "refresh_token" => {
             if fields.keys().any(|key| {
-                !["grant_type", "client_id", "resource", "refresh_token"]
-                    .contains(&key.as_str())
+                !["grant_type", "client_id", "resource", "refresh_token"].contains(&key.as_str())
             }) {
                 return oauth_json_error(StatusCode::BAD_REQUEST, "invalid_request");
             }
@@ -945,8 +955,7 @@ pub(crate) async fn post_token(
     };
     match pair {
         Ok(pair) => {
-            let body = serde_json::to_vec(&pair)
-                .expect("OAuth token response can be serialized");
+            let body = serde_json::to_vec(&pair).expect("OAuth token response can be serialized");
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/json")

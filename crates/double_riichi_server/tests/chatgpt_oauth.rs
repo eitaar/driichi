@@ -6,15 +6,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(debug_assertions)]
+use axum::{Router, body::to_bytes, http::header};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
-};
-#[cfg(debug_assertions)]
-use axum::{
-    Router,
-    body::to_bytes,
-    http::header,
 };
 #[cfg(debug_assertions)]
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -65,9 +61,8 @@ async fn test_server(name: &str) -> TestServer {
         std::process::id()
     ));
     let storage = Arc::new(Storage::connect(&root).await.unwrap());
-    let admin = Arc::new(
-        AdminAuthenticator::new("admin", hash_password(TEST_PASSWORD).unwrap()).unwrap(),
-    );
+    let admin =
+        Arc::new(AdminAuthenticator::new("admin", hash_password(TEST_PASSWORD).unwrap()).unwrap());
     let config = ChatgptOAuthConfig {
         issuer: Url::parse("https://driichi.example/").unwrap(),
         resource: Url::parse(RESOURCE).unwrap(),
@@ -180,7 +175,13 @@ fn request_with_form(path: &str, form: &[(String, String)], cookies: &[String]) 
 
 #[cfg(debug_assertions)]
 async fn body_text(response: axum::response::Response) -> String {
-    String::from_utf8(to_bytes(response.into_body(), 1024 * 1024).await.unwrap().to_vec()).unwrap()
+    String::from_utf8(
+        to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap()
 }
 
 #[cfg(debug_assertions)]
@@ -194,7 +195,10 @@ fn redirect_value(response: &axum::response::Response, key: &str) -> Option<Stri
 }
 
 #[cfg(debug_assertions)]
-async fn post_login(server: &TestServer, state: &str) -> (axum::response::Response, String, String) {
+async fn post_login(
+    server: &TestServer,
+    state: &str,
+) -> (axum::response::Response, String, String) {
     let initial = server
         .app
         .clone()
@@ -272,7 +276,11 @@ async fn admin_login_requires_same_origin_csrf_and_keeps_admin_cookie_path() {
     assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
 
     let mut bad_csrf = fields;
-    bad_csrf.iter_mut().find(|(key, _)| key == "csrf").unwrap().1 = "wrong-token".into();
+    bad_csrf
+        .iter_mut()
+        .find(|(key, _)| key == "csrf")
+        .unwrap()
+        .1 = "wrong-token".into();
     let rejected = server
         .app
         .clone()
@@ -322,11 +330,22 @@ async fn denied_consent_redirects_with_state_and_issuer_without_a_code() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let location = response.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(location.starts_with(&format!("{REDIRECT_URI}?")));
     assert_eq!(authorization_code_count(&server.storage).await, 0);
-    assert_eq!(redirect_value(&response, "error").as_deref(), Some("access_denied"));
-    assert_eq!(redirect_value(&response, "state").as_deref(), Some(TEST_STATE));
+    assert_eq!(
+        redirect_value(&response, "error").as_deref(),
+        Some("access_denied")
+    );
+    assert_eq!(
+        redirect_value(&response, "state").as_deref(),
+        Some(TEST_STATE)
+    );
     assert_eq!(redirect_value(&response, "iss").as_deref(), Some(ISSUER));
     assert_eq!(redirect_value(&response, "code"), None);
     assert!(cookie_header(&response, "driichi_oauth_csrf").contains("Max-Age=0"));
@@ -392,11 +411,19 @@ async fn approved_consent_mints_single_use_code_and_token_endpoint_is_form_encod
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let location = response.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(location.starts_with(&format!("{REDIRECT_URI}?")));
     assert_eq!(authorization_code_count(&server.storage).await, 1);
     let code = redirect_value(&response, "code").expect("approved consent returns a code");
-    assert_eq!(redirect_value(&response, "state").as_deref(), Some(TEST_STATE));
+    assert_eq!(
+        redirect_value(&response, "state").as_deref(),
+        Some(TEST_STATE)
+    );
     assert_eq!(redirect_value(&response, "iss").as_deref(), Some(ISSUER));
 
     let mut exchange = vec![
@@ -431,8 +458,14 @@ async fn approved_consent_mints_single_use_code_and_token_endpoint_is_form_encod
         .await
         .unwrap();
     assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(replay.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
-    assert_eq!(serde_json::from_str::<Value>(&body_text(replay).await).unwrap()["error"], "invalid_grant");
+    assert_eq!(
+        replay.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-store"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&body_text(replay).await).unwrap()["error"],
+        "invalid_grant"
+    );
 
     exchange = vec![
         ("grant_type".into(), "refresh_token".into()),
@@ -447,8 +480,14 @@ async fn approved_consent_mints_single_use_code_and_token_endpoint_is_form_encod
         .await
         .unwrap();
     assert_eq!(refreshed.status(), StatusCode::OK);
-    assert_eq!(refreshed.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
-    assert!(serde_json::from_str::<Value>(&body_text(refreshed).await).unwrap()["refresh_token"].is_string());
+    assert_eq!(
+        refreshed.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-store"
+    );
+    assert!(
+        serde_json::from_str::<Value>(&body_text(refreshed).await).unwrap()["refresh_token"]
+            .is_string()
+    );
 
     finish_test_server(server).await;
 }
@@ -471,7 +510,10 @@ async fn issuer_metadata_matches_safe_authorization_redirects() {
     assert_eq!(metadata.status(), StatusCode::OK);
     let metadata: Value = serde_json::from_str(&body_text(metadata).await).unwrap();
     assert_eq!(metadata["issuer"], ISSUER);
-    assert_eq!(metadata["authorization_response_iss_parameter_supported"], true);
+    assert_eq!(
+        metadata["authorization_response_iss_parameter_supported"],
+        true
+    );
 
     let mut wrong_resource = authorization_fields(TEST_STATE);
     wrong_resource
@@ -495,9 +537,17 @@ async fn issuer_metadata_matches_safe_authorization_redirects() {
         .await
         .unwrap();
     assert_eq!(error.status(), StatusCode::SEE_OTHER);
-    let location = error.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let location = error
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(location.starts_with(&format!("{REDIRECT_URI}?")));
-    assert_eq!(redirect_value(&error, "error").as_deref(), Some("invalid_request"));
+    assert_eq!(
+        redirect_value(&error, "error").as_deref(),
+        Some("invalid_request")
+    );
     assert_eq!(redirect_value(&error, "state").as_deref(), Some(TEST_STATE));
     assert_eq!(redirect_value(&error, "iss").as_deref(), Some(ISSUER));
 

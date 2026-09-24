@@ -268,12 +268,15 @@ impl ServerState {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn with_chatgpt_bot_token_for_tests(mut self, raw_token: &str) -> Self {
-        let record = self.bot_tokens.as_ref()
+        let record = self
+            .bot_tokens
+            .as_ref()
             .and_then(|service| service.authenticate(raw_token).ok())
             .expect("test ChatGPT Bot Token is active");
         self.chatgpt_bot_token = Some(Arc::new(
             crate::chatgpt_gateway::DedicatedBotToken::for_tests(
-                raw_token.to_owned(), record.token_id().to_owned(),
+                raw_token.to_owned(),
+                record.token_id().to_owned(),
             ),
         ));
         self
@@ -339,7 +342,10 @@ impl ServerState {
         &self.public_origin_url
     }
 
-    pub(crate) fn bot_token_record_for_chatgpt(&self, raw_token: &str) -> Option<crate::BotTokenRecord> {
+    pub(crate) fn bot_token_record_for_chatgpt(
+        &self,
+        raw_token: &str,
+    ) -> Option<crate::BotTokenRecord> {
         self.bot_tokens.as_ref()?.authenticate(raw_token).ok()
     }
 
@@ -460,11 +466,14 @@ impl ServerState {
         let dedicated_chatgpt_token = config.chatgpt_oauth.as_ref().and_then(|_| {
             std::env::var("DRIICHI_CHATGPT_BOT_TOKEN")
                 .ok()
-                .and_then(|raw| token_service.authenticate(&raw).ok().map(|record| {
-                    Arc::new(crate::chatgpt_gateway::DedicatedBotToken::for_process(
-                        raw, record.token_id().to_owned(),
-                    ))
-                }))
+                .and_then(|raw| {
+                    token_service.authenticate(&raw).ok().map(|record| {
+                        Arc::new(crate::chatgpt_gateway::DedicatedBotToken::for_process(
+                            raw,
+                            record.token_id().to_owned(),
+                        ))
+                    })
+                })
         });
         let chatgpt_oauth_config = dedicated_chatgpt_token
             .as_ref()
@@ -1239,10 +1248,7 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
                 "/api/v1/admin/oauth/authorize",
                 get(crate::oauth::get_authorize).post(crate::oauth::post_consent),
             )
-            .route(
-                "/api/v1/admin/oauth/login",
-                post(crate::oauth::post_login),
-            )
+            .route("/api/v1/admin/oauth/login", post(crate::oauth::post_login))
             .route("/oauth/token", post(crate::oauth::post_token));
     }
     if state.chatgpt_oauth.is_some() && state.chatgpt_bot_token.is_some() {
@@ -1601,10 +1607,7 @@ async fn admin_login(
         Ok(login) => login,
         Err(response) => return response,
     };
-    let mut response = json_response(
-        StatusCode::OK,
-        json!({"expires_at": login.expires_at}),
-    );
+    let mut response = json_response(StatusCode::OK, json!({"expires_at": login.expires_at}));
     response
         .headers_mut()
         .insert(header::SET_COOKIE, login.cookie);

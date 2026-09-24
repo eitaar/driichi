@@ -9,7 +9,7 @@ use axum::{
 };
 use zeroize::Zeroizing;
 
-use crate::{mcp::McpRuntime, oauth::OAuthError, ServerState};
+use crate::{ServerState, mcp::McpRuntime, oauth::OAuthError};
 
 pub(crate) struct DedicatedBotToken {
     raw: Arc<Zeroizing<String>>,
@@ -36,8 +36,7 @@ impl DedicatedBotToken {
 
     fn is_active(&self, state: &ServerState) -> bool {
         if self.check_environment
-            && std::env::var("DRIICHI_CHATGPT_BOT_TOKEN").ok().as_deref()
-                != Some(self.raw.as_str())
+            && std::env::var("DRIICHI_CHATGPT_BOT_TOKEN").ok().as_deref() != Some(self.raw.as_str())
         {
             return false;
         }
@@ -94,16 +93,28 @@ pub(crate) async fn mcp_endpoint(
     }
 
     let Some(token) = state.chatgpt_bot_token.as_ref() else {
-        return gateway_error(StatusCode::SERVICE_UNAVAILABLE, "delegation_unavailable", None);
+        return gateway_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "delegation_unavailable",
+            None,
+        );
     };
     if !token.is_active(&state) {
-        return gateway_error(StatusCode::SERVICE_UNAVAILABLE, "delegation_unavailable", None);
+        return gateway_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "delegation_unavailable",
+            None,
+        );
     }
     let authorization = format!("Bearer {}", token.raw.as_str());
     let internal_authorization = match HeaderValue::from_str(&authorization) {
         Ok(value) => value,
         Err(_) => {
-            return gateway_error(StatusCode::SERVICE_UNAVAILABLE, "delegation_unavailable", None);
+            return gateway_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "delegation_unavailable",
+                None,
+            );
         }
     };
 
@@ -196,7 +207,10 @@ fn unauthorized(resource: &url::Url, error: &'static str) -> Response {
 }
 
 fn scope_challenge(resource: &url::Url) -> HeaderValue {
-    challenge_value(resource, r#", error="insufficient_scope", scope="driichi:play""#)
+    challenge_value(
+        resource,
+        r#", error="insufficient_scope", scope="driichi:play""#,
+    )
 }
 
 fn token_challenge(resource: &url::Url) -> HeaderValue {

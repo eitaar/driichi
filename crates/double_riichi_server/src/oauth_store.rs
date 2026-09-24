@@ -439,7 +439,9 @@ impl OAuthStore {
             return Err(OAuthError::InvalidGrant);
         };
         let scope: String = row.try_get("scope").map_err(|_| OAuthError::Storage)?;
-        let family_scope: String = row.try_get("family_scope").map_err(|_| OAuthError::Storage)?;
+        let family_scope: String = row
+            .try_get("family_scope")
+            .map_err(|_| OAuthError::Storage)?;
         if scope != family_scope {
             return Err(OAuthError::InvalidGrant);
         }
