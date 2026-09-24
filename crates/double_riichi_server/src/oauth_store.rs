@@ -227,7 +227,7 @@ impl OAuthStore {
 
         let family_id = new_family_id();
         let family_expires_at = now + REFRESH_FAMILY_LIFETIME_SECONDS;
-        let pair = new_token_pair();
+        let pair = new_token_pair(now, family_expires_at);
         sqlx::query(
             "INSERT INTO oauth_refresh_families \
              (family_id, client_id, subject, resource, scope, issued_at, expires_at) \
@@ -392,7 +392,7 @@ impl OAuthStore {
             .try_get("expires_at")
             .map_err(|_| OAuthError::Storage)?;
 
-        let pair = new_token_pair();
+        let pair = new_token_pair(now, family_expires_at);
         insert_token_rows(
             &mut transaction,
             &family_id,
@@ -469,21 +469,25 @@ async fn insert_token_rows(
     .bind(resource)
     .bind(OAUTH_SCOPE)
     .bind(issued_at)
-    .bind(issued_at + ACCESS_TOKEN_LIFETIME_SECONDS)
+    .bind(access_expires_at(issued_at, refresh_expires_at))
     .execute(&mut **transaction)
     .await
     .map_err(|_| OAuthError::Storage)?;
     Ok(())
 }
 
-fn new_token_pair() -> TokenPair {
+fn new_token_pair(issued_at: i64, family_expires_at: i64) -> TokenPair {
     TokenPair {
         access_token: new_secret("access"),
         token_type: "Bearer",
-        expires_in: ACCESS_TOKEN_LIFETIME_SECONDS as u64,
+        expires_in: (access_expires_at(issued_at, family_expires_at) - issued_at) as u64,
         refresh_token: new_secret("refresh"),
         scope: OAUTH_SCOPE,
     }
+}
+
+fn access_expires_at(issued_at: i64, family_expires_at: i64) -> i64 {
+    (issued_at + ACCESS_TOKEN_LIFETIME_SECONDS).min(family_expires_at)
 }
 
 fn new_secret(kind: &str) -> String {
