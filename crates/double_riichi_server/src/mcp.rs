@@ -1453,6 +1453,19 @@ impl McpHandler {
 
 #[tool_router]
 impl McpHandler {
+    #[tool(description = "Read only your bound participant's private Room state and legal actions.")]
+    async fn get_my_state(
+        &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
+    ) -> Result<Json<Value>, CallToolResult> {
+        let (_, entry) = self.binding(&parts).await.map_err(|error| error.result())?;
+        let uri = Self::uri(&entry.room_code, entry.participant_id.as_str(), "state");
+        self.read_state(&entry, &uri)
+            .await
+            .map(Json)
+            .map_err(|error| error.result())
+    }
+
     #[tool(description = "Join or resume one MCP Participant in a Room.")]
     async fn join_room(
         &self,
