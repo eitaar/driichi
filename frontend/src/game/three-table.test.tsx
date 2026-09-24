@@ -139,7 +139,15 @@ describe("ThreeTable", () => {
     await waitFor(() => expect(canvasCalls).toHaveBeenCalled());
     const props = canvasCalls.mock.lastCall?.[0] as Record<string, unknown>;
     expect(props.frameloop).toBe("demand");
-    expect(props.dpr).toEqual([1, 1.5]);
+    expect(props.dpr).toEqual([1, 2]);
+    expect(props.gl).toMatchObject({
+      antialias: true,
+      alpha: false,
+      depth: true,
+      stencil: false,
+      precision: "highp",
+      powerPreference: "high-performance",
+    });
     expect(props.camera).toEqual({
       fov: CAMERA.fov,
       position: CAMERA.position,

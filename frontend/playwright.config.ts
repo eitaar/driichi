@@ -1,5 +1,14 @@
 import { defineConfig } from "@playwright/test";
 
+const hardwareWebgl = process.env.DRIICHI_HARDWARE_WEBGL === "1";
+const webglArgs = hardwareWebgl
+  ? ["--enable-webgl"]
+  : [
+      "--use-angle=swiftshader",
+      "--enable-webgl",
+      "--enable-unsafe-swiftshader",
+    ];
+
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: true,
@@ -16,13 +25,8 @@ export default defineConfig({
       name: "chromium",
       use: {
         browserName: "chromium",
-        launchOptions: {
-          args: [
-            "--use-angle=swiftshader",
-            "--enable-webgl",
-            "--enable-unsafe-swiftshader",
-          ],
-        },
+        ...(hardwareWebgl ? { deviceScaleFactor: 2 } : {}),
+        launchOptions: { args: webglArgs },
       },
     },
   ],

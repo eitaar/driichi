@@ -183,7 +183,8 @@ The representative target is a stable 60fps interaction path on a current deskto
 Required implementation choices:
 
 - `<Canvas frameloop="demand">` with explicit invalidation only for bounded event animation;
-- DPR clamped to `[1, 1.5]`;
+- device DPR clamped to `[1, 2]`, fixed for the renderer during idle and motion;
+- default-framebuffer MSAA enabled and high-precision shaders requested;
 - instanced visible faces, concealed backs, wall backs, and repeated table hardware;
 - one tile-face atlas and shared materials/geometries;
 - memoized projection-to-instance transforms;
@@ -225,6 +226,7 @@ Sol scores each candidate from 1–5 on composition, spacing, tile readability, 
 - Browser tests at 1024×600, 1280×720, 1600×900, and 1920×1080 for Live 4p, Live 3p, and Replay.
 - Keyboard/focus, dialog containment, Reduced Motion, WebGL fallback, connection states, asset fallback, and accessibility checks.
 - Render instrumentation proves non-zero real scene primitives and tiles.
+- Browser coverage verifies DPR 2, the MSAA context attribute, drawing-buffer dimensions, and motion-stable quality in a focused high-density case. Default CI uses bounded SwiftShader regression limits; `DRIICHI_HARDWARE_WEBGL=1` headed coverage enforces the stated desktop motion budgets on a hardware renderer.
 
 ### Visual
 

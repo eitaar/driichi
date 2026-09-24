@@ -486,7 +486,7 @@ export function ThreeTable({
             // Demand when idle; a bounded always loop only while an exact-target
             // motion is active, then it returns to demand in the completion commit.
             frameloop={motion ? "always" : "demand"}
-            dpr={[1, 1.5]}
+            dpr={[1, 2]}
             camera={{
               fov: CAMERA.fov,
               position: [...CAMERA.position],
@@ -494,11 +494,11 @@ export function ThreeTable({
               far: CAMERA.far,
             }}
             gl={{
-              antialias: false,
+              antialias: true,
               alpha: false,
               depth: true,
               stencil: false,
-              precision: "lowp",
+              precision: "highp",
               powerPreference: "high-performance",
             }}
             fallback={
