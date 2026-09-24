@@ -541,6 +541,201 @@ allowed_origins = ["{CHATGPT_ORIGIN}"]
 }
 
 #[tokio::test]
+async fn gateway_allows_anonymous_discovery_and_returns_tool_auth_challenges() {
+    let fixture = fixture("anonymous-discovery", RESOURCE).await;
+
+    let initialize = fixture
+        .app
+        .clone()
+        .oneshot(rpc_request(
+            "/chatgpt/mcp",
+            "POST",
+            None,
+            None,
+            Some(20),
+            "initialize",
+            json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name":"anonymous-discovery","version":"1"}
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(initialize.status(), StatusCode::OK);
+    let session = initialize
+        .headers()
+        .get("mcp-session-id")
+        .expect("anonymous initialize creates a bounded MCP session")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(rpc_body(initialize).await["id"], 20);
+
+    let initialized = fixture
+        .app
+        .clone()
+        .oneshot(rpc_request(
+            "/chatgpt/mcp",
+            "POST",
+            None,
+            Some(&session),
+            None,
+            "notifications/initialized",
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert!(initialized.status().is_success());
+
+    let listing = fixture
+        .app
+        .clone()
+        .oneshot(rpc_request(
+            "/chatgpt/mcp",
+            "POST",
+            None,
+            Some(&session),
+            Some(21),
+            "tools/list",
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listing.status(), StatusCode::OK);
+    let listing_body = rpc_body(listing).await;
+    assert_eq!(listing_body["id"], 21);
+    let tools = listing_body["result"]["tools"].as_array().unwrap();
+    assert!(!tools.is_empty());
+    for tool in tools {
+        let schemes = json!([{"type":"oauth2","scopes":["driichi:play"]}]);
+        assert_eq!(tool["securitySchemes"], schemes);
+        assert_eq!(tool["_meta"]["securitySchemes"], schemes);
+    }
+
+    let missing = fixture
+        .app
+        .clone()
+        .oneshot(rpc_request(
+            "/chatgpt/mcp",
+            "POST",
+            None,
+            Some(&session),
+            Some(22),
+            "tools/call",
+            json!({"name":"get_my_state","arguments":{}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::OK);
+    assert_eq!(
+        missing
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok()),
+        Some(session.as_str())
+    );
+    let missing_body = rpc_body(missing).await;
+    assert_eq!(missing_body["id"], 22);
+    assert_eq!(missing_body["result"]["isError"], true);
+    let challenge = missing_body["result"]["_meta"]["mcp/www_authenticate"][0]
+        .as_str()
+        .unwrap();
+    assert!(challenge.contains("error=\"insufficient_scope\""));
+    assert!(challenge.contains("error_description="));
+    assert!(challenge.contains("scope=\"driichi:play\""));
+
+    let invalid = rpc(
+        &fixture.app,
+        "invalid-access-token",
+        Some(&session),
+        Some(23),
+        "tools/call",
+        json!({"name":"get_my_state","arguments":{}}),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::OK);
+    let invalid_body = rpc_body(invalid).await;
+    assert_eq!(invalid_body["id"], 23);
+    assert_eq!(invalid_body["result"]["isError"], true);
+    assert!(
+        invalid_body["result"]["_meta"]["mcp/www_authenticate"][0]
+            .as_str()
+            .unwrap()
+            .contains("error=\"invalid_token\"")
+    );
+
+    let access = mint_access(&fixture.app, RESOURCE, "duplicate-bearer").await;
+    let duplicate = Request::builder()
+        .method("POST")
+        .uri("/chatgpt/mcp")
+        .header("host", "driichi.example")
+        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("mcp-session-id", &session)
+        .header("mcp-protocol-version", PROTOCOL_VERSION)
+        .body(Body::from(
+            json!({
+                "jsonrpc":"2.0",
+                "id":24,
+                "method":"tools/call",
+                "params":{"name":"get_my_state","arguments":{}}
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let duplicate = fixture.app.clone().oneshot(duplicate).await.unwrap();
+    assert_eq!(duplicate.status(), StatusCode::OK);
+    let duplicate_body = rpc_body(duplicate).await;
+    assert_eq!(duplicate_body["id"], 24);
+    assert_eq!(duplicate_body["result"]["isError"], true);
+    assert!(
+        duplicate_body["result"]["_meta"]["mcp/www_authenticate"][0]
+            .as_str()
+            .unwrap()
+            .contains("error=\"invalid_token\"")
+    );
+
+    let arbitrary_notification = fixture
+        .app
+        .clone()
+        .oneshot(rpc_request(
+            "/chatgpt/mcp",
+            "POST",
+            None,
+            Some(&session),
+            None,
+            "notifications/cancelled",
+            json!({"requestId":1}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(arbitrary_notification.status(), StatusCode::UNAUTHORIZED);
+
+    let resources = fixture
+        .app
+        .clone()
+        .oneshot(rpc_request(
+            "/chatgpt/mcp",
+            "POST",
+            None,
+            Some(&session),
+            Some(25),
+            "resources/list",
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resources.status(), StatusCode::UNAUTHORIZED);
+
+    fixture.state.shutdown().await;
+    fixture.storage.close().await;
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[tokio::test]
 async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
     let fixture = fixture("reject", RESOURCE).await;
     let valid_access = mint_access(&fixture.app, RESOURCE, "valid").await;
@@ -554,23 +749,24 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
             None,
             None,
             Some(1),
-            "initialize",
-            json!({}),
+            "tools/call",
+            json!({"name":"get_my_state","arguments":{}}),
         ))
         .await
         .unwrap();
-    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
-    let challenge = missing
-        .headers()
-        .get(header::WWW_AUTHENTICATE)
-        .unwrap()
-        .to_str()
+    assert_eq!(missing.status(), StatusCode::OK);
+    let missing_body = rpc_body(missing).await;
+    assert_eq!(missing_body["id"], 1);
+    assert_eq!(missing_body["result"]["isError"], true);
+    let challenge = missing_body["result"]["_meta"]["mcp/www_authenticate"][0]
+        .as_str()
         .unwrap();
     assert!(
         challenge.contains(
             "resource_metadata=\"https://driichi.example/.well-known/oauth-protected-resource/chatgpt/mcp\""
         )
     );
+    assert!(challenge.contains("error=\"insufficient_scope\""));
 
     let duplicate_bearer = Request::builder()
         .method("POST")
@@ -771,9 +967,16 @@ async fn gateway_delegates_sessions_streams_and_keeps_legacy_pi_tokens_independe
     )
     .await;
     assert_eq!(list.status(), StatusCode::OK);
-    let tools = rpc_body(list).await["result"]["tools"]
-        .as_array()
-        .unwrap()
+    let listing_body = rpc_body(list).await;
+    let tool_descriptors = listing_body["result"]["tools"].as_array().unwrap();
+    let my_state_tool = tool_descriptors
+        .iter()
+        .find(|tool| tool["name"] == "get_my_state")
+        .expect("get_my_state tool is listed");
+    let expected_schemes = json!([{"type":"oauth2","scopes":["driichi:play"]}]);
+    assert_eq!(my_state_tool["securitySchemes"], expected_schemes);
+    assert_eq!(my_state_tool["_meta"]["securitySchemes"], expected_schemes);
+    let tools = tool_descriptors
         .iter()
         .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
