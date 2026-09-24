@@ -2271,7 +2271,7 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            ["join_room", "leave_room", "submit_action", "wait_for_turn"]
+            ["get_my_state", "join_room", "leave_room", "submit_action", "wait_for_turn"]
         );
 
         let templates = resource_templates();
