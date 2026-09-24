@@ -529,7 +529,9 @@ fn validate_chatgpt_oauth(
         .map(|origin| {
             let parsed = Url::parse(origin)
                 .map_err(|_| ConfigError::Invalid("ChatGPT OAuth allowed origin is invalid"))?;
-            if parsed.as_str() != origin || !is_trusted_chatgpt_origin(&parsed) {
+            let matches_canonical_form = parsed.as_str() == origin
+                || parsed.as_str().strip_suffix('/') == Some(origin);
+            if !matches_canonical_form || !is_trusted_chatgpt_origin(&parsed) {
                 return Err(ConfigError::Invalid(
                     "ChatGPT OAuth allowed origin is not trusted",
                 ));

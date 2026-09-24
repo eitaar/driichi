@@ -633,6 +633,21 @@ fn chatgpt_oauth_is_opt_in_and_requires_trusted_https_configuration() {
     );
     assert_eq!(enabled.allowed_origins.len(), 1);
 
+    let canonical_oauth = valid_oauth.replace(
+        "allowed_origins = [\"https://chatgpt.com\"]",
+        "allowed_origins = [\"https://chatgpt.com/\"]",
+    );
+    let canonical_path = write_config(
+        &root,
+        &format!("public_origin = \"https://driichi.com\"\n[chatgpt_oauth]\n{canonical_oauth}"),
+    );
+    assert!(
+        RuntimeConfig::from_path(&canonical_path)
+            .unwrap()
+            .chatgpt_oauth
+            .is_some()
+    );
+
     for public_origin in [
         "http://driichi.com",
         "https://localhost",
