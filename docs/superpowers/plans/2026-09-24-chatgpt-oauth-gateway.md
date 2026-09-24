@@ -150,20 +150,24 @@ CREATE TABLE oauth_codes (
   scope TEXT NOT NULL,
   subject TEXT NOT NULL CHECK(subject = 'admin'),
   pkce_challenge TEXT NOT NULL,
+  issued_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER
 );
 CREATE TABLE oauth_refresh_families (
   family_id TEXT PRIMARY KEY,
   client_id TEXT NOT NULL,
+  subject TEXT NOT NULL CHECK(subject = 'admin'),
   resource TEXT NOT NULL,
   scope TEXT NOT NULL,
+  issued_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   revoked_at INTEGER
 );
 CREATE TABLE oauth_refresh_tokens (
   token_hash BLOB PRIMARY KEY,
   family_id TEXT NOT NULL REFERENCES oauth_refresh_families(family_id),
+  issued_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER
 );
@@ -172,6 +176,7 @@ CREATE TABLE oauth_access_tokens (
   family_id TEXT NOT NULL REFERENCES oauth_refresh_families(family_id),
   resource TEXT NOT NULL,
   scope TEXT NOT NULL,
+  issued_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
 ```
