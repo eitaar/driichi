@@ -339,7 +339,7 @@ const OAUTH_CSRF_COOKIE_LIFETIME_SECONDS: u64 = 10 * 60;
 const MAX_PENDING_AUTHORIZATIONS: usize = 1024;
 const MAX_OAUTH_FORM_BYTES: usize = 16 * 1024;
 const MAX_OAUTH_QUERY_BYTES: usize = 8 * 1024;
-const AUTHORIZATION_FIELDS: [&str; 8] = [
+const AUTHORIZATION_FIELDS: [&str; 9] = [
     "client_id",
     "redirect_uri",
     "response_type",
@@ -348,6 +348,7 @@ const AUTHORIZATION_FIELDS: [&str; 8] = [
     "resource",
     "code_challenge",
     "code_challenge_method",
+    "ui_locales",
 ];
 
 fn parse_urlencoded_fields(input: &[u8], limit: usize) -> Result<HashMap<String, String>, ()> {
