@@ -412,7 +412,13 @@ async fn live_mcp_discovers_joins_reads_and_keeps_room_binding_permanent() {
     tools.sort();
     assert_eq!(
         tools,
-        ["join_room", "leave_room", "submit_action", "wait_for_turn"]
+        [
+            "get_my_state",
+            "join_room",
+            "leave_room",
+            "submit_action",
+            "wait_for_turn"
+        ]
     );
 
     let join = tool_call(
@@ -522,6 +528,129 @@ async fn live_mcp_discovers_joins_reads_and_keeps_room_binding_permanent() {
     )
     .await;
     assert_eq!(tool_value(&after_leave)["code"], "session_already_bound");
+
+    state.shutdown().await;
+    storage.close().await;
+}
+
+#[tokio::test]
+async fn live_mcp_exposes_only_bound_private_state() {
+    let (state, service, storage, token) = fixture("private-state").await;
+    let room = room_with_code(&state, "MCP private state").await;
+    let app = server_router(state.clone());
+    let (session_id, _) = initialize(&app, &token, 70).await;
+
+    let join = tool_call(
+        &app,
+        &token,
+        &session_id,
+        71,
+        "join_room",
+        json!({
+            "room_code": room.join_code(),
+            "provider": "runner",
+            "display_name": "MCP Private"
+        }),
+    )
+    .await;
+    let joined = tool_value(&join);
+    let participant_id = joined["participant_id"].as_str().unwrap().to_owned();
+    let state_uri = joined["state_uri"].as_str().unwrap().to_owned();
+
+    let other = service.create("other", 1, "task14-other").await.unwrap();
+    let other_token = other.secret().expose().to_owned();
+    let (other_session, _) = initialize(&app, &other_token, 76).await;
+    let other_join = tool_call(
+        &app,
+        &other_token,
+        &other_session,
+        77,
+        "join_room",
+        json!({
+            "room_code": room.join_code(),
+            "provider": "runner",
+            "display_name": "MCP Other"
+        }),
+    )
+    .await;
+    let other_participant = tool_value(&other_join)["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(participant_id, other_participant);
+
+    room.send(RoomCommand::select(participant_id.as_str()))
+        .await
+        .unwrap();
+    room.send(RoomCommand::select(other_participant.as_str()))
+        .await
+        .unwrap();
+    room.send(RoomCommand::fill_with_bots()).await.unwrap();
+    assert!(matches!(
+        room.send(RoomCommand::start()).await.unwrap(),
+        double_riichi_core::RoomResponse::Started(_)
+    ));
+
+    let state_result = tool_call(&app, &token, &session_id, 72, "get_my_state", json!({})).await;
+    let my_state = tool_value(&state_result);
+    assert_eq!(my_state["state_uri"], state_uri);
+    let owner_hand = my_state["players"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|player| player["participant_id"].as_str() == Some(participant_id.as_str()))
+        .expect("owner is present in the private state projection")["hand"]
+        .clone();
+    assert!(owner_hand.is_array(), "private hand is missing: {my_state}");
+
+    let resource_state = read_resource(
+        &app,
+        &token,
+        &session_id,
+        73,
+        my_state["state_uri"].as_str().unwrap(),
+    )
+    .await;
+    let resource_hand = resource_state["players"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|player| player["participant_id"].as_str() == Some(participant_id.as_str()))
+        .expect("owner is present in the private resource projection")["hand"]
+        .clone();
+    assert_eq!(owner_hand, resource_hand);
+    assert_eq!(my_state["legal_actions"], resource_state["legal_actions"]);
+
+    let (unjoined_session, _) = initialize(&app, &token, 74).await;
+    let unjoined = tool_call(
+        &app,
+        &token,
+        &unjoined_session,
+        75,
+        "get_my_state",
+        json!({}),
+    )
+    .await;
+    assert_eq!(tool_value(&unjoined)["code"], "session_expired");
+
+    let response = mcp(
+        &app,
+        Some(&other_token),
+        None,
+        Some(&other_session),
+        Some(78),
+        "resources/read",
+        json!({"uri": state_uri}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["jsonrpc"], "2.0");
+    assert!(
+        !body["error"].is_null(),
+        "a different token read the private state"
+    );
+    assert!(body["result"].is_null());
 
     state.shutdown().await;
     storage.close().await;
@@ -886,7 +1015,13 @@ async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
         tool_names.sort();
         assert_eq!(
             tool_names,
-            ["join_room", "leave_room", "submit_action", "wait_for_turn"]
+            [
+                "get_my_state",
+                "join_room",
+                "leave_room",
+                "submit_action",
+                "wait_for_turn"
+            ]
         );
 
         let templates = timeout(REQUEST_TIMEOUT, peer.list_resource_templates(None))
