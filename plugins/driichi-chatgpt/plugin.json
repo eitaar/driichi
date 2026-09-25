@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "driichi-chatgpt",
+  "version": "0.1.0",
+  "description": "Play in a driichi Room using authenticated MCP tools.",
+  "author": {
+    "name": "eitaar"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "driichi",
+        "shortDescription": "Connect to a driichi Room",
+        "longDescription": "Join a Room, inspect your own state, and submit legal actions.",
+        "developerName": "eitaar",
+        "category": "Productivity",
+        "capabilities": ["Interactive"],
+        "defaultPrompt": [
+          "Join my driichi Room.",
+          "Show my current Room state."
+        ]
+      }
+    }
+  }
+}

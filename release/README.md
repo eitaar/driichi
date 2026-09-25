@@ -30,6 +30,32 @@ ChatGPT OAuth is opt-in. The gateway exposes `/chatgpt/mcp` only when `[chatgpt_
 5. Restart the service after changing the configuration or process secret. Check `/.well-known/oauth-protected-resource/chatgpt/mcp` and `/.well-known/oauth-authorization-server` through the public HTTPS origin. The resource identifier must equal the configured HTTPS origin followed by `/chatgpt/mcp`, and its authorization server must match the configured issuer.
 6. Before packaging a plugin, test the real endpoint from ChatGPT Developer Mode: metadata discovery, admin sign-in and consent, PKCE token exchange, MCP initialize, join, `get_my_state`, a legal action, and leave. Verify a pre-existing Pi bridge and MJAI client still work. A live ChatGPT plugin package is not part of the release archive; create one only after a stable HTTPS endpoint has been deployed and verified.
 
+## Private ChatGPT plugin install gate
+
+The source plugin in `plugins/driichi-chatgpt/` records the supplied MCP URL,
+`https://driichi.eitaar.dev/chatgpt/mcp`; it is not a live endpoint check.
+The current check (2026-09-25) found that the OAuth metadata and MCP paths return
+404, so the plugin is not ready to install or create in ChatGPT.
+
+Before installing the private plugin, verify all of the following against the
+deployed HTTPS service:
+
+1. `GET https://driichi.eitaar.dev/.well-known/oauth-protected-resource/chatgpt/mcp`
+   returns **200**, and its `resource` is exactly
+   `https://driichi.eitaar.dev/chatgpt/mcp`.
+2. `GET https://driichi.eitaar.dev/.well-known/oauth-authorization-server`
+   returns **200** and advertises the configured issuer, PKCE `S256`, token
+   endpoint authentication `none`, and CIMD support.
+3. An unauthenticated
+   `GET https://driichi.eitaar.dev/chatgpt/mcp` returns **401** with a
+   `WWW-Authenticate: Bearer` challenge whose `resource_metadata` points to
+   `https://driichi.eitaar.dev/.well-known/oauth-protected-resource/chatgpt/mcp`.
+
+A **404** does not satisfy this gate. After the checks pass, complete the live
+OAuth and MCP acceptance flow in ChatGPT Developer Mode described above. Keep
+the plugin source out of release archives; this private source package is not a
+published or installable plugin.
+
 From a source checkout, verify the opt-in and startup gates with:
 
 ```sh
