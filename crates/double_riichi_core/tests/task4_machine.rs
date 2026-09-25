@@ -139,8 +139,8 @@ async fn temporary_auto_turn_is_immediate_after_casual_or_riichi_dev_timeout() {
 async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout() {
     let mode = GameMode::FourPlayerRedEast;
     for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
-        let mut machine = MatchMachine::with_seed(mode, roster(mode, ParticipantKind::Human), 42)
-            .unwrap();
+        let mut machine =
+            MatchMachine::with_seed(mode, roster(mode, ParticipantKind::Human), 42).unwrap();
         machine.set_time_control(time_control);
 
         let first = machine.current_decision().unwrap().unwrap();
