@@ -758,20 +758,28 @@ async fn admin_bot_token_http_lifecycle_is_one_time_and_revokes_room_access() {
         .unwrap(),
         1
     );
-    let active_seat = room
-        .snapshot()
-        .await
-        .unwrap()
-        .participants
-        .into_iter()
-        .find(|participant| participant.id.as_str() == "agent")
-        .unwrap();
-    assert_eq!(
-        active_seat.controller,
-        double_riichi_core::RoomController::PermanentAuto(
-            double_riichi_core::PermanentAutoReason::TokenRevoked
-        )
+    let expected_controller = double_riichi_core::RoomController::PermanentAuto(
+        double_riichi_core::PermanentAutoReason::TokenRevoked,
     );
+    let active_seat = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let active_seat = room
+                .snapshot()
+                .await
+                .unwrap()
+                .participants
+                .into_iter()
+                .find(|participant| participant.id.as_str() == "agent")
+                .expect("revoked token participant should remain in the room");
+            if active_seat.controller == expected_controller {
+                break active_seat;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("revocation worker did not update the room before the deadline");
+    assert_eq!(active_seat.controller, expected_controller);
     let again = app
         .oneshot(
             Request::builder()
