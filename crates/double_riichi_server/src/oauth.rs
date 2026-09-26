@@ -642,7 +642,7 @@ fn html_response(body: String) -> Response {
             "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
         )
         .header("x-content-type-options", "nosniff")
-        .header("referrer-policy", "no-referrer")
+        .header("referrer-policy", "origin")
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
