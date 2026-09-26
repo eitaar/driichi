@@ -137,13 +137,12 @@ async fn temporary_auto_turn_is_immediate_after_casual_or_riichi_dev_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout() {
+    let mode = GameMode::FourPlayerRedEast;
     for time_control in [TimeControl::Casual, TimeControl::RiichiDev] {
-        let mut machine = MatchMachine::with_time_control(
-            GameMode::FourPlayerRedEast,
-            roster(GameMode::FourPlayerRedEast, ParticipantKind::Human),
-            time_control,
-        )
-        .unwrap();
+        let mut machine =
+            MatchMachine::with_seed(mode, roster(mode, ParticipantKind::Human), 42).unwrap();
+        machine.set_time_control(time_control);
+
         let first = machine.current_decision().unwrap().unwrap();
         let seat = first.eligible().next().expect("initial turn");
         let initial_duration = first.duration_for(seat).expect("turn deadline");
@@ -155,11 +154,13 @@ async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout
             ControllerState::TemporaryAuto
         );
 
-        for _ in 0..5_000 {
-            let decision = machine.current_decision().unwrap().expect("decision");
+        let received_response = loop {
+            let Some(decision) = machine.current_decision().unwrap() else {
+                break false;
+            };
             if decision.kind() == DecisionKind::Response && !decision.actions_for(seat).is_empty() {
                 assert_eq!(decision.duration_for(seat), Some(Duration::ZERO));
-                return;
+                break true;
             }
             for eligible in decision.eligible().collect::<Vec<_>>() {
                 if eligible == seat {
@@ -173,15 +174,20 @@ async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout
                     )
                     .unwrap();
             }
-            let current = machine.current_decision().unwrap().expect("decision");
+            let Some(current) = machine.current_decision().unwrap() else {
+                break false;
+            };
             if !current.actions_for(seat).is_empty() {
                 if let Some(duration) = current.duration_for(seat) {
                     time::advance(duration).await;
                 }
                 machine.resolve_expired().unwrap();
             }
-        }
-        panic!("temporary auto seat did not receive a subsequent response");
+        };
+        assert!(
+            received_response,
+            "temporary auto seat did not receive a subsequent response"
+        );
     }
 }
 

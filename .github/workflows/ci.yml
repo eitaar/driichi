@@ -80,6 +80,13 @@ jobs:
       - name: Install browser runtime
         run: npx --prefix frontend playwright install --with-deps chromium
 
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ffmpeg
+          ffmpeg -version
+
       - name: Run deterministic local gates
         env:
           GIT_COMMIT: ${{ github.sha }}
