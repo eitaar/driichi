@@ -639,7 +639,7 @@ fn html_response(body: String) -> Response {
         .header(header::PRAGMA, "no-cache")
         .header(
             "content-security-policy",
-            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'none'; form-action 'self' https://chatgpt.com; base-uri 'none'; frame-ancestors 'none'",
         )
         .header("x-content-type-options", "nosniff")
         .header("referrer-policy", "origin")
