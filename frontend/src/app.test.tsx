@@ -27,7 +27,7 @@ describe("entry shell", () => {
   it("keeps the room action visible and keyboard reachable", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: /your table is live/i })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("heading", { name: /join a room/i })).toBeVisible());
     expect(screen.getByRole("textbox", { name: /room code/i })).toHaveFocus();
     await waitFor(() => expect(screen.getByRole("button", { name: /open room/i })).toBeVisible());
     expect(screen.getByRole("link", { name: /admin sign in/i })).toBeVisible();
@@ -76,8 +76,9 @@ describe("public room join", () => {
       participant_limit: 4,
     }));
 
-    expect(await screen.findByRole("heading", { name: /join night market/i })).toBeVisible();
-    expect(screen.getByText("4p-red-east")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /choose your character/i })).toBeVisible();
+    fireEvent.click(screen.getByText('Room details'));
+    expect(screen.getByText(/4p-red-east/)).toBeVisible();
     expect(screen.getByText("1 / 4 participants")).toBeVisible();
   });
 
@@ -112,7 +113,7 @@ describe("public room join", () => {
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /join night market/i });
+    await screen.findByRole("heading", { name: /choose your character/i });
     expect(await screen.findByRole("alert")).toHaveTextContent("Characters could not be loaded.");
     fireEvent.click(screen.getByRole("button", { name: /retry character list/i }));
     expect(await screen.findByRole("radio", { name: /red player/i })).toBeVisible();
@@ -141,7 +142,7 @@ describe("public room join", () => {
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /join night market/i });
+    await screen.findByRole("heading", { name: /choose your character/i });
     fireEvent.change(screen.getByRole("textbox", { name: /display name/i }), {
       target: { value: "Mika" },
     });
@@ -489,13 +490,14 @@ describe("human lobby websocket", () => {
       },
       state: null,
     });
-    expect(await screen.findByRole("heading", { name: /night market lobby/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /^lobby$/i })).toBeVisible();
+    screen.getAllByText('Details',{selector:'summary'}).forEach(summary => fireEvent.click(summary));
     expect(screen.getByText(/mika \/ you/i)).toBeVisible();
     expect(screen.getAllByText("Presence")).toHaveLength(3);
     expect(screen.getAllByText("Selection")).toHaveLength(3);
     expect(screen.getAllByText("Controller")).toHaveLength(3);
     expect(screen.getByText(/seat 1/i)).toBeVisible();
-    expect(screen.getByText(/3\s+OF\s+3/i)).toBeVisible();
+    expect(screen.getByText('3 / 3 selected')).toBeVisible();
   });
 
   it("keeps the WebSocket connected when the server rejects a normal command", async () => {
@@ -648,7 +650,7 @@ describe("human lobby websocket", () => {
     expect(imageCount).toBe(12);
     sockets[0].emit({ ...snapshot, room: { ...snapshot.room, room_name: "Stale Room" } });
     expect(screen.queryByRole("heading", { name: /stale room lobby/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /night market lobby/i })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
     vi.useRealTimers();
   });
 

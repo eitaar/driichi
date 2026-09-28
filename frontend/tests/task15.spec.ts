@@ -219,8 +219,8 @@ for (const viewport of [
     expect(tableHeightRatio).toBeLessThanOrEqual(0.88);
     expect(Number(await table.getAttribute("data-rendered-tile-count"))).toBeGreaterThanOrEqual(100);
     await expect(page.locator(".table-player-frame")).toHaveCount(4);
-    await expect(page.locator(".table-player-portrait")).toHaveCount(4);
-    await expect.poll(() => page.locator(".table-player-portrait").evaluateAll((images) =>
+    await expect(page.locator(".table-player-icon")).toHaveCount(4);
+    await expect.poll(() => page.locator(".table-player-icon").evaluateAll((images) =>
       images.every((image) => (image as HTMLImageElement).naturalWidth > 1),
     )).toBe(true);
     await expect(page.locator('.table-player-frame[data-position="top"]')).toHaveCount(1);

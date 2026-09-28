@@ -1,0 +1,39 @@
+/* Shared Live/Replay table presentation; controls remain DOM and server-driven. */
+.gameplay-shell{font-family:"Segoe UI",system-ui,sans-serif;background:#eef0f2;color:#283342}
+.gameplay-shell .gameplay-main{height:100dvh;min-height:600px;padding:0;display:block}
+.gameplay-main .table-letterbox{width:100%;height:100%;max-height:none;aspect-ratio:auto;border:0;box-shadow:none;background:#eef0f2}
+.gameplay-shell .three-table,.replay-table-wrap .three-table{background:#eef0f2}
+.gameplay-shell .gameplay-controls{color:#283342}
+.gameplay-shell .gameplay-controls .connection-state,.gameplay-shell .audio-settings summary{border:1px solid #bcc6cf;background:#fafbfc;color:#283342}
+.gameplay-shell .audio-settings,.gameplay-shell .audio-settings-body{font-family:"Segoe UI",system-ui,sans-serif;color:#283342}
+.gameplay-shell .audio-settings-body{background:#fafbfc;border-color:#bcc6cf;box-shadow:none}
+.gameplay-shell .gameplay-toast{background:#fafbfc;color:#283342;box-shadow:none}
+.gameplay-shell .table-player-overlays,.replay-table-wrap .table-player-overlays{pointer-events:none}
+.gameplay-shell .table-player-frame,.replay-table-wrap .table-player-frame{width:clamp(86px,9vw,120px);display:flex;flex-direction:column;gap:5px;padding:0;min-height:0;border:0;background:none;box-shadow:none;text-align:center;color:#283342}
+.gameplay-shell .table-player-frame.is-local,.replay-table-wrap .table-player-frame.is-local{border:0;box-shadow:none}
+.gameplay-shell .table-player-icon,.replay-table-wrap .table-player-icon{width:clamp(62px,6vw,78px);height:clamp(70px,7vw,90px);object-fit:cover;border:0;border-radius:2px;background:#dce4ed}
+.gameplay-shell .table-player-copy,.replay-table-wrap .table-player-copy{display:block;max-width:100%;padding:2px 4px;background:#eef0f2}
+.gameplay-shell .table-player-copy strong,.replay-table-wrap .table-player-copy strong{color:#283342;font:600 14px/1.3 "Segoe UI",system-ui,sans-serif;overflow-wrap:anywhere;-webkit-line-clamp:2}
+.gameplay-shell .table-player-frame[data-position=top],.replay-table-wrap .table-player-frame[data-position=top]{top:14px;left:50%;right:auto;transform:translateX(-50%)}
+.gameplay-shell .table-player-frame[data-position=bottom],.replay-table-wrap .table-player-frame[data-position=bottom]{bottom:clamp(135px,14vw,166px);left:16px}
+.gameplay-shell .table-player-frame[data-position=left],.replay-table-wrap .table-player-frame[data-position=left]{top:33%;left:16px}
+.gameplay-shell .table-player-frame[data-position=right],.replay-table-wrap .table-player-frame[data-position=right]{top:42%;right:16px}
+.gameplay-shell .table-hit-layer,.replay-table-wrap .table-replay-hand{position:absolute;z-index:4;left:13%;right:13%;bottom:20px;display:flex;justify-content:center;gap:3px;pointer-events:none}
+.gameplay-shell .table-tile-hit,.replay-table-wrap .table-replay-hand img{position:relative;display:block;flex:0 0 calc((74vw - 51px)/14);width:calc((74vw - 51px)/14);max-width:82px;min-width:0;height:clamp(68px,7.7vw,109px);padding:0;border:0;border-radius:3px;background:#fafbfc;box-shadow:0 4px 0 #bcc6cf;color:#283342;pointer-events:auto}
+.gameplay-shell .table-tile-hit img,.replay-table-wrap .table-replay-hand img{object-fit:fill}
+.gameplay-shell .table-tile-hit.is-legal,.gameplay-shell .table-tile-hit.is-legal:hover:not(:disabled){background:#fafbfc;color:#283342;box-shadow:0 4px 0 #bcc6cf;transform:none}
+.gameplay-shell .table-tile-hit img{display:block;width:100%;height:100%;border-radius:3px}
+.gameplay-shell .table-tile-hit:last-child{margin-left:12px}
+.gameplay-shell .table-tile-hit.is-dora{box-shadow:0 0 5px 2px #dca64acc,0 0 15px 4px #dca64a66,0 4px 0 #bcc6cf}
+.gameplay-shell .table-tile-hit.is-legal:hover:not(:disabled),.gameplay-shell .table-tile-hit.is-legal:focus-visible{transform:translateY(-8px);outline:3px solid #2762ab;outline-offset:2px}
+.gameplay-shell .table-tile-hit:disabled{opacity:1}
+.gameplay-shell .action-deck{bottom:calc(clamp(68px,7.7vw,109px) + 38px);border:0;background:transparent;color:#283342;box-shadow:none;font-family:"Segoe UI",system-ui,sans-serif}
+.gameplay-shell .action-deck-label{background:#eef0f2;padding:4px 8px}
+.gameplay-shell .action-deck-label strong,.gameplay-shell .action-deck .eyebrow,.gameplay-shell .action-deck-label [data-testid=decision-timer]{color:#283342;font-family:inherit}
+.gameplay-shell .action-buttons .button,.gameplay-shell .candidate-list .button{min-height:44px;border:1px solid #bcc6cf;background:#fafbfc;color:#283342;box-shadow:none;font-size:13px}
+.gameplay-shell .action-buttons .button:hover:not(:disabled),.gameplay-shell .candidate-list .button:hover:not(:disabled){background:#dce4ed}
+.gameplay-shell .candidate-popup{background:#eef0f2;border-color:#bcc6cf;color:#283342}
+.gameplay-shell .candidate-popup-head,.gameplay-shell .candidate-popup-head .text-button{color:#283342;font-family:inherit}
+.gameplay-shell .three-table__fallback{background:#fafbfc;color:#283342;border-color:#bcc6cf}
+@media(max-width:700px){.gameplay-shell .table-hit-layer,.replay-table-wrap .table-replay-hand{left:8px;right:8px;bottom:16px;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;overflow-x:auto}.gameplay-shell .table-tile-hit,.replay-table-wrap .table-replay-hand img{width:100%;max-width:none;height:60px}.gameplay-shell .table-tile-hit:last-child{margin-left:0}.gameplay-shell .action-deck{bottom:174px;flex-wrap:wrap}.gameplay-shell .table-player-frame[data-position=bottom],.gameplay-shell .table-player-frame[data-position=left],.gameplay-shell .table-player-frame[data-position=right],.gameplay-shell .table-player-frame[data-position=top]{top:78px;bottom:auto;left:auto;right:auto;transform:none;width:calc(25% - 10px)}.gameplay-shell .table-player-frame[data-position=bottom]{left:5px}.gameplay-shell .table-player-frame[data-position=right]{left:calc(25% + 2px)}.gameplay-shell .table-player-frame[data-position=top]{left:calc(50% + 1px)}.gameplay-shell .table-player-frame[data-position=left]{left:calc(75% - 2px)}}
+@media(prefers-reduced-motion:reduce){.gameplay-shell .table-tile-hit:hover:not(:disabled),.gameplay-shell .table-tile-hit:focus-visible{transform:none}}

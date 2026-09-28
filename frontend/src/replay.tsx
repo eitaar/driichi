@@ -7,6 +7,7 @@ import { portraitFromEvents, preloadRosterAssets, voiceEvents } from "./game/gam
 import { ThreeTable } from "./game/three-table";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
+import "./replay.css";
 
 const REPLAY_PAGE_SIZE = 50;
 const replayKeys = {
@@ -204,8 +205,20 @@ function frameLog(frame: ReplayFrame): string[] {
   return [...before, readableKind(eventKind(frame.visible_event)), ...after];
 }
 
-function kyokuValues(frames: ReplayFrame[]): string[] {
-  return [...new Set(frames.map((frame) => frame.visible_state.kyoku).filter((value): value is string | number => typeof value === "string" || typeof value === "number").map(String))];
+function roundDestinations(frames: ReplayFrame[]): Array<{ position: number; label: string }> {
+  const destinations: Array<{ position: number; label: string }> = [];
+  let previous = "";
+  frames.forEach((frame, position) => {
+    const { round, kyoku, honba } = frame.visible_state;
+    // A round is selectable only when the projection identifies all three facts.
+    if (typeof round !== "string" || (typeof kyoku !== "string" && typeof kyoku !== "number") || typeof honba !== "number") return;
+    const key = JSON.stringify([round, kyoku, honba]);
+    if (key !== previous || /^start_?kyoku$/i.test(eventKind(frame.visible_event))) {
+      destinations.push({ position, label: `${round} ${kyoku} · ${honba} honba` });
+    }
+    previous = key;
+  });
+  return destinations;
 }
 
 function replayRoom(replay: ReplayView, includeCharacters: boolean): RoomSnapshot {
@@ -286,9 +299,16 @@ function useReplayAudio(frame: ReplayFrame | undefined, room: RoomSnapshot, posi
     };
   }, []);
   useEffect(() => {
-    if (!enabled || !frame || position === 0 || playedPositionRef.current === position) return;
+    if (!enabled) {
+      managerRef.current?.stop();
+      playedPositionRef.current = position;
+      return;
+    }
+    if (playedPositionRef.current === position) return;
     playedPositionRef.current = position;
-    managerRef.current?.playVoices(voiceEvents([frame.visible_event], room));
+    // Discard pending voices on seek/advance; a slow clip must not queue behind 64x playback.
+    managerRef.current?.stop();
+    if (frame && position !== 0) managerRef.current?.playVoices(voiceEvents([frame.visible_event], room));
   }, [enabled, frame, position, room]);
 }
 
@@ -313,18 +333,15 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
   const assetStatus = useReplayAssetStatus(replay);
   const genericPresentation = replay.source === "ranked" || assetStatus !== "available";
   const room = useMemo(() => replayRoom(replay, !genericPresentation), [replay, genericPresentation]);
-  const kyokus = useMemo(() => kyokuValues(frames), [frames]);
-  useReplayAudio(frame, room, position, !genericPresentation);
+  const rounds = useMemo(() => roundDestinations(frames), [frames]);
+  useReplayAudio(frame, room, position, !genericPresentation && rate <= 2);
   const portraitEffect = !genericPresentation && frame ? portraitFromEvents([frame.visible_event], room) : null;
   useEffect(() => {
-    if (!playing || frames.length < 2) return;
+    if (!playing || position >= frames.length - 1) return;
     const timer = window.setTimeout(() => {
       setPosition((current) => {
-        if (current >= frames.length - 1) {
-          setPlaying(false);
-          return current;
-        }
-        return current + 1;
+        if (current >= frames.length - 2) setPlaying(false);
+        return Math.min(current + 1, frames.length - 1);
       });
     }, 900 / rate);
     return () => window.clearTimeout(timer);
@@ -339,23 +356,27 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
         className="replay-viewer"
         aria-label="Replay viewer"
         data-testid="replay-viewer"
-        data-motion={reducedMotion ? "static" : "cinematic"}
+        data-motion={reducedMotion || rate > 2 ? "static" : "cinematic"}
       >
         <div className="replay-table-stage">
-          <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion} portraitEffect={portraitEffect} surface="replay" /></div>
+          <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} portraitEffect={rate > 2 ? null : portraitEffect} surface="replay" /></div>
           <div className="replay-status-toast" role="status" aria-live="polite">
             <span className="replay-live-state">{presentationLabel}</span>
             <span className="state-label">EVENT {String(position + 1).padStart(3, "0")}</span>
             <strong>{readableKind(eventKind(frame.visible_event))}</strong>
             <span className="visually-hidden">{statusText}</span>
           </div>
-          <div className="replay-controls replay-controls-overlay" aria-label="Replay controls">
-            {!playing ? <button className="button button-primary" onClick={() => setPlaying(position < frames.length - 1 && frames.length > 1)}><Play aria-hidden="true" weight="fill" />Play</button> : <button className="button button-primary" onClick={() => setPlaying(false)}><Pause aria-hidden="true" weight="fill" />Pause</button>}
-            <button className="button button-secondary" aria-label="Previous Event" disabled={position === 0} onClick={() => selectPosition(position - 1)}><ArrowLeft aria-hidden="true" weight="regular" />Previous Event</button>
-            <button className="button button-secondary" aria-label="Next Event" disabled={position >= frames.length - 1} onClick={() => selectPosition(position + 1)}>Next Event <ArrowRight aria-hidden="true" weight="regular" /></button>
-            <div className="replay-speed" aria-label="Playback speed">{[0.5, 1, 2, 4].map((value) => <button key={value} type="button" className={`speed-button${rate === value ? " is-active" : ""}`} aria-pressed={rate === value} onClick={() => setRate(value)}>{value}x</button>)}</div>
-            <label className="replay-jump">Jump to Kyoku<select aria-label="Jump to Kyoku" value={String(frame.visible_state.kyoku ?? "")} onChange={(event) => { const target = event.target.value; const next = frames.findIndex((candidate) => String(candidate.visible_state.kyoku ?? "") === target); if (next >= 0) selectPosition(next); }}><option value="">Current</option>{kyokus.map((kyoku) => <option value={kyoku} key={kyoku}>Kyoku {kyoku}</option>)}</select></label>
+        </div>
+        <div className="replay-playback" aria-label="Replay controls">
+          <div className="replay-timeline"><label htmlFor="replay-position">Event {position + 1} / {frames.length}</label><input id="replay-position" aria-label="Replay position" type="range" min="0" max={frames.length - 1} value={position} onChange={(event) => selectPosition(Number(event.target.value))} /><span className="replay-event">{readableKind(eventKind(frame.visible_event))}</span></div>
+          <div className="replay-buttons">
+            <button type="button" aria-label="Previous Event" disabled={position === 0} onClick={() => selectPosition(position - 1)}><ArrowLeft aria-hidden="true" />Previous</button>
+            <button type="button" className="replay-play" disabled={!playing && position >= frames.length - 1} onClick={() => setPlaying(!playing)}>{playing ? <Pause aria-hidden="true" weight="fill" /> : <Play aria-hidden="true" weight="fill" />}{playing ? "Pause" : "Play"}</button>
+            <button type="button" aria-label="Next Event" disabled={position >= frames.length - 1} onClick={() => selectPosition(position + 1)}>Next<ArrowRight aria-hidden="true" /></button>
           </div>
+          <label className="replay-option">Speed <select aria-label="Playback speed" value={rate} onChange={(event) => setRate(Number(event.target.value))}>{[0.5, 1, 2, 4, 8, 16, 32, 64].map((value) => <option value={value} key={value}>{value}×</option>)}</select></label>
+          {rounds.length > 0 && <label className="replay-option">Round <select aria-label="Jump to Kyoku" value={rounds.reduce((current, entry) => entry.position <= position ? entry.position : current, rounds[0].position)} onChange={(event) => selectPosition(Number(event.target.value))}>{rounds.map((entry) => <option key={entry.position} value={entry.position}>{entry.label}</option>)}</select></label>}
+          <ReplayLink className="replay-library-link" href="/admin/replays">Replay library</ReplayLink>
         </div>
       </section>
       <section className="replay-event-log" role="log" aria-label="Replay event log" aria-live="off"><div className="section-heading"><div><p className="eyebrow">TIMELINE</p><h3>Event log</h3></div><span className="state-label">SERVER FRAMES</span></div><ol>{frames.map((entry, index) => <li key={entry.event_index} className={index === position ? "is-current" : ""}><button type="button" onClick={() => selectPosition(index)}><span>{String(index + 1).padStart(3, "0")}</span><span>{frameLog(entry).join(" / ")}</span></button></li>)}</ol></section>
@@ -372,5 +393,5 @@ function ReplayDetail({ matchId }: { matchId: string }) {
 }
 
 export function ReplayWorkspace({ matchId }: { matchId?: string }) {
-  return <div className="app-shell workspace-shell replay-shell"><a className="skip-link" href="#replay-main">Skip to main content</a><ReplayTopbar />{matchId ? <ReplayDetail matchId={matchId} /> : <ReplayList />}</div>;
+  return <div className={`app-shell workspace-shell replay-shell${matchId ? " replay-detail-shell" : ""}`}><a className="skip-link" href="#replay-main">Skip to main content</a><ReplayTopbar />{matchId ? <ReplayDetail matchId={matchId} /> : <ReplayList />}</div>;
 }

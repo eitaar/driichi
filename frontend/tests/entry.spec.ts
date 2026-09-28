@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({page}) => {
+  await page.route('**/api/v1/characters/human', route => route.fulfill({json:[]}));
+});
+
 for (const viewport of [
   { width: 1024, height: 600, label: "1024x600" },
   { width: 1440, height: 900, label: "1440x900" },
@@ -16,7 +20,7 @@ for (const viewport of [
       page.on("requestfailed", (request) => failedRequests.push(`${request.method()} ${request.url()}`));
 
       await page.goto("/");
-      await expect(page.getByRole("heading", { name: /your table is live/i })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /join a room/i })).toBeVisible();
       await expect(page.getByRole("button", { name: /open room/i })).toBeVisible();
       await expect(page.getByRole("link", { name: /admin sign in/i })).toBeVisible();
       await expect(page.locator("nav")).toHaveCSS("height", /.+/);
@@ -102,7 +106,7 @@ test("human lobby shows a reconnectable websocket handoff", async ({ page }) => 
     sessionStorage.setItem("driichi:participant:123456", "P1");
   });
   await page.goto("/room/123456/lobby");
-  await expect(page.getByRole("heading", { name: /room lobby/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
   await expect(page.getByText(/connecting/i)).toBeVisible();
 });
 
@@ -177,8 +181,10 @@ for (const viewport of [
       sessionStorage.setItem("driichi:participant:123456", "P1");
     });
     await page.goto("/room/123456/lobby");
-    await expect(page.getByRole("heading", { name: /night market lobby/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
     await expect(page.locator(".connection-state")).toHaveText("connected");
+    const readyButton = await page.getByRole("button", { name: /set ready/i }).boundingBox();
+    expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
     await page.screenshot({ path: `test-results/task-11/lobby-${viewport.label}.png`, fullPage: false });
   });
 }

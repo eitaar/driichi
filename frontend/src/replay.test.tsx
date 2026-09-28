@@ -118,9 +118,9 @@ describe("Replay Admin workspace", () => {
     expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("Mika");
     expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("25,000");
     expect(view.container.querySelector('[data-position="right"]')).toHaveTextContent("Riichi");
-    expect(screen.getByAltText("Mika portrait")).toHaveAttribute(
+    expect(screen.getByAltText("Mika icon")).toHaveAttribute(
       "src",
-      "/assets/characters/ordinary-pack/portrait.webp",
+      "/assets/characters/ordinary-pack/icon.webp",
     );
 
     view.rerender(

@@ -1,0 +1,40 @@
+/* Replay shares the Live table; only its playback and archive surfaces are styled here. */
+.replay-shell{font-family:"Segoe UI",system-ui,sans-serif;background:#eef0f2;color:#283342}
+.replay-shell .topbar{background:#fafbfc;border-color:#bcc6cf}
+.replay-shell .brand,.replay-shell .nav-link,.replay-shell .text-button{color:#354a66;font-family:inherit}
+.replay-detail-shell>.topbar{display:none}
+.replay-shell .replay-heading h1,.replay-shell .replay-empty h2,.replay-shell .replay-state h2{font-family:inherit;font-size:clamp(2rem,4vw,3.5rem);line-height:1.1;letter-spacing:normal}
+.replay-shell .replay-heading,.replay-shell .replay-pagination{border-color:#bcc6cf}
+.replay-shell .replay-row{background:#fafbfc;border-color:#bcc6cf}
+.replay-shell .replay-row:hover{background:#dce4ed;border-color:#354a66}
+.replay-shell .replay-row-main code,.replay-shell .replay-row-detail,.replay-shell .replay-row-detail time,.replay-shell .replay-heading p:not(.eyebrow),.replay-shell .replay-meta dd,.replay-shell .replay-empty p:not(.eyebrow),.replay-shell .replay-state p:not(.eyebrow){color:#586574;font-family:inherit}
+.replay-shell .replay-status{color:#354a66;font-family:inherit}
+.replay-shell .replay-status.is-bad,.replay-shell .danger-text{color:#a72e3f}
+.replay-detail-main{padding:0 0 48px}
+.replay-shell .replay-viewer{margin:0}
+.replay-shell .replay-table-stage{width:100%;height:calc(100dvh - 132px);min-height:450px;aspect-ratio:auto;border:0;box-shadow:none;background:#eef0f2}
+.replay-shell .replay-table-wrap{background:#eef0f2}
+.replay-shell .table-player-overlays[data-surface="replay"] .table-player-frame[data-position="bottom"]{inset-block-end:clamp(135px,14vw,166px)}
+.replay-shell .replay-status-toast{max-width:min(44%,360px);background:#fafbfc;color:#283342;border:1px solid #bcc6cf;border-left:3px solid #dca64a;box-shadow:none;font:12px "Segoe UI",system-ui,sans-serif}
+.replay-shell .replay-live-state,.replay-shell .replay-status-toast .state-label,.replay-shell .replay-status-toast strong{color:#354a66;font:inherit;letter-spacing:normal}
+.replay-playback{min-height:132px;padding:12px 24px;display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;background:#eef0f2;border-top:1px solid #bcc6cf;font-size:14px}
+.replay-timeline{display:flex;align-items:center;gap:16px;flex-basis:100%;min-width:0;font-variant-numeric:tabular-nums}
+.replay-timeline label{white-space:nowrap;min-width:112px}
+.replay-timeline input{flex:1;min-width:60px;min-height:32px;accent-color:#865a10}
+.replay-event{min-width:160px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#586574}
+.replay-buttons{display:flex;gap:8px}
+.replay-buttons button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:44px;padding:8px 12px;border:1px solid #bcc6cf;background:#fafbfc;color:#283342;font:inherit;cursor:pointer}
+.replay-buttons button:hover:not(:disabled){background:#dce4ed}
+.replay-buttons .replay-play{min-width:88px;border-color:#dca64a;background:#dca64a;font-weight:600}
+.replay-buttons button:disabled{opacity:.48;cursor:not-allowed}
+.replay-option{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.replay-option select{min-height:44px;max-width:200px;padding:8px;border:1px solid #bcc6cf;background:#fafbfc;color:#283342;font:inherit}
+.replay-library-link{margin-left:auto;color:#354a66;text-decoration:underline;text-underline-offset:3px}
+.replay-shell :is(button,select,input,a):focus-visible{outline:3px solid #2762ab;outline-offset:3px}
+.replay-shell .replay-event-log li button{color:#586574;font-family:inherit;font-size:13px;letter-spacing:normal}
+.replay-shell .replay-event-log li button:hover,.replay-shell .replay-event-log li.is-current button{background:#dce4ed;color:#283342}
+.replay-shell .replay-event-log li.is-current button>span:first-child{color:#865a10}
+.replay-shell .back-link{color:#354a66}
+.replay-shell .back-link:hover{color:#283342}
+@media(max-width:760px){.replay-shell .replay-table-stage{width:100%;margin:0;min-height:500px;height:calc(100dvh - 230px)}.replay-playback{padding:12px;gap:8px}.replay-timeline{flex-wrap:wrap;gap:8px}.replay-event{flex-basis:100%;max-width:none}.replay-buttons{flex-basis:100%}.replay-buttons button{flex:1}.replay-library-link{margin-left:0}.replay-shell .replay-status-toast{max-width:65%}.replay-shell .replay-viewer{margin-top:0}}
+@media(max-width:700px){.replay-shell .table-player-overlays[data-surface="replay"] .table-player-frame[data-position="bottom"]{bottom:auto;top:78px}}
