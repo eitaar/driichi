@@ -204,6 +204,7 @@ pub struct RoomConfig {
     pub character_catalog: CharacterCatalog,
     pub time_control: TimeControl,
     pub replay_save: bool,
+    pub benchmark: bool,
     pub max_participants: usize,
     pub disconnected_participant_expiry: Duration,
     pub empty_room_cleanup: Duration,
@@ -221,6 +222,7 @@ impl RoomConfig {
             character_catalog,
             time_control: TimeControl::Casual,
             replay_save: true,
+            benchmark: false,
             max_participants: DEFAULT_MAX_PARTICIPANTS,
             disconnected_participant_expiry: Duration::from_secs(10 * 60),
             empty_room_cleanup: Duration::from_secs(30 * 60),
@@ -639,6 +641,24 @@ pub struct MatchPlayerSnapshot {
     pub controller: RoomController,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchmarkStatus {
+    Running,
+    Completed,
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkProgress {
+    pub run_id: String,
+    pub target: u16,
+    pub completed: u16,
+    pub stop_requested: bool,
+    pub status: BenchmarkStatus,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomSnapshot {
     pub id: RoomId,
@@ -649,6 +669,8 @@ pub struct RoomSnapshot {
     pub mode: GameMode,
     pub time_control: TimeControl,
     pub replay_save: bool,
+    pub benchmark_mode: bool,
+    pub benchmark: Option<BenchmarkProgress>,
     pub phase: RoomPhase,
     pub participants: Vec<RoomParticipantSnapshot>,
     pub match_players: Vec<MatchPlayerSnapshot>,
@@ -798,6 +820,7 @@ pub enum RoomCommand {
         participant_id: ParticipantId,
     },
     FillWithBots,
+    AddBenchmarkBot,
     SetMode {
         mode: GameMode,
     },
@@ -1106,6 +1129,8 @@ pub enum RoomError {
     NotEnoughPlayers,
     #[error("rematch is unavailable")]
     RematchUnavailable,
+    #[error("benchmark operation is unavailable")]
+    BenchmarkUnavailable,
     #[error("controller is not interactive")]
     ControllerNotInteractive,
     #[error("persistence worker failed")]
@@ -1295,6 +1320,7 @@ pub struct RoomState {
     match_machine: Option<MatchMachine>,
     history: RoomHistoryBuffer,
     result: Option<MatchResult>,
+    benchmark: Option<BenchmarkProgress>,
     revision: u64,
     deleted: bool,
     shutting_down: bool,
@@ -1339,6 +1365,7 @@ impl RoomState {
             match_machine: None,
             history: RoomHistoryBuffer::default(),
             result: None,
+            benchmark: None,
             revision: 0,
             deleted: false,
             shutting_down: false,
@@ -1353,6 +1380,63 @@ impl RoomState {
         })
     }
 
+    fn validate_benchmark_start(&self, target: u16) -> Result<Vec<ParticipantId>, RoomError> {
+        if !self.config.benchmark
+            || !matches!(self.phase, RoomPhase::Lobby)
+            || !(1..=1000).contains(&target)
+            || !self.config.replay_save
+            || !self.replay_available
+        {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        let mut selected: Vec<_> = self
+            .participants
+            .values()
+            .filter(|participant| participant.selected)
+            .collect();
+        if selected.len() != self.config.mode.seat_count()
+            || selected.iter().any(|participant| {
+                participant.participant.kind == ParticipantKind::Human
+                    || (participant.participant.kind != ParticipantKind::BuiltInBot
+                        && participant.presence != Presence::Connected)
+            })
+        {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        selected.sort_by(|a, b| a.participant.id.as_str().cmp(b.participant.id.as_str()));
+        Ok(selected
+            .iter()
+            .map(|participant| participant.participant.id.clone())
+            .collect())
+    }
+
+    fn benchmark_roster(&self, sequence: u16) -> Result<Vec<Participant>, RoomError> {
+        if sequence == 0 || !self.config.benchmark {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        let ids = self.validate_benchmark_start(1)?;
+        let mut roster: Vec<_> = ids
+            .into_iter()
+            .map(|id| self.participants[&id].participant.clone())
+            .collect();
+        let shift = (usize::from(sequence) - 1) % roster.len();
+        roster.rotate_right(shift);
+        Ok(roster)
+    }
+
+    fn add_benchmark_bot(&mut self, now: Instant) -> Result<RoomParticipantSnapshot, RoomError> {
+        if !self.config.benchmark || !matches!(self.phase, RoomPhase::Lobby) {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        let id = ParticipantId::new(format!("benchmark-bot-{}", self.revision + 1));
+        self.add_participant(
+            Participant::new(id, "Built-in Bot", ParticipantKind::BuiltInBot),
+            None,
+            None,
+            now,
+        )
+    }
+
     pub fn snapshot(&self) -> RoomSnapshot {
         let roster = self.match_roster.clone();
         RoomSnapshot {
@@ -1364,6 +1448,8 @@ impl RoomState {
             mode: self.config.mode,
             time_control: self.config.time_control,
             replay_save: self.config.replay_save,
+            benchmark_mode: self.config.benchmark,
+            benchmark: self.benchmark.clone(),
             phase: self.phase.clone(),
             participants: {
                 let mut participants: Vec<_> = self
@@ -1468,6 +1554,12 @@ impl RoomState {
     ) -> Result<RoomParticipantSnapshot, RoomError> {
         if self.participants.contains_key(&participant.id) {
             return Err(RoomError::DuplicateParticipant);
+        }
+        if self.config.benchmark
+            && (participant.kind == ParticipantKind::Human
+                || !matches!(self.phase, RoomPhase::Lobby))
+        {
+            return Err(RoomError::BenchmarkUnavailable);
         }
         if self.config.mode.is_three_player() && participant.kind == ParticipantKind::MJAI {
             return Err(RoomError::InvalidCharacter);
@@ -1699,6 +1791,9 @@ impl RoomState {
     ) -> Result<(), RoomError> {
         if !matches!(self.phase, RoomPhase::Lobby) {
             return Err(RoomError::NotLobby);
+        }
+        if self.config.benchmark && replay_save == Some(false) {
+            return Err(RoomError::BenchmarkUnavailable);
         }
         let target_name = room_name
             .as_deref()
@@ -2059,9 +2154,13 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::FillWithBots => {
+                if self.config.benchmark {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
                 self.fill_with_bots()?;
                 RoomResponse::Accepted(self.snapshot())
             }
+            RoomCommand::AddBenchmarkBot => RoomResponse::Joined(self.add_benchmark_bot(now)?),
             RoomCommand::SetMode { mode } => {
                 self.set_mode(mode)?;
                 RoomResponse::Accepted(self.snapshot())
@@ -2084,6 +2183,9 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::SetReplaySave { enabled } => {
+                if self.config.benchmark && !enabled {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
                 if !matches!(self.phase, RoomPhase::Lobby) {
                     return Err(RoomError::NotLobby);
                 }
@@ -2169,6 +2271,9 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::BackToLobby => {
+                if self.config.benchmark {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
                 self.back_to_lobby()?;
                 RoomResponse::Accepted(self.snapshot())
             }
@@ -2532,6 +2637,9 @@ impl Actor {
             } => {
                 self.submit_action(participant_id, decision_id, action_id)
                     .await
+            }
+            RoomCommand::Rematch if self.state.config.benchmark => {
+                Err(RoomError::BenchmarkUnavailable)
             }
             RoomCommand::Rematch => self.rematch().await,
             RoomCommand::Shutdown { mode } => self.shutdown(mode).await,
@@ -3466,6 +3574,91 @@ fn _audience_for_role(role: MatchRole) -> Option<Audience> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn benchmark_rejects_humans_and_requires_explicit_selected_roster() {
+        let mut config = RoomConfig::new(
+            "benchmark",
+            GameMode::FourPlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.benchmark = true;
+        let mut room = RoomState::new(config).unwrap();
+        assert!(room.snapshot().benchmark_mode);
+        assert!(room.snapshot().benchmark.is_none());
+        let now = Instant::now();
+        assert!(
+            room.apply_simple(
+                RoomCommand::join(Participant::new("human", "Human", ParticipantKind::Human)),
+                now
+            )
+            .is_err()
+        );
+        assert!(room.apply_simple(RoomCommand::FillWithBots, now).is_err());
+        assert!(room.validate_benchmark_start(1).is_err());
+        assert!(room.apply_simple(RoomCommand::AddBenchmarkBot, now).is_ok());
+        assert_eq!(room.snapshot().participants.len(), 1);
+        assert!(!room.snapshot().participants[0].selected);
+        assert!(room.validate_benchmark_start(1).is_err());
+        for _ in 0..3 {
+            room.apply_simple(RoomCommand::AddBenchmarkBot, now)
+                .unwrap();
+        }
+        for player in room.snapshot().participants {
+            room.apply_simple(RoomCommand::select(player.id), now)
+                .unwrap();
+        }
+        assert!(room.validate_benchmark_start(0).is_err());
+        assert!(room.validate_benchmark_start(1001).is_err());
+        assert_eq!(room.validate_benchmark_start(4).unwrap().len(), 4);
+        let initial: Vec<_> = room
+            .benchmark_roster(1)
+            .unwrap()
+            .into_iter()
+            .map(|player| player.id)
+            .collect();
+        let rotated: Vec<_> = room
+            .benchmark_roster(2)
+            .unwrap()
+            .into_iter()
+            .map(|player| player.id)
+            .collect();
+        let cycle: Vec<_> = room
+            .benchmark_roster(5)
+            .unwrap()
+            .into_iter()
+            .map(|player| player.id)
+            .collect();
+        assert_eq!(
+            rotated,
+            [
+                initial[3].clone(),
+                initial[0].clone(),
+                initial[1].clone(),
+                initial[2].clone()
+            ]
+        );
+        assert_eq!(cycle, initial);
+    }
+
+    #[test]
+    fn benchmark_configuration_cannot_turn_off_replay_saving() {
+        let mut config = RoomConfig::new(
+            "benchmark",
+            GameMode::ThreePlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.benchmark = true;
+        let mut room = RoomState::new(config).unwrap();
+        assert!(
+            room.apply_simple(
+                RoomCommand::configure(None, None, None, Some(false), None),
+                Instant::now()
+            )
+            .is_err()
+        );
+        assert!(room.snapshot().replay_save);
+    }
 
     #[tokio::test]
     async fn registry_reaps_finished_effect_workers_during_room_churn() {
