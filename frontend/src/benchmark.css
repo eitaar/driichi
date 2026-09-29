@@ -1,0 +1,37 @@
+.benchmark-main { width: min(1100px, 100%); margin: 32px auto; padding: 0 24px 48px; }
+.benchmark-main h1 { font-size: 28px; font-weight: 600; letter-spacing: 0; }
+.benchmark-main h2 { margin: 0 0 16px; font-size: 20px; font-weight: 600; }
+.benchmark-main p { margin: 12px 0; max-width: 72ch; }
+.benchmark-shell .topbar nav { display: flex; flex-wrap: wrap; gap: 16px; }
+.benchmark-controls { margin: 24px 0; }
+.benchmark-controls h3 { margin: 0 0 12px; font-size: 18px; }
+.benchmark-controls .action-row { align-items: end; flex-wrap: wrap; }
+.benchmark-controls .form-block { max-width: 180px; }
+.benchmark-create { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(150px, .7fr); gap: 16px; align-items: end; margin: 32px 0; }
+.benchmark-create > button { grid-column: 1 / -1; justify-self: start; }
+.benchmark-history, .benchmark-statistics { margin-top: 40px; }
+.benchmark-history ul { list-style: none; margin: 0; padding: 0; }
+.benchmark-history li { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.benchmark-history a { display: block; min-height: 44px; align-content: center; }
+.benchmark-identity { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.benchmark-statistics figure { margin: 0 0 24px; }
+.benchmark-statistics svg { display: block; width: 100%; max-width: 800px; color: var(--paper); }
+.benchmark-statistics svg text { fill: currentColor; font: 12px "Segoe UI", system-ui, sans-serif; }
+.benchmark-statistics figcaption { font-size: 14px; color: var(--muted); margin-top: 12px; }
+.benchmark-table-scroll { max-width: 100%; overflow-x: auto; }
+.benchmark-main table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; text-align: left; }
+.benchmark-main th, .benchmark-main td { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.benchmark-main th { font-weight: 600; }
+.benchmark-series-key { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 6px; }
+.benchmark-live { position: relative; width: 100%; height: clamp(400px, 60vw, 650px); margin: 16px 0; overflow: hidden; }
+.benchmark-live .three-table { height: 100%; }
+.benchmark-live .table-replay-hand img { flex: 1 1 0; width: 0; max-width: 64px; height: auto; aspect-ratio: 3 / 4; }
+.benchmark-live .table-player-copy strong { color: #283342; }
+@media (max-width: 700px) {
+  .benchmark-main { margin-top: 24px; padding: 0 16px 32px; }
+  .benchmark-create { grid-template-columns: 1fr; }
+  .benchmark-statistics svg text { font-size: 22px; }
+  .benchmark-shell .topbar { flex-wrap: wrap; }
+  .benchmark-live .table-replay-hand img { width: 100%; max-width: none; }
+  .benchmark-controls .action-row { display: grid; }
+}

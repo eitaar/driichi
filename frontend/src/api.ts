@@ -55,6 +55,7 @@ export interface AdminRoomSummary {
   participant_count: number;
   selected_count: number;
   created_at: string;
+  benchmark_mode?: boolean;
 }
 
 export interface RoomParticipant {
@@ -89,6 +90,35 @@ export interface AdminRoomDetail extends AdminRoomSummary {
   revision: number;
   persistence_degraded: boolean;
   replay_available: boolean;
+  benchmark?: BenchmarkProgress | null;
+}
+
+export interface BenchmarkProgress {
+  run_id: string;
+  target: number;
+  completed: number;
+  stop_requested: boolean;
+  status: "running" | "completed" | "stopped" | "failed";
+}
+
+export interface BenchmarkRun {
+  run_id: string;
+  room_code: string;
+  game_mode: string;
+  target: number;
+  completed: number;
+  status: BenchmarkProgress["status"] | "interrupted";
+  reason: string | null;
+  failed_match_id: string | null;
+  roster: { participant_id: string; display_name: string; participant_kind: string; initial_seat: number; character_id: string | null }[];
+  matches: { sequence: number; match_id: string; results: { participant_id: string; seat: number; final_score: number; rank: number }[] }[];
+  statistics?: { participant_id: string; display_name: string; average_rank: number | null; first_place_rate: number | null; cumulative_net_scores: number[] }[];
+}
+
+export interface BenchmarkLive {
+  revision: number;
+  benchmark: BenchmarkProgress | null;
+  projection: import("./game/types").ProjectedState | null;
 }
 
 export interface BotTokenRecord {
@@ -201,7 +231,24 @@ function adminReplayPath(matchId: string): string {
   return `/api/v1/admin/replays/${encodeURIComponent(matchId)}`;
 }
 
+function benchmarkRoomPath(joinCode: string) {
+  adminRoomPath(joinCode); // Keep the existing room-code boundary validation.
+  return `/api/v1/admin/benchmark/rooms/${encodeURIComponent(joinCode)}`;
+}
+
 export const api = {
+  createBenchmarkRoom(input: { room_name: string; game_mode: GameMode; time_control: TimeControl }) {
+    return requestJson<AdminRoomDetail>("/api/v1/admin/benchmark/rooms", { method: "POST", body: JSON.stringify(input) });
+  },
+  addBenchmarkBot(joinCode: string) { return requestJson<AdminRoomDetail>(`${benchmarkRoomPath(joinCode)}/bots`, { method: "POST" }); },
+  startBenchmarkRun(joinCode: string, target: number) {
+    if (!Number.isInteger(target) || target < 1 || target > 1000) throw new ApiProblem({ code: "invalid_target", detail: "Choose 1–1,000 Matches." });
+    return requestJson<AdminRoomDetail>(`${benchmarkRoomPath(joinCode)}/runs`, { method: "POST", body: JSON.stringify({ target }) });
+  },
+  stopBenchmarkRun(joinCode: string) { return requestJson<AdminRoomDetail>(`${benchmarkRoomPath(joinCode)}/stop`, { method: "POST" }); },
+  listBenchmarkRuns() { return requestJson<BenchmarkRun[]>("/api/v1/admin/benchmark/runs"); },
+  getBenchmarkRun(runId: string) { return requestJson<BenchmarkRun>(`/api/v1/admin/benchmark/runs/${encodeURIComponent(runId)}`); },
+  getBenchmarkLive(joinCode: string) { return requestJson<BenchmarkLive>(`${benchmarkRoomPath(joinCode)}/live`); },
   lookupRoom(joinCode: string) { return requestJson<RoomLookup>(roomPath(joinCode)); },
   listHumanCharacters() { return requestJson<HumanCharacter[]>("/api/v1/characters/human"); },
   joinHuman(joinCode: string, nickname: string, characterId: string) {
