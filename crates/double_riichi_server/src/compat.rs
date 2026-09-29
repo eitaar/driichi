@@ -16,9 +16,10 @@ use axum::{
     response::Response,
 };
 use double_riichi_core::{
-    AudienceProjection, Decision, DecisionId, GameEvent, GameMode, MatchMachine, Participant,
-    ParticipantId, ParticipantKind, PlayerDecisionProjection, ROOM_COMMAND_CAPACITY, RoomCommand,
-    RoomError, RoomEvent, RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl, TimingConfig,
+    AudienceProjection, Decision, DecisionId, GameEvent, GameMode, MatchId, MatchMachine,
+    Participant, ParticipantId, ParticipantKind, PlayerDecisionProjection, ROOM_COMMAND_CAPACITY,
+    RoomCommand, RoomError, RoomEvent, RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl,
+    TimingConfig,
 };
 use double_riichi_mjai::{
     AckStatus, ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition,
@@ -2039,6 +2040,7 @@ async fn run_room_socket(
     let mut adapter = MjaiAdapter::new(mode);
     let mut timing = TimingBudget::new();
     let mut cursor = 0usize;
+    let mut last_match_id = None;
     let mut last_decision = None;
     let mut last_request_id = None;
     let mut request_time = RequestTime {
@@ -2054,6 +2056,7 @@ async fn run_room_socket(
         &mut adapter,
         &mut timing,
         &mut cursor,
+        &mut last_match_id,
         &mut last_decision,
         &mut last_request_id,
         &mut request_time,
@@ -2100,7 +2103,7 @@ async fn run_room_socket(
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             },
-            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
+            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_match_id, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
         }
     }
     teardown_room_connection(&state, &room, &participant_id, generation).await;
@@ -2120,19 +2123,45 @@ async fn sync_room(
     adapter: &mut MjaiAdapter,
     timing: &mut TimingBudget,
     cursor: &mut usize,
+    last_match_id: &mut Option<MatchId>,
     last_decision: &mut Option<DecisionId>,
     last_request_id: &mut Option<u64>,
     request_time: &mut RequestTime,
     request_opened: &mut Instant,
     output: &mpsc::Sender<Message>,
 ) -> bool {
-    let events = match room.match_events().await {
-        Ok(events) => events,
-        Err(_) => return false,
+    // Identity, events and private projection must belong to the same actor read.
+    let (match_id, events, projection) = match room
+        .send(RoomCommand::GetMatchView {
+            participant_id: participant_id.clone(),
+        })
+        .await
+    {
+        Ok(RoomResponse::MatchView {
+            match_id,
+            events,
+            projection,
+        }) => (match_id, events, projection),
+        _ => return false,
     };
-    let projection = match room.projection(participant_id.clone()).await {
-        Ok(Some(AudienceProjection::Player(projection))) => projection,
-        _ => return true,
+    if *last_match_id != match_id {
+        if let Some(request_id) = last_request_id.take() {
+            let _ = adapter.retire_request(request_id);
+        }
+        *last_decision = None;
+        *cursor = 0;
+        *last_match_id = match_id;
+        adapter.reset_kyoku();
+        timing.reset_kyoku();
+        *request_time = RequestTime {
+            grace_ms: 0,
+            bank_ms: 0,
+            deadline_ms: 0,
+        };
+        *request_opened = Instant::now();
+    }
+    let Some(AudienceProjection::Player(projection)) = projection else {
+        return true;
     };
     let seat = projection.viewer_seat;
     let scores = projection

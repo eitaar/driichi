@@ -213,8 +213,8 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
 .table-player-frame[data-position="right"] { inset-inline-end: 2%; inset-block-start: 42%; }
 .table-player-frame[data-position="top"] { inset-inline-end: 2%; inset-block-start: 2.5%; }
 .table-player-frame[data-position="left"] { inset-inline-start: 2%; inset-block-start: 42%; }
-.table-player-portrait { display: block; width: 100%; aspect-ratio: 4 / 5; object-fit: cover; border: 1px solid rgba(154, 112, 66, .65); border-radius: 2px; background: #171c20; }
-.table-player-portrait.asset-fallback { display: grid; place-items: center; color: #c8c9c4; font: 600 clamp(16px, 2vw, 26px) 'Geist Mono', monospace; }
+.table-player-icon { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border: 1px solid rgba(154, 112, 66, .65); border-radius: 2px; background: #171c20; }
+.table-player-icon.asset-fallback { display: grid; place-items: center; color: #c8c9c4; font: 600 clamp(16px, 2vw, 26px) 'Geist Mono', monospace; }
 .table-player-copy { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; align-items: baseline; }
 .table-player-copy strong { display: -webkit-box; overflow: hidden; color: #f1f0eb; font-size: clamp(10.5px, .9vw, 13px); line-height: 1.08; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .table-player-score { color: #eee5d2; font: 600 clamp(9px, .8vw, 11px) 'Geist Mono', monospace; }

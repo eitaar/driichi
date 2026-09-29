@@ -11,6 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use double_riichi_core::room::BenchmarkStatus;
 use double_riichi_core::{
     GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind, RoomAuxiliaryEvent,
     RoomAuxiliaryPhase, RoomEffect, RoomEffectError, RoomPersistenceFailure,
@@ -147,6 +148,126 @@ struct ReplayResponse<'a> {
     frames: &'a [ReplayFrame],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchmarkRunStatus {
+    Running,
+    Completed,
+    Stopped,
+    Failed,
+    Interrupted,
+}
+
+impl BenchmarkRunStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, StorageError> {
+        match value {
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "stopped" => Ok(Self::Stopped),
+            "failed" => Ok(Self::Failed),
+            "interrupted" => Ok(Self::Interrupted),
+            _ => Err(StorageError::ReplayMetadata),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchmarkRosterRecord {
+    pub participant_id: String,
+    pub display_name: String,
+    pub participant_kind: String,
+    pub initial_seat: i64,
+    pub character_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchmarkResultRecord {
+    pub participant_id: String,
+    pub seat: i64,
+    pub final_score: i64,
+    pub rank: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchmarkMatchRecord {
+    pub sequence: u16,
+    pub match_id: String,
+    pub results: Vec<BenchmarkResultRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchmarkRunRecord {
+    pub run_id: String,
+    pub room_code: String,
+    pub game_mode: String,
+    pub target: u16,
+    pub completed: u16,
+    pub status: BenchmarkRunStatus,
+    pub reason: Option<String>,
+    pub failed_match_id: Option<String>,
+    pub roster: Vec<BenchmarkRosterRecord>,
+    pub matches: Vec<BenchmarkMatchRecord>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BenchmarkParticipantStatistics {
+    pub participant_id: String,
+    pub display_name: String,
+    pub average_rank: Option<f64>,
+    pub first_place_rate: Option<f64>,
+    pub cumulative_net_scores: Vec<f64>,
+}
+
+impl BenchmarkRunRecord {
+    pub fn statistics(&self) -> Vec<BenchmarkParticipantStatistics> {
+        self.roster
+            .iter()
+            .map(|player| {
+                let mut ranks = Vec::new();
+                let mut cumulative = 0.0;
+                let mut series = Vec::new();
+                for game in &self.matches {
+                    if let Some(result) = game
+                        .results
+                        .iter()
+                        .find(|result| result.participant_id == player.participant_id)
+                    {
+                        ranks.push(result.rank);
+                        let mean = game
+                            .results
+                            .iter()
+                            .map(|r| r.final_score as f64)
+                            .sum::<f64>()
+                            / game.results.len() as f64;
+                        cumulative += result.final_score as f64 - mean;
+                        series.push(cumulative);
+                    }
+                }
+                BenchmarkParticipantStatistics {
+                    participant_id: player.participant_id.clone(),
+                    display_name: player.display_name.clone(),
+                    average_rank: (!ranks.is_empty())
+                        .then(|| ranks.iter().sum::<i64>() as f64 / ranks.len() as f64),
+                    first_place_rate: (!ranks.is_empty()).then(|| {
+                        ranks.iter().filter(|rank| **rank == 1).count() as f64 / ranks.len() as f64
+                    }),
+                    cumulative_net_scores: series,
+                }
+            })
+            .collect()
+    }
+}
+
 pub struct Storage {
     pool: SqlitePool,
     data_root: PathBuf,
@@ -198,6 +319,11 @@ impl Storage {
             .await
             .map_err(StorageError::Migration)?;
 
+        sqlx::query("UPDATE benchmark_runs SET status = 'interrupted', reason = 'server restarted' WHERE status = 'running'")
+            .execute(&pool)
+            .await
+            .map_err(StorageError::Sqlx)?;
+
         let storage = Self {
             pool,
             data_root: data_root.to_path_buf(),
@@ -221,6 +347,136 @@ impl Storage {
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    pub async fn create_benchmark_run(
+        &self,
+        run_id: &str,
+        room_code: &str,
+        mode: GameMode,
+        target: u16,
+        roster: &[MatchPlayerSnapshot],
+    ) -> Result<(), StorageError> {
+        if !(1..=1000).contains(&target) || roster.len() != mode.seat_count() {
+            return Err(StorageError::ReplayMetadata);
+        }
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        sqlx::query("INSERT INTO benchmark_runs (run_id, room_code, game_mode, target, status) VALUES (?, ?, ?, ?, 'running')")
+            .bind(run_id).bind(room_code).bind(mode.as_str()).bind(i64::from(target))
+            .execute(&mut *transaction).await.map_err(StorageError::Sqlx)?;
+        for player in roster {
+            sqlx::query("INSERT INTO benchmark_roster (run_id, participant_id, display_name, participant_kind, initial_seat, character_id) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(run_id)
+                .bind(player.participant_id.as_str())
+                .bind(&player.display_name)
+                .bind(participant_kind_kind(player.kind))
+                .bind(i64::from(player.seat.index()))
+                .bind(&player.character_id)
+                .execute(&mut *transaction).await.map_err(StorageError::Sqlx)?;
+        }
+        transaction.commit().await.map_err(StorageError::Sqlx)
+    }
+
+    pub async fn fail_benchmark_run(
+        &self,
+        run_id: &str,
+        match_id: Option<&str>,
+        reason: &str,
+    ) -> Result<(), StorageError> {
+        let updated = sqlx::query("UPDATE benchmark_runs SET status = 'failed', reason = ?, failed_match_id = ? WHERE run_id = ? AND status = 'running'")
+            .bind(reason).bind(match_id).bind(run_id)
+            .execute(&self.pool).await.map_err(StorageError::Sqlx)?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::ReplayMetadata);
+        }
+        Ok(())
+    }
+
+    pub async fn list_benchmark_runs(&self) -> Result<Vec<BenchmarkRunRecord>, StorageError> {
+        let rows = sqlx::query("SELECT run_id FROM benchmark_runs ORDER BY rowid DESC")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StorageError::Sqlx)?;
+        let mut runs = Vec::with_capacity(rows.len());
+        for row in rows {
+            let run_id: String = row.try_get("run_id").map_err(StorageError::Sqlx)?;
+            runs.push(self.load_benchmark_run(&run_id).await?);
+        }
+        Ok(runs)
+    }
+
+    pub async fn load_benchmark_run(
+        &self,
+        run_id: &str,
+    ) -> Result<BenchmarkRunRecord, StorageError> {
+        let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
+        let row = sqlx::query("SELECT run_id, room_code, game_mode, target, completed, status, reason, failed_match_id FROM benchmark_runs WHERE run_id = ?")
+            .bind(run_id).fetch_one(&mut *transaction).await.map_err(StorageError::Sqlx)?;
+        let roster = sqlx::query("SELECT participant_id, display_name, participant_kind, initial_seat, character_id FROM benchmark_roster WHERE run_id = ? ORDER BY initial_seat")
+            .bind(run_id).fetch_all(&mut *transaction).await.map_err(StorageError::Sqlx)?;
+        let matches = sqlx::query(
+            "SELECT sequence, match_id FROM benchmark_matches WHERE run_id = ? ORDER BY sequence",
+        )
+        .bind(run_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(StorageError::Sqlx)?;
+        let mut match_records = Vec::with_capacity(matches.len());
+        for entry in matches {
+            let sequence: i64 = entry.try_get("sequence").map_err(StorageError::Sqlx)?;
+            let results = sqlx::query("SELECT participant_id, seat, final_score, rank FROM benchmark_results WHERE run_id = ? AND sequence = ? ORDER BY seat")
+                .bind(run_id).bind(sequence).fetch_all(&mut *transaction).await.map_err(StorageError::Sqlx)?;
+            match_records.push(BenchmarkMatchRecord {
+                sequence: u16::try_from(sequence).map_err(|_| StorageError::ReplayMetadata)?,
+                match_id: entry.try_get("match_id").map_err(StorageError::Sqlx)?,
+                results: results
+                    .into_iter()
+                    .map(|result| {
+                        Ok(BenchmarkResultRecord {
+                            participant_id: result.try_get("participant_id")?,
+                            seat: result.try_get("seat")?,
+                            final_score: result.try_get("final_score")?,
+                            rank: result.try_get("rank")?,
+                        })
+                    })
+                    .collect::<Result<_, sqlx::Error>>()
+                    .map_err(StorageError::Sqlx)?,
+            });
+        }
+        transaction.commit().await.map_err(StorageError::Sqlx)?;
+        let status: String = row.try_get("status").map_err(StorageError::Sqlx)?;
+        Ok(BenchmarkRunRecord {
+            run_id: row.try_get("run_id").map_err(StorageError::Sqlx)?,
+            room_code: row.try_get("room_code").map_err(StorageError::Sqlx)?,
+            game_mode: row.try_get("game_mode").map_err(StorageError::Sqlx)?,
+            target: u16::try_from(
+                row.try_get::<i64, _>("target")
+                    .map_err(StorageError::Sqlx)?,
+            )
+            .map_err(|_| StorageError::ReplayMetadata)?,
+            completed: u16::try_from(
+                row.try_get::<i64, _>("completed")
+                    .map_err(StorageError::Sqlx)?,
+            )
+            .map_err(|_| StorageError::ReplayMetadata)?,
+            status: BenchmarkRunStatus::parse(&status)?,
+            reason: row.try_get("reason").map_err(StorageError::Sqlx)?,
+            failed_match_id: row.try_get("failed_match_id").map_err(StorageError::Sqlx)?,
+            roster: roster
+                .into_iter()
+                .map(|player| {
+                    Ok(BenchmarkRosterRecord {
+                        participant_id: player.try_get("participant_id")?,
+                        display_name: player.try_get("display_name")?,
+                        participant_kind: player.try_get("participant_kind")?,
+                        initial_seat: player.try_get("initial_seat")?,
+                        character_id: player.try_get("character_id")?,
+                    })
+                })
+                .collect::<Result<_, sqlx::Error>>()
+                .map_err(StorageError::Sqlx)?,
+            matches: match_records,
+        })
     }
 
     pub fn max_connections(&self) -> u32 {
@@ -1218,7 +1474,7 @@ impl Storage {
         result: &MatchResult,
         completed_at: i64,
     ) -> Result<(), StorageError> {
-        self.complete_match("ranked", match_id, artifact, result, completed_at)
+        self.complete_match("ranked", match_id, artifact, result, completed_at, None)
             .await
     }
 
@@ -1229,8 +1485,46 @@ impl Storage {
         result: &MatchResult,
         completed_at: i64,
     ) -> Result<(), StorageError> {
-        self.complete_match("room", match_id, artifact, result, completed_at)
+        self.complete_match("room", match_id, artifact, result, completed_at, None)
             .await
+    }
+
+    pub async fn record_benchmark_completion(
+        &self,
+        run_id: &str,
+        sequence: u16,
+        match_id: &str,
+        result: &MatchResult,
+        artifact: &ReplayArtifact,
+        completed_at: i64,
+    ) -> Result<(), StorageError> {
+        self.complete_match(
+            "room",
+            match_id,
+            artifact,
+            result,
+            completed_at,
+            Some((run_id, sequence)),
+        )
+        .await
+    }
+
+    pub async fn stop_benchmark_run(
+        &self,
+        run_id: &str,
+        status: BenchmarkRunStatus,
+        reason: Option<&str>,
+    ) -> Result<(), StorageError> {
+        if status == BenchmarkRunStatus::Running {
+            return Err(StorageError::ReplayMetadata);
+        }
+        let updated = sqlx::query("UPDATE benchmark_runs SET status = ?, reason = ? WHERE run_id = ? AND status = 'running'")
+            .bind(status.as_str()).bind(reason).bind(run_id)
+            .execute(&self.pool).await.map_err(StorageError::Sqlx)?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::ReplayMetadata);
+        }
+        Ok(())
     }
 
     async fn complete_match(
@@ -1240,8 +1534,28 @@ impl Storage {
         artifact: &ReplayArtifact,
         result: &MatchResult,
         completed_at: i64,
+        benchmark: Option<(&str, u16)>,
     ) -> Result<(), StorageError> {
         self.resolve_replay_path(&artifact.relative_path_string())?;
+        if let Some((run_id, sequence)) = benchmark {
+            let previous = sqlx::query(
+                "SELECT match_id FROM benchmark_matches WHERE run_id = ? AND sequence = ?",
+            )
+            .bind(run_id)
+            .bind(i64::from(sequence))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(StorageError::Sqlx)?;
+            if let Some(previous) = previous {
+                let previous_id: String =
+                    previous.try_get("match_id").map_err(StorageError::Sqlx)?;
+                return if previous_id == match_id {
+                    Ok(())
+                } else {
+                    Err(StorageError::ReplayMetadata)
+                };
+            }
+        }
         let file_size =
             i64::try_from(artifact.file_size).map_err(|_| StorageError::ReplayMetadata)?;
         let mut transaction = self.pool.begin().await.map_err(StorageError::Sqlx)?;
@@ -1288,6 +1602,30 @@ impl Storage {
             .execute(&mut *transaction)
             .await
             .map_err(StorageError::Sqlx)?;
+        }
+        if let Some((run_id, sequence)) = benchmark {
+            let advanced = sqlx::query("UPDATE benchmark_runs SET completed = completed + 1 WHERE run_id = ? AND status = 'running' AND completed = ? AND completed < target")
+                .bind(run_id).bind(i64::from(sequence) - 1)
+                .execute(&mut *transaction).await.map_err(StorageError::Sqlx)?;
+            if advanced.rows_affected() != 1 || result.players.len() != result.mode.seat_count() {
+                return Err(StorageError::ReplayMetadata);
+            }
+            sqlx::query(
+                "INSERT INTO benchmark_matches (run_id, sequence, match_id) VALUES (?, ?, ?)",
+            )
+            .bind(run_id)
+            .bind(i64::from(sequence))
+            .bind(match_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(StorageError::Sqlx)?;
+            for player in &result.players {
+                sqlx::query("INSERT INTO benchmark_results (run_id, sequence, participant_id, seat, final_score, rank) VALUES (?, ?, ?, ?, ?, ?)")
+                    .bind(run_id).bind(i64::from(sequence)).bind(player.participant_id.as_str())
+                    .bind(i64::from(player.seat.index())).bind(i64::from(player.final_score))
+                    .bind(i64::from(player.rank))
+                    .execute(&mut *transaction).await.map_err(StorageError::Sqlx)?;
+            }
         }
         transaction.commit().await.map_err(StorageError::Sqlx)
     }
@@ -1481,16 +1819,69 @@ pub fn spawn_room_effect_worker(
                     }
                     let _ = completion.send(result);
                 }
+                RoomEffect::CreateBenchmarkRun {
+                    run_id,
+                    room_code,
+                    mode,
+                    target,
+                    roster,
+                    completion,
+                } => {
+                    let result = storage
+                        .create_benchmark_run(&run_id, &room_code, mode, target, &roster)
+                        .await
+                        .map_err(|error| room_effect_error(error.to_string()));
+                    let _ = completion.send(result);
+                }
+                RoomEffect::StopBenchmarkRun {
+                    run_id,
+                    status,
+                    reason,
+                    failed_match_id,
+                    completion,
+                } => {
+                    let result = if status == BenchmarkStatus::Failed {
+                        storage
+                            .fail_benchmark_run(
+                                &run_id,
+                                failed_match_id.as_ref().map(|id| id.as_str()),
+                                reason.as_deref().unwrap_or("benchmark failed"),
+                            )
+                            .await
+                    } else {
+                        let status = match status {
+                            BenchmarkStatus::Completed => BenchmarkRunStatus::Completed,
+                            BenchmarkStatus::Stopped => BenchmarkRunStatus::Stopped,
+                            _ => BenchmarkRunStatus::Failed,
+                        };
+                        storage
+                            .stop_benchmark_run(&run_id, status, reason.as_deref())
+                            .await
+                    };
+                    if let Err(error) = &result {
+                        tracing::warn!(error = ?error, "benchmark terminal state persistence failed");
+                    }
+                    let _ = completion
+                        .send(result.map_err(|error| room_effect_error(error.to_string())));
+                }
                 RoomEffect::FinalizeMatch {
                     match_id,
                     result,
+                    benchmark,
                     completed_at,
                     completion,
                 } => {
                     let id = match_id.to_string();
                     let replay = replays.remove(&id);
-                    let persisted =
-                        finalize_room_replay(&storage, &id, replay, &result, completed_at).await;
+                    let persisted = finalize_room_replay(
+                        &storage,
+                        &id,
+                        replay,
+                        &result,
+                        benchmark,
+                        completed_at,
+                    )
+                    .await;
                     let _ = completion.send(persisted);
                 }
                 RoomEffect::DeleteIncomplete { match_id } => {
@@ -1524,6 +1915,7 @@ async fn finalize_room_replay(
     match_id: &str,
     replay: Option<RoomReplay>,
     result: &double_riichi_core::MatchResult,
+    benchmark: Option<(String, u16)>,
     completed_at: i64,
 ) -> Result<(), RoomEffectError> {
     let replay = match replay {
@@ -1551,10 +1943,23 @@ async fn finalize_room_replay(
             return Err(room_effect_error(error.to_string()));
         }
     };
-    match storage
-        .complete_room_match(match_id, &artifact, result, completed_at)
-        .await
-    {
+    let persisted = if let Some((run_id, sequence)) = benchmark {
+        storage
+            .record_benchmark_completion(
+                &run_id,
+                sequence,
+                match_id,
+                result,
+                &artifact,
+                completed_at,
+            )
+            .await
+    } else {
+        storage
+            .complete_room_match(match_id, &artifact, result, completed_at)
+            .await
+    };
+    match persisted {
         Ok(()) => Ok(()),
         Err(error) => {
             storage.mark_replay_degraded();
@@ -1938,6 +2343,194 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn benchmark_statistics_use_stored_ranks_center_scores_and_keep_identities_separate() {
+        let mut run = BenchmarkRunRecord {
+            run_id: "stats".into(),
+            room_code: "123456".into(),
+            game_mode: "4p-red-east".into(),
+            target: 3,
+            completed: 0,
+            status: BenchmarkRunStatus::Failed,
+            reason: Some("failed attempt excluded".into()),
+            failed_match_id: Some("failed".into()),
+            roster: (0..4)
+                .map(|seat| BenchmarkRosterRecord {
+                    participant_id: format!("p{seat}"),
+                    display_name: "same name".into(),
+                    participant_kind: "mcp".into(),
+                    initial_seat: seat,
+                    character_id: None,
+                })
+                .collect(),
+            matches: vec![],
+        };
+        let stats = run.statistics();
+        assert_eq!(stats.len(), 4);
+        assert!(stats.iter().all(|s| s.average_rank.is_none()
+            && s.first_place_rate.is_none()
+            && s.cumulative_net_scores.is_empty()));
+        for (sequence, scores, ranks) in [
+            (1, [40000, 30000, 20000, 10000], [2, 1, 3, 4]),
+            (2, [10000, 20000, 30000, 40000], [4, 3, 2, 1]),
+            (3, [30000, 30000, 20000, 20000], [1, 2, 3, 4]),
+        ] {
+            run.matches.push(BenchmarkMatchRecord {
+                sequence,
+                match_id: format!("m{sequence}"),
+                results: (0..4)
+                    .map(|seat| BenchmarkResultRecord {
+                        participant_id: format!("p{seat}"),
+                        seat: seat as i64,
+                        final_score: scores[seat],
+                        rank: ranks[seat],
+                    })
+                    .collect(),
+            });
+        }
+        run.completed = 3;
+        let stats = run.statistics();
+        assert_eq!(stats[0].average_rank, Some(7.0 / 3.0));
+        assert_eq!(stats[0].first_place_rate, Some(1.0 / 3.0));
+        assert_eq!(stats[0].cumulative_net_scores, [15000.0, 0.0, 5000.0]);
+        assert_eq!(stats[1].average_rank, Some(2.0));
+        assert_eq!(stats[1].cumulative_net_scores, [5000.0, 0.0, 5000.0]);
+    }
+
+    #[tokio::test]
+    async fn benchmark_read_keeps_header_matches_and_statistics_in_one_snapshot() {
+        let root = test_root("benchmark-read-snapshot");
+        let storage = Storage::connect(&root).await.unwrap();
+        let roster: Vec<_> = players()
+            .into_iter()
+            .enumerate()
+            .map(|(seat, p)| MatchPlayerSnapshot {
+                participant_id: p.id,
+                display_name: p.display_name,
+                kind: p.kind,
+                seat: Seat::new(seat as u8).unwrap(),
+                character_id: None,
+                controller: double_riichi_core::RoomController::PermanentAuto(
+                    double_riichi_core::PermanentAutoReason::BuiltInBot,
+                ),
+            })
+            .collect();
+        storage
+            .create_benchmark_run(
+                "snapshot",
+                "123456",
+                GameMode::FourPlayerRedEast,
+                2,
+                &roster,
+            )
+            .await
+            .unwrap();
+        storage
+            .open_room_match(
+                "snapshot-match",
+                GameMode::FourPlayerRedEast,
+                "benchmark",
+                1,
+                "4p/snapshot-match.mjson",
+                &roster,
+            )
+            .await
+            .unwrap();
+        let released = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let first = Arc::new(AtomicBool::new(true));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .after_release({
+                let released = released.clone();
+                let resume = resume.clone();
+                move |_, _| {
+                    let released = released.clone();
+                    let resume = resume.clone();
+                    let first = first.clone();
+                    Box::pin(async move {
+                        if first.swap(false, Ordering::SeqCst) {
+                            released.notify_one();
+                            resume.notified().await;
+                        }
+                        Ok(true)
+                    })
+                }
+            })
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(storage.database_path())
+                    .journal_mode(SqliteJournalMode::Wal),
+            )
+            .await
+            .unwrap();
+        let reader = Arc::new(Storage {
+            pool,
+            data_root: storage.data_root.clone(),
+            replay_root: storage.replay_root.clone(),
+            replay_degraded: AtomicBool::new(false),
+            max_connections: 1,
+        });
+        let read = tokio::spawn({
+            let reader = reader.clone();
+            async move { reader.load_benchmark_run("snapshot").await.unwrap() }
+        });
+        // Commit exactly after the reader releases its first connection. Without a
+        // read transaction this splits the header and Match association reads.
+        tokio::time::timeout(Duration::from_secs(5), released.notified())
+            .await
+            .unwrap();
+        let result = MatchResult {
+            mode: GameMode::FourPlayerRedEast,
+            final_scores: vec![25000; 4],
+            players: roster
+                .iter()
+                .enumerate()
+                .map(|(i, p)| MatchPlayerResult {
+                    participant_id: p.participant_id.clone(),
+                    display_name: p.display_name.clone(),
+                    kind: p.kind,
+                    seat: p.seat,
+                    final_score: 25000,
+                    rank: i as u8 + 1,
+                })
+                .collect(),
+        };
+        storage
+            .record_benchmark_completion(
+                "snapshot",
+                1,
+                "snapshot-match",
+                &result,
+                &ReplayArtifact {
+                    relative_path: "4p/snapshot-match.mjson".into(),
+                    file_size: 100,
+                    auxiliary_events: vec![],
+                },
+                2,
+            )
+            .await
+            .unwrap();
+        resume.notify_one();
+        let before = read.await.unwrap();
+        assert_eq!(before.completed, 0);
+        assert!(
+            before.matches.is_empty(),
+            "a completion after the header read must not appear in that snapshot"
+        );
+        assert!(
+            before
+                .statistics()
+                .iter()
+                .all(|stat| stat.cumulative_net_scores.is_empty())
+        );
+        let after = reader.load_benchmark_run("snapshot").await.unwrap();
+        assert_eq!(after.completed, 1);
+        assert_eq!(after.matches.len(), 1);
+        reader.close().await;
+        storage.close().await;
     }
 
     #[test]

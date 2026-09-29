@@ -204,6 +204,7 @@ pub struct RoomConfig {
     pub character_catalog: CharacterCatalog,
     pub time_control: TimeControl,
     pub replay_save: bool,
+    pub benchmark: bool,
     pub max_participants: usize,
     pub disconnected_participant_expiry: Duration,
     pub empty_room_cleanup: Duration,
@@ -221,6 +222,7 @@ impl RoomConfig {
             character_catalog,
             time_control: TimeControl::Casual,
             replay_save: true,
+            benchmark: false,
             max_participants: DEFAULT_MAX_PARTICIPANTS,
             disconnected_participant_expiry: Duration::from_secs(10 * 60),
             empty_room_cleanup: Duration::from_secs(30 * 60),
@@ -493,7 +495,7 @@ impl RoomKyokuSummary {
 fn project_history_event(event: &GameEvent, audience: Audience) -> Option<RoomHistoryEvent> {
     let viewer = match audience {
         Audience::Player(seat) => Some(seat),
-        Audience::Public | Audience::ReplayAdmin => None,
+        Audience::Public | Audience::BenchmarkAdmin | Audience::ReplayAdmin => None,
     };
     Some(match event {
         GameEvent::StartGame { .. } => return None,
@@ -639,6 +641,24 @@ pub struct MatchPlayerSnapshot {
     pub controller: RoomController,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchmarkStatus {
+    Running,
+    Completed,
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkProgress {
+    pub run_id: String,
+    pub target: u16,
+    pub completed: u16,
+    pub stop_requested: bool,
+    pub status: BenchmarkStatus,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomSnapshot {
     pub id: RoomId,
@@ -649,6 +669,8 @@ pub struct RoomSnapshot {
     pub mode: GameMode,
     pub time_control: TimeControl,
     pub replay_save: bool,
+    pub benchmark_mode: bool,
+    pub benchmark: Option<BenchmarkProgress>,
     pub phase: RoomPhase,
     pub participants: Vec<RoomParticipantSnapshot>,
     pub match_players: Vec<MatchPlayerSnapshot>,
@@ -744,9 +766,25 @@ pub enum RoomEffect {
         match_id: MatchId,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
+    CreateBenchmarkRun {
+        run_id: String,
+        room_code: String,
+        mode: GameMode,
+        target: u16,
+        roster: Vec<MatchPlayerSnapshot>,
+        completion: oneshot::Sender<Result<(), RoomEffectError>>,
+    },
+    StopBenchmarkRun {
+        run_id: String,
+        status: BenchmarkStatus,
+        reason: Option<String>,
+        failed_match_id: Option<MatchId>,
+        completion: oneshot::Sender<Result<(), RoomEffectError>>,
+    },
     FinalizeMatch {
         match_id: MatchId,
         result: MatchResult,
+        benchmark: Option<(String, u16)>,
         completed_at: i64,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
@@ -764,7 +802,9 @@ impl RoomEffect {
         match self {
             Self::OpenMatch { completion, .. }
             | Self::FlushKyoku { completion, .. }
-            | Self::FinalizeMatch { completion, .. } => {
+            | Self::FinalizeMatch { completion, .. }
+            | Self::CreateBenchmarkRun { completion, .. }
+            | Self::StopBenchmarkRun { completion, .. } => {
                 let _ = completion.send(result);
             }
             Self::AppendEvents { .. }
@@ -798,6 +838,12 @@ pub enum RoomCommand {
         participant_id: ParticipantId,
     },
     FillWithBots,
+    AddBenchmarkBot,
+    StartBenchmark {
+        run_id: String,
+        target: u16,
+    },
+    StopBenchmark,
     SetMode {
         mode: GameMode,
     },
@@ -862,6 +908,9 @@ pub enum RoomCommand {
     },
     GetSnapshot,
     GetMatchEvents,
+    GetMatchView {
+        participant_id: ParticipantId,
+    },
     GetHistoryProjection {
         participant_id: ParticipantId,
     },
@@ -870,6 +919,7 @@ pub enum RoomCommand {
         participant_id: ParticipantId,
     },
     GetPublicProjection,
+    GetBenchmarkAdminProjection,
 }
 
 impl RoomCommand {
@@ -1046,9 +1096,15 @@ pub enum RoomResponse {
     Joined(RoomParticipantSnapshot),
     Accepted(RoomSnapshot),
     Projection(Option<AudienceProjection>),
+    BenchmarkLive(RoomSnapshot, Option<AudienceProjection>),
     Started(MatchId),
     Action(DecisionResult),
     MatchEvents(Vec<GameEvent>),
+    MatchView {
+        match_id: Option<MatchId>,
+        events: Vec<GameEvent>,
+        projection: Option<AudienceProjection>,
+    },
     HistoryProjection(RoomHistoryProjection),
     Deleted,
     Shutdown,
@@ -1106,6 +1162,8 @@ pub enum RoomError {
     NotEnoughPlayers,
     #[error("rematch is unavailable")]
     RematchUnavailable,
+    #[error("benchmark operation is unavailable")]
+    BenchmarkUnavailable,
     #[error("controller is not interactive")]
     ControllerNotInteractive,
     #[error("persistence worker failed")]
@@ -1213,6 +1271,15 @@ impl RoomHandle {
         }
     }
 
+    pub async fn benchmark_admin_projection(
+        &self,
+    ) -> Result<Option<AudienceProjection>, RoomError> {
+        match self.send(RoomCommand::GetBenchmarkAdminProjection).await? {
+            RoomResponse::BenchmarkLive(_, projection) => Ok(projection),
+            _ => Err(RoomError::Closed),
+        }
+    }
+
     pub async fn match_events(&self) -> Result<Vec<GameEvent>, RoomError> {
         match self.send(RoomCommand::GetMatchEvents).await? {
             RoomResponse::MatchEvents(events) => Ok(events),
@@ -1295,6 +1362,8 @@ pub struct RoomState {
     match_machine: Option<MatchMachine>,
     history: RoomHistoryBuffer,
     result: Option<MatchResult>,
+    benchmark: Option<BenchmarkProgress>,
+    benchmark_roster_ids: Vec<ParticipantId>,
     revision: u64,
     deleted: bool,
     shutting_down: bool,
@@ -1339,6 +1408,8 @@ impl RoomState {
             match_machine: None,
             history: RoomHistoryBuffer::default(),
             result: None,
+            benchmark: None,
+            benchmark_roster_ids: Vec::new(),
             revision: 0,
             deleted: false,
             shutting_down: false,
@@ -1353,6 +1424,76 @@ impl RoomState {
         })
     }
 
+    fn validate_benchmark_start(&self, target: u16) -> Result<Vec<ParticipantId>, RoomError> {
+        if !self.config.benchmark
+            || self.benchmark.is_some()
+            || !matches!(self.phase, RoomPhase::Lobby)
+            || !(1..=1000).contains(&target)
+            || !self.config.replay_save
+            || !self.replay_available
+        {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        let mut selected: Vec<_> = self
+            .participants
+            .values()
+            .filter(|participant| participant.selected)
+            .collect();
+        if selected.len() != self.config.mode.seat_count()
+            || selected.iter().any(|participant| {
+                participant.participant.kind == ParticipantKind::Human
+                    || (participant.participant.kind != ParticipantKind::BuiltInBot
+                        && participant.presence != Presence::Connected)
+            })
+        {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        selected.sort_by(|a, b| a.participant.id.as_str().cmp(b.participant.id.as_str()));
+        Ok(selected
+            .iter()
+            .map(|participant| participant.participant.id.clone())
+            .collect())
+    }
+
+    fn benchmark_roster(&self, sequence: u16) -> Result<Vec<Participant>, RoomError> {
+        if sequence == 0 || !self.config.benchmark {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        let ids = if self.benchmark.is_some() {
+            self.benchmark_roster_ids.clone()
+        } else {
+            self.validate_benchmark_start(1)?
+        };
+        let mut roster: Vec<_> = ids
+            .into_iter()
+            .map(|id| {
+                self.participants
+                    .get(&id)
+                    .map(|p| p.participant.clone())
+                    .ok_or(RoomError::BenchmarkUnavailable)
+            })
+            .collect::<Result<_, _>>()?;
+        if roster.len() != self.config.mode.seat_count() {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        let shift = (usize::from(sequence) - 1) % roster.len();
+        roster.rotate_right(shift);
+        Ok(roster)
+    }
+
+    fn add_benchmark_bot(&mut self, now: Instant) -> Result<RoomParticipantSnapshot, RoomError> {
+        if !self.config.benchmark || !matches!(self.phase, RoomPhase::Lobby) {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        let id = ParticipantId::new(format!("benchmark-bot-{}", self.revision + 1));
+        self.add_participant(
+            Participant::new(id, "Built-in Bot", ParticipantKind::BuiltInBot),
+            None,
+            None,
+            now,
+        )
+    }
+
     pub fn snapshot(&self) -> RoomSnapshot {
         let roster = self.match_roster.clone();
         RoomSnapshot {
@@ -1364,6 +1505,8 @@ impl RoomState {
             mode: self.config.mode,
             time_control: self.config.time_control,
             replay_save: self.config.replay_save,
+            benchmark_mode: self.config.benchmark,
+            benchmark: self.benchmark.clone(),
             phase: self.phase.clone(),
             participants: {
                 let mut participants: Vec<_> = self
@@ -1468,6 +1611,12 @@ impl RoomState {
     ) -> Result<RoomParticipantSnapshot, RoomError> {
         if self.participants.contains_key(&participant.id) {
             return Err(RoomError::DuplicateParticipant);
+        }
+        if self.config.benchmark
+            && (participant.kind == ParticipantKind::Human
+                || !matches!(self.phase, RoomPhase::Lobby))
+        {
+            return Err(RoomError::BenchmarkUnavailable);
         }
         if self.config.mode.is_three_player() && participant.kind == ParticipantKind::MJAI {
             return Err(RoomError::InvalidCharacter);
@@ -1700,6 +1849,9 @@ impl RoomState {
         if !matches!(self.phase, RoomPhase::Lobby) {
             return Err(RoomError::NotLobby);
         }
+        if self.config.benchmark && replay_save == Some(false) {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
         let target_name = room_name
             .as_deref()
             .map(|value| normalize_name(value).ok_or(RoomError::InvalidRoomName))
@@ -1816,7 +1968,13 @@ impl RoomState {
                 ParticipantKind::Human | ParticipantKind::MJAI | ParticipantKind::MCP
             ) && participant.presence == Presence::Connected
         });
-        if external_connected || matches!(self.phase, RoomPhase::Playing(_)) {
+        if external_connected
+            || matches!(self.phase, RoomPhase::Playing(_))
+            || self
+                .benchmark
+                .as_ref()
+                .is_some_and(|run| run.status == BenchmarkStatus::Running)
+        {
             self.empty_since = None;
         } else if self.empty_since.is_none() {
             self.empty_since = Some(now);
@@ -1835,7 +1993,13 @@ impl RoomState {
         if !matches!(self.phase, RoomPhase::Lobby | RoomPhase::PostMatch(_)) {
             return Err(RoomError::NotLobby);
         }
-        let selected: Vec<_> = if matches!(self.phase, RoomPhase::PostMatch(_)) {
+        let selected: Vec<_> = if self.config.benchmark {
+            let sequence = self.benchmark.as_ref().map_or(1, |run| run.completed + 1);
+            self.benchmark_roster(sequence)?
+                .iter()
+                .map(|player| &self.participants[&player.id])
+                .collect()
+        } else if matches!(self.phase, RoomPhase::PostMatch(_)) {
             self.match_roster
                 .iter()
                 .filter_map(|entry| self.participants.get(&entry.participant_id))
@@ -1869,12 +2033,13 @@ impl RoomState {
         let all_bots = selected
             .iter()
             .all(|participant| participant.participant.kind == ParticipantKind::BuiltInBot);
-        let mut machine = MatchMachine::with_time_control(
-            self.config.mode,
-            participants,
-            self.config.time_control,
-        )
-        .map_err(|error| RoomError::Match(error.to_string()))?;
+        let constructor = if self.config.benchmark {
+            MatchMachine::with_fixed_seats
+        } else {
+            MatchMachine::with_time_control
+        };
+        let mut machine = constructor(self.config.mode, participants, self.config.time_control)
+            .map_err(|error| RoomError::Match(error.to_string()))?;
         if all_bots {
             machine.set_time_control(TimeControl::Unlimited);
         }
@@ -2036,6 +2201,23 @@ impl RoomState {
         if self.shutting_down {
             return Err(RoomError::Closed);
         }
+        if self.benchmark.is_some()
+            && matches!(
+                command,
+                RoomCommand::Join { .. }
+                    | RoomCommand::Select { .. }
+                    | RoomCommand::Deselect { .. }
+                    | RoomCommand::AddBenchmarkBot
+                    | RoomCommand::Configure { .. }
+                    | RoomCommand::SetMode { .. }
+                    | RoomCommand::SetRoomName { .. }
+                    | RoomCommand::SetTimeControl { .. }
+                    | RoomCommand::SetReplaySave { .. }
+                    | RoomCommand::SetMaxParticipants { .. }
+            )
+        {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
         let response = match command {
             RoomCommand::Join {
                 participant,
@@ -2059,9 +2241,13 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::FillWithBots => {
+                if self.config.benchmark {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
                 self.fill_with_bots()?;
                 RoomResponse::Accepted(self.snapshot())
             }
+            RoomCommand::AddBenchmarkBot => RoomResponse::Joined(self.add_benchmark_bot(now)?),
             RoomCommand::SetMode { mode } => {
                 self.set_mode(mode)?;
                 RoomResponse::Accepted(self.snapshot())
@@ -2084,6 +2270,9 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::SetReplaySave { enabled } => {
+                if self.config.benchmark && !enabled {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
                 if !matches!(self.phase, RoomPhase::Lobby) {
                     return Err(RoomError::NotLobby);
                 }
@@ -2169,6 +2358,9 @@ impl RoomState {
                 RoomResponse::Accepted(self.snapshot())
             }
             RoomCommand::BackToLobby => {
+                if self.config.benchmark {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
                 self.back_to_lobby()?;
                 RoomResponse::Accepted(self.snapshot())
             }
@@ -2182,11 +2374,15 @@ impl RoomState {
             }
             RoomCommand::Shutdown { .. }
             | RoomCommand::Start
+            | RoomCommand::StartBenchmark { .. }
+            | RoomCommand::StopBenchmark
             | RoomCommand::SubmitAction { .. }
             | RoomCommand::Rematch
             | RoomCommand::GetProjection { .. }
             | RoomCommand::GetPublicProjection
+            | RoomCommand::GetBenchmarkAdminProjection
             | RoomCommand::GetMatchEvents
+            | RoomCommand::GetMatchView { .. }
             | RoomCommand::GetHistoryProjection { .. }
             | RoomCommand::GetPublicHistoryProjection => {
                 return Err(RoomError::Match("actor-only command".into()));
@@ -2434,9 +2630,10 @@ impl Actor {
             }
             let wake = self.next_wake();
             tokio::select! {
+                biased;
                 failure = self.failures.recv() => {
                     if let Some(failure) = failure {
-                        self.handle_persistence_failure(failure);
+                        self.handle_persistence_failure(failure).await;
                     }
                 }
                 envelope = self.receiver.recv() => {
@@ -2486,21 +2683,38 @@ impl Actor {
         if let Some(since) = self.state.empty_since {
             wake = wake.min(since + self.state.config.empty_room_cleanup);
         }
+        if self.benchmark_running()
+            && (matches!(self.state.phase, RoomPhase::PostMatch(_))
+                || self
+                    .state
+                    .match_roster
+                    .iter()
+                    .all(|p| p.kind == ParticipantKind::BuiltInBot))
+        {
+            wake = now;
+        }
         wake.max(now)
     }
 
-    fn handle_persistence_failure(&mut self, failure: RoomPersistenceFailure) {
+    async fn handle_persistence_failure(&mut self, failure: RoomPersistenceFailure) {
         let owns_match = matches!(
             self.state.phase,
             RoomPhase::Playing(ref id) | RoomPhase::PostMatch(ref id) if *id == failure.match_id
         );
         if owns_match {
-            self.fail_replay(failure.match_id, failure.error);
+            self.fail_replay(failure.match_id, failure.error.clone());
+            if self.benchmark_running() {
+                let _ = self.abort_match(failure.error).await;
+            }
         }
     }
 
     async fn process(&mut self, command: RoomCommand) -> Result<RoomResponse, RoomError> {
         let now = Instant::now();
+        if self.benchmark_running() && self.benchmark_external_expired(now) {
+            self.abort_match("benchmark bot decision timed out".into())
+                .await?;
+        }
         match command {
             RoomCommand::GetSnapshot => Ok(RoomResponse::Accepted(self.state.snapshot())),
             RoomCommand::GetMatchEvents => Ok(RoomResponse::MatchEvents(
@@ -2510,6 +2724,24 @@ impl Actor {
                     .map(|machine| machine.events().to_vec())
                     .unwrap_or_default(),
             )),
+            RoomCommand::GetMatchView { participant_id } => {
+                let projection = self.state.projection_for(&participant_id)?;
+                let match_id = match &self.state.phase {
+                    RoomPhase::Playing(id) | RoomPhase::PostMatch(id) => Some(id.clone()),
+                    RoomPhase::Lobby => None,
+                };
+                let events = self
+                    .state
+                    .match_machine
+                    .as_ref()
+                    .map(|machine| machine.events().to_vec())
+                    .unwrap_or_default();
+                Ok(RoomResponse::MatchView {
+                    match_id,
+                    events,
+                    projection,
+                })
+            }
             RoomCommand::GetHistoryProjection { participant_id } => self
                 .state
                 .history_projection(&participant_id)
@@ -2524,7 +2756,30 @@ impl Actor {
             RoomCommand::GetPublicProjection => {
                 self.state.public_projection().map(RoomResponse::Projection)
             }
+            RoomCommand::GetBenchmarkAdminProjection => {
+                if !self.state.config.benchmark {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
+                let projection = self
+                    .state
+                    .match_machine
+                    .as_mut()
+                    .map(|machine| machine.project(Audience::BenchmarkAdmin))
+                    .transpose()
+                    .map_err(|error| RoomError::Match(error.to_string()))?;
+                Ok(RoomResponse::BenchmarkLive(
+                    self.state.snapshot(),
+                    projection,
+                ))
+            }
+            RoomCommand::Start if self.state.config.benchmark => {
+                Err(RoomError::BenchmarkUnavailable)
+            }
             RoomCommand::Start => self.start_match().await,
+            RoomCommand::StartBenchmark { run_id, target } => {
+                self.start_benchmark(run_id, target).await
+            }
+            RoomCommand::StopBenchmark => self.stop_benchmark().await,
             RoomCommand::SubmitAction {
                 participant_id,
                 decision_id,
@@ -2533,10 +2788,26 @@ impl Actor {
                 self.submit_action(participant_id, decision_id, action_id)
                     .await
             }
+            RoomCommand::Rematch if self.state.config.benchmark => {
+                Err(RoomError::BenchmarkUnavailable)
+            }
             RoomCommand::Rematch => self.rematch().await,
             RoomCommand::Shutdown { mode } => self.shutdown(mode).await,
             RoomCommand::Tick => self.tick(now).await,
             command => {
+                if self.benchmark_running() && self.benchmark_loses_player(&command) {
+                    self.abort_match("benchmark participant lost".into())
+                        .await?;
+                }
+                if self.benchmark_running()
+                    && matches!(
+                        command,
+                        RoomCommand::PersistenceFailed
+                            | RoomCommand::PersistenceCompleted { success: false }
+                    )
+                {
+                    self.abort_match("persistence failed".into()).await?;
+                }
                 let auxiliary = self.auxiliary_for_command(&command);
                 let response = self.state.apply_simple(command.clone(), now)?;
                 self.emit_for_command(&command);
@@ -2699,8 +2970,133 @@ impl Actor {
         });
     }
 
+    fn benchmark_running(&self) -> bool {
+        self.state
+            .benchmark
+            .as_ref()
+            .is_some_and(|run| run.status == BenchmarkStatus::Running)
+    }
+
+    fn benchmark_external_expired(&mut self, now: Instant) -> bool {
+        let Some(machine) = self.state.match_machine.as_mut() else {
+            return false;
+        };
+        let Ok(Some(decision)) = machine.current_decision() else {
+            return false;
+        };
+        self.state.match_roster.iter().any(|player| {
+            player.kind != ParticipantKind::BuiltInBot
+                && decision.submitted_action_id(player.seat).is_none()
+                && decision
+                    .deadline_for(player.seat)
+                    .is_some_and(|deadline| deadline <= now)
+        })
+    }
+
+    fn benchmark_loses_player(&self, command: &RoomCommand) -> bool {
+        match command {
+            RoomCommand::Disconnect { participant_id }
+            | RoomCommand::Leave { participant_id }
+            | RoomCommand::Kick { participant_id } => {
+                self.state.benchmark_roster_ids.contains(participant_id)
+            }
+            RoomCommand::RevokeToken { token_id } => {
+                self.state.benchmark_roster_ids.iter().any(|id| {
+                    self.state
+                        .participants
+                        .get(id)
+                        .is_some_and(|p| p.token_id.as_deref() == Some(token_id))
+                })
+            }
+            _ => false,
+        }
+    }
+
+    async fn start_benchmark(
+        &mut self,
+        run_id: String,
+        target: u16,
+    ) -> Result<RoomResponse, RoomError> {
+        let ids = self.state.validate_benchmark_start(target)?;
+        let (_, _, roster) = self.state.build_match()?;
+        let (completion, receiver) = oneshot::channel();
+        // A queued write cannot be cancelled by timing out its acknowledgement.
+        self.send_durable_effect(
+            RoomEffect::CreateBenchmarkRun {
+                run_id: run_id.clone(),
+                room_code: self.state.join_code.to_string(),
+                mode: self.state.config.mode,
+                target,
+                roster,
+                completion,
+            },
+            receiver,
+        )
+        .await?;
+        self.state.benchmark_roster_ids = ids;
+        self.state.benchmark = Some(BenchmarkProgress {
+            run_id,
+            target,
+            completed: 0,
+            stop_requested: false,
+            status: BenchmarkStatus::Running,
+        });
+        self.state.bump_revision();
+        self.start_match().await
+    }
+
+    async fn stop_benchmark(&mut self) -> Result<RoomResponse, RoomError> {
+        if self.state.benchmark.is_none() {
+            return Err(RoomError::BenchmarkUnavailable);
+        }
+        if self.benchmark_running() {
+            self.state.benchmark.as_mut().unwrap().stop_requested = true;
+            self.state.bump_revision();
+            if !matches!(self.state.phase, RoomPhase::Playing(_)) {
+                self.finish_benchmark(BenchmarkStatus::Stopped, None, None)
+                    .await;
+            }
+            self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+        }
+        Ok(RoomResponse::Accepted(self.state.snapshot()))
+    }
+
+    async fn finish_benchmark(
+        &mut self,
+        status: BenchmarkStatus,
+        reason: Option<String>,
+        failed_match_id: Option<MatchId>,
+    ) {
+        if !self.benchmark_running() {
+            return;
+        }
+        let run = self.state.benchmark.as_mut().unwrap();
+        run.status = status;
+        let run_id = run.run_id.clone();
+        self.state.bump_revision();
+        let (completion, receiver) = oneshot::channel();
+        if self
+            .send_ack_effect(
+                RoomEffect::StopBenchmarkRun {
+                    run_id,
+                    status,
+                    reason,
+                    failed_match_id,
+                    completion,
+                },
+                receiver,
+            )
+            .await
+            .is_err()
+        {
+            self.mark_persistence_degraded();
+        }
+    }
+
     async fn start_match(&mut self) -> Result<RoomResponse, RoomError> {
-        if !matches!(self.state.phase, RoomPhase::Lobby) {
+        if !matches!(self.state.phase, RoomPhase::Lobby)
+            && !(self.benchmark_running() && matches!(self.state.phase, RoomPhase::PostMatch(_)))
+        {
             return Err(RoomError::NotLobby);
         }
         if self.state.config.replay_save && !self.state.replay_available {
@@ -2717,7 +3113,13 @@ impl Actor {
                 now_unix_seconds(),
             );
             if self.send_ack_effect(effect, completion).await.is_err() {
-                self.fail_replay(match_id, "Match persistence open failed".to_owned());
+                self.fail_replay(match_id.clone(), "Match persistence open failed".to_owned());
+                self.finish_benchmark(
+                    BenchmarkStatus::Failed,
+                    Some("Match persistence open failed".into()),
+                    Some(match_id),
+                )
+                .await;
                 return Err(RoomError::Persistence);
             }
         }
@@ -2767,7 +3169,7 @@ impl Actor {
         }
     }
 
-    async fn send_finalize_effect(
+    async fn send_durable_effect(
         &mut self,
         effect: RoomEffect,
         completion: oneshot::Receiver<Result<(), RoomEffectError>>,
@@ -2823,9 +3225,21 @@ impl Actor {
     }
 
     async fn tick(&mut self, now: Instant) -> Result<RoomResponse, RoomError> {
+        if self.benchmark_running() && matches!(self.state.phase, RoomPhase::PostMatch(_)) {
+            return self.start_match().await;
+        }
         let expired = self.state.disconnected_cleanup(now);
         if !expired.is_empty() {
             self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+        }
+        if self
+            .state
+            .match_machine
+            .as_ref()
+            .is_some_and(MatchMachine::is_complete)
+        {
+            self.advance_match().await?;
+            return Ok(RoomResponse::Accepted(self.state.snapshot()));
         }
         if self.state.match_machine.is_some() {
             match self
@@ -2900,7 +3314,13 @@ impl Actor {
     }
 
     async fn advance_match(&mut self) -> Result<(), RoomError> {
-        for _ in 0..10_000 {
+        // Bound benchmark slices so stop/disconnect commands run between decisions and Matches.
+        let bound = if self.benchmark_running() { 32 } else { 10_000 };
+        for _ in 0..bound {
+            if self.benchmark_running() && !self.state.replay_available {
+                self.abort_match("replay persistence failed".into()).await?;
+                return Ok(());
+            }
             let Some(_) = self.state.match_machine.as_ref() else {
                 return Ok(());
             };
@@ -2973,6 +3393,9 @@ impl Actor {
                 }
             }
         }
+        if self.benchmark_running() {
+            return Ok(());
+        }
         Err(RoomError::Match(
             "automatic decision loop exceeded bound".into(),
         ))
@@ -3039,11 +3462,36 @@ impl Actor {
             let effect = RoomEffect::FinalizeMatch {
                 match_id: match_id.clone(),
                 result: result.clone(),
+                benchmark: self
+                    .state
+                    .benchmark
+                    .as_ref()
+                    .filter(|run| run.status == BenchmarkStatus::Running)
+                    .map(|run| (run.run_id.clone(), run.completed + 1)),
                 completed_at: now_unix_seconds(),
                 completion,
             };
-            if self.send_finalize_effect(effect, receiver).await.is_err() {
+            if self.send_durable_effect(effect, receiver).await.is_err() {
                 self.fail_replay(match_id.clone(), "replay finalization failed".to_owned());
+            }
+        }
+        if self.benchmark_running() && !self.state.replay_available {
+            self.abort_match("replay finalization failed".into())
+                .await?;
+            return Ok(());
+        }
+        if self.benchmark_running() {
+            let run = self.state.benchmark.as_mut().unwrap();
+            run.completed += 1;
+            let status = if run.stop_requested {
+                Some(BenchmarkStatus::Stopped)
+            } else if run.completed == run.target {
+                Some(BenchmarkStatus::Completed)
+            } else {
+                None
+            };
+            if let Some(status) = status {
+                self.finish_benchmark(status, None, None).await;
             }
         }
         self.state
@@ -3059,8 +3507,21 @@ impl Actor {
     async fn abort_match(&mut self, reason: String) -> Result<RoomResponse, RoomError> {
         let match_id = match self.state.phase {
             RoomPhase::Playing(ref id) => id.clone(),
-            _ => return Ok(RoomResponse::Accepted(self.state.snapshot())),
+            _ => {
+                if self.benchmark_running() {
+                    self.finish_benchmark(BenchmarkStatus::Failed, Some(reason), None)
+                        .await;
+                    self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+                }
+                return Ok(RoomResponse::Accepted(self.state.snapshot()));
+            }
         };
+        self.finish_benchmark(
+            BenchmarkStatus::Failed,
+            Some(reason.clone()),
+            Some(match_id.clone()),
+        )
+        .await;
         if self.state.config.replay_save && self.cleanup_incomplete(match_id.clone()).await.is_err()
         {
             self.mark_persistence_degraded();
@@ -3115,6 +3576,16 @@ impl Actor {
         if self.state.shutting_down {
             return Ok(RoomResponse::Shutdown);
         }
+        let failed_match = match self.state.phase.clone() {
+            RoomPhase::Playing(id) => Some(id),
+            _ => None,
+        };
+        self.finish_benchmark(
+            BenchmarkStatus::Failed,
+            Some("server shutdown".into()),
+            failed_match,
+        )
+        .await;
         self.state.shutting_down = true;
         self.publish(RoomEvent::ServerShutdown);
         if matches!(mode, ShutdownMode::Graceful | ShutdownMode::Forced)
@@ -3466,6 +3937,138 @@ fn _audience_for_role(role: MatchRole) -> Option<Audience> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn benchmark_rejects_humans_and_requires_explicit_selected_roster() {
+        let mut config = RoomConfig::new(
+            "benchmark",
+            GameMode::FourPlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.benchmark = true;
+        let mut room = RoomState::new(config).unwrap();
+        assert!(room.snapshot().benchmark_mode);
+        assert!(room.snapshot().benchmark.is_none());
+        let now = Instant::now();
+        assert!(
+            room.apply_simple(
+                RoomCommand::join(Participant::new("human", "Human", ParticipantKind::Human)),
+                now
+            )
+            .is_err()
+        );
+        assert!(room.apply_simple(RoomCommand::FillWithBots, now).is_err());
+        assert!(room.validate_benchmark_start(1).is_err());
+        assert!(room.apply_simple(RoomCommand::AddBenchmarkBot, now).is_ok());
+        assert_eq!(room.snapshot().participants.len(), 1);
+        assert!(!room.snapshot().participants[0].selected);
+        assert!(room.validate_benchmark_start(1).is_err());
+        for _ in 0..3 {
+            room.apply_simple(RoomCommand::AddBenchmarkBot, now)
+                .unwrap();
+        }
+        for player in room.snapshot().participants {
+            room.apply_simple(RoomCommand::select(player.id), now)
+                .unwrap();
+        }
+        assert!(room.validate_benchmark_start(0).is_err());
+        assert!(room.validate_benchmark_start(1001).is_err());
+        assert_eq!(room.validate_benchmark_start(4).unwrap().len(), 4);
+        let initial: Vec<_> = room
+            .benchmark_roster(1)
+            .unwrap()
+            .into_iter()
+            .map(|player| player.id)
+            .collect();
+        let rotated: Vec<_> = room
+            .benchmark_roster(2)
+            .unwrap()
+            .into_iter()
+            .map(|player| player.id)
+            .collect();
+        let cycle: Vec<_> = room
+            .benchmark_roster(5)
+            .unwrap()
+            .into_iter()
+            .map(|player| player.id)
+            .collect();
+        assert_eq!(
+            rotated,
+            [
+                initial[3].clone(),
+                initial[0].clone(),
+                initial[1].clone(),
+                initial[2].clone()
+            ]
+        );
+        assert_eq!(cycle, initial);
+    }
+
+    #[tokio::test]
+    async fn benchmark_tick_finalizes_a_match_completed_at_the_slice_boundary() {
+        let mut config = RoomConfig::new(
+            "boundary",
+            GameMode::FourPlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.benchmark = true;
+        let mut state = RoomState::new(config).unwrap();
+        for _ in 0..4 {
+            state
+                .apply_simple(RoomCommand::AddBenchmarkBot, Instant::now())
+                .unwrap();
+        }
+        for player in state.snapshot().participants {
+            state
+                .apply_simple(RoomCommand::select(player.id), Instant::now())
+                .unwrap();
+        }
+        let (id, mut machine, roster) = state.build_match().unwrap();
+        for _ in 0..10_000 {
+            if machine.is_complete() {
+                break;
+            }
+            machine.resolve_expired().unwrap();
+        }
+        assert!(machine.is_complete());
+        state.benchmark_roster_ids = roster.iter().map(|p| p.participant_id.clone()).collect();
+        state.benchmark = Some(BenchmarkProgress {
+            run_id: "boundary".into(),
+            target: 1,
+            completed: 0,
+            stop_requested: false,
+            status: BenchmarkStatus::Running,
+        });
+        state.commit_match(id, machine, roster);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let run = handle.snapshot().await.unwrap().benchmark.unwrap();
+        assert_eq!(run.completed, 1);
+        assert_eq!(run.status, BenchmarkStatus::Completed);
+        handle
+            .send(RoomCommand::shutdown(ShutdownMode::Forced))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn benchmark_configuration_cannot_turn_off_replay_saving() {
+        let mut config = RoomConfig::new(
+            "benchmark",
+            GameMode::ThreePlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.benchmark = true;
+        let mut room = RoomState::new(config).unwrap();
+        assert!(
+            room.apply_simple(
+                RoomCommand::configure(None, None, None, Some(false), None),
+                Instant::now()
+            )
+            .is_err()
+        );
+        assert!(room.snapshot().replay_save);
+    }
 
     #[tokio::test]
     async fn registry_reaps_finished_effect_workers_during_room_churn() {

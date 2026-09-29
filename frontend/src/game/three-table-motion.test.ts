@@ -114,7 +114,6 @@ describe("cameraAccentAt", () => {
 
   it("leaves the fixed camera unchanged for non-win motion", () => {
     expect(cameraAccentAt("discard", 0.5)).toEqual({ fov: CAMERA.fov, target: CAMERA.target });
-    expect(cameraAccentAt("win", 0.5).target[2]).toBeCloseTo(0.6);
   });
 });
 

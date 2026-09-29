@@ -29,14 +29,15 @@ export interface MatchSceneLayout {
 
 export type TableSurface = "live" | "replay";
 
-export const TABLE_SIZE = { width: 13.6, depth: 11 } as const;
+export const TABLE_WIDTH_STRETCH = 1.06;
+export const TABLE_SIZE = { width: 13.65 * TABLE_WIDTH_STRETCH, depth: 12.25 } as const;
 export const TABLE_RENDER_OFFSET: readonly [number, number, number] = [0, 0, -0.38];
 export const CAMERA = {
   // The fixed lens stays inside the approved envelope while the authored table
   // depth keeps the complete world frame within the 16:9 safe composition.
-  fov: 34,
-  position: [0, 12.8, 12.9] as Vec3,
-  target: [0, 0.15, 0.38] as Vec3,
+  fov: 33.8,
+  position: [0, 12, 13.4] as Vec3,
+  target: [0, 0.15, 0] as Vec3,
   near: 0.1,
   far: 60,
 } as const;
@@ -45,7 +46,7 @@ export const LOCAL_TILE_SIZE = 1;
 // tile footprint. The remote scale remains the visual/replay value from the
 // authoritative-motion integration.
 export const REMOTE_TILE_SIZE = 0.78;
-export const TILE_BODY_HEIGHTS = { local: 0.18, remote: 0.16 } as const;
+export const TILE_BODY_HEIGHTS = { local: 0.2, remote: 0.2 } as const;
 export const TILE_BODY_SIZE = { width: 0.62, height: TILE_BODY_HEIGHTS.local, depth: 0.86 } as const;
 export const CENTER_DEVICE_AABB = {
   minX: -1.65,
@@ -84,10 +85,10 @@ export function aabbIntersects(left: SceneAabb, right: SceneAabb): boolean {
 }
 
 const HAND_ANCHORS: Record<SceneSeat, Vec3> = {
-  bottom: [0, 0.28, 4.72],
-  right: [5.35, 0.2, 0],
-  top: [0, 0.2, -4.13],
-  left: [-5.35, 0.2, 0],
+  bottom: [0, 0.58, 4.72],
+  right: [5.35, 0.48, 0],
+  top: [0, 0.48, -4.13],
+  left: [-5.35, 0.48, 0],
 };
 
 const SEAT_ROTATIONS: Record<SceneSeat, Vec3> = {
@@ -101,10 +102,10 @@ const SEAT_ROTATIONS: Record<SceneSeat, Vec3> = {
 
 const WALL_EDGE_ORDER: readonly SceneSeat[] = ["bottom", "right", "top", "left"];
 const WALL_ANCHORS: Record<SceneSeat, Vec3> = {
-  bottom: [-4.25, 0.18, 3.17],
-  right: [4.65, 0.18, 2.69],
-  top: [4.25, 0.18, -3.17],
-  left: [-4.65, 0.18, -2.69],
+  bottom: [-3.44, 0.18, 3.17],
+  right: [4.25, 0.18, 2.69],
+  top: [3.44, 0.18, -3.17],
+  left: [-4.25, 0.18, -2.69],
 };
 
 function nonNegativeInteger(value: unknown): number {
@@ -170,23 +171,20 @@ function addHandTiles(
   position: SceneSeat,
   surface: TableSurface,
 ): void {
+  if (position === "bottom") return; // Both Live and Replay show the local hand in DOM.
   const { values, face } = handValues(player, position, surface);
-  const spacing = position === "bottom" ? 0.66 : 0.51;
+  const spacing = 0.51;
   const center = (values.length - 1) / 2;
   const anchor = HAND_ANCHORS[position];
   for (let index = 0; index < values.length; index += 1) {
-    const drawOffset =
-      position === "bottom" && values.length === 14 && index === values.length - 1
-        ? 0.22
-        : 0;
-    const offset = (index - center) * spacing + drawOffset;
+    const offset = (index - center) * spacing;
     tiles.push(
       sceneTile(
         `hand-${position}-seat-${seat}-${index}`,
         values[index],
         tilePosition(position, anchor, offset),
-        SEAT_ROTATIONS[position],
-        position === "bottom" ? LOCAL_TILE_SIZE : REMOTE_TILE_SIZE,
+        [Math.PI / 2, 0, -SEAT_ROTATIONS[position][1]],
+        REMOTE_TILE_SIZE,
         face,
         "hand",
       ),
@@ -225,27 +223,13 @@ function addDiscardTiles(
   }
 }
 
-const MELD_TILE_SPACING = 0.55;
-const MELD_LANE_CENTERS = [-4, 4] as const;
-const MELD_ROW_CENTERS = [3, 3.72] as const;
-
-function meldPosition(
-  position: SceneSeat,
-  meldIndex: number,
-  tileIndex: number,
-  tileCount: number,
-): Vec3 {
-  // Keep each called group in one of two side lanes. A single horizontal meld
-  // strip sits in the river's rows, so a long river can occupy the same world
-  // AABB. Side lanes are outside the six-column river footprint for every seat;
-  // the second row still clears the local hand's inner edge.
-  const laneCenter = MELD_LANE_CENTERS[meldIndex % MELD_LANE_CENTERS.length];
-  const rowCenter = MELD_ROW_CENTERS[Math.floor(meldIndex / MELD_LANE_CENTERS.length) % MELD_ROW_CENTERS.length];
-  const offset = (tileIndex - (tileCount - 1) / 2) * MELD_TILE_SPACING;
-  if (position === "bottom") return [laneCenter + offset, 0.2, rowCenter];
-  if (position === "top") return [laneCenter + offset, 0.2, -rowCenter];
-  if (position === "right") return [rowCenter, 0.2, laneCenter + offset];
-  return [-rowCenter, 0.2, laneCenter + offset];
+function meldPosition(position: SceneSeat, index: number, scale: number): Vec3 {
+  const edge = position === "bottom" || position === "top" ? 6 * TABLE_WIDTH_STRETCH : 5.25;
+  const offset = index * (TILE_BODY_SIZE.width * scale + 0.02);
+  if (position === "bottom") return [edge - offset, 0.3, 4.5];
+  if (position === "top") return [-edge + offset, 0.3, -5.3];
+  if (position === "right") return [6 * TABLE_WIDTH_STRETCH, 0.3, -edge + offset];
+  return [-5.35 * TABLE_WIDTH_STRETCH, 0.3, edge - offset];
 }
 
 function addMeldTiles(
@@ -254,16 +238,18 @@ function addMeldTiles(
   seat: number,
   position: SceneSeat,
 ): void {
+  let offset = 0;
   for (const [meldIndex, meld] of (player.melds ?? []).entries()) {
     const meldTiles = (meld.tiles ?? []).filter((tile) => Number.isInteger(tile));
+    const scale = (position === "bottom" ? LOCAL_TILE_SIZE * 0.85 : REMOTE_TILE_SIZE) * 0.9;
     for (const [tileIndex, tile] of meldTiles.entries()) {
       tiles.push(
         sceneTile(
           `meld-${position}-seat-${seat}-${meldIndex}-${tileIndex}`,
           tile,
-          meldPosition(position, meldIndex, tileIndex, meldTiles.length),
+          meldPosition(position, offset++, scale),
           SEAT_ROTATIONS[position],
-          position === "bottom" ? LOCAL_TILE_SIZE : REMOTE_TILE_SIZE,
+          scale,
           "front",
           "meld",
         ),
@@ -281,7 +267,7 @@ function addDoraTiles(tiles: SceneTile[], indicators: unknown): void {
       sceneTile(
         `dora-${index}`,
         tile,
-        [(index - center) * 0.64, 0.61, 0.86],
+        [-4.4 + (index - center) * 0.55, 0.34, -3.75],
         [0, 0, 0],
         LOCAL_TILE_SIZE,
         "front",
@@ -293,12 +279,13 @@ function addDoraTiles(tiles: SceneTile[], indicators: unknown): void {
 
 function wallPosition(index: number): { edge: SceneSeat; position: Vec3 } {
   const edge = WALL_EDGE_ORDER[index % WALL_EDGE_ORDER.length];
-  const slot = Math.floor(index / WALL_EDGE_ORDER.length);
+  const stack = Math.floor(index / (WALL_EDGE_ORDER.length * 2));
+  const height = 0.24 + Math.floor(index / WALL_EDGE_ORDER.length) % 2 * 0.21;
   const anchor = WALL_ANCHORS[edge];
-  if (edge === "bottom") return { edge, position: [anchor[0] + slot * 0.25, anchor[1], anchor[2]] };
-  if (edge === "right") return { edge, position: [anchor[0], anchor[1], anchor[2] - slot * 0.25] };
-  if (edge === "top") return { edge, position: [anchor[0] - slot * 0.25, anchor[1], anchor[2]] };
-  return { edge, position: [anchor[0], anchor[1], anchor[2] + slot * 0.25] };
+  if (edge === "bottom") return { edge, position: [anchor[0] + stack * 0.43, height, anchor[2]] };
+  if (edge === "right") return { edge, position: [anchor[0], height, 3.44 - stack * 0.43] };
+  if (edge === "top") return { edge, position: [anchor[0] - stack * 0.43, height, anchor[2]] };
+  return { edge, position: [anchor[0], height, -3.44 + stack * 0.43] };
 }
 
 function addWallTiles(tiles: SceneTile[], count: number): void {
@@ -311,7 +298,7 @@ function addWallTiles(tiles: SceneTile[], count: number): void {
         null,
         position,
         SEAT_ROTATIONS[edge],
-        REMOTE_TILE_SIZE,
+        0.65,
         "back",
         "wall",
       ),

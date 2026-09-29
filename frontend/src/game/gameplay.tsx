@@ -10,8 +10,7 @@ import {
 import { AudioManager, type AudioSettings, type VoiceKind } from "./audio";
 import { decodeCharacterAsset } from "./assets";
 import { ThreeTable, type PortraitEffect } from "./three-table";
-import { buildMatchSceneLayout, type MatchSceneLayout } from "./three-table-layout";
-import { projectLocalHandHitTargets } from "./table-hit-targets";
+import { isDora } from "./dora";
 import { seatPositionFor, seatPositions } from "./orientation";
 import { useGameStore, type Transport } from "./store";
 import type {
@@ -24,6 +23,7 @@ import type {
 } from "./types";
 import { tileAssetUrl, tileIdsFromValue, tileLabel } from "./tiles";
 import { useGameplayViewportSupport } from "./viewport";
+import "./result.css";
 
 export interface GameplayProps {
   room: RoomSnapshot | null;
@@ -519,70 +519,33 @@ export function handActionMap(
 function TileHitLayer({
   hand,
   actions,
-  layout,
+  indicators,
   disabled,
   onAction,
 }: {
   hand: number[];
   actions: VisibleAction[];
-  layout: MatchSceneLayout | null;
+  indicators: number[];
   disabled: boolean;
-  onAction: (action: VisibleAction) => void;
+  onAction: (actions: VisibleAction[]) => void;
 }) {
   const mapped = handActionMap(hand, actions);
-  const projected = useMemo(
-    () => projectLocalHandHitTargets(layout ?? { players: [], tiles: [], wallCount: 0 }),
-    [layout],
-  );
-  const bounds = projected.bounds;
-  const hasProjectedBounds = projected.targets.length > 0 && bounds.width > 0 && bounds.height > 0;
   return (
-    <div
-      className="table-hit-layer"
-      role="group"
-      aria-label="Your concealed hand"
-      style={
-        hasProjectedBounds
-          ? {
-              left: `${bounds.left * 100}%`,
-              top: `${bounds.top * 100}%`,
-              right: "auto",
-              bottom: "auto",
-              width: `${bounds.width * 100}%`,
-              height: `${bounds.height * 100}%`,
-            }
-          : undefined
-      }
-    >
-      {mapped.map((action, index) => {
-        const target = projected.targets[index];
-        const targetStyle = target && hasProjectedBounds
-          ? {
-              left: `${((target.rect.left - bounds.left) / bounds.width) * 100}%`,
-              top: `${((target.rect.top - bounds.top) / bounds.height) * 100}%`,
-              width: `${(target.rect.width / bounds.width) * 100}%`,
-              height: `${(target.rect.height / bounds.height) * 100}%`,
-            }
-          : undefined;
+    <div className="table-hit-layer" role="group" aria-label="Your concealed hand">
+      {hand.map((tile, index) => {
+        const action = mapped[index];
+        const candidates = action ? actions.filter((candidate) => actionTile(candidate.action) === tile) : [];
         return (
           <button
-            key={target?.tileKey ?? `${hand[index]}-${index}`}
+            key={`${tile}-${index}`}
             type="button"
-            className={`table-tile-hit${action ? " is-legal" : ""}`}
-            data-action-id={action?.action_id ?? ""}
-            data-tile-key={target?.tileKey ?? ""}
-            style={targetStyle}
-            aria-label={
-              action
-                ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(hand[index])}`
-                : `Your ${tileLabel(hand[index])}`
-            }
+            className={`table-tile-hit${action ? " is-legal" : ""}${isDora(tile, indicators) ? " is-dora" : ""}`}
+            data-action-id={candidates.length === 1 ? action?.action_id : ""}
+            aria-label={action ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(tile)}` : `Your ${tileLabel(tile)}`}
             disabled={disabled || !action}
-            onClick={() => {
-              if (action) onAction(action);
-            }}
+            onClick={() => onAction(candidates)}
           >
-            {tileLabel(hand[index])}
+            <img src={tileAssetUrl(tile)} alt="" />
           </button>
         );
       })}
@@ -883,10 +846,7 @@ function RoundWinTiles({
   if (!hand?.length && !melds?.length && winningTile === undefined) return null;
   return (
     <div className="round-win-hand" role="group" aria-label="Winning hand">
-      <div className="round-win-hand-label">
-        <span className="state-label">VISIBLE HAND</span>
-        {!hand?.length && <span className="round-win-hand-note">Some tiles remain private.</span>}
-      </div>
+      {!hand?.length && <span className="round-win-hand-note">Some tiles remain private.</span>}
       {hand && hand.length > 0 && (
         <div
           className="round-win-tile-row"
@@ -947,31 +907,62 @@ export function RoundWinSurface({
           available={effect.characterId ? assets[effect.characterId] !== false : false}
           className="round-win-portrait"
         />
-        <div className="round-win-copy">
-          <p className="eyebrow">ROUND WIN / {effect.result}</p>
-          <h2 id="round-win-heading">{effect.displayName}</h2>
-          <span className="round-win-method">{effect.result === "Tsumo" ? "Self-draw" : "Discard win"}</span>
-        </div>
+        <h2 id="round-win-heading">{effect.displayName}</h2>
       </div>
-      <dl className="round-win-facts" aria-label="Round win facts">
-        {effect.han !== undefined && <div><dt>Han</dt><dd>{effect.han}</dd></div>}
-        {effect.fu !== undefined && <div><dt>Fu</dt><dd>{effect.fu}</dd></div>}
-        {effect.limit && <div><dt>Limit</dt><dd>{effect.limit}</dd></div>}
-        {effect.points !== undefined && <div><dt>Points</dt><dd>{roundPoints(effect.points)}</dd></div>}
-      </dl>
-      {yaku.length > 0 && (
-        <div className="round-win-yaku" role="group" aria-label="Authoritative yaku">
-          <span className="state-label">YAKU</span>
-          <ul>
+      <div className="round-win-details" aria-label={`${effect.result} win details`}>
+        <RoundWinTiles hand={effect.hand} melds={effect.melds} winningTile={effect.winningTile} />
+        {yaku.length > 0 && (
+          <dl className="round-win-yaku" aria-label="Authoritative yaku">
             {yaku.map((entry, index) => (
-              <li key={`${entry.name}-${index}`}>
-                {yakuLabel(entry.name)}{entry.han === undefined ? "" : ` · ${entry.han} han`}
-              </li>
+              <div key={`${entry.name}-${index}`}><dt>{yakuLabel(entry.name)}</dt><dd>{entry.han === undefined ? "" : `${entry.han} han`}</dd></div>
             ))}
-          </ul>
-        </div>
-      )}
-      <RoundWinTiles hand={effect.hand} melds={effect.melds} winningTile={effect.winningTile} />
+          </dl>
+        )}
+        {(effect.han !== undefined || effect.fu !== undefined || effect.limit || effect.points !== undefined) && (
+          <div className="round-win-total">
+            <p>{effect.han !== undefined && `${effect.han} han`}{effect.fu !== undefined && ` · ${effect.fu} fu`}{effect.limit && ` · ${effect.limit}`}</p>
+            {effect.points !== undefined && <strong>{roundPoints(effect.points)} <small>points</small></strong>}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ScoreTransfer({
+  effect,
+  room,
+  reducedMotion,
+}: {
+  effect: RoundWinEffect;
+  room: RoomSnapshot | null;
+  reducedMotion: boolean;
+}) {
+  const [progress, setProgress] = useState(reducedMotion ? 1 : 0);
+  useEffect(() => {
+    if (reducedMotion) return;
+    const start = performance.now();
+    const timer = window.setInterval(() => setProgress(Math.min(1, (performance.now() - start) / 3000)), 50);
+    return () => window.clearInterval(timer);
+  }, [reducedMotion]);
+  return (
+    <section className="score-transfer" aria-label="Score transfer" role="status">
+      <h2>Score transfer</h2>
+      <ol>
+        {roster(room).slice().sort((a, b) => a.seat - b.seat).map((player) => {
+          const seat = player.seat;
+          const final = effect.scores![seat];
+          const delta = effect.delta![seat];
+          const change = Math.round(delta * (reducedMotion ? 1 : progress));
+          return (
+            <li key={player.participant_id}>
+              <span>{player.display_name}</span>
+              <span>{delta >= 0 ? "+" : "−"}{Math.abs(change).toLocaleString()}</span>
+              <strong>{(final - delta + change).toLocaleString()}</strong>
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }
@@ -989,27 +980,6 @@ function resultSeat(
   return typeof seat === "number" && Number.isInteger(seat) && seat >= 0
     ? seat
     : fallbackSeat ?? index;
-}
-
-function resultDelta(
-  player: Record<string, unknown>,
-  index: number,
-  result: Record<string, unknown> | null,
-  fallbackSeat?: number,
-): number | undefined {
-  for (const key of ["delta", "deltas", "final_delta", "score_delta"]) {
-    const direct = resultNumber(player[key]);
-    if (direct !== undefined) return direct;
-  }
-  const seat = resultSeat(player, fallbackSeat, index);
-  for (const key of ["deltas", "delta", "final_deltas", "score_deltas"]) {
-    const values = result?.[key];
-    if (Array.isArray(values)) {
-      const delta = resultNumber(values[seat]) ?? resultNumber(values[index]);
-      if (delta !== undefined) return delta;
-    }
-  }
-  return undefined;
 }
 
 function resultScore(
@@ -1060,55 +1030,24 @@ export function ResultsPanel({
   const firstId =
     typeof first.participant_id === "string" ? first.participant_id : "";
   const roomRoster = roster(room);
-  const firstRoster = roomRoster.find(
-    (entry) => entry.participant_id === firstId,
-  );
+  const firstRoster = roomRoster.find((entry) => entry.participant_id === firstId);
   const firstName =
     typeof first.display_name === "string" ? first.display_name : "First place";
   const firstAsset = firstRoster?.character_id;
-  const firstSeat = firstRoster?.seat;
-  const firstScore = resultScore(first, 0, result, firstSeat);
-  const firstDelta = resultDelta(first, 0, result, firstSeat);
-  const mode =
-    typeof room?.game_mode === "string" && room.game_mode.trim().length > 0
-      ? room.game_mode
-      : typeof result?.mode === "string"
-        ? result.mode
-        : undefined;
+
   return (
     <section className="results-panel" data-testid="results-panel" aria-labelledby="results-heading">
-      <div className="results-heading">
-        <div>
-          <p className="eyebrow">POST-MATCH / FINAL</p>
-          <h2 id="results-heading">Standings</h2>
-        </div>
-        <span className="state-label">{ordered.length} PLAYERS</span>
-      </div>
-      <div
-        className="results-winner"
-        role="group"
-        aria-label={`First place: ${firstName}`}
-      >
+      <div className="results-winner">
         <ResultPortrait
           characterId={firstAsset}
           name={firstName}
           available={firstAsset ? assets[firstAsset] !== false : false}
           className="results-winner-hero-portrait"
         />
-        <div className="results-winner-copy">
-          <span className="results-winner-rank">01 / FIRST PLACE</span>
-          <h3>{firstName}</h3>
-          <strong>{firstScore === undefined ? "—" : firstScore.toLocaleString()}</strong>
-          <span>FINAL POINTS{firstDelta === undefined ? "" : ` · ${firstDelta >= 0 ? "+" : ""}${firstDelta.toLocaleString()} DELTA`}</span>
-        </div>
       </div>
-      <dl className="results-facts" aria-label="Final match facts">
-        {mode && <div><dt>Mode</dt><dd>{mode}</dd></div>}
-        {typeof room?.replay_available === "boolean" && (
-          <div><dt>Replay</dt><dd>{room.replay_available ? "Available" : "Not saved"}</dd></div>
-        )}
-      </dl>
-      <ol className="results-list" aria-label="Final standings">
+      <div className="results-standings">
+        <h2 id="results-heading">Final standings</h2>
+        <ol className="results-list" aria-label="Final standings">
         {ordered.map((player, index) => {
           const id =
             typeof player.participant_id === "string"
@@ -1122,38 +1061,19 @@ export function ResultsPanel({
             (entry) => entry.participant_id === id,
           );
           const score = resultScore(player, index, result, rosterEntry?.seat);
-          const delta = resultDelta(player, index, result, rosterEntry?.seat);
-          const controller = rosterEntry?.controller ?? "";
-          const characterId = rosterEntry?.character_id;
-          const autoLabel = controller.includes("permanent_auto")
-            ? "Permanent Auto"
-            : controller.includes("temporary_auto")
-              ? "Temporary Auto"
-              : undefined;
           const rank = Number(player.rank ?? index + 1);
           return (
             <li key={id} className={rank === 1 ? "is-first" : undefined}>
               <span className="result-rank" aria-label={`Rank ${rank}`}>
-                {String(rank).padStart(2, "0")}
+                {rank}
               </span>
-              <ResultPortrait
-                characterId={characterId}
-                name={name}
-                available={characterId ? assets[characterId] !== false : false}
-                className="results-list-portrait"
-              />
-              <span className="result-name">
-                {name}
-                {autoLabel && <small>{autoLabel}</small>}
-              </span>
-              <span className="result-score">
-                <strong>{score === undefined ? "—" : score.toLocaleString()}</strong>
-                {delta !== undefined && <small className={delta >= 0 ? "is-positive" : "is-negative"}>{delta >= 0 ? "+" : ""}{delta.toLocaleString()}</small>}
-              </span>
+              <span className="result-name">{name}</span>
+              <span className="result-score">{score === undefined ? "—" : score.toLocaleString()}</span>
             </li>
           );
         })}
-      </ol>
+        </ol>
+      </div>
     </section>
   );
 }
@@ -1224,10 +1144,8 @@ export function GameplaySurface({
   const viewer = ownSeat(projection);
   const ownPlayer = projectionPlayer(projection, viewer);
   const grouped = useMemo(() => actionCandidates(decision), [decision]);
-  const sceneLayout = useMemo(
-    () => (projection ? buildMatchSceneLayout(projection, room) : null),
-    [projection, room],
-  );
+  const [tileCandidates, setTileCandidates] = useState<VisibleAction[] | null>(null);
+  useEffect(() => setTileCandidates(null), [decision?.decision_id]);
   // Ordinary discards remain table targets when both families are offered.
   // A Riichi-only decision still uses the table target as its concrete action;
   // when both are present, Riichi is rendered independently in ActionDeck so
@@ -1240,17 +1158,37 @@ export function GameplaySurface({
     null,
   );
   const portraitEventRef = useRef<number | null>(null);
+  const remainingWins = useRef<RoundWinEffect[]>([]);
   useEffect(() => {
     if (portraitEventRef.current === eventToken) return;
     portraitEventRef.current = eventToken;
-    const candidate = portraitFromEvents(storeEvents, room, projection);
-    if (candidate) setPortraitEffect(candidate);
+    const winners = storeEvents.flatMap((event) =>
+      eventKind(event) === "hora" ? [portraitFromEvents([event], room, projection)].filter((value): value is RoundWinEffect => value !== null) : [],
+    );
+    if (winners.length) {
+      remainingWins.current = winners.slice(1);
+      setResultStage("win");
+      setResultPaused(false);
+      setPortraitEffect(winners[0]);
+    }
   }, [eventToken, projection, room, storeEvents]);
+  const [resultStage, setResultStage] = useState<"win" | "transfer">("win");
+  const [resultPaused, setResultPaused] = useState(false);
   useEffect(() => {
-    if (!portraitEffect) return;
-    const timeout = window.setTimeout(() => setPortraitEffect(null), 12000);
+    if (!portraitEffect || room?.phase === "post_match" || resultPaused) return;
+    const hasTransfer = portraitEffect.scores?.length === roster(room).length &&
+      portraitEffect.delta?.length === portraitEffect.scores.length &&
+      roster(room).every((player) => typeof player.seat === "number" &&
+        player.seat >= 0 && player.seat < portraitEffect.scores!.length);
+    const timeout = window.setTimeout(() => {
+      if (resultStage === "win" && hasTransfer) setResultStage("transfer");
+      else if (remainingWins.current.length) {
+        setResultStage("win");
+        setPortraitEffect(remainingWins.current.shift()!);
+      } else setPortraitEffect(null);
+    }, 5000);
     return () => window.clearTimeout(timeout);
-  }, [portraitEffect]);
+  }, [portraitEffect, resultStage, resultPaused]);
   useEffect(() => {
     if (pending && decision && pending.decisionId !== decision.decision_id)
       useGameStore.getState().clearPendingAction();
@@ -1261,10 +1199,12 @@ export function GameplaySurface({
     return () => window.clearTimeout(focusTimer);
   }, [onLeaveResults, room?.phase]);
   const submit = (action: VisibleAction) => {
-    if (!decision || status !== "connected") return;
-    useGameStore
-      .getState()
-      .submitAction(decision.decision_id, action.action_id, send);
+    if (!decision || status !== "connected" || !decision.actions.some((candidate) => candidate.action_id === action.action_id)) return;
+    const state = useGameStore.getState();
+    if (state.pendingAction || state.actionResultHistory.some((result) => result.decision_id === decision.decision_id && result.status === "accepted")) return;
+    if (state.projection?.decision && state.projection.decision.decision_id !== decision.decision_id) return;
+    state.submitAction(decision.decision_id, action.action_id, send);
+    setTileCandidates(null);
   };
   const closeMessage =
     reason === "connected_elsewhere"
@@ -1285,7 +1225,8 @@ export function GameplaySurface({
   const ownController = room?.participants.find((participant) => participant.participant_id === participantId)?.controller
     ?? roster(room).find((player) => player.seat === viewer)?.controller
     ?? "";
-  const inputDisabled = Boolean(pending) || status !== "connected" || !decision;
+  const inputDisabled = Boolean(pending) || status !== "connected" || !decision
+    || actionResultHistory.some((result) => result.decision_id === decision.decision_id && result.status === "accepted");
   return (
     <div
       className="app-shell gameplay-shell"
@@ -1358,17 +1299,38 @@ export function GameplaySurface({
             <TileHitLayer
               hand={ownPlayer?.hand ?? []}
               actions={legalDiscardActions}
-              layout={sceneLayout}
+              indicators={projection?.dora_indicators ?? []}
               disabled={inputDisabled}
-              onAction={submit}
+              onAction={(candidates) => {
+                if (candidates.length === 1) submit(candidates[0]);
+                else if (candidates.length > 1) setTileCandidates(candidates);
+              }}
             />
+            {tileCandidates && decision && (
+              <CandidatePopup
+                key={decision.decision_id}
+                id="tile-candidate-dialog"
+                actions={tileCandidates}
+                disabled={inputDisabled}
+                onAction={submit}
+                onClose={() => setTileCandidates(null)}
+              />
+            )}
             {portraitEffect && room?.phase !== "post_match" && (
               <div className="round-win-overlay">
-                <RoundWinSurface
-                  effect={portraitEffect}
-                  assets={assets}
-                  reducedMotion={reducedMotion}
-                />
+                {resultStage === "transfer" && portraitEffect.scores && portraitEffect.delta ? (
+                  <ScoreTransfer effect={portraitEffect} room={room} reducedMotion={reducedMotion} />
+                ) : (
+                  <RoundWinSurface effect={portraitEffect} assets={assets} reducedMotion={reducedMotion} />
+                )}
+                <div className="round-win-actions">
+                  <button type="button" className="button" aria-pressed={resultPaused} onClick={() => setResultPaused(!resultPaused)}>
+                    {resultPaused ? "Resume" : "Pause for review"}
+                  </button>
+                  <button type="button" className="button round-win-continue" onClick={() => { remainingWins.current = []; setPortraitEffect(null); }}>
+                    Continue
+                  </button>
+                </div>
               </div>
             )}
             {room?.phase !== "post_match" && (

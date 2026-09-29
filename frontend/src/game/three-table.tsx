@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { Canvas } from "@react-three/fiber";
+import "./live-table.css";
 import { SRGBColorSpace } from "three";
 
 import type { AnimationItem } from "./animation";
@@ -16,7 +17,7 @@ import { MatchTableScene, type SceneRenderStats } from "./three-table-scene";
 import { nextSceneMotion, type SceneMotion } from "./three-table-motion";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
 import { buildMatchSceneLayout, CAMERA, type TableSurface } from "./three-table-layout";
-import { tileLabel } from "./tiles";
+import { tileAssetUrl, tileLabel } from "./tiles";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 
 export interface PortraitEffect {
@@ -153,7 +154,7 @@ function playerInitial(player: ProjectedPlayer): string {
     ?? "?";
 }
 
-function PlayerPortrait({
+function PlayerIcon({
   player,
   characterId,
 }: {
@@ -163,16 +164,16 @@ function PlayerPortrait({
   const [failed, setFailed] = useState(false);
   if (!characterId || failed) {
     return (
-      <span className="table-player-portrait asset-fallback" aria-label={`${player.display_name} portrait unavailable`}>
+      <span className="table-player-icon asset-fallback" aria-label={`${player.display_name} icon unavailable`}>
         {playerInitial(player)}
       </span>
     );
   }
   return (
     <img
-      className="table-player-portrait"
-      src={`/assets/characters/${encodeURIComponent(characterId)}/portrait.webp`}
-      alt={`${player.display_name} portrait`}
+      className="table-player-icon"
+      src={`/assets/characters/${encodeURIComponent(characterId)}/icon.webp`}
+      alt={`${player.display_name} icon`}
       onError={() => setFailed(true)}
     />
   );
@@ -201,19 +202,12 @@ export function TablePlayerOverlay({
             key={`${scenePlayer.position}:${player.participant_id}`}
             aria-label={`${player.display_name}, ${scenePlayer.position} player`}
           >
-            <PlayerPortrait
+            <PlayerIcon
               key={`${player.participant_id}:${characterId ?? "fallback"}`}
               player={player}
               characterId={characterId}
             />
-            <span className="table-player-copy">
-              <strong>{player.display_name}</strong>
-              <span className="table-player-score">
-                {typeof player.score === "number" ? player.score.toLocaleString() : "—"}
-              </span>
-              <span className="table-player-position">{scenePlayer.position.toUpperCase()}</span>
-              {player.riichi && <span className="table-player-riichi">Riichi</span>}
-            </span>
+            <span className="table-player-copy"><strong>{player.display_name}</strong></span>
           </section>
         );
       })}
@@ -463,8 +457,20 @@ export function ThreeTable({
       {projection && (
         <TablePlayerOverlay projection={projection} room={room} surface={surface} />
       )}
-      {projection && layout && !isFallback && (
-        <TableCenterFacts projection={projection} wallCount={layout.wallCount} />
+      {projection && layout && (
+        <div className="visually-hidden"><TableCenterFacts projection={projection} wallCount={layout.wallCount} />
+          <ul aria-label="Table scores">{layout.players.map(({ seat }) => {
+            const player = projection.players?.find((candidate) => candidate.seat === seat);
+            return player && <li key={seat}>{player.display_name}: {typeof player.score === "number" ? player.score.toLocaleString() : "unavailable"}{player.riichi ? ", Riichi" : ""}</li>;
+          })}</ul>
+        </div>
+      )}
+      {surface === "replay" && projection?.players?.find((player) => player.seat === layout?.players.find((seat) => seat.position === "bottom")?.seat)?.hand && (
+        <div className="table-replay-hand" aria-label="Your concealed hand">
+          {projection.players.find((player) => player.seat === layout?.players.find((seat) => seat.position === "bottom")?.seat)!.hand!.map((tile, index) => (
+            <img key={`${tile}-${index}`} src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+          ))}
+        </div>
       )}
       {!projection ? null : isFallback ? (
         <TableFallback
@@ -509,7 +515,7 @@ export function ThreeTable({
             }
             onCreated={({ gl }) => {
               gl.outputColorSpace = SRGBColorSpace;
-              gl.shadowMap.enabled = false;
+              gl.shadowMap.enabled = true;
               contextCleanupRef.current?.();
               const onContextLost = (event: Event) => {
                 event.preventDefault();
@@ -523,6 +529,7 @@ export function ThreeTable({
           >
             <MatchTableScene
               layout={layout}
+              projection={projection}
               atlas={atlas}
               motion={motion}
               onMotionComplete={completeMotion}

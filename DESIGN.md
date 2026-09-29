@@ -1,87 +1,260 @@
 ---
 version: alpha
 name: Double Riichi
-description: Dark, table-first interface language for authoritative riichi mahjong play and operations.
+description: キャラクターを選ぶ楽しさと卓上の読みやすさを、画面ごとの主役を引き立てる構図で両立する麻雀ゲーム。
 colors:
-  ink: "#090b0d"
-  ink-raised: "#101316"
-  ink-panel: "#15191d"
-  ink-soft: "#1a1f23"
-  line: "#30363b"
-  line-strong: "#495158"
-  paper: "#f1f0eb"
-  muted: "#aab0b4"
-  muted-strong: "#c8c9c4"
-  accent: "#b93a35"
-  accent-bright: "#ef8d84"
-  success: "#d7e0d4"
-  table-surround: "#0b0e11"
-  table-shell: "#171c20"
-  table-felt: "#18352f"
-  table-wood: "#221b18"
-  table-trim: "#9a7042"
-  tile-body: "#eee5d2"
-  tile-back: "#173a33"
+  paper: "#eef0f2"
+  panel: "#fafbfc"
+  ink: "#283342"
+  muted: "#586574"
+  line: "#bcc6cf"
+  slate: "#354a66"
+  accent: "#dca64a"
+  selected: "#dce4ed"
+  focus: "#2762ab"
+  error: "#a72e3f"
 typography:
-  sans:
-    fontFamily: Geist
-  mono:
-    fontFamily: Geist Mono
-rounded:
-  sharp: 3px
-  subtle: 10px
+  body:
+    fontFamily: '"Segoe UI", system-ui, sans-serif'
+    fontSize: 16px
+  display:
+    fontFamily: 'Georgia, "Times New Roman", serif'
 ---
 
 ## Overview
 
-Double Riichi presents authoritative mahjong state with a restrained dark interface. Operational surfaces use flat broadcast-noir structure; Live Match and Replay use one cinematic table-first visual system. The 3D table, tiles, and game state dominate while interface chrome appears only where it enables an action or explains status.
+Double Riichi は、キャラクターを選んでルームに参加し、卓を囲んで遊ぶ麻雀ゲームである。
+画面の印象は、共通の装飾ではなく、その画面で扱う人物や牌によって作る。
+キャラクター選択では人物を大きく見せ、対局では卓と手牌を主役にする。
+情報量を抑えることと、ゲームの楽しさを削ることを区別する。
+
+承認されたキャラクター選択画面を、参加前の画面群の視覚基準とする。
+冷たい白の背景と墨色の文字を使い、キャラクター自身の色が目に入る構成を保つ。
+この基準は、すべての画面を同じ二分割レイアウトにする指示ではない。
+各画面で最も重要な対象と次の操作を先に決め、その関係に合わせて構図を選ぶ。
 
 ## Colors
 
-Use the ink family for application chrome and semantic DOM surfaces. Vermilion is reserved for primary decisions, errors, and focus emphasis; it is not decorative fill.
+### 参加前の画面
 
-Use the table palette only inside Live Match and Replay. Felt stays desaturated, metal stays satin and dark, wood is sparse, and warm trim never becomes a bright ornamental frame. Tile faces keep stronger value contrast than every surrounding material.
+背景には paper、入力などの操作面には panel を使う。
+両者の差は控えめにし、画面を多数のカードに分解しない。
+本文と操作名には ink、補助説明には muted を使う。
+補助説明も背景に埋もれない濃度を保つ。
+
+slate は既存の参加前画面の操作色として維持する。
+accent は琥珀色 #dca64a とし、青灰色の卓から明確に分離する。
+手牌操作フィードバック、中央の手番表示、実際のドラ牌のグローに使う。結果表示の点数・1位の強調と、Replay・Adminの主要操作にも控えめに適用する。
+ドラ表示牌そのものや裏向き牌は発光させない。
+参加前画面への適用はこの変更に含めない。
+キャラクターの衣装に合わせて操作色を毎回変えず、選択が変わっても操作の位置と意味を維持する。
+selected は選択状態の補助面、line は入力境界などの区切りに使う。
+選択中の項目は色だけでなく、枠とラベルの強調でも識別できるようにする。
+
+focus と error は、それぞれキーボードフォーカスと失敗の表示に限定する。
+エラーを装飾用のアクセントと兼用して、失敗の意味を曖昧にしない。
+
+### 卓上の画面
+
+Live と Replay は、参加前の白い操作面を卓全体へ広げない。
+卓の素材と照明が背景を作り、牌面の明るさと記号のコントラストを優先する。
+同じ試合の Live と Replay は同じ卓の見え方を共有する。
+
+人物の色彩は立ち絵や小さな肖像に残し、卓や操作パネル全体を人物のテーマ色で塗り替えない。
+局面を読むための色と、人物を識別するための色を混同しない。
 
 ## Typography
 
-Use Geist for readable names, actions, headings, and explanatory copy. Use Geist Mono for scores, counters, Seat labels, connection state, timers, revisions, and other compact machine-readable facts.
+### 英語専用の UI
 
-Player names and legal actions remain readable at the minimum gameplay viewport. Decorative labels never compete with tile faces or the local hand.
+画面見出し、操作名、説明、エラー、アクセシブル名は英語で記述し、文書言語も英語として指定する。
+設計文書と開発中の会話は日本語でよい。
+プレイヤーが入力した表示名やルーム名は翻訳せず、そのまま表示する。
+麻雀牌の記号は UI 文言とは区別し、本来の牌面を維持する。
+
+操作名、入力、説明、画面見出しには body を使う。
+英語の単語幅を基準に余白とボタン幅を調整し、日本語版の幅へ無理に押し込まない。
+画面見出しは、周囲との距離と適度な太さで識別させる。
+極端な太字、大きすぎる見出し、強いマイナス字間で存在感を作らない。
+
+### 横書きの人物名とブランド
+
+display は、参加前画面のキャラクター名と控えめなブランド表示に限定した欧文セリフ体とする。Live・Replay・結果・Adminは名前とブランドも body を使う。
+説明文、入力、ボタン、点数までセリフ体に広げない。
+
+キャラクター名は英語表記またはローマ字表記で横書きにする。
+立ち絵の下に独立した名前の領域を確保し、人物に重ねない。
+長い名前は自然な単語の区切りで折り返し、装飾のための縦書きや文字単位の分断は行わない。
+
+### 数字と文言
+
+点数、残り時間、局情報は桁の比較ができるようにする。
+数字の更新で隣接する操作が動かないよう、必要な幅を確保する。
+
+見出しは対象や行為をそのまま書く。
+「Choose your character」「Display name」「Preview riichi voice」のように、読んだ後の操作が分かる英語を使う。
+情報を増やさない標語や装飾用の英語ラベルは足さない。
 
 ## Layout
 
-Operational routes may use rails, lists, and flat sections. Live Match and Replay instead use a fixed cinematic table composition with semantic DOM overlays in outer safe areas.
+### 画面ごとの主役
 
-The local hand is the largest tile group. Opponent hands, rivers, and walls recede toward the center. Portrait frames remain compact and outside the play field. Four-player play uses bottom, right, top, and left; three-player play uses bottom, right, and left without a top placeholder.
+- **Entry**：ルームコードの入力と入室を最短の流れに置く。
+- **Room Join**：キャラクターの姿と選ぶ操作を中心に置き、表示名と参加操作を同じ流れにまとめる。
+- **Lobby**：参加者と自分の準備状態を読み取りやすくし、選んだキャラクターとのつながりを残す。
+- **Live Match**：手牌と卓上の局面を最も強く見せ、選べる操作を手牌の近くに置く。
+- **Replay**：Live と同じ卓を使い、対局操作の代わりに再生操作を置く。
+- **Post-Match**：試合全体の総合一位を先に見せ、その後に全員の順位と点数を比較できるようにする。
+- **Admin**：主催者が次に行う管理操作と、その判断に必要なルーム状態を優先する。
 
-Actions form one row directly above the local hand. Replay transport stays along the lower outer rail. Settings, connection state, notices, dialogs, and controls stay clear of tiles and preserve the complete table silhouette.
+これらの画面間では、文字の役割、操作の表現、情報を抑える方針を共有する。
+人物を大きく見せる構図を Admin に流用したり、対局中の小さな肖像の制限をキャラクター選択に持ち込んだりしない。
+
+### キャラクター選択の構図
+
+横長画面では、左に立ち絵、右に選択と参加の操作を置く。
+立ち絵はカードの小さなサムネイルではなく、人物の姿を確認するための主領域として扱う。
+画像の縦横比を維持し、頭や足が意図せず切れないようにする。
+素材内の透明な余白も含めて、実際の人物がどこに立つかを目視で確認する。
+
+操作領域は、画面見出し、表示名、顔一覧、音声試聴、参加の順で読めるようにする。
+キャラクター選択と Lobby にルーム名や PIN を常設しない。
+キャラクターを切り替えても表示名を失わず、参加ボタンを別の位置へ動かさない。
+立ち絵の周囲には余白を残し、装飾や説明文で埋めない。
+
+狭い画面では、立ち絵と操作領域を縦に並べる。
+横長画面を単純に縮小せず、顔一覧と入力の操作サイズを保つ。
+内容が収まらない場合は縦スクロールを許容し、参加操作を画面外で切り落とさない。
+
+### Live と Replay の構図
+
+Live の Canvas はビューポート全体を占める。Replay は下部の再生操作領域を除いた卓領域を占める。
+常設のサイトナビゲーションや横の管理パネルで卓を縮めない。
+自分の手牌は画面下の二次元表示とし、副露、相手の手牌、河、山は三次元の卓上に置く。
+カメラの俯角を下げ、自分の副露が二次元手牌に隠れない構図を確認する。
+卓は手前側の内縁が Canvas の左右端に届く大きさまで拡大する。
+副露は各席から見た右端に寄せ、複数の組も横一列に連ねる。牌間隔は実寸と縮尺に合わせ、重なりや不自然な隙間を作らない。
+鳴く前後で自分の二次元手牌のサイズを変えない。リーチ宣言牌は河で90度回転させる。
+対面（画面上側）の肖像は上中央に配置する。
+対局の DOM は肖像と名前を主体とし、装飾的な白いカードや影を避ける。Live のブランド表示は本文と同じサンセリフを使う。
+卓は俯瞰視点で大きく見せ、背景一色に見えないよう外周の縁をわずかに残す。
+卓面は暗い青灰色、周辺の操作面は白・スレート系を使い分ける。
+手牌は画面幅を使って大きく見せ、狭い画面では操作対象を縮小し続けず、配置を組み替える。
+
+人物の肖像と名前は卓の周囲にフローティング表示し、牌、河、山と重ねない。
+長い表示名も確認できるようにし、肖像の取得に失敗しても名前と代替表示を残す。
+四人戦は下、右、上、左の席を使う。
+三人戦では上の席を空け、架空の第四席や代替カードを置かない。
+
+合法な操作は手牌のすぐ上にまとめる。
+Replay の再生操作も手牌を隠さない領域に置き、履歴や速度の補助操作が牌の上へ常駐しないようにする。
+設定、通知、再接続表示を追加した状態でも、必要な操作を失わない構図にする。
+
+### 和了・最終順位
+
+和了では左に大きな立ち絵、右に手牌・役・翻符・点数を置く。名前は立ち絵の下に背景なしで表示する。
+Ron、局・自風、支払者、手牌見出しなどの重複する可視ラベルを増やさない。
+点数移動は増減ゼロと移動前の点数から3秒で最終値へ進め、2秒保持する。Continueで残りをスキップできる。
+Reduced Motionでは数値を即時確定し、レビュー停止中は自動遷移だけを止める。
+最終順位も左に立ち絵、右に順位・名前・点数のみの一覧を置く。キャラ側の名前や一覧の肖像は重複させない。
+
+### Replay・Admin
+
+Replayは自動の打牌表示と閲覧操作を分け、手牌を操作して打牌できないようにする。
+前後移動とシークでは手牌・河を同じ局面へ戻す。速度は0.5、1、2、4、8、16、32、64倍を用意する。
+Adminはルーム一覧と選択中ルームの詳細を分け、参加状況・準備状態・開始操作を一緒に確認できるようにする。
+作成・設定・Bot Token管理は開閉できる領域へまとめる。狭い画面では一覧から詳細へ縦に並べる。
+
+### 承認と実装範囲
+
+Entry・Character・Lobby・Liveの承認済み基準を維持する。AdminのPolishは明示的にLGTMを得た。
+最終順位は利用者が訂正した左右構図を採用。Replayは「それ以外はよさげ」の評価後、自分の打牌と64倍速までの操作を修正した。
+見た目の承認は本番移行や全状態の完成を意味しない。結果の複数和了・同点・三人戦、実牌譜接続、実管理操作は別途確認する。
+スマホ縦画面の卓情報は依然として小さく、全体の読みやすさは未解決。Replayのリサイズ後の卓消失も再現待ちであり、修正済みと扱わない。
 
 ## Elevation & Depth
 
-Operational DOM surfaces use borders and restrained shadows rather than stacked cards. The Match table uses real geometry, fixed perspective, satin materials, and static studio lighting. Depth clarifies the rail, felt, center device, walls, and tile bodies; it does not create ornamental spectacle.
+キャラクター選択の背景面と影は、人物を背景から分離するために使う。
+立ち絵には控えめな影を使い、主張の強い影や厚い枠で人物を囲まない。
+入力やボタンは明快な平面として扱い、木製の部品のような立体表現を共通様式にしない。
 
-Meaningful game events may briefly change tile position, emphasis, or camera target. Idle camera drift, animated lighting, continuous particles, blur-heavy post-processing, and routine shake are outside the visual language.
+卓上の奥行きは、実際の透視投影、牌の形状、素材への光の当たり方で示す。
+平面の図形と影だけを最終的な卓の品質基準にしない。
+カメラを固定し、牌面と手牌の読みやすさを維持する。
+
+動きは選択の変化や対局の出来事を伝えるために使う。
+意味のない常時浮遊、カメラの漂い、点滅、粒子で静止画の弱さを補わない。
+Reduced Motion では空間的な移動を抑え、選択枠や状態文などの静止した手掛かりを残す。
 
 ## Shapes
 
-DOM controls and panels use sharp or subtle rounding only. The automatic table may use softened manufactured edges, but tiles retain crisp readable faces with small physical bevels.
+キャラクター選択の入力、顔一覧、参加ボタンは、直線を中心とした簡潔な形にする。
+すべてを丸いカードやピルで囲まない。
+立ち絵の背景に使う切り欠きのある面は、人物を受ける背景として限定し、ボタンや一覧へ繰り返さない。
+
+卓と牌には、それぞれの物体に必要な角の丸みを使う。
+牌の面取りと DOM ボタンの形を、同じ角丸の規則に無理にまとめない。
 
 ## Components
 
-Legal actions, tile hit targets, candidate dialogs, Settings, status, blocking messages, Results, and Replay transport are semantic DOM. The WebGL scene is visual-only and must never become the sole owner of an action or status.
+### キャラクター選択
 
-Player presentation contains portrait, display name, score, Seat position or Wind, and Riichi state. The center device contains only Kyoku, Honba, Kyotaku, bounded wall count, and Dora indicators.
+顔一覧は、画像、名前、選択状態をひと組として表示する。
+色名だけの選択肢に置き換えない。
+選択中の人物は大きな立ち絵と名前で確認でき、顔一覧の選択と一致するようにする。
+マウスだけでなくキーボードでも選べるようにする。
 
-WebGL fallback preserves current Match facts and operable DOM controls. Reduced Motion presents authoritative state immediately and retains static cues.
+ボイス試聴は選択中の人物に結びつける。
+切り替え時には前の人物の再生を止め、遅れて完了した処理が新しい人物の状態を上書きしないようにする。
+読み込み中、再生中、再生失敗を操作の近くで伝える。
+
+名前と有効なキャラクターの選択がそろってから参加を許可する。
+参加処理中は重複送信を防ぎ、失敗時には入力と選択を残す。
+ルームに参加できない状態や素材の取得失敗を、装飾用の仮画像で隠さない。
+
+### キャラクター素材
+
+既存の Character Pack の立ち絵、顔画像、音声を使う。
+試作で直接参照するローカル素材と、製品が配信する登録済み素材を区別する。
+試作用の固定リストやローカルパスを、製品の素材取得方式にしない。
+
+素材の出典と利用条件を保持する。
+第三者の人物画像や音声を、プロジェクト独自の素材や CC0 素材として扱わない。
+ローカル利用の許可を、そのまま公開リポジトリへの収録許可と解釈しない。
+
+### 操作とフィードバック
+
+主要操作は塗りのあるボタンで示し、補助操作は文字を中心に見せる。
+同じ画面の操作をすべて同じ強さにしない。
+フォーカス表示は即座に現れ、マウスを使わなくても現在位置が分かるようにする。
+
+無効状態は見た目だけでなく、実際の操作可否と一致させる。
+エラーは修正対象の近くに表示し、何が失敗したかと再試行の方法を伝える。
+絵の上に置く操作は、その位置の背景が変わっても文字を読めるようにする。
+
+### 卓上 UI の責務
+
+Live と Replay は同じ Three.js／React Three Fiber の卓を共有する。
+Canvas は卓と中央表示器を描画し、手牌操作、ダイアログ、フォーカス、再生制御は React DOM が担う。
+点数・風・リーチ状態・局情報は中央表示器の WebGL 描画に集約し、文字を各席のプレイヤー向きにする。
+中央情報を可視の DOM パネルで上から覆わない。読み上げ用の情報は別途 DOM に保持する。
+手番は中央表示器の該当席側の点灯と矢印で示し、肖像に点数を重複表示しない。
+二次元の手牌はホバーとキーボードフォーカスで反応し、1回のクリックまたは Enter／Space で即打牌する。別の Discard 確認ボタンは置かない。
+演出の都合でサーバーが確定した局面や合法な操作を変えない。
+
+点数、局、残り枚数などは、それぞれの役割に合う場所へ集約する。
+同じ情報を上部の帯と中央装置などへ重複して常設しない。
+WebGL が利用できない場合も、DOM の局面情報と必要な操作を残す。
 
 ## Do's and Don'ts
 
-- Do make the table and tiles the first read.
-- Do keep the local hand visibly larger than every opponent hand.
-- Do keep portraits small and outside tile geometry.
-- Do use one shared visual scene for Live 4p, Live 3p, and Replay.
-- Do preserve fixed camera composition and minimal information density.
-- Don't copy proprietary characters, logos, readable text, or ornamental marks from references.
-- Don't add free camera controls, physics, runtime CDN assets, or a high-detail external model pipeline.
-- Don't duplicate scores, timers, actions, or Match facts across multiple surfaces.
-- Don't use bright gold, noisy texture, bloom, or constant motion to manufacture visual importance.
+- キャラクター選択では人物を、対局では卓と牌を主役にする。
+- 情報量を抑えても、顔一覧、立ち絵、試聴という選ぶ体験は残す。
+- 英語の文字幅と実際の素材を使って、画面の見え方を確認する。
+- Live と Replay の比較では、同じ局面と表示条件で卓の一貫性を確認する。
+- ベージュの背景、太い茶色の縁、全画面共通の飾り卓を新しい共通様式にしない。
+- 極太文字と強い字詰めだけで、デザインの特徴を作らない。
+- キャラクター選択の大きな立ち絵を対局中へ持ち込まず、対局中の小さな肖像を選択画面の上限にしない。
+- 雀魂の人物、ロゴ、装飾、固有の UI を複製しない。
+- 明るい金色、騒がしいテクスチャ、ブルーム、常時動作する演出で重要度を作らない。
+- 自由カメラ、物理演算、実行時 CDN 素材、高精細な外部モデルの導入を、視覚更新の前提にしない。

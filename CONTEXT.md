@@ -72,6 +72,18 @@ _Avoid_: Custom game
 A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby, or join code.
 _Avoid_: Hidden room, ranked room
 
+**Benchmark Mode**:
+A bot-only Room mode for comparing playing strength across matches. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play, but missing players are never automatically supplied.
+_Avoid_: Ranked mode, bot replacement
+
+**Benchmark Run**:
+A fixed roster's series of one or more completed and recorded Matches, with seats rotated between Matches. Aborted or unrecorded Matches do not count toward its target; results belong to each Participant rather than the Bot Token it uses.
+_Avoid_: Rematch, Replay
+
+**Benchmark Admin Observer**:
+An authenticated Admin observing a live Benchmark Match with access to every player's concealed information. Ordinary Spectators remain limited to the Public View.
+_Avoid_: Spectator, Replay View
+
 **Kyoku**:
 One dealt hand within a match, such as East 1.
 _Avoid_: Round, hand

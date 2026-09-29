@@ -27,7 +27,7 @@ describe("entry shell", () => {
   it("keeps the room action visible and keyboard reachable", async () => {
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: /your table is live/i })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("heading", { name: /join a room/i })).toBeVisible());
     expect(screen.getByRole("textbox", { name: /room code/i })).toHaveFocus();
     await waitFor(() => expect(screen.getByRole("button", { name: /open room/i })).toBeVisible());
     expect(screen.getByRole("link", { name: /admin sign in/i })).toBeVisible();
@@ -76,8 +76,9 @@ describe("public room join", () => {
       participant_limit: 4,
     }));
 
-    expect(await screen.findByRole("heading", { name: /join night market/i })).toBeVisible();
-    expect(screen.getByText("4p-red-east")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /choose your character/i })).toBeVisible();
+    fireEvent.click(screen.getByText('Room details'));
+    expect(screen.getByText(/4p-red-east/)).toBeVisible();
     expect(screen.getByText("1 / 4 participants")).toBeVisible();
   });
 
@@ -112,7 +113,7 @@ describe("public room join", () => {
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /join night market/i });
+    await screen.findByRole("heading", { name: /choose your character/i });
     expect(await screen.findByRole("alert")).toHaveTextContent("Characters could not be loaded.");
     fireEvent.click(screen.getByRole("button", { name: /retry character list/i }));
     expect(await screen.findByRole("radio", { name: /red player/i })).toBeVisible();
@@ -141,7 +142,7 @@ describe("public room join", () => {
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /join night market/i });
+    await screen.findByRole("heading", { name: /choose your character/i });
     fireEvent.change(screen.getByRole("textbox", { name: /display name/i }), {
       target: { value: "Mika" },
     });
@@ -240,7 +241,7 @@ describe("admin room workspace", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: /admin rooms/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /^rooms$/i })).toBeVisible();
     expect(await screen.findByRole("link", { name: /night market/i })).toBeVisible();
     expect(await screen.findByRole("heading", { name: /night market/i })).toBeVisible();
     expect(screen.getByText(/identity/i)).toBeVisible();
@@ -289,7 +290,8 @@ describe("admin room workspace", () => {
     });
 
     render(<App />);
-    await screen.findByRole("heading", { name: /credentials for agents/i });
+    await screen.findByRole("heading", { name: /choose a room/i });
+    fireEvent.click(screen.getByText("Bot tokens"));
     fireEvent.change(screen.getByRole("textbox", { name: /token name/i }), { target: { value: "runner" } });
     fireEvent.click(screen.getByRole("button", { name: /create token/i }));
     expect(await screen.findByText("driichi_secret_once")).toBeVisible();
@@ -389,7 +391,8 @@ describe("admin mutation coverage", () => {
     const participant = { participant_id: "P2", display_name: "Nori", kind: "human", presence: "connected", selected: false, ready: false, character_id: "player-red", role: "none", controller: "interactive" };
     const fetchMock = vi.fn().mockImplementation((input, init) => {
       const path = String(input);
-      const detail = { ...room, selected_count: selected ? 4 : 3, participants: [{ ...participant, selected }] };
+      const bots = [0, 1, 2].map((index) => ({ ...participant, participant_id: `B${index}`, display_name: `Bot ${index}`, kind: "built_in_bot", selected: true, ready: true }));
+      const detail = { ...room, selected_count: selected ? 4 : 3, participants: [...bots, { ...participant, selected, ready: selected }] };
       if (path.endsWith("/participants/P2/select")) { selected = true; return Promise.resolve(response(detail)); }
       if (path.endsWith("/participants/P2/deselect")) { selected = false; return Promise.resolve(response(detail)); }
       if (path.endsWith("/start")) return Promise.resolve(response({ ...detail, phase: "playing" }));
@@ -401,12 +404,14 @@ describe("admin mutation coverage", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await screen.findByRole("heading", { name: /night market/i });
-    fireEvent.click(screen.getByRole("button", { name: /^select$/i }));
+    const nori = within(screen.getByText("Nori").closest("article") as HTMLElement);
+    fireEvent.click(nori.getByRole("button", { name: /^select$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P2/select", expect.objectContaining({ method: "POST" })));
-    await screen.findByRole("button", { name: /^deselect$/i });
-    fireEvent.click(screen.getByRole("button", { name: /^deselect$/i }));
+    await waitFor(() => expect(nori.getByRole("button", { name: /^deselect$/i })).toBeEnabled());
+    fireEvent.click(nori.getByRole("button", { name: /^deselect$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P2/deselect", expect.objectContaining({ method: "POST" })));
-    fireEvent.click(await screen.findByRole("button", { name: /^select$/i }));
+    await waitFor(() => expect(nori.getByRole("button", { name: /^select$/i })).toBeEnabled());
+    fireEvent.click(nori.getByRole("button", { name: /^select$/i }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/participants/P2/select")).length).toBeGreaterThan(1));
     await waitFor(() => expect(screen.getByRole("button", { name: /start match/i })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: /start match/i }));
@@ -428,7 +433,8 @@ describe("admin mutation coverage", () => {
     fireEvent.click(screen.getByRole("button", { name: /kick/i }));
     fireEvent.click(await screen.findByRole("button", { name: /confirm kick/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P1/kick", expect.objectContaining({ method: "POST" })));
-    fireEvent.click(screen.getByRole("button", { name: "Create Room" }));
+    fireEvent.click(screen.getByText("Create room"));
+    fireEvent.click(screen.getByRole("button", { name: /set up room/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText(/room name/i), { target: { value: "Second Room" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /^create room$/i }));
@@ -489,13 +495,14 @@ describe("human lobby websocket", () => {
       },
       state: null,
     });
-    expect(await screen.findByRole("heading", { name: /night market lobby/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /^lobby$/i })).toBeVisible();
+    screen.getAllByText('Details',{selector:'summary'}).forEach(summary => fireEvent.click(summary));
     expect(screen.getByText(/mika \/ you/i)).toBeVisible();
     expect(screen.getAllByText("Presence")).toHaveLength(3);
     expect(screen.getAllByText("Selection")).toHaveLength(3);
     expect(screen.getAllByText("Controller")).toHaveLength(3);
     expect(screen.getByText(/seat 1/i)).toBeVisible();
-    expect(screen.getByText(/3\s+OF\s+3/i)).toBeVisible();
+    expect(screen.getByText('3 / 3 selected')).toBeVisible();
   });
 
   it("keeps the WebSocket connected when the server rejects a normal command", async () => {
@@ -648,7 +655,7 @@ describe("human lobby websocket", () => {
     expect(imageCount).toBe(12);
     sockets[0].emit({ ...snapshot, room: { ...snapshot.room, room_name: "Stale Room" } });
     expect(screen.queryByRole("heading", { name: /stale room lobby/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /night market lobby/i })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
     vi.useRealTimers();
   });
 

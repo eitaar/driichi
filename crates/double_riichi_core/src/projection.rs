@@ -180,6 +180,7 @@ impl TableState {
 pub enum Audience {
     Player(Seat),
     Public,
+    BenchmarkAdmin,
     ReplayAdmin,
 }
 
@@ -200,6 +201,7 @@ impl TableState {
 pub enum AudienceProjection {
     Player(PlayerProjection),
     Public(PublicProjection),
+    BenchmarkAdmin(PublicProjection),
     ReplayAdmin(ReplayAdminProjection),
 }
 
@@ -342,22 +344,38 @@ pub fn project_table_state(state: &TableState, audience: Audience) -> AudiencePr
                 .as_ref()
                 .and_then(|decision| player_decision(decision, viewer_seat)),
         }),
-        Audience::Public => AudienceProjection::Public(PublicProjection {
-            mode: state.mode,
-            round: state.round,
-            kyoku: state.kyoku,
-            dealer: state.dealer,
-            honba: state.honba,
-            kyotaku: state.kyotaku,
-            remaining_wall: state.remaining_wall,
-            players: state
-                .players
-                .iter()
-                .map(|player| visible_player(player, HandVisibility::None))
-                .collect(),
-            dora_indicators: state.dora_indicators.clone(),
-            decision: state.decision.as_ref().map(public_decision),
-        }),
+        Audience::Public | Audience::BenchmarkAdmin => {
+            let projection = PublicProjection {
+                mode: state.mode,
+                round: state.round,
+                kyoku: state.kyoku,
+                dealer: state.dealer,
+                honba: state.honba,
+                kyotaku: state.kyotaku,
+                remaining_wall: state.remaining_wall,
+                players: state
+                    .players
+                    .iter()
+                    .map(|player| {
+                        visible_player(
+                            player,
+                            if audience == Audience::BenchmarkAdmin {
+                                HandVisibility::All
+                            } else {
+                                HandVisibility::None
+                            },
+                        )
+                    })
+                    .collect(),
+                dora_indicators: state.dora_indicators.clone(),
+                decision: state.decision.as_ref().map(public_decision),
+            };
+            if audience == Audience::BenchmarkAdmin {
+                AudienceProjection::BenchmarkAdmin(projection)
+            } else {
+                AudienceProjection::Public(projection)
+            }
+        }
         Audience::ReplayAdmin => AudienceProjection::ReplayAdmin(ReplayAdminProjection {
             mode: state.mode,
             round: state.round,

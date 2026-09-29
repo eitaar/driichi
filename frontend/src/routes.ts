@@ -5,6 +5,7 @@ export type Route =
   | { kind: "admin-login" }
   | { kind: "admin-replays" }
   | { kind: "admin-replay"; matchId: string }
+  | { kind: "admin-benchmark"; runId?: string }
   | { kind: "admin"; joinCode?: string }
   | { kind: "not-found" };
 
@@ -21,6 +22,11 @@ export function routeForPath(pathname: string): Route {
     catch { return { kind: "not-found" }; }
   }
   if (/^\/admin\/replays\/?$/.test(pathname)) return { kind: "admin-replays" };
+  const benchmark = pathname.match(/^\/admin\/benchmark(?:\/runs\/([^/]+))?\/?$/);
+  if (benchmark) {
+    try { return { kind: "admin-benchmark", runId: benchmark[1] ? decodeURIComponent(benchmark[1]) : undefined }; }
+    catch { return { kind: "not-found" }; }
+  }
   const admin = pathname.match(/^\/admin(?:\/rooms\/(\d{6}))?\/?$/);
   if (admin) return { kind: "admin", joinCode: admin[1] };
   return { kind: "not-found" };
