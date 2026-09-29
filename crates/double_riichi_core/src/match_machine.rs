@@ -102,7 +102,7 @@ pub struct MatchMachine {
 
 impl MatchMachine {
     pub fn new(mode: GameMode, participants: Vec<Participant>) -> Result<Self, MatchError> {
-        Self::new_internal(mode, participants, rand::random())
+        Self::new_internal(mode, participants, rand::random(), true)
     }
 
     pub fn with_seed(
@@ -110,7 +110,18 @@ impl MatchMachine {
         participants: Vec<Participant>,
         seed: u64,
     ) -> Result<Self, MatchError> {
-        Self::new_internal(mode, participants, seed)
+        Self::new_internal(mode, participants, seed, true)
+    }
+
+    /// Preserve caller-assigned seats while dealing independently for each Match.
+    pub fn with_fixed_seats(
+        mode: GameMode,
+        participants: Vec<Participant>,
+        time_control: TimeControl,
+    ) -> Result<Self, MatchError> {
+        let mut machine = Self::new_internal(mode, participants, rand::random(), false)?;
+        machine.time_control = time_control;
+        Ok(machine)
     }
 
     pub fn with_time_control(
@@ -510,11 +521,13 @@ impl MatchMachine {
         mode: GameMode,
         participants: Vec<Participant>,
         seed: u64,
+        shuffle_seats: bool,
     ) -> Result<Self, MatchError> {
         validate_participants(mode, &participants)?;
         let mut players = participants;
-        let mut rng = StdRng::seed_from_u64(seed);
-        players.shuffle(&mut rng);
+        if shuffle_seats {
+            players.shuffle(&mut StdRng::seed_from_u64(seed));
+        }
         let (engine, events) = EngineAdapter::new(mode, Some(seed))
             .map_err(|error| MatchError::Aborted(error.to_string()))?;
         let controllers = players
@@ -549,7 +562,7 @@ impl MatchMachine {
         participants: Vec<Participant>,
         seed: u64,
     ) -> Result<Self, MatchError> {
-        Self::new_internal(mode, participants, seed)
+        Self::new_internal(mode, participants, seed, true)
     }
 
     fn ensure_running(&self) -> Result<(), MatchError> {

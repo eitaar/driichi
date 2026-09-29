@@ -11,6 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use double_riichi_core::room::BenchmarkStatus;
 use double_riichi_core::{
     GameMode, MatchPlayerSnapshot, MatchResult, Participant, ParticipantKind, RoomAuxiliaryEvent,
     RoomAuxiliaryPhase, RoomEffect, RoomEffectError, RoomPersistenceFailure,
@@ -1767,16 +1768,69 @@ pub fn spawn_room_effect_worker(
                     }
                     let _ = completion.send(result);
                 }
+                RoomEffect::CreateBenchmarkRun {
+                    run_id,
+                    room_code,
+                    mode,
+                    target,
+                    roster,
+                    completion,
+                } => {
+                    let result = storage
+                        .create_benchmark_run(&run_id, &room_code, mode, target, &roster)
+                        .await
+                        .map_err(|error| room_effect_error(error.to_string()));
+                    let _ = completion.send(result);
+                }
+                RoomEffect::StopBenchmarkRun {
+                    run_id,
+                    status,
+                    reason,
+                    failed_match_id,
+                    completion,
+                } => {
+                    let result = if status == BenchmarkStatus::Failed {
+                        storage
+                            .fail_benchmark_run(
+                                &run_id,
+                                failed_match_id.as_ref().map(|id| id.as_str()),
+                                reason.as_deref().unwrap_or("benchmark failed"),
+                            )
+                            .await
+                    } else {
+                        let status = match status {
+                            BenchmarkStatus::Completed => BenchmarkRunStatus::Completed,
+                            BenchmarkStatus::Stopped => BenchmarkRunStatus::Stopped,
+                            _ => BenchmarkRunStatus::Failed,
+                        };
+                        storage
+                            .stop_benchmark_run(&run_id, status, reason.as_deref())
+                            .await
+                    };
+                    if let Err(error) = &result {
+                        tracing::warn!(error = ?error, "benchmark terminal state persistence failed");
+                    }
+                    let _ = completion
+                        .send(result.map_err(|error| room_effect_error(error.to_string())));
+                }
                 RoomEffect::FinalizeMatch {
                     match_id,
                     result,
+                    benchmark,
                     completed_at,
                     completion,
                 } => {
                     let id = match_id.to_string();
                     let replay = replays.remove(&id);
-                    let persisted =
-                        finalize_room_replay(&storage, &id, replay, &result, completed_at).await;
+                    let persisted = finalize_room_replay(
+                        &storage,
+                        &id,
+                        replay,
+                        &result,
+                        benchmark,
+                        completed_at,
+                    )
+                    .await;
                     let _ = completion.send(persisted);
                 }
                 RoomEffect::DeleteIncomplete { match_id } => {
@@ -1810,6 +1864,7 @@ async fn finalize_room_replay(
     match_id: &str,
     replay: Option<RoomReplay>,
     result: &double_riichi_core::MatchResult,
+    benchmark: Option<(String, u16)>,
     completed_at: i64,
 ) -> Result<(), RoomEffectError> {
     let replay = match replay {
@@ -1837,10 +1892,23 @@ async fn finalize_room_replay(
             return Err(room_effect_error(error.to_string()));
         }
     };
-    match storage
-        .complete_room_match(match_id, &artifact, result, completed_at)
-        .await
-    {
+    let persisted = if let Some((run_id, sequence)) = benchmark {
+        storage
+            .record_benchmark_completion(
+                &run_id,
+                sequence,
+                match_id,
+                result,
+                &artifact,
+                completed_at,
+            )
+            .await
+    } else {
+        storage
+            .complete_room_match(match_id, &artifact, result, completed_at)
+            .await
+    };
+    match persisted {
         Ok(()) => Ok(()),
         Err(error) => {
             storage.mark_replay_degraded();
