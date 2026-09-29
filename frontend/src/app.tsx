@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, QueryClient, QueryClientProvider, QueryCache, MutationCache } from "@tanstack/react-query";
 import {
   ArrowLeft, ArrowRight, ArrowUpRight, Check, Copy, LockKey, Plus, SignOut,
   SpeakerHigh, WarningCircle, X,
@@ -14,6 +14,7 @@ import type { RoomSnapshot } from "./game/types";
 import { navigate, routeForPath, type Route } from "./routes";
 import { ReplayWorkspace } from "./replay";
 import { BenchmarkControls, BenchmarkWorkspace } from "./benchmark";
+import { clearAdminSession, signOutAdmin } from "./admin-session";
 import "./styles.css";
 import "./pre-match.css";
 import "./admin.css";
@@ -33,7 +34,15 @@ function useReducedMotion() {
 }
 
 export function App() {
-  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0, refetchOnWindowFocus: true } } }));
+  const [queryClient] = useState(() => {
+    const onAuthError = (error: unknown) => { if (error instanceof ApiProblem && error.status === 401) clearAdminSession(client); };
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, refetchOnWindowFocus: true } },
+      queryCache: new QueryCache({ onError: (error, query) => { if (query.queryKey[0] === "admin") onAuthError(error); } }),
+      mutationCache: new MutationCache({ onError: onAuthError }),
+    });
+    return client;
+  });
   return <QueryClientProvider client={queryClient}><AppRoutes /></QueryClientProvider>;
 }
 
@@ -117,7 +126,7 @@ function AdminWorkspace({ routeCode }: { routeCode?: string }) {
   const invalidate = () => { void queryClient.invalidateQueries({ queryKey: queryKeys.rooms }); if (selectedCode) void queryClient.invalidateQueries({ queryKey: queryKeys.room(selectedCode) }); };
   const action = useMutation({ mutationFn: (task: () => Promise<unknown>) => task(), onSuccess: invalidate });
   const create = useMutation({ mutationFn: api.createAdminRoom, onSuccess: (room) => { void queryClient.invalidateQueries({ queryKey: queryKeys.rooms }); setSelectedCode(room.join_code); setCreateOpen(false); navigate(`/admin/rooms/${room.join_code}`); } });
-  return <div className="app-shell workspace-shell"><Topbar action={<div className="workspace-actions"><RouteLink href="/admin/benchmark" className="nav-link">Benchmarks</RouteLink><RouteLink href="/admin/replays" className="nav-link">Replays <ArrowRight aria-hidden="true" weight="regular" /></RouteLink><RouteLink href="/" className="nav-link">Entry <ArrowUpRight aria-hidden="true" weight="regular" /></RouteLink><button className="text-button" onClick={() => { void api.logoutAdmin().finally(() => navigate("/admin/login")); }}><SignOut aria-hidden="true" weight="regular" />Sign out</button></div>} /><main className="admin-workspace"><aside className="workspace-rail"><div className="workspace-rail-head"><h1>Rooms</h1></div><details className="admin-disclosure create-room-disclosure"><summary>Create room</summary><button className="button button-secondary" onClick={() => setCreateOpen(true)}>Set up room <Plus aria-hidden="true" weight="regular" /></button></details>{rooms.isLoading && <p className="state-label" aria-busy="true">Loading Rooms</p>}{rooms.isError && <ProblemInline error={rooms.error} />}{rooms.data?.length === 0 && <div className="empty-state"><p>No Rooms yet.</p><button className="button button-secondary" onClick={() => setCreateOpen(true)}>Create a Room <Plus aria-hidden="true" weight="regular" /></button></div>}<nav className="room-list" aria-label="Admin Rooms">{rooms.data?.map((room) => <RouteLink key={room.join_code} href={`/admin/rooms/${room.join_code}`} className={`room-list-item${selectedCode === room.join_code ? " is-active" : ""}`} aria-current={selectedCode === room.join_code ? "page" : undefined} onClick={() => setSelectedCode(room.join_code)}><span><strong>{room.room_name}</strong><small>{room.join_code} · {room.game_mode} · {room.phase}</small></span></RouteLink>)}</nav><TokenPanel tokens={tokens.data ?? []} loading={tokens.isLoading} error={tokens.error} action={action} queryClient={queryClient} /></aside><section className="workspace-main">{!selectedCode && !rooms.isLoading && <EmptyDetail onCreate={() => setCreateOpen(true)} />}{selectedCode && detail.isLoading && <LoadingPanel label="Loading Room detail" />}{selectedCode && detail.isError && <ProblemPanel title="Room detail unavailable" error={detail.error} />}{detail.data && <RoomDetailPanel room={detail.data} action={action} onDeleted={() => { void queryClient.invalidateQueries({ queryKey: queryKeys.rooms }); setSelectedCode(""); navigate("/admin"); }} />}</section></main><CreateRoomDialog open={createOpen} onClose={() => setCreateOpen(false)} mutation={create} /></div>;
+  return <div className="app-shell workspace-shell"><Topbar action={<div className="workspace-actions"><RouteLink href="/admin/benchmark" className="nav-link">Benchmarks</RouteLink><RouteLink href="/admin/replays" className="nav-link">Replays <ArrowRight aria-hidden="true" weight="regular" /></RouteLink><RouteLink href="/" className="nav-link">Entry <ArrowUpRight aria-hidden="true" weight="regular" /></RouteLink><button className="text-button" onClick={() => signOutAdmin(queryClient)}><SignOut aria-hidden="true" weight="regular" />Sign out</button></div>} /><main className="admin-workspace"><aside className="workspace-rail"><div className="workspace-rail-head"><h1>Rooms</h1></div><details className="admin-disclosure create-room-disclosure"><summary>Create room</summary><button className="button button-secondary" onClick={() => setCreateOpen(true)}>Set up room <Plus aria-hidden="true" weight="regular" /></button></details>{rooms.isLoading && <p className="state-label" aria-busy="true">Loading Rooms</p>}{rooms.isError && <ProblemInline error={rooms.error} />}{rooms.data?.length === 0 && <div className="empty-state"><p>No Rooms yet.</p><button className="button button-secondary" onClick={() => setCreateOpen(true)}>Create a Room <Plus aria-hidden="true" weight="regular" /></button></div>}<nav className="room-list" aria-label="Admin Rooms">{rooms.data?.map((room) => <RouteLink key={room.join_code} href={`/admin/rooms/${room.join_code}`} className={`room-list-item${selectedCode === room.join_code ? " is-active" : ""}`} aria-current={selectedCode === room.join_code ? "page" : undefined} onClick={() => setSelectedCode(room.join_code)}><span><strong>{room.room_name}</strong><small>{room.join_code} · {room.game_mode} · {room.phase}</small></span></RouteLink>)}</nav><TokenPanel tokens={tokens.data ?? []} loading={tokens.isLoading} error={tokens.error} action={action} queryClient={queryClient} /></aside><section className="workspace-main">{!selectedCode && !rooms.isLoading && <EmptyDetail onCreate={() => setCreateOpen(true)} />}{selectedCode && detail.isLoading && <LoadingPanel label="Loading Room detail" />}{selectedCode && detail.isError && <ProblemPanel title="Room detail unavailable" error={detail.error} />}{detail.data && <RoomDetailPanel room={detail.data} action={action} onDeleted={() => { void queryClient.invalidateQueries({ queryKey: queryKeys.rooms }); setSelectedCode(""); navigate("/admin"); }} />}</section></main><CreateRoomDialog open={createOpen} onClose={() => setCreateOpen(false)} mutation={create} /></div>;
 }
 
 function EmptyDetail({ onCreate }: { onCreate: () => void }) { return <section className="empty-detail"><p className="eyebrow">ROOM DETAIL</p><h2>Choose a Room.</h2><p>Open a Room from the rail, or create the next one.</p><button className="button button-primary" onClick={onCreate}>Create Room <Plus aria-hidden="true" weight="regular" /></button></section>; }

@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiProblem, problemFrom, type AdminRoomDetail, type BenchmarkRun, type GameMode, type TimeControl } from "./api";
 import { ThreeTable } from "./game/three-table";
 import { tileLabel } from "./game/tiles";
 import { navigate } from "./routes";
+import { signOutAdmin } from "./admin-session";
 import "./benchmark.css";
 
 function Link({ href, children }: { href: string; children: ReactNode }) {
@@ -38,8 +39,9 @@ export function BenchmarkControls({ room, pending, perform }: {
 }
 
 export function BenchmarkWorkspace({ runId }: { runId?: string }) {
+  const client = useQueryClient();
   return <div className="app-shell workspace-shell benchmark-shell">
-    <header className="topbar"><Link href="/admin">DOUBLE RIICHI</Link><nav aria-label="Benchmark navigation"><Link href="/admin">Rooms</Link><Link href="/admin/benchmark">Benchmarks</Link><button className="text-button" onClick={() => { void api.logoutAdmin().finally(() => navigate("/admin/login")); }}>Sign out</button></nav></header>
+    <header className="topbar"><Link href="/admin">DOUBLE RIICHI</Link><nav aria-label="Benchmark navigation"><Link href="/admin">Rooms</Link><Link href="/admin/benchmark">Benchmarks</Link><button className="text-button" onClick={() => signOutAdmin(client)}>Sign out</button></nav></header>
     <main className="benchmark-main">{runId ? <RunDetail key={runId} runId={runId} /> : <RunList />}</main>
   </div>;
 }
@@ -90,7 +92,7 @@ function LiveObserver({ code }: { code: string }) {
   });
   const projection = live.data?.projection;
   return <details className="admin-disclosure" onToggle={event => setOpen(event.currentTarget.open)}><summary>Live table — all current hands</summary>
-    {open && (live.isError ? <ErrorMessage error={live.error} retry={() => { void live.refetch(); }} /> : !live.data ? <p role="status">Connecting to live table…</p> : projection ? <>
+    {open && (live.isError ? <ErrorMessage error={live.error} retry={() => { void live.refetch(); }} /> : !live.data || !live.isFetchedAfterMount ? <p role="status">Connecting to live table…</p> : projection ? <>
       <p className="field-hint">Read-only Admin view · Revision {live.data.revision} · Updates every second</p>
       <div className="benchmark-live replay-table-wrap"><ThreeTable projection={projection} room={null} surface="replay" reducedMotion /></div>
       <details><summary>Current hands as text</summary><ul>{projection.players?.map(player => <li key={player.participant_id}>{player.display_name} ({player.participant_id}): {player.hand?.map(tileLabel).join(", ")}</li>)}</ul></details>

@@ -7,6 +7,7 @@ import { portraitFromEvents, preloadRosterAssets, voiceEvents } from "./game/gam
 import { ThreeTable } from "./game/three-table";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
+import { signOutAdmin } from "./admin-session";
 import "./replay.css";
 
 const REPLAY_PAGE_SIZE = 50;
@@ -42,6 +43,7 @@ function formatReplayDate(value: string): string {
 }
 
 function ReplayTopbar() {
+  const client = useQueryClient();
   return (
     <header className="topbar">
       <ReplayLink className="brand" href="/" aria-label="Double Riichi home">
@@ -51,7 +53,7 @@ function ReplayTopbar() {
       <nav aria-label="Replay navigation">
         <ReplayLink className="nav-link" href="/admin">Rooms <ArrowLeft aria-hidden="true" weight="regular" /></ReplayLink>
         <ReplayLink className="nav-link" href="/admin/replays">Replay library</ReplayLink>
-        <button className="text-button" onClick={() => { void api.logoutAdmin().finally(() => navigate("/admin/login")); }}>Sign out</button>
+        <button className="text-button" onClick={() => signOutAdmin(client)}>Sign out</button>
       </nav>
     </header>
   );

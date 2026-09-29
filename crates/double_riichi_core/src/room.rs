@@ -908,6 +908,9 @@ pub enum RoomCommand {
     },
     GetSnapshot,
     GetMatchEvents,
+    GetMatchView {
+        participant_id: ParticipantId,
+    },
     GetHistoryProjection {
         participant_id: ParticipantId,
     },
@@ -1097,6 +1100,11 @@ pub enum RoomResponse {
     Started(MatchId),
     Action(DecisionResult),
     MatchEvents(Vec<GameEvent>),
+    MatchView {
+        match_id: Option<MatchId>,
+        events: Vec<GameEvent>,
+        projection: Option<AudienceProjection>,
+    },
     HistoryProjection(RoomHistoryProjection),
     Deleted,
     Shutdown,
@@ -2374,6 +2382,7 @@ impl RoomState {
             | RoomCommand::GetPublicProjection
             | RoomCommand::GetBenchmarkAdminProjection
             | RoomCommand::GetMatchEvents
+            | RoomCommand::GetMatchView { .. }
             | RoomCommand::GetHistoryProjection { .. }
             | RoomCommand::GetPublicHistoryProjection => {
                 return Err(RoomError::Match("actor-only command".into()));
@@ -2715,6 +2724,24 @@ impl Actor {
                     .map(|machine| machine.events().to_vec())
                     .unwrap_or_default(),
             )),
+            RoomCommand::GetMatchView { participant_id } => {
+                let projection = self.state.projection_for(&participant_id)?;
+                let match_id = match &self.state.phase {
+                    RoomPhase::Playing(id) | RoomPhase::PostMatch(id) => Some(id.clone()),
+                    RoomPhase::Lobby => None,
+                };
+                let events = self
+                    .state
+                    .match_machine
+                    .as_ref()
+                    .map(|machine| machine.events().to_vec())
+                    .unwrap_or_default();
+                Ok(RoomResponse::MatchView {
+                    match_id,
+                    events,
+                    projection,
+                })
+            }
             RoomCommand::GetHistoryProjection { participant_id } => self
                 .state
                 .history_projection(&participant_id)
@@ -2993,7 +3020,8 @@ impl Actor {
         let ids = self.state.validate_benchmark_start(target)?;
         let (_, _, roster) = self.state.build_match()?;
         let (completion, receiver) = oneshot::channel();
-        self.send_ack_effect(
+        // A queued write cannot be cancelled by timing out its acknowledgement.
+        self.send_durable_effect(
             RoomEffect::CreateBenchmarkRun {
                 run_id: run_id.clone(),
                 room_code: self.state.join_code.to_string(),
@@ -3141,7 +3169,7 @@ impl Actor {
         }
     }
 
-    async fn send_finalize_effect(
+    async fn send_durable_effect(
         &mut self,
         effect: RoomEffect,
         completion: oneshot::Receiver<Result<(), RoomEffectError>>,
@@ -3443,7 +3471,7 @@ impl Actor {
                 completed_at: now_unix_seconds(),
                 completion,
             };
-            if self.send_finalize_effect(effect, receiver).await.is_err() {
+            if self.send_durable_effect(effect, receiver).await.is_err() {
                 self.fail_replay(match_id.clone(), "replay finalization failed".to_owned());
             }
         }
@@ -3479,7 +3507,14 @@ impl Actor {
     async fn abort_match(&mut self, reason: String) -> Result<RoomResponse, RoomError> {
         let match_id = match self.state.phase {
             RoomPhase::Playing(ref id) => id.clone(),
-            _ => return Ok(RoomResponse::Accepted(self.state.snapshot())),
+            _ => {
+                if self.benchmark_running() {
+                    self.finish_benchmark(BenchmarkStatus::Failed, Some(reason), None)
+                        .await;
+                    self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+                }
+                return Ok(RoomResponse::Accepted(self.state.snapshot()));
+            }
         };
         self.finish_benchmark(
             BenchmarkStatus::Failed,

@@ -1,7 +1,7 @@
 use double_riichi_core::room::BenchmarkStatus;
 use double_riichi_core::{
-    CharacterCatalog, GameMode, Participant, ParticipantKind, RoomActor, RoomCommand, RoomConfig,
-    RoomEffect, RoomHandle, RoomResponse, ShutdownMode,
+    AudienceProjection, CharacterCatalog, GameMode, Participant, ParticipantKind, RoomActor,
+    RoomCommand, RoomConfig, RoomEffect, RoomHandle, RoomResponse, ShutdownMode,
 };
 use std::time::Duration;
 
@@ -18,11 +18,10 @@ async fn selected_room(built_in: bool) -> (RoomHandle, tokio::sync::mpsc::Receiv
             handle.send(RoomCommand::AddBenchmarkBot).await.unwrap()
         } else {
             handle
-                .send(RoomCommand::join(Participant::new(
-                    format!("bot-{seat}"),
-                    "MCP",
-                    ParticipantKind::MCP,
-                )))
+                .send(RoomCommand::join_with_token(
+                    Participant::new(format!("bot-{seat}"), "MCP", ParticipantKind::MCP),
+                    "shared-token",
+                ))
                 .await
                 .unwrap()
         };
@@ -107,6 +106,141 @@ async fn series_waits_for_header_and_completion_ack_before_opening_matches() {
             .unwrap()
             .completed,
         1
+    );
+    handle
+        .send(RoomCommand::shutdown(ShutdownMode::Forced))
+        .await
+        .unwrap();
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn queued_roster_loss_at_durable_match_boundary_fails_without_opening_another_match() {
+    for command in [
+        RoomCommand::disconnect("bot-0"),
+        RoomCommand::leave("bot-0"),
+        RoomCommand::kick("bot-0"),
+        RoomCommand::revoke_token("shared-token"),
+    ] {
+        let (handle, mut effects) = selected_room(false).await;
+        let worker = tokio::spawn(async move {
+            while let Some(effect) = effects.recv().await {
+                if matches!(effect, RoomEffect::FinalizeMatch { .. }) {
+                    return (effect, effects);
+                }
+                effect.acknowledge(Ok(()));
+            }
+            panic!("missing finalization");
+        });
+        handle
+            .send(RoomCommand::StartBenchmark {
+                run_id: "boundary".into(),
+                target: 2,
+            })
+            .await
+            .unwrap();
+        let driver = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                loop {
+                    let run = handle.snapshot().await.unwrap().benchmark.unwrap();
+                    if run.completed > 0 || run.status != BenchmarkStatus::Running {
+                        break;
+                    }
+                    for id in ["bot-0", "bot-1", "bot-2", "bot-3"] {
+                        let Ok(Some(AudienceProjection::Player(projection))) =
+                            handle.projection(id).await
+                        else {
+                            continue;
+                        };
+                        if let Some(decision) =
+                            projection.decision.filter(|d| !d.actions.is_empty())
+                        {
+                            handle
+                                .send(RoomCommand::submit_action(
+                                    id,
+                                    decision.decision_id,
+                                    decision.default_action_id,
+                                ))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        });
+        let (finalize, mut effects) = tokio::time::timeout(Duration::from_secs(15), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        let loss = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.send(command).await }
+        });
+        tokio::task::yield_now().await; // enqueue loss before releasing finalization
+        finalize.acknowledge(Ok(()));
+        let terminal = tokio::time::timeout(Duration::from_secs(2), effects.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            terminal,
+            RoomEffect::StopBenchmarkRun {
+                status: BenchmarkStatus::Failed,
+                failed_match_id: None,
+                ..
+            }
+        ));
+        terminal.acknowledge(Ok(()));
+        loss.await.unwrap().unwrap();
+        driver.await.unwrap();
+        let run = handle.snapshot().await.unwrap().benchmark.unwrap();
+        assert_eq!(run.completed, 1);
+        assert_eq!(run.status, BenchmarkStatus::Failed);
+        assert!(effects.try_recv().is_err());
+        let _ = handle.send(RoomCommand::reconnect("bot-0")).await;
+        assert_eq!(
+            handle.snapshot().await.unwrap().benchmark.unwrap().status,
+            BenchmarkStatus::Failed
+        );
+        handle
+            .send(RoomCommand::shutdown(ShutdownMode::Forced))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn delayed_header_ack_retains_run_ownership_until_definitive_outcome() {
+    let (handle, mut effects) = selected_room(false).await;
+    let start = tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            handle
+                .send(RoomCommand::StartBenchmark {
+                    run_id: "delayed".into(),
+                    target: 2,
+                })
+                .await
+        }
+    });
+    let header = effects.recv().await.unwrap();
+    assert!(matches!(header, RoomEffect::CreateBenchmarkRun { .. }));
+    tokio::time::advance(Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+    header.acknowledge(Ok(()));
+    let worker = tokio::spawn(async move {
+        while let Some(effect) = effects.recv().await {
+            effect.acknowledge(Ok(()));
+        }
+    });
+    assert!(
+        start.await.unwrap().is_ok(),
+        "a late successful header must still have an owning Run"
+    );
+    assert_eq!(
+        handle.snapshot().await.unwrap().benchmark.unwrap().status,
+        BenchmarkStatus::Running
     );
     handle
         .send(RoomCommand::shutdown(ShutdownMode::Forced))

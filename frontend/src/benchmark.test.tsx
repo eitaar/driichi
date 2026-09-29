@@ -12,6 +12,7 @@ const room = {
 const run = {
   run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "interrupted", reason: "server restarted", failed_match_id: "aborted", roster: [], matches: [], statistics: [],
 };
+const live = { revision: 5, benchmark: null, projection: { audience: "benchmark_admin", mode: "4p-red-east", round: "east", kyoku: 1, dora_indicators: [0], players: Array.from({ length: 4 }, (_, seat) => ({ seat, participant_id: `p${seat}`, display_name: `Bot ${seat}`, score: 25000, hand: Array(13).fill(0), concealed_count: 13, discards: [], melds: [], riichi: false })), decision: null } };
 function response(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }); }
 function stubFetch(handler: (path: string, init?: RequestInit) => Response) {
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => handler(String(input), init)));
@@ -104,7 +105,7 @@ it("recovers a private observer read without joining a participant or submitting
   stubFetch(path => {
     if (!path.endsWith("/live")) return response({ ...run, status: "running", reason: null, failed_match_id: null });
     if (++reads === 1) return response({ detail: "Observer connection lost" }, 503);
-    return response({ revision: 5, benchmark: null, projection: { audience: "benchmark_admin", mode: "4p-red-east", round: "east", kyoku: 1, dora_indicators: [0], players: Array.from({ length: 4 }, (_, seat) => ({ seat, participant_id: `p${seat}`, display_name: `Bot ${seat}`, score: 25000, hand: Array(13).fill(0), concealed_count: 13, discards: [], melds: [], riichi: false })), decision: null } });
+    return response(live);
   });
   render(<App />);
   fireEvent.click(await screen.findByText("Live table — all current hands"));
@@ -113,6 +114,65 @@ it("recovers a private observer read without joining a participant or submitting
   expect(await screen.findByText(/Read-only Admin view/)).toBeVisible();
   const paths = vi.mocked(fetch).mock.calls.map(([path]) => String(path));
   expect(paths.some(path => path.endsWith("/join") || path.endsWith("/actions"))).toBe(false);
+});
+
+it("purges private snapshots on sign-out before back navigation can reuse them", async () => {
+  window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
+  let signedOut = false;
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    if (path.endsWith("/logout")) { signedOut = true; return response({}); }
+    if (signedOut) return new Promise<Response>(() => {}); // unauthorized read has not resolved yet
+    return response(path.endsWith("/live") ? live : { ...run, status: "running" });
+  }));
+  render(<App />);
+  fireEvent.click(await screen.findByText("Live table — all current hands"));
+  await screen.findByText(/Read-only Admin view/);
+  fireEvent.click(screen.getByText("Current hands as text"));
+  expect(screen.getByText(/Bot 0 \(p0\):/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  await screen.findByRole("heading", { name: "Sign in to host." });
+  window.history.pushState({}, "", "/admin/benchmark/runs/run-1");
+  fireEvent.popState(window);
+  expect(screen.queryByText("Live table — all current hands")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Bot 0 \(p0\):/)).not.toBeInTheDocument();
+});
+
+it("waits for a fresh authorized observer read before rendering a cached hand on reentry", async () => {
+  window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
+  let holdLiveRead = false;
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    if (path.endsWith("/live")) return holdLiveRead ? new Promise<Response>(() => {}) : response(live);
+    return response(path === "/api/v1/admin/benchmark/runs" ? [{ ...run, status: "running" }] : { ...run, status: "running" });
+  }));
+  render(<App />);
+  fireEvent.click(await screen.findByText("Live table — all current hands"));
+  await screen.findByText(/Read-only Admin view/);
+  fireEvent.click(screen.getByRole("link", { name: "Benchmarks" }));
+  await screen.findByRole("heading", { name: "Benchmarks" });
+  holdLiveRead = true;
+  fireEvent.click(await screen.findByRole("link", { name: /^123456/ }));
+  fireEvent.click(await screen.findByText("Live table — all current hands"));
+  expect(await screen.findByText("Connecting to live table…")).toBeVisible();
+  expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument();
+});
+
+it("removes private snapshots and leaves the Admin surface after a live read returns 401", async () => {
+  window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
+  let expired = false;
+  stubFetch(path => {
+    if (!path.endsWith("/live")) return response({ ...run, status: "running" });
+    return expired ? response({ detail: "Admin session expired" }, 401) : response(live);
+  });
+  render(<App />);
+  const summary = await screen.findByText("Live table — all current hands");
+  fireEvent.click(summary);
+  await screen.findByText(/Read-only Admin view/);
+  expired = true;
+  fireEvent.click(summary);
+  await waitFor(() => expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument());
+  fireEvent.click(summary);
+  expect(await screen.findByRole("heading", { name: "Sign in to host." })).toBeVisible();
+  expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument();
 });
 
 it("exposes request failures with an explicit retry action", async () => {
