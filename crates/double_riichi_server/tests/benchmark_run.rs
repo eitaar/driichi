@@ -1,7 +1,7 @@
 use double_riichi_core::room::BenchmarkStatus;
 use double_riichi_core::{
-    CharacterCatalog, GameMode, Participant, ParticipantKind, RoomActor, RoomCommand, RoomConfig,
-    RoomHandle, RoomPhase, RoomResponse, ShutdownMode,
+    AudienceProjection, CharacterCatalog, GameMode, Participant, ParticipantKind, RoomActor,
+    RoomCommand, RoomConfig, RoomHandle, RoomPhase, RoomResponse, ShutdownMode,
 };
 use double_riichi_server::{BenchmarkRunStatus, Storage, spawn_room_effect_worker};
 use std::{
@@ -13,6 +13,17 @@ use std::{
 };
 
 async fn room(built_in: bool) -> (RoomHandle, Arc<Storage>, tokio::task::JoinHandle<()>) {
+    room_with_kinds(if built_in {
+        [ParticipantKind::BuiltInBot; 4]
+    } else {
+        [ParticipantKind::MCP; 4]
+    })
+    .await
+}
+
+async fn room_with_kinds(
+    kinds: [ParticipantKind; 4],
+) -> (RoomHandle, Arc<Storage>, tokio::task::JoinHandle<()>) {
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "benchmark-run-{}-{}-{}",
@@ -33,16 +44,12 @@ async fn room(built_in: bool) -> (RoomHandle, Arc<Storage>, tokio::task::JoinHan
     config.empty_room_cleanup = Duration::from_secs(60);
     let (room, effects) = RoomActor::spawn_with_effect_channel(config);
     let worker = spawn_room_effect_worker(storage.clone(), effects);
-    for seat in 0..4 {
-        let response = if built_in {
+    for (seat, kind) in kinds.into_iter().enumerate() {
+        let response = if kind == ParticipantKind::BuiltInBot {
             room.send(RoomCommand::AddBenchmarkBot).await.unwrap()
         } else {
             room.send(RoomCommand::join_with_token(
-                Participant::new(
-                    format!("bot-{seat}"),
-                    format!("Bot {seat}"),
-                    ParticipantKind::MCP,
-                ),
+                Participant::new(format!("bot-{seat}"), format!("Bot {seat}"), kind),
                 "shared-token",
             ))
             .await
@@ -115,6 +122,96 @@ async fn built_in_series_counts_only_durable_matches_and_rotates_fixed_ids() {
         assert!(matches!(state.phase, RoomPhase::PostMatch(_)));
         close(room, storage, worker).await;
     }
+}
+
+#[tokio::test]
+async fn mixed_roster_keeps_same_token_identities_through_two_persisted_matches() {
+    let (room, storage, worker) = room_with_kinds([
+        ParticipantKind::MCP,
+        ParticipantKind::MCP,
+        ParticipantKind::MJAI,
+        ParticipantKind::BuiltInBot,
+    ])
+    .await;
+    room.send(RoomCommand::StartBenchmark {
+        run_id: "mixed".into(),
+        target: 2,
+    })
+    .await
+    .unwrap();
+    for _ in 0..10_000 {
+        if room.snapshot().await.unwrap().benchmark.unwrap().status != BenchmarkStatus::Running {
+            break;
+        }
+        let mut submitted = false;
+        for id in ["bot-0", "bot-1", "bot-2"] {
+            let Some(AudienceProjection::Player(projection)) = room.projection(id).await.unwrap()
+            else {
+                continue;
+            };
+            assert_eq!(
+                projection
+                    .players
+                    .iter()
+                    .filter(|player| player.hand.is_some())
+                    .count(),
+                1
+            );
+            if let Some(decision) = projection
+                .decision
+                .filter(|decision| !decision.actions.is_empty())
+            {
+                room.send(RoomCommand::submit_action(
+                    id,
+                    decision.decision_id,
+                    decision.default_action_id,
+                ))
+                .await
+                .unwrap();
+                submitted = true;
+            }
+        }
+        if !submitted {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    let run = storage.load_benchmark_run("mixed").await.unwrap();
+    assert_eq!(run.status, BenchmarkRunStatus::Completed);
+    assert_eq!(run.completed, 2);
+    assert_eq!(run.matches.len(), 2);
+    assert_ne!(run.matches[0].match_id, run.matches[1].match_id);
+    let stats = run.statistics();
+    assert_eq!(stats.len(), 4);
+    for id in ["bot-0", "bot-1"] {
+        assert_eq!(
+            stats
+                .iter()
+                .find(|stat| stat.participant_id.as_str() == id)
+                .unwrap()
+                .cumulative_net_scores
+                .len(),
+            2
+        );
+    }
+    for player in &run.roster {
+        for (index, game) in run.matches.iter().enumerate() {
+            assert_eq!(
+                game.results
+                    .iter()
+                    .find(|result| result.participant_id == player.participant_id)
+                    .unwrap()
+                    .seat as usize,
+                (player.initial_seat as usize + index) % 4
+            );
+        }
+    }
+    let completed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM matches WHERE status = 'completed'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+    assert_eq!(completed, 2);
+    close(room, storage, worker).await;
 }
 
 #[tokio::test]

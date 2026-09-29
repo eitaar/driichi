@@ -158,6 +158,31 @@ async fn admin_polling_has_current_hands_only_and_revalidates_auth_without_becom
         .unwrap();
 }
 
+#[tokio::test]
+async fn three_player_benchmark_rejects_mjai_before_admission() {
+    let rooms = RoomRegistry::new();
+    let mut config = RoomConfig::new(
+        "three-player benchmark",
+        GameMode::ThreePlayerRedEast,
+        CharacterCatalog::starter(),
+    );
+    config.benchmark = true;
+    let room = rooms.create(config).await.unwrap();
+    assert!(
+        room.send(RoomCommand::join(Participant::new(
+            "mjai",
+            "MJAI",
+            ParticipantKind::MJAI
+        )))
+        .await
+        .is_err()
+    );
+    assert!(room.snapshot().await.unwrap().participants.is_empty());
+    room.send(RoomCommand::shutdown(ShutdownMode::Forced))
+        .await
+        .unwrap();
+}
+
 #[test]
 fn benchmark_audience_does_not_reuse_replay_private_decisions() {
     use double_riichi_core::{MatchMachine, TimeControl};
