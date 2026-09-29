@@ -495,7 +495,7 @@ impl RoomKyokuSummary {
 fn project_history_event(event: &GameEvent, audience: Audience) -> Option<RoomHistoryEvent> {
     let viewer = match audience {
         Audience::Player(seat) => Some(seat),
-        Audience::Public | Audience::ReplayAdmin => None,
+        Audience::Public | Audience::BenchmarkAdmin | Audience::ReplayAdmin => None,
     };
     Some(match event {
         GameEvent::StartGame { .. } => return None,
@@ -916,6 +916,7 @@ pub enum RoomCommand {
         participant_id: ParticipantId,
     },
     GetPublicProjection,
+    GetBenchmarkAdminProjection,
 }
 
 impl RoomCommand {
@@ -1092,6 +1093,7 @@ pub enum RoomResponse {
     Joined(RoomParticipantSnapshot),
     Accepted(RoomSnapshot),
     Projection(Option<AudienceProjection>),
+    BenchmarkLive(RoomSnapshot, Option<AudienceProjection>),
     Started(MatchId),
     Action(DecisionResult),
     MatchEvents(Vec<GameEvent>),
@@ -1257,6 +1259,15 @@ impl RoomHandle {
     pub async fn public_projection(&self) -> Result<Option<AudienceProjection>, RoomError> {
         match self.send(RoomCommand::GetPublicProjection).await? {
             RoomResponse::Projection(projection) => Ok(projection),
+            _ => Err(RoomError::Closed),
+        }
+    }
+
+    pub async fn benchmark_admin_projection(
+        &self,
+    ) -> Result<Option<AudienceProjection>, RoomError> {
+        match self.send(RoomCommand::GetBenchmarkAdminProjection).await? {
+            RoomResponse::BenchmarkLive(_, projection) => Ok(projection),
             _ => Err(RoomError::Closed),
         }
     }
@@ -2361,6 +2372,7 @@ impl RoomState {
             | RoomCommand::Rematch
             | RoomCommand::GetProjection { .. }
             | RoomCommand::GetPublicProjection
+            | RoomCommand::GetBenchmarkAdminProjection
             | RoomCommand::GetMatchEvents
             | RoomCommand::GetHistoryProjection { .. }
             | RoomCommand::GetPublicHistoryProjection => {
@@ -2716,6 +2728,22 @@ impl Actor {
                 .map(RoomResponse::Projection),
             RoomCommand::GetPublicProjection => {
                 self.state.public_projection().map(RoomResponse::Projection)
+            }
+            RoomCommand::GetBenchmarkAdminProjection => {
+                if !self.state.config.benchmark {
+                    return Err(RoomError::BenchmarkUnavailable);
+                }
+                let projection = self
+                    .state
+                    .match_machine
+                    .as_mut()
+                    .map(|machine| machine.project(Audience::BenchmarkAdmin))
+                    .transpose()
+                    .map_err(|error| RoomError::Match(error.to_string()))?;
+                Ok(RoomResponse::BenchmarkLive(
+                    self.state.snapshot(),
+                    projection,
+                ))
             }
             RoomCommand::Start if self.state.config.benchmark => {
                 Err(RoomError::BenchmarkUnavailable)
@@ -3175,6 +3203,15 @@ impl Actor {
         let expired = self.state.disconnected_cleanup(now);
         if !expired.is_empty() {
             self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+        }
+        if self
+            .state
+            .match_machine
+            .as_ref()
+            .is_some_and(MatchMachine::is_complete)
+        {
+            self.advance_match().await?;
+            return Ok(RoomResponse::Accepted(self.state.snapshot()));
         }
         if self.state.match_machine.is_some() {
             match self
@@ -3930,6 +3967,53 @@ mod tests {
             ]
         );
         assert_eq!(cycle, initial);
+    }
+
+    #[tokio::test]
+    async fn benchmark_tick_finalizes_a_match_completed_at_the_slice_boundary() {
+        let mut config = RoomConfig::new(
+            "boundary",
+            GameMode::FourPlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.benchmark = true;
+        let mut state = RoomState::new(config).unwrap();
+        for _ in 0..4 {
+            state
+                .apply_simple(RoomCommand::AddBenchmarkBot, Instant::now())
+                .unwrap();
+        }
+        for player in state.snapshot().participants {
+            state
+                .apply_simple(RoomCommand::select(player.id), Instant::now())
+                .unwrap();
+        }
+        let (id, mut machine, roster) = state.build_match().unwrap();
+        for _ in 0..10_000 {
+            if machine.is_complete() {
+                break;
+            }
+            machine.resolve_expired().unwrap();
+        }
+        assert!(machine.is_complete());
+        state.benchmark_roster_ids = roster.iter().map(|p| p.participant_id.clone()).collect();
+        state.benchmark = Some(BenchmarkProgress {
+            run_id: "boundary".into(),
+            target: 1,
+            completed: 0,
+            stop_requested: false,
+            status: BenchmarkStatus::Running,
+        });
+        state.commit_match(id, machine, roster);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let run = handle.snapshot().await.unwrap().benchmark.unwrap();
+        assert_eq!(run.completed, 1);
+        assert_eq!(run.status, BenchmarkStatus::Completed);
+        handle
+            .send(RoomCommand::shutdown(ShutdownMode::Forced))
+            .await
+            .unwrap();
     }
 
     #[test]

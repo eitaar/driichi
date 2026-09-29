@@ -1209,6 +1209,10 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
             "/api/v1/admin/rooms/{join_code}/fill-with-bots",
             post(admin_fill),
         )
+        .route(
+            "/api/v1/admin/benchmark/rooms/{join_code}/live",
+            get(admin_benchmark_live),
+        )
         .route("/api/v1/admin/rooms/{join_code}/start", post(admin_start))
         .route(
             "/api/v1/admin/rooms/{join_code}/rematch",
@@ -2253,6 +2257,39 @@ async fn admin_room_detail(
     match handle.snapshot().await {
         Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
         Err(_) => room_not_found(&request_id),
+    }
+}
+
+async fn admin_benchmark_live(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let credential = match require_admin(&state, &headers, &request_id) {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let Some(handle) = state.rooms.get(&join_code).await else {
+        return room_not_found(&request_id);
+    };
+    let response = handle.send(RoomCommand::GetBenchmarkAdminProjection).await;
+    if let Err(response) = revalidate_admin(&state, &credential, &request_id) {
+        return response;
+    }
+    match response {
+        Ok(RoomResponse::BenchmarkLive(snapshot, projection)) => {
+            let mut response = json_response(
+                StatusCode::OK,
+                json!({"revision": snapshot.revision, "benchmark": snapshot.benchmark, "projection": projection}),
+            );
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        Err(error) => room_error_response(error, &request_id),
+        _ => internal_error(&request_id),
     }
 }
 
@@ -3509,7 +3546,9 @@ fn room_event_value(event: &RoomEvent) -> Value {
 fn projection_viewer_seat(projection: &AudienceProjection) -> Option<Seat> {
     match projection {
         AudienceProjection::Player(player) => Some(player.viewer_seat),
-        AudienceProjection::Public(_) | AudienceProjection::ReplayAdmin(_) => None,
+        AudienceProjection::Public(_)
+        | AudienceProjection::BenchmarkAdmin(_)
+        | AudienceProjection::ReplayAdmin(_) => None,
     }
 }
 
