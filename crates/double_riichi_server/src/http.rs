@@ -1210,6 +1210,27 @@ pub fn server_router(state: Arc<ServerState>) -> Router {
             post(admin_fill),
         )
         .route(
+            "/api/v1/admin/benchmark/rooms",
+            post(admin_create_benchmark_room),
+        )
+        .route(
+            "/api/v1/admin/benchmark/rooms/{join_code}/bots",
+            post(admin_benchmark_add_bot),
+        )
+        .route(
+            "/api/v1/admin/benchmark/rooms/{join_code}/runs",
+            post(admin_benchmark_start),
+        )
+        .route(
+            "/api/v1/admin/benchmark/rooms/{join_code}/stop",
+            post(admin_benchmark_stop),
+        )
+        .route("/api/v1/admin/benchmark/runs", get(admin_benchmark_runs))
+        .route(
+            "/api/v1/admin/benchmark/runs/{run_id}",
+            get(admin_benchmark_run),
+        )
+        .route(
             "/api/v1/admin/benchmark/rooms/{join_code}/live",
             get(admin_benchmark_live),
         )
@@ -1925,6 +1946,25 @@ async fn admin_create_room(
     Extension(request_id): Extension<RequestId>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    admin_create_room_inner(state, headers, request_id, body, false).await
+}
+
+async fn admin_create_benchmark_room(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    admin_create_room_inner(state, headers, request_id, body, true).await
+}
+
+async fn admin_create_room_inner(
+    state: Arc<ServerState>,
+    headers: HeaderMap,
+    request_id: RequestId,
+    body: Result<Bytes, BytesRejection>,
+    benchmark: bool,
+) -> Response {
     let credential = match require_admin(&state, &headers, &request_id) {
         Ok(credential) => credential,
         Err(response) => return response,
@@ -1954,6 +1994,13 @@ async fn admin_create_room(
     }
     if let Some(replay_save) = payload.replay_save {
         config.replay_save = replay_save;
+    }
+    if benchmark {
+        if state.storage.is_none() {
+            return internal_error(&request_id);
+        }
+        config.benchmark = true;
+        config.replay_save = true;
     }
     if let Some(limit) = payload.participant_limit {
         if !(mode.seat_count()..=state.limits.room_participant_limit).contains(&limit) {
@@ -2257,6 +2304,133 @@ async fn admin_room_detail(
     match handle.snapshot().await {
         Ok(snapshot) => room_detail_response(StatusCode::OK, &snapshot),
         Err(_) => room_not_found(&request_id),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartBenchmarkRequest {
+    target: u16,
+}
+
+async fn admin_benchmark_start(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    if !unsafe_admin_origin_allowed(&headers, &state) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Origin not allowed",
+            "The request origin is not allowed.",
+            "origin_not_allowed",
+        )
+        .response(&request_id);
+    }
+    let payload: StartBenchmarkRequest = match parse_json(&headers, body, &request_id) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if !(1..=1000).contains(&payload.target) {
+        return invalid_request(&request_id);
+    }
+    admin_room_command(
+        &state,
+        &join_code,
+        headers,
+        request_id,
+        "benchmark_start",
+        RoomCommand::StartBenchmark {
+            run_id: generate_ulid(),
+            target: payload.target,
+        },
+    )
+    .await
+}
+
+async fn admin_benchmark_add_bot(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_room_command(
+        &state,
+        &join_code,
+        headers,
+        request_id,
+        "benchmark_add_bot",
+        RoomCommand::AddBenchmarkBot,
+    )
+    .await
+}
+
+async fn admin_benchmark_stop(
+    State(state): State<Arc<ServerState>>,
+    Path(join_code): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    admin_room_command(
+        &state,
+        &join_code,
+        headers,
+        request_id,
+        "benchmark_stop",
+        RoomCommand::StopBenchmark,
+    )
+    .await
+}
+
+async fn admin_benchmark_runs(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let Some(storage) = &state.storage else {
+        return internal_error(&request_id);
+    };
+    match storage.list_benchmark_runs().await {
+        Ok(runs) => json_response(StatusCode::OK, json!(runs)),
+        Err(_) => internal_error(&request_id),
+    }
+}
+
+async fn admin_benchmark_run(
+    State(state): State<Arc<ServerState>>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers, &request_id) {
+        return response;
+    }
+    let Some(storage) = &state.storage else {
+        return internal_error(&request_id);
+    };
+    match storage.load_benchmark_run(&run_id).await {
+        Ok(run) => {
+            let stats = run.statistics();
+            let mut value = json!(run);
+            value["statistics"] = json!(stats);
+            json_response(StatusCode::OK, value)
+        }
+        Err(StorageError::Sqlx(sqlx::Error::RowNotFound)) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "Run not found",
+            "The requested Benchmark Run does not exist.",
+            "benchmark_run_not_found",
+        )
+        .response(&request_id),
+        Err(_) => internal_error(&request_id),
     }
 }
 
@@ -2784,6 +2958,10 @@ async fn admin_room_command(
     }
     let response = match handle.send(command).await {
         Ok(response @ RoomResponse::Started(_)) => response,
+        Ok(RoomResponse::Joined(_)) => match handle.snapshot().await {
+            Ok(snapshot) => RoomResponse::Accepted(snapshot),
+            Err(_) => return internal_error(&request_id),
+        },
         Ok(RoomResponse::Accepted(snapshot)) => {
             if !room_command_changed(action, &before, &snapshot) {
                 if let Err(error) = cancel_admin_audit(state, &request_id).await {
@@ -3751,6 +3929,8 @@ struct RoomListView {
     participant_count: usize,
     selected_count: usize,
     created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    benchmark_mode: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -3810,6 +3990,7 @@ fn room_list_view(snapshot: &RoomSnapshot) -> RoomListView {
             .filter(|participant| participant.selected)
             .count(),
         created_at: unix_seconds_rfc3339(snapshot.created_at),
+        benchmark_mode: snapshot.benchmark_mode.then_some(true),
     }
 }
 
@@ -3897,10 +4078,11 @@ fn controller_name(controller: RoomController) -> String {
 }
 
 fn room_detail_response(status: StatusCode, snapshot: &RoomSnapshot) -> Response {
-    json_response(
-        status,
-        serde_json::to_value(room_detail_view(snapshot)).unwrap_or(Value::Null),
-    )
+    let mut value = serde_json::to_value(room_detail_view(snapshot)).unwrap_or(Value::Null);
+    if snapshot.benchmark_mode {
+        value["benchmark"] = json!(snapshot.benchmark);
+    }
+    json_response(status, value)
 }
 
 fn room_snapshot_value(snapshot: &RoomSnapshot) -> Value {

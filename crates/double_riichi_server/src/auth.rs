@@ -795,9 +795,8 @@ pub(crate) fn validate_audit_summary(action: &str, summary: &Value) -> bool {
         return false;
     }
     match action {
-        "login" | "logout" | "fill_with_bots" | "match_start" | "rematch" | "back_to_lobby" => {
-            object.is_empty()
-        }
+        "login" | "logout" | "fill_with_bots" | "match_start" | "rematch" | "back_to_lobby"
+        | "benchmark_add_bot" | "benchmark_start" | "benchmark_stop" => object.is_empty(),
         "room_create" | "room_delete" => object_has_string(object, "room_name"),
         "room_configure" => object_has_string_array(object, "changed_fields"),
         "participant_select" | "participant_deselect" | "participant_kick" => {

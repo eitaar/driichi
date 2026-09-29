@@ -219,6 +219,55 @@ pub struct BenchmarkRunRecord {
     pub matches: Vec<BenchmarkMatchRecord>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct BenchmarkParticipantStatistics {
+    pub participant_id: String,
+    pub display_name: String,
+    pub average_rank: Option<f64>,
+    pub first_place_rate: Option<f64>,
+    pub cumulative_net_scores: Vec<f64>,
+}
+
+impl BenchmarkRunRecord {
+    pub fn statistics(&self) -> Vec<BenchmarkParticipantStatistics> {
+        self.roster
+            .iter()
+            .map(|player| {
+                let mut ranks = Vec::new();
+                let mut cumulative = 0.0;
+                let mut series = Vec::new();
+                for game in &self.matches {
+                    if let Some(result) = game
+                        .results
+                        .iter()
+                        .find(|result| result.participant_id == player.participant_id)
+                    {
+                        ranks.push(result.rank);
+                        let mean = game
+                            .results
+                            .iter()
+                            .map(|r| r.final_score as f64)
+                            .sum::<f64>()
+                            / game.results.len() as f64;
+                        cumulative += result.final_score as f64 - mean;
+                        series.push(cumulative);
+                    }
+                }
+                BenchmarkParticipantStatistics {
+                    participant_id: player.participant_id.clone(),
+                    display_name: player.display_name.clone(),
+                    average_rank: (!ranks.is_empty())
+                        .then(|| ranks.iter().sum::<i64>() as f64 / ranks.len() as f64),
+                    first_place_rate: (!ranks.is_empty()).then(|| {
+                        ranks.iter().filter(|rank| **rank == 1).count() as f64 / ranks.len() as f64
+                    }),
+                    cumulative_net_scores: series,
+                }
+            })
+            .collect()
+    }
+}
+
 pub struct Storage {
     pool: SqlitePool,
     data_root: PathBuf,
@@ -2292,6 +2341,60 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn benchmark_statistics_use_stored_ranks_center_scores_and_keep_identities_separate() {
+        let mut run = BenchmarkRunRecord {
+            run_id: "stats".into(),
+            room_code: "123456".into(),
+            game_mode: "4p-red-east".into(),
+            target: 3,
+            completed: 0,
+            status: BenchmarkRunStatus::Failed,
+            reason: Some("failed attempt excluded".into()),
+            failed_match_id: Some("failed".into()),
+            roster: (0..4)
+                .map(|seat| BenchmarkRosterRecord {
+                    participant_id: format!("p{seat}"),
+                    display_name: "same name".into(),
+                    participant_kind: "mcp".into(),
+                    initial_seat: seat,
+                    character_id: None,
+                })
+                .collect(),
+            matches: vec![],
+        };
+        let stats = run.statistics();
+        assert_eq!(stats.len(), 4);
+        assert!(stats.iter().all(|s| s.average_rank.is_none()
+            && s.first_place_rate.is_none()
+            && s.cumulative_net_scores.is_empty()));
+        for (sequence, scores, ranks) in [
+            (1, [40000, 30000, 20000, 10000], [2, 1, 3, 4]),
+            (2, [10000, 20000, 30000, 40000], [4, 3, 2, 1]),
+            (3, [30000, 30000, 20000, 20000], [1, 2, 3, 4]),
+        ] {
+            run.matches.push(BenchmarkMatchRecord {
+                sequence,
+                match_id: format!("m{sequence}"),
+                results: (0..4)
+                    .map(|seat| BenchmarkResultRecord {
+                        participant_id: format!("p{seat}"),
+                        seat: seat as i64,
+                        final_score: scores[seat],
+                        rank: ranks[seat],
+                    })
+                    .collect(),
+            });
+        }
+        run.completed = 3;
+        let stats = run.statistics();
+        assert_eq!(stats[0].average_rank, Some(7.0 / 3.0));
+        assert_eq!(stats[0].first_place_rate, Some(1.0 / 3.0));
+        assert_eq!(stats[0].cumulative_net_scores, [15000.0, 0.0, 5000.0]);
+        assert_eq!(stats[1].average_rank, Some(2.0));
+        assert_eq!(stats[1].cumulative_net_scores, [5000.0, 0.0, 5000.0]);
     }
 
     #[test]
