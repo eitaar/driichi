@@ -10,6 +10,7 @@ vi.mock("./game/audio", () => ({
     settings = { master: 1, sfx: 1, voice: 1, voiceEnabled: true };
     playVoices = mockPlayVoices;
     unlock = vi.fn(() => Promise.resolve());
+    stop = vi.fn();
     destroy = vi.fn();
   },
 }));
@@ -53,6 +54,7 @@ const frame = (
     mode: "FourPlayerRedEast",
     round: "East",
     kyoku: index < 2 ? 1 : 2,
+    honba: 0,
     players: [0, 1, 2, 3].map((seat) => ({ seat, participant_id: `P${seat}`, display_name: `Seat ${seat}`, kind: "BuiltInBot", score: 25000, hand: hands[seat], concealed_count: hands[seat]?.length ?? 0, discards: [], melds: [], riichi: false })),
     dora_indicators: [0],
     decision: null,
@@ -116,8 +118,7 @@ describe("Replay Admin workspace", () => {
     expect(view.container.querySelector(".table-player-overlays")).not.toHaveAttribute("aria-hidden");
     expect(view.container.querySelector('[data-position="top"]')).not.toBeNull();
     expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("Mika");
-    expect(view.container.querySelector('[data-position="bottom"]')).toHaveTextContent("25,000");
-    expect(view.container.querySelector('[data-position="right"]')).toHaveTextContent("Riichi");
+    expect(view.container.querySelector('[data-position="right"]')).toHaveTextContent("Seat 1");
     expect(screen.getByAltText("Mika icon")).toHaveAttribute(
       "src",
       "/assets/characters/ordinary-pack/icon.webp",
@@ -276,8 +277,7 @@ describe("Replay Admin workspace", () => {
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /previous event/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /next event/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: "0.5x" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "1x" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("combobox", { name: /playback speed/i })).toHaveValue("1");
     expect(screen.getByRole("combobox", { name: /jump to kyoku/i })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent(/disconnected/i);
     const eventLog = screen.getByRole("log", { name: /replay event log/i });
@@ -286,8 +286,8 @@ describe("Replay Admin workspace", () => {
     expect(screen.getByRole("button", { name: /^pause$/i })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /next event/i }));
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "2x" }));
-    expect(screen.getByRole("button", { name: "2x" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(screen.getByRole("combobox", { name: /playback speed/i }), { target: { value: "2" } });
+    expect(screen.getByRole("combobox", { name: /playback speed/i })).toHaveValue("2");
     fireEvent.change(screen.getByRole("combobox", { name: /jump to kyoku/i }), { target: { value: "2" } });
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
   });

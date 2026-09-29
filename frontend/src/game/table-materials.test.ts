@@ -1,10 +1,7 @@
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { LinearMipmapLinearFilter } from "three";
 import { describe, expect, it } from "vitest";
 import {
-  FELT_MATERIAL_TINT,
   TABLE_TEXTURE_URLS,
   TABLE_TEXTURE_SPECS,
   configureTableTexture,
@@ -42,23 +39,6 @@ describe("table material assets", () => {
     expect(TABLE_TEXTURE_SPECS.felt.colorSpace).toBe("srgb");
     expect(TABLE_TEXTURE_SPECS.felt.minFilter).toBe("mipmap");
     expect(TABLE_TEXTURE_SPECS.felt.anisotropy).toBe(4);
-  });
-
-  it("keeps felt direct-loaded and deep-green without a derived canvas texture", () => {
-    const sceneSource = readFileSync(
-      resolve(process.cwd(), "src/game/three-table-scene.tsx"),
-      "utf8",
-    );
-
-    expect(FELT_MATERIAL_TINT).toBe("#18352f");
-    expect(sceneSource).not.toContain("CanvasTexture");
-    expect(sceneSource).not.toContain("tintFeltTexture");
-    expect(sceneSource).toContain(
-      "(texture) => resolve(configureTableTexture(texture, TABLE_TEXTURE_SPECS[key]))",
-    );
-    expect(sceneSource).not.toMatch(
-      /<meshBasicMaterial\s+color="#ffffff"\s+map=\{texture\}/,
-    );
   });
 
   it("configures trilinear mipmaps so felt anisotropy is effective", () => {

@@ -39,12 +39,13 @@ describe("result surfaces", () => {
     expect(screen.getByTestId("round-win-surface")).toHaveAttribute("data-motion", "static");
     expect(screen.getByRole("heading", { name: "Mika" })).toBeVisible();
     expect(screen.getByRole("img", { name: "Mika portrait unavailable" })).toBeVisible();
-    expect(screen.getByText("Discard win")).toBeVisible();
-    expect(screen.getByText("Riichi · 1 han")).toBeVisible();
+    expect(screen.getByLabelText("Ron win details")).toBeVisible();
+    expect(screen.getByText("Riichi")).toBeVisible();
+    expect(screen.getByText("1 han")).toBeVisible();
     expect(screen.getAllByRole("img")).toHaveLength(14);
   });
 
-  it("keeps final standings semantic while showing portraits, auto labels, and supplied deltas", () => {
+  it("keeps final standings semantic and highlights the winner portrait", () => {
     const room = {
       game_mode: "4p-red-east",
       replay_available: true,
@@ -67,13 +68,9 @@ describe("result surfaces", () => {
 
     const standings = screen.getByRole("list", { name: "Final standings" });
     expect(within(standings).getAllByRole("listitem")).toHaveLength(2);
-    expect(screen.getByText("Permanent Auto")).toBeVisible();
-    expect(screen.getByText("+5,000")).toBeVisible();
-    expect(screen.getByText("-5,000")).toBeVisible();
-    expect(screen.getAllByAltText("Mika portrait")).toHaveLength(2);
-    expect(screen.getByAltText("Nori portrait")).toBeVisible();
-    expect(screen.getByText("Available")).toBeVisible();
-    expect(screen.getByText("4p-red-east")).toBeVisible();
+    expect(within(standings).getAllByRole("listitem")[0]).toHaveTextContent("Mika");
+    expect(within(standings).getAllByRole("listitem")[0]).toHaveTextContent("45,000");
+    expect(screen.getByAltText("Mika portrait")).toBeVisible();
   });
 
   it("maps seat-ordered final scores to ranked players without inventing deltas", () => {

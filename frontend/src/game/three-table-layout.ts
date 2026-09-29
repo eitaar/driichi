@@ -226,7 +226,7 @@ function addDiscardTiles(
 function meldPosition(position: SceneSeat, index: number, scale: number): Vec3 {
   const edge = position === "bottom" || position === "top" ? 6 * TABLE_WIDTH_STRETCH : 5.25;
   const offset = index * (TILE_BODY_SIZE.width * scale + 0.02);
-  if (position === "bottom") return [edge - offset, 0.3, 3.7];
+  if (position === "bottom") return [edge - offset, 0.3, 4.5];
   if (position === "top") return [-edge + offset, 0.3, -5.3];
   if (position === "right") return [6 * TABLE_WIDTH_STRETCH, 0.3, -edge + offset];
   return [-5.35 * TABLE_WIDTH_STRETCH, 0.3, edge - offset];

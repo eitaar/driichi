@@ -241,7 +241,7 @@ describe("admin room workspace", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: /admin rooms/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /^rooms$/i })).toBeVisible();
     expect(await screen.findByRole("link", { name: /night market/i })).toBeVisible();
     expect(await screen.findByRole("heading", { name: /night market/i })).toBeVisible();
     expect(screen.getByText(/identity/i)).toBeVisible();
@@ -290,7 +290,8 @@ describe("admin room workspace", () => {
     });
 
     render(<App />);
-    await screen.findByRole("heading", { name: /credentials for agents/i });
+    await screen.findByRole("heading", { name: /choose a room/i });
+    fireEvent.click(screen.getByText("Bot tokens"));
     fireEvent.change(screen.getByRole("textbox", { name: /token name/i }), { target: { value: "runner" } });
     fireEvent.click(screen.getByRole("button", { name: /create token/i }));
     expect(await screen.findByText("driichi_secret_once")).toBeVisible();
@@ -390,7 +391,8 @@ describe("admin mutation coverage", () => {
     const participant = { participant_id: "P2", display_name: "Nori", kind: "human", presence: "connected", selected: false, ready: false, character_id: "player-red", role: "none", controller: "interactive" };
     const fetchMock = vi.fn().mockImplementation((input, init) => {
       const path = String(input);
-      const detail = { ...room, selected_count: selected ? 4 : 3, participants: [{ ...participant, selected }] };
+      const bots = [0, 1, 2].map((index) => ({ ...participant, participant_id: `B${index}`, display_name: `Bot ${index}`, kind: "built_in_bot", selected: true, ready: true }));
+      const detail = { ...room, selected_count: selected ? 4 : 3, participants: [...bots, { ...participant, selected, ready: selected }] };
       if (path.endsWith("/participants/P2/select")) { selected = true; return Promise.resolve(response(detail)); }
       if (path.endsWith("/participants/P2/deselect")) { selected = false; return Promise.resolve(response(detail)); }
       if (path.endsWith("/start")) return Promise.resolve(response({ ...detail, phase: "playing" }));
@@ -402,12 +404,14 @@ describe("admin mutation coverage", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await screen.findByRole("heading", { name: /night market/i });
-    fireEvent.click(screen.getByRole("button", { name: /^select$/i }));
+    const nori = within(screen.getByText("Nori").closest("article") as HTMLElement);
+    fireEvent.click(nori.getByRole("button", { name: /^select$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P2/select", expect.objectContaining({ method: "POST" })));
-    await screen.findByRole("button", { name: /^deselect$/i });
-    fireEvent.click(screen.getByRole("button", { name: /^deselect$/i }));
+    await waitFor(() => expect(nori.getByRole("button", { name: /^deselect$/i })).toBeEnabled());
+    fireEvent.click(nori.getByRole("button", { name: /^deselect$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P2/deselect", expect.objectContaining({ method: "POST" })));
-    fireEvent.click(await screen.findByRole("button", { name: /^select$/i }));
+    await waitFor(() => expect(nori.getByRole("button", { name: /^select$/i })).toBeEnabled());
+    fireEvent.click(nori.getByRole("button", { name: /^select$/i }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/participants/P2/select")).length).toBeGreaterThan(1));
     await waitFor(() => expect(screen.getByRole("button", { name: /start match/i })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: /start match/i }));
@@ -429,7 +433,8 @@ describe("admin mutation coverage", () => {
     fireEvent.click(screen.getByRole("button", { name: /kick/i }));
     fireEvent.click(await screen.findByRole("button", { name: /confirm kick/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P1/kick", expect.objectContaining({ method: "POST" })));
-    fireEvent.click(screen.getByRole("button", { name: "Create Room" }));
+    fireEvent.click(screen.getByText("Create room"));
+    fireEvent.click(screen.getByRole("button", { name: /set up room/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText(/room name/i), { target: { value: "Second Room" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /^create room$/i }));

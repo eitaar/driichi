@@ -4829,6 +4829,9 @@ mod tests {
 
         drop(app);
         storage.close().await;
+        drop(storage);
+        // SQLite's background worker can still hold a Windows file handle briefly after close.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
