@@ -165,6 +165,142 @@ paths:
           description: Admin session ended.
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/oauth/authorize:
+    get:
+      operationId: getOAuthAuthorizationPage
+      tags: [admin]
+      description: >-
+        Browser-only ChatGPT authorization entry point, available when OAuth is
+        configured. Validates the configured client, redirect URI and MCP resource,
+        and S256 PKCE. Returns sign-in HTML without an Admin session, or consent
+        HTML with one, and establishes a ten-minute OAuth CSRF cookie and pending
+        flow. Query fields must be unique; unknown fields and queries over 8 KiB
+        are rejected. ui_locales is accepted but does not change the page.
+      security:
+        - {}
+        - adminCookie: []
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/client_id'
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/redirect_uri'
+        - name: response_type
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/response_type'
+        - name: state
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/state'
+        - name: scope
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/scope'
+        - name: resource
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/resource'
+        - name: code_challenge
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/code_challenge'
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/code_challenge_method'
+        - name: ui_locales
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/OAuthPage'
+        '303':
+          $ref: '#/components/responses/OAuthRedirect'
+        '400':
+          $ref: '#/components/responses/OAuthError'
+        '404':
+          $ref: '#/components/responses/OAuthError'
+    post:
+      operationId: submitOAuthConsent
+      tags: [admin]
+      description: >-
+        Browser form submission requiring the exact public Origin, an Admin
+        session and the matching OAuth CSRF cookie. Submitted authorization fields
+        must match the pending ten-minute flow. Consumes the flow once and clears
+        its CSRF cookie; approval redirects with a short-lived authorization code,
+        denial with access_denied, and other decisions with invalid_request. Both
+        redirects preserve state and include iss. Forms are limited to 16 KiB;
+        duplicate and unknown fields are rejected.
+      security:
+        - adminCookie: []
+          oauthCsrfCookie: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthOrigin'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthConsentForm'
+      responses:
+        '303':
+          $ref: '#/components/responses/OAuthRedirect'
+        '400':
+          $ref: '#/components/responses/OAuthError'
+        '401':
+          $ref: '#/components/responses/OAuthError'
+        '403':
+          $ref: '#/components/responses/OAuthError'
+        '404':
+          $ref: '#/components/responses/OAuthError'
+  /api/v1/admin/oauth/login:
+    post:
+      operationId: signInForOAuthConsent
+      tags: [admin]
+      description: >-
+        Browser sign-in form for a pending OAuth flow, not the JSON Admin login.
+        Requires the exact public Origin and matching CSRF cookie, with the same
+        authorization fields as the pending flow. Establishes the Admin session
+        cookie and returns consent HTML; login alone does not issue an OAuth grant.
+        Forms are limited to 16 KiB; duplicate and unknown fields are rejected.
+      security:
+        - oauthCsrfCookie: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthOrigin'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthLoginForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/OAuthPage'
+        '400':
+          $ref: '#/components/responses/OAuthError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OAuthError'
+        '404':
+          $ref: '#/components/responses/OAuthError'
+        '429':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
   /api/v1/admin/tokens:
     get:
       operationId: listBotTokens
@@ -450,6 +586,225 @@ paths:
                 $ref: '#/components/schemas/RoomDetail'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin/benchmark/rooms:
+    post:
+      operationId: createBenchmarkRoom
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      description: >-
+        Create a bot-only benchmark Room with storage configured. Accepts the
+        ordinary Room creation fields, but always enables replay saving even if
+        replay_save is false. Human and ordinary spectator admission is disabled.
+        Admin mutations require an allowed same-origin request and durable audit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoomRequest'
+      responses:
+        '201':
+          description: Created benchmark Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/benchmark/rooms/{join_code}/bots:
+    post:
+      operationId: addBenchmarkBot
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      description: >-
+        Add one Built-in Bot to a benchmark Lobby. No request body is needed.
+        This does not select the bot or autofill the Run roster; use the ordinary
+        Admin participant selection operation. Requires an allowed same-origin
+        request and durable audit.
+      responses:
+        '200':
+          description: Updated benchmark Room snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/benchmark/rooms/{join_code}/runs:
+    post:
+      operationId: startBenchmarkRun
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      description: >-
+        Start a durably recorded Run using the explicitly selected, connected
+        bot-only roster with exactly one participant per seat. Three-player MJAI
+        is unsupported. Freeze Participant-ID identity for the Run, rotate seats
+        per Match and deal independently. Count only completed, persisted Matches;
+        selected-bot loss fails the Run without replacement. Requires an allowed
+        same-origin request and durable audit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [target]
+              properties:
+                target:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000
+      responses:
+        '200':
+          description: Room snapshot after durable Run creation and Match start.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/benchmark/rooms/{join_code}/stop:
+    post:
+      operationId: stopBenchmarkRun
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      description: >-
+        Request graceful stop after the current Match is persisted. No request
+        body is needed; no next Match is opened. Requires an allowed same-origin
+        request and durable audit.
+      responses:
+        '200':
+          description: Room snapshot with the stop request recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/benchmark/runs:
+    get:
+      operationId: listBenchmarkRuns
+      tags: [admin]
+      security:
+        - adminCookie: []
+      responses:
+        '200':
+          description: Persisted Run history, including frozen rosters and results.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BenchmarkRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/benchmark/runs/{run_id}:
+    get:
+      operationId: getBenchmarkRun
+      tags: [admin]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Consistent Run snapshot and per-Participant-ID statistics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkRunDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/benchmark/rooms/{join_code}/live:
+    get:
+      operationId: getBenchmarkLiveProjection
+      tags: [admin, rooms]
+      security:
+        - adminCookie: []
+      parameters:
+        - $ref: '#/components/parameters/JoinCode'
+      description: >-
+        Authenticated private polling snapshot. Includes current concealed hands
+        for all seats, but never future wall order or players' private legal
+        actions. Room revision, Run progress and projection are read atomically.
+        Do not retain this data after Admin sign-out or authorization failure.
+      responses:
+        '200':
+          description: Private live snapshot; projection is null without a Match.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkLive'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/Problem'
   /api/v1/admin/replays:
     get:
       operationId: listAdminReplays
@@ -599,6 +954,10 @@ components:
       type: apiKey
       in: cookie
       name: driichi_admin
+    oauthCsrfCookie:
+      type: apiKey
+      in: cookie
+      name: driichi_oauth_csrf
     botBearer:
       type: http
       scheme: bearer
@@ -639,7 +998,58 @@ components:
       schema:
         type: string
         maxLength: 128
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Run ID returned by Run creation or history.
+    OAuthOrigin:
+      name: Origin
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uri
+      description: Exact configured public origin, without query or fragment.
   responses:
+    OAuthPage:
+      description: Browser sign-in or consent HTML; cookies establish the flow/session.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        text/html:
+          schema:
+            type: string
+    OAuthRedirect:
+      description: Configured redirect URI with state, iss and code or error.
+      headers:
+        Location:
+          schema:
+            type: string
+            format: uri
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+    OAuthError:
+      description: OAuth JSON error, or a shared HTTP problem for a disabled route/login.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [error]
+            properties:
+              error:
+                type: string
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     Problem:
       description: RFC 9457-style bounded problem details.
       content:
@@ -826,6 +1236,224 @@ components:
           type: integer
           minimum: 3
           maximum: 32
+    OAuthAuthorizationForm:
+      type: object
+      required:
+        - client_id
+        - redirect_uri
+        - response_type
+        - state
+        - scope
+        - resource
+        - code_challenge
+        - code_challenge_method
+        - csrf
+      properties:
+        client_id:
+          type: string
+          format: uri
+          description: Must equal the configured trusted ChatGPT client metadata URL.
+        redirect_uri:
+          type: string
+          format: uri
+          description: Must equal the configured trusted ChatGPT redirect URI.
+        response_type:
+          type: string
+          const: code
+        state:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: Opaque state; runtime limit is 2048 UTF-8 bytes.
+        scope:
+          type: string
+          const: driichi:play
+        resource:
+          type: string
+          format: uri
+          description: Must equal the configured MCP resource URL.
+        code_challenge:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        code_challenge_method:
+          type: string
+          const: S256
+        ui_locales:
+          type: string
+        csrf:
+          type: string
+          minLength: 1
+          writeOnly: true
+          description: Server-issued pending-flow token matching the OAuth CSRF cookie.
+    OAuthConsentForm:
+      allOf:
+        - $ref: '#/components/schemas/OAuthAuthorizationForm'
+        - type: object
+          required: [decision]
+          properties:
+            decision:
+              type: string
+              description: approve or deny; other values redirect with invalid_request.
+      unevaluatedProperties: false
+    OAuthLoginForm:
+      allOf:
+        - $ref: '#/components/schemas/OAuthAuthorizationForm'
+        - type: object
+          required: [username, password]
+          properties:
+            username:
+              type: string
+              maxLength: 256
+              description: Runtime limit is 256 UTF-8 bytes.
+            password:
+              type: string
+              maxLength: 4096
+              writeOnly: true
+              description: Runtime limit is 4096 UTF-8 bytes.
+      unevaluatedProperties: false
+    BenchmarkProgress:
+      type: object
+      additionalProperties: false
+      required: [run_id, target, completed, stop_requested, status]
+      properties:
+        run_id:
+          type: string
+        target:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        completed:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        stop_requested:
+          type: boolean
+        status:
+          type: string
+          enum: [running, completed, stopped, failed]
+    BenchmarkLive:
+      type: object
+      additionalProperties: false
+      required: [revision, benchmark, projection]
+      properties:
+        revision:
+          type: integer
+          minimum: 0
+        benchmark:
+          oneOf:
+            - $ref: '#/components/schemas/BenchmarkProgress'
+            - type: 'null'
+        projection:
+          type: [object, 'null']
+          additionalProperties: true
+          description: Current all-hands Match projection, without future wall/private actions.
+    BenchmarkRun:
+      type: object
+      required:
+        - run_id
+        - room_code
+        - game_mode
+        - target
+        - completed
+        - status
+        - reason
+        - failed_match_id
+        - roster
+        - matches
+      properties:
+        run_id:
+          type: string
+        room_code:
+          type: string
+        game_mode:
+          type: string
+          enum: [4p-red-east, 4p-red-half, 3p-red-east, 3p-red-half]
+        target:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        completed:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        status:
+          type: string
+          enum: [running, completed, stopped, failed, interrupted]
+        reason:
+          type: [string, 'null']
+        failed_match_id:
+          type: [string, 'null']
+        roster:
+          type: array
+          description: Frozen identity and initial seats; no cross-Run/token aggregation.
+          items:
+            type: object
+            additionalProperties: false
+            required: [participant_id, display_name, participant_kind, initial_seat, character_id]
+            properties:
+              participant_id:
+                type: string
+              display_name:
+                type: string
+              participant_kind:
+                type: string
+              initial_seat:
+                type: integer
+              character_id:
+                type: [string, 'null']
+        matches:
+          type: array
+          description: Only completed Matches whose result rows were durably persisted.
+          items:
+            type: object
+            additionalProperties: false
+            required: [sequence, match_id, results]
+            properties:
+              sequence:
+                type: integer
+              match_id:
+                type: string
+              results:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [participant_id, seat, final_score, rank]
+                  properties:
+                    participant_id:
+                      type: string
+                    seat:
+                      type: integer
+                    final_score:
+                      type: integer
+                    rank:
+                      type: integer
+    BenchmarkRunDetail:
+      allOf:
+        - $ref: '#/components/schemas/BenchmarkRun'
+        - type: object
+          required: [statistics]
+          properties:
+            statistics:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [participant_id, display_name, average_rank, first_place_rate, cumulative_net_scores]
+                properties:
+                  participant_id:
+                    type: string
+                  display_name:
+                    type: string
+                  average_rank:
+                    type: [number, 'null']
+                  first_place_rate:
+                    type: [number, 'null']
+                  cumulative_net_scores:
+                    type: array
+                    description: Cumulative score minus each completed Match's mean score.
+                    items:
+                      type: number
     RoomSummary:
       type: object
       additionalProperties: true
@@ -862,6 +1490,10 @@ components:
           type: boolean
         replay_available:
           type: boolean
+        benchmark:
+          oneOf:
+            - $ref: '#/components/schemas/BenchmarkProgress'
+            - type: 'null'
     PublicRoomLookup:
       type: object
       additionalProperties: false

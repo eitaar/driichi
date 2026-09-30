@@ -6,6 +6,8 @@ import { resolve } from "node:path";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
+// Frame probes must not compete with trace image/snapshot capture; API traces remain.
+test.use({ trace: { mode: "retain-on-failure", screenshots: false, snapshots: false } });
 
 const characterFixtureRoot = resolve(
   process.cwd(),
@@ -29,14 +31,14 @@ const projectionFixture = JSON.parse(
 
 async function installCharacterFixtures(
   page: Page,
-  missingPortraitCharacterId?: string,
+  missingIconCharacterId?: string,
 ) {
   await page.route("**/assets/characters/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     const match = /^\/assets\/characters\/([^/]+)\/(portrait|icon)\.webp$/.exec(
       pathname,
     );
-    if (!match || (match[2] === "portrait" && match[1] === missingPortraitCharacterId)) {
+    if (!match || (match[2] === "icon" && match[1] === missingIconCharacterId)) {
       await route.fulfill({ status: 404, body: "missing test asset" });
       return;
     }
@@ -137,10 +139,11 @@ async function expectRenderedTable(page: Page) {
   const rendererPixelRatio = Number(await table.getAttribute("data-renderer-pixel-ratio"));
   expect(rendererPixelRatio).toBeGreaterThanOrEqual(1);
   expect(rendererPixelRatio).toBeLessThanOrEqual(2);
-  expect(tableWidthRatio).toBeGreaterThanOrEqual(0.82);
-  expect(tableWidthRatio).toBeLessThanOrEqual(0.9);
-  expect(tableHeightRatio).toBeGreaterThanOrEqual(0.78);
-  expect(tableHeightRatio).toBeLessThanOrEqual(0.88);
+  // DESIGN.md: the near rim fills the canvas width; no fixed 16:9 inset.
+  expect(tableWidthRatio).toBeGreaterThanOrEqual(0.98);
+  expect(tableWidthRatio).toBeLessThanOrEqual(1);
+  expect(tableHeightRatio).toBeGreaterThan(0);
+  expect(tableHeightRatio).toBeLessThanOrEqual(1);
   const canvasQuality = await table.evaluate((node) => {
     const canvas = node.querySelector("canvas");
     if (!canvas) return null;
@@ -152,14 +155,13 @@ async function expectRenderedTable(page: Page) {
       pixelWidth: canvas.width,
       pixelHeight: canvas.height,
       antialias: context?.getContextAttributes()?.antialias ?? false,
+      viewportWidth: document.documentElement.clientWidth,
+      viewportHeight: window.innerHeight,
     };
   });
   expect(canvasQuality).not.toBeNull();
-  expect(canvasQuality?.clientWidth).toBeGreaterThan(0);
-  expect(canvasQuality?.clientHeight).toBeGreaterThan(0);
-  expect(
-    (canvasQuality?.clientWidth ?? 0) / (canvasQuality?.clientHeight ?? 1),
-  ).toBeCloseTo(1600 / 900, 1);
+  expect(canvasQuality?.clientWidth).toBe(canvasQuality?.viewportWidth);
+  expect(canvasQuality?.clientHeight).toBe(canvasQuality?.viewportHeight);
   expect(canvasQuality?.antialias).toBe(true);
   expect(Math.abs(
     (canvasQuality?.pixelWidth ?? 0)
@@ -249,8 +251,9 @@ async function expectApprovedLiveOverlayGeometry(page: Page) {
     };
   });
   expect(geometry.actions.bottom).toBeLessThanOrEqual(geometry.hand.top - 12);
-  // Hit targets should hug the projected local hand, not create a broad action band.
-  expect(geometry.hand.height).toBeLessThanOrEqual(geometry.stage.height * 0.12 + 4);
+  // The local hand is now a separate 2D row, with usable, bounded hit targets.
+  expect(geometry.hand.height).toBeGreaterThanOrEqual(44);
+  expect(geometry.hand.height).toBeLessThanOrEqual(120);
   expect(Math.max(...geometry.frameWidths)).toBeLessThanOrEqual(geometry.stage.width * 0.1 + 1);
   expect(geometry.factCount).toBe(5);
 }
@@ -333,7 +336,7 @@ for (const viewport of requiredViewports) {
         page.locator(".table-hit-layer"),
       );
       await expectApprovedLiveOverlayGeometry(page);
-      await expect(table.getByText("Mika")).toBeVisible();
+      await expect(table.getByText("Mika", { exact: true })).toBeVisible();
       await expect(page.getByTestId("decision-timer")).toHaveAttribute(
         "aria-label",
         /Decision timer: \d+ seconds/,
@@ -385,9 +388,10 @@ for (const viewport of requiredViewports) {
   }
 }
 
-test("keeps called-hand canvas tiles and semantic hit extents in the same projection", async ({ page }) => {
+test("keeps called-hand 2D tiles actionable without shrinking their size", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
-  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  const initialState = structuredClone(projectionFixture.projections["4p-red-east"]);
+  const state = structuredClone(initialState);
   const local = (state.players as Array<Record<string, unknown>>)[0];
   const hand = [16, 17, 52, 53, 88];
   local.hand = hand;
@@ -406,18 +410,29 @@ test("keeps called-hand canvas tiles and semantic hit extents in the same projec
     })),
   };
   await installCharacterFixtures(page);
-  await installSocket(page, "4p-red-east", state);
+  await installSocket(page, "4p-red-east", initialState);
   await page.goto("/room/123456/lobby");
   await expectRenderedTable(page);
+  const fullHandTile = await page.locator(".table-tile-hit").first().boundingBox();
+  expect(fullHandTile).not.toBeNull();
+  await page.evaluate((state) => {
+    (window as unknown as { __socket: { emit: (value: unknown) => void } }).__socket.emit({
+      type: "game_update", event: { type: "pon", actor: 0 }, state,
+    });
+  }, state);
 
   const stage = page.locator(".table-letterbox");
   const layer = page.locator(".table-hit-layer");
   const targets = layer.locator(".table-tile-hit.is-legal");
   await expect(targets).toHaveCount(hand.length);
-  const tileKeys = await targets.evaluateAll((elements) =>
-    elements.map((element) => element.getAttribute("data-tile-key")),
+  const actionIds = await targets.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-action-id")),
   );
-  expect(tileKeys).toEqual(hand.map((_, index) => `hand-bottom-seat-0-${index}`));
+  expect(actionIds).toEqual(hand.map((_, index) => `called-discard-${index}`));
+  const calledHandTile = await targets.first().boundingBox();
+  expect(calledHandTile).not.toBeNull();
+  expect(calledHandTile!.width).toBeCloseTo(fullHandTile!.width, 2);
+  expect(calledHandTile!.height).toBeCloseTo(fullHandTile!.height, 2);
   const geometry = await stage.evaluate((element) => {
     const stageRect = element.getBoundingClientRect();
     const layer = element.querySelector<HTMLElement>(".table-hit-layer")!;
@@ -434,7 +449,9 @@ test("keeps called-hand canvas tiles and semantic hit extents in the same projec
     };
   });
   expect(geometry.layer.width).toBeGreaterThan(0);
-  expect(geometry.layer.width).toBeLessThan(geometry.stage.width * 0.6);
+  const occupiedWidth = Math.max(...geometry.targetRects.map((rect) => rect.right))
+    - Math.min(...geometry.targetRects.map((rect) => rect.left));
+  expect(occupiedWidth).toBeLessThan(geometry.stage.width * 0.6);
   expect(geometry.layer.height).toBeGreaterThan(0);
   expect(geometry.targetRects).toHaveLength(hand.length);
   for (const target of geometry.targetRects) {
@@ -443,9 +460,13 @@ test("keeps called-hand canvas tiles and semantic hit extents in the same projec
     expect(target.right).toBeLessThanOrEqual(geometry.stage.right);
     expect(target.bottom).toBeLessThanOrEqual(geometry.stage.bottom);
   }
+  await targets.first().click();
+  expect(await page.evaluate(() => JSON.parse(
+    (window as unknown as { __socket: { sent: string[] } }).__socket.sent.at(-1) ?? "{}",
+  ))).toEqual({ type: "submit_action", decision_id: "called-hand-1", action_id: "called-discard-0" });
 });
 
-test("keeps a long participant name and missing portrait actionable", async ({ page }) => {
+test("keeps a long participant name and missing icon actionable", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   const state = structuredClone(projectionFixture.projections["4p-red-east"]);
   (state.players as Array<Record<string, unknown>>)[0].display_name =
@@ -1018,15 +1039,15 @@ test("keeps the Riichi legal highlight while its authoritative action is pending
   });
   expect(initialStyle.borderStyle).toBe("none");
   expect(initialStyle.borderWidth).toBe("0px");
-  expect(initialStyle.background).toBe("rgba(0, 0, 0, 0)");
-  expect(initialStyle.boxShadow).toBe("none");
+  expect(initialStyle.background).toBe("rgb(250, 251, 252)");
+  expect(initialStyle.boxShadow).not.toBe("none");
   await legal.first().focus();
   await expect.poll(() => legal.first().evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
   await legal.first().click();
   await expect(page.getByTestId("action-deck")).toHaveAttribute("aria-busy", "true");
   await expect(legal).toHaveCount(1);
   const pendingStyle = await legal.first().evaluate((element) => getComputedStyle(element).backgroundColor);
-  expect(pendingStyle).toBe("rgba(0, 0, 0, 0)");
+  expect(pendingStyle).toBe(initialStyle.background);
 });
 
 test("shows the authoritative Mangan post-match results surface", async ({
@@ -1107,7 +1128,10 @@ test("shows the authoritative Mangan post-match results surface", async ({
   });
   await expect(table).toHaveAttribute("data-render-ready", "true");
   await expect(page.getByTestId("results-panel")).toBeVisible();
-  await expect(page.getByText("Permanent Auto")).toHaveCount(3);
+  const standings = page.getByTestId("results-panel").locator(".results-list");
+  await expect(standings.locator(".result-name")).toHaveText(["Mika", "Nori", "Ren", "Aya"]);
+  await expect(standings.locator(".result-score")).toHaveText(["45,000", "30,000", "15,000", "10,000"]);
+  await expect(page.getByTestId("gameplay-shell")).toHaveAttribute("data-human-controller", "interactive");
   await expect(page.getByTestId("results-panel").locator(".results-winner-hero-portrait")).toHaveAttribute("alt", "Mika portrait");
   await page.screenshot({
     path: "test-results/task-12/results-portrait-state.png",

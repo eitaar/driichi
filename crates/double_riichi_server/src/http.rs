@@ -1023,7 +1023,7 @@ fn frontend_asset_mime(path: &str) -> Option<&'static str> {
     })
 }
 
-#[cfg(frontend_dist)]
+#[cfg(any(frontend_dist, test))]
 fn frontend_hashed_asset(path: &str) -> bool {
     let Some(file_name) = path.rsplit('/').next() else {
         return false;
@@ -1031,7 +1031,12 @@ fn frontend_hashed_asset(path: &str) -> bool {
     let Some(stem) = file_name.rsplit_once('.').map(|(stem, _)| stem) else {
         return false;
     };
-    let Some((_, hash)) = stem.rsplit_once('-') else {
+    // ponytail: Vite's default 8-char suffix; use its manifest for custom naming.
+    let hash = stem
+        .get(stem.len().saturating_sub(9)..)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .or_else(|| stem.rsplit_once('-').map(|(_, hash)| hash));
+    let Some(hash) = hash else {
         return false;
     };
     (8..=64).contains(&hash.len())
@@ -4768,6 +4773,29 @@ fn _unused_types(_: &GameAction, _: &RoomJoinCode) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontend_asset_cache_recognizes_base64url_hashes() {
+        for path in [
+            "assets/index-Ab12Cd34.js",
+            "assets/index-Bx8-wdl7.js",
+            "assets/Blank-CVPOzfu-.svg",
+            "assets/index--bc_defg.css",
+            "assets/Geist-Variable-Bj2R_7yk.woff2",
+            "assets/index-0123456789abcdef.js",
+        ] {
+            assert!(frontend_hashed_asset(path), "{path}");
+        }
+        for path in [
+            "assets/index.js",
+            "assets/style.css",
+            "assets/icon-short.svg",
+            "assets/index-.js",
+            "assets/index-abc!defg.js",
+        ] {
+            assert!(!frontend_hashed_asset(path), "{path}");
+        }
+    }
 
     #[test]
     fn rate_pruning_keeps_each_kind_window() {

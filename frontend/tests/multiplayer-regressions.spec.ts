@@ -219,7 +219,8 @@ test("keeps ordinary tenpai discards clickable beside a separate Riichi action",
         type: "action_result",
         decision_id: "tenpai-with-choice",
         action_id: actionId,
-        status: "accepted",
+        status: "rejected",
+        code: "illegal_action",
       });
     }, { actionId });
     await expect(page.getByTestId("action-deck")).toHaveAttribute("aria-busy", "false");
@@ -236,6 +237,20 @@ test("keeps ordinary tenpai discards clickable beside a separate Riichi action",
     decision_id: "tenpai-with-choice",
     action_id: "riichi-red-five",
   });
+  await page.evaluate(() => {
+    (window as unknown as { __socket: { emit: (value: unknown) => void } }).__socket.emit({
+      type: "action_result",
+      decision_id: "tenpai-with-choice",
+      action_id: "riichi-red-five",
+      status: "accepted",
+    });
+  });
+  await expect(riichi).toBeDisabled();
+  await expect(ordinaryTargets.first()).toBeDisabled();
+  await riichi.dispatchEvent("click");
+  expect(await page.evaluate(() =>
+    (window as unknown as { __socket: { sent: string[] } }).__socket.sent.length,
+  )).toBe(4);
 });
 
 test("leaves result presentation, reaches Ready, and can present the next result without reload", async ({ page }) => {
@@ -267,7 +282,7 @@ test("leaves result presentation, reaches Ready, and can present the next result
   const dismiss = page.getByTestId("dismiss-results");
   await expect(dismiss).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { name: /night market lobby/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
   const review = page.getByTestId("review-results");
   await expect(review).toBeFocused();
   await review.click();

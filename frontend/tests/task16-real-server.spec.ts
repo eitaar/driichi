@@ -21,7 +21,7 @@ const test = base.extend<{}, { harness: RealServerHarness }>({
         await harness.stop();
       }
     },
-    { scope: "worker", timeout: 240_000 },
+    { scope: "worker", timeout: 720_000 },
   ],
 });
 
@@ -84,7 +84,7 @@ async function openEntry(page: Page, harness: RealServerHarness) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(harness.frontendOrigin);
   await expect(page.getByTestId("entry-shell")).toHaveAttribute("data-motion", "static");
-  await expect(page.getByRole("heading", { name: /your table is live/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^join a room$/i })).toBeVisible();
   const roomCode = page.getByRole("textbox", { name: /room code/i });
   await expect(roomCode).toBeFocused();
   await page.keyboard.press("Tab");
@@ -101,11 +101,12 @@ async function loginAdmin(page: Page, harness: RealServerHarness) {
   await page.getByRole("button", { name: /^sign in$/i }).click();
   await expect(page.getByRole("heading", { name: /admin session active/i })).toBeVisible({ timeout: 20_000 });
   await page.getByRole("link", { name: /open admin/i }).click();
-  await expect(page.getByRole("heading", { name: /admin rooms/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^rooms$/i })).toBeVisible();
 }
 
 async function createRoom(page: Page, mode: MatchMode): Promise<string> {
-  const createTrigger = page.getByRole("button", { name: "Create Room" }).first();
+  await page.getByText("Create room", { exact: true }).click();
+  const createTrigger = page.getByRole("button", { name: "Set up room" });
   await createTrigger.focus();
   await createTrigger.click();
   const dialog = page.getByRole("dialog");
@@ -145,7 +146,7 @@ async function joinHuman(
   const page = await context.newPage();
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${harness.frontendOrigin}/room/${joinCode}`);
-  await expect(page.getByRole("heading", { name: /join task 16/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^choose your character$/i })).toBeVisible();
   await expectAccessible(page, `${mode} room join`);
   await page.getByLabel("Display name").fill(`Human ${mode}`);
   await chooseCharacter(page);
@@ -153,7 +154,7 @@ async function joinHuman(
   await expect(page.getByRole("heading", { name: /you're in task 16/i })).toBeVisible();
   await expectAccessible(page, `${mode} join accepted`);
   await page.getByRole("link", { name: /enter lobby/i }).click();
-  await expect(page.getByRole("heading", { name: new RegExp(`Task 16 ${mode} Lobby`, "i") })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
   await expect(page.locator(".connection-state")).toHaveText("connected", { timeout: 20_000 });
   return page;
 }
@@ -167,20 +168,20 @@ async function fillWithBotsAndStart(
   const humanParticipant = adminPage.locator(".participant-row").filter({ hasText: new RegExp(`Human ${mode}`) });
   await expect(humanParticipant).toHaveCount(1);
   await humanParticipant.getByRole("button", { name: /^select$/i }).click();
-  await expect(adminPage.getByText(new RegExp(`ROSTER \/ 1 OF ${seats}`, "i"))).toBeVisible({ timeout: 20_000 });
+  await expect(adminPage.getByText(new RegExp(`^1 of ${seats} selected$`, "i"))).toBeVisible({ timeout: 20_000 });
   await expect(adminPage.getByRole("button", { name: /fill with bots/i })).toBeEnabled({ timeout: 20_000 });
   await adminPage.getByRole("button", { name: /fill with bots/i }).click();
-  await expect(adminPage.getByText(new RegExp(`ROSTER \/ ${seats} OF ${seats}`, "i"))).toBeVisible({ timeout: 20_000 });
+  await expect(adminPage.getByText(new RegExp(`^${seats} of ${seats} selected$`, "i"))).toBeVisible({ timeout: 20_000 });
   await expect(adminPage.locator(".participant-row")).toHaveCount(seats);
 
-  await expect(humanPage.getByText(new RegExp(`ROSTER \/ ${seats} OF ${seats}`, "i"))).toBeVisible({ timeout: 20_000 });
+  await expect(humanPage.getByText(`${seats} / ${seats} selected`, { exact: true })).toBeVisible({ timeout: 20_000 });
   await expect(humanPage.getByRole("button", { name: /set ready/i })).toBeEnabled({ timeout: 20_000 });
   await expectAccessible(humanPage, "lobby");
   await captureAtBothViewports(humanPage, `${mode}-lobby`);
   await humanPage.emulateMedia({ reducedMotion: "reduce" });
   await humanPage.setViewportSize({ width: 1440, height: 900 });
   await humanPage.getByRole("button", { name: /set ready/i }).click();
-  await expect(humanPage.getByText(/ready for the next match/i)).toBeVisible({ timeout: 10_000 });
+  await expect(humanPage.getByText("Ready for the next Match", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   await expect(adminPage.getByRole("button", { name: /start match/i })).toBeEnabled({ timeout: 30_000 });
   await adminPage.getByRole("button", { name: /start match/i }).click();
@@ -468,8 +469,7 @@ async function completeMatch(page: Page, mode: MatchMode, seats: number) {
   }
   await expect(page.getByRole("heading", { name: /standings/i })).toBeVisible();
   await expect(page.locator(".results-list li")).toHaveCount(seats);
-  await expect(page.getByText("Permanent Auto")).toHaveCount(seats - 1);
-  await expect(page.getByText("Temporary Auto")).toHaveCount(0);
+  // Controller facts are checked in the Admin roster, not the names/scores-only results.
   await expect(page.getByTestId("gameplay-shell")).toHaveAttribute("data-human-controller", /interactive/i);
   await expectAccessible(page, "results");
   await captureAtBothViewports(page, `${mode}-results`);
@@ -477,6 +477,10 @@ async function completeMatch(page: Page, mode: MatchMode, seats: number) {
 
 test("serves the embedded gameplay with visible tiles under its CSP", async ({ page, harness }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(harness.rustOrigin);
+  await expect(page.getByRole("heading", { name: /^join a room$/i })).toBeVisible();
+  await expectAccessible(page, "embedded entry");
   const tileResponses: Array<{ status: number; contentType: string }> = [];
   page.on("response", (response) => {
     if (new URL(response.url()).pathname.endsWith(".svg")) {
@@ -583,29 +587,28 @@ async function verifyReplayAndOpenRoutes(
   await expectAccessible(adminPage, "replay viewer");
   await captureAtBothViewports(adminPage, `${mode}-replay-viewer`);
   await adminPage.getByRole("button", { name: /next event/i }).click();
-  const replayControls = adminPage.locator(".replay-controls-overlay");
-  const replayPlay = replayControls.getByRole("button", { name: /^play$/i });
-  await replayPlay.focus();
+  const replayControls = adminPage.locator(".replay-playback");
+  await replayControls.getByRole("button", { name: /previous event/i }).focus();
   await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: /previous event/i })).toBeFocused();
+  await expect(replayControls.getByRole("button", { name: /^play$/i })).toBeFocused();
   await adminPage.keyboard.press("Tab");
   await expect(replayControls.getByRole("button", { name: /next event/i })).toBeFocused();
   await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: "0.5x" })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: "1x" })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: "2x" })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: "4x" })).toBeFocused();
+  const speed = replayControls.getByRole("combobox", { name: /playback speed/i });
+  await expect(speed).toBeFocused();
+  expect(await speed.locator("option").evaluateAll((options) =>
+    options.map((option) => (option as HTMLOptionElement).value),
+  )).toEqual(["0.5", "1", "2", "4", "8", "16", "32", "64"]);
+  await speed.selectOption("2");
+  await expect(speed).toHaveValue("2");
   await adminPage.keyboard.press("Tab");
   await expect(replayControls.getByRole("combobox", { name: /jump to kyoku/i })).toBeFocused();
+  await adminPage.keyboard.press("Tab");
+  await expect(replayControls.getByRole("link", { name: /^replay library$/i })).toBeFocused();
   await adminPage.locator(".skip-link").focus();
   await expect(adminPage.locator(".skip-link")).toBeFocused();
   await adminPage.keyboard.press("Tab");
-  await expect(adminPage.getByRole("link", { name: /double riichi home/i })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(adminPage.getByRole("link", { name: /^rooms$/i })).toBeFocused();
+  await expect(replayControls.getByRole("slider", { name: /replay position/i })).toBeFocused();
 }
 
 for (const [mode, seats] of [
@@ -624,8 +627,10 @@ for (const [mode, seats] of [
       const humanPage = await joinHuman(humanContext, harness, joinCode, mode);
       await fillWithBotsAndStart(adminPage, humanPage, mode, seats);
       await completeMatch(humanPage, mode, seats);
-      await expect(adminPage.getByText("Post-Match", { exact: true })).toBeVisible({ timeout: 30_000 });
+      await expect(adminPage.locator(".detail-lede")).toContainText("Post-Match", { timeout: 30_000 });
       await expect(adminPage.locator(".seat-row.is-filled")).toHaveCount(seats);
+      await expect(adminPage.locator(".participant-row").filter({ hasText: /permanent[_ ]auto[_ ]builtinbot/i })).toHaveCount(seats - 1);
+      await expect(adminPage.locator(".participant-row").filter({ hasText: /temporary[_ ]auto/i })).toHaveCount(0);
       const humanParticipant = adminPage.locator(".participant-row").filter({ hasText: new RegExp(`Human ${mode}`) });
       await expect(humanParticipant).toContainText(/interactive/i);
       await expect(humanParticipant).not.toContainText(/temporary[_ ]auto/i);

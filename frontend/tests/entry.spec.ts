@@ -84,8 +84,9 @@ test("admin route exposes the room workspace at desktop sizes", async ({ page })
     });
   });
   await page.goto("/admin");
-  await expect(page.getByRole("heading", { name: /admin rooms/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name: /credentials for agents/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^rooms$/i })).toBeVisible();
+  await page.getByText("Bot tokens", { exact: true }).click();
+  await expect(page.getByRole("textbox", { name: /token name/i })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
 });
 
@@ -139,7 +140,8 @@ for (const viewport of [
     });
     await page.goto("/admin/rooms/123456");
     await expect(page.getByRole("heading", { name: /night market/i })).toBeVisible();
-    await expect(page.getByRole("heading", { name: /credentials for agents/i })).toBeVisible();
+    await page.getByText("Bot tokens", { exact: true }).click();
+    await expect(page.getByRole("textbox", { name: /token name/i })).toBeVisible();
     await page.screenshot({ path: `test-results/task-11/admin-${viewport.label}.png`, fullPage: false });
   });
 

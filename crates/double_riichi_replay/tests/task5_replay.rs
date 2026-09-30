@@ -631,6 +631,129 @@ fn three_player_frames_have_no_dummy_fourth_player() {
 }
 
 #[test]
+fn reconstructed_round_facts_survive_events_and_reset_at_the_next_kyoku() {
+    for mode in [GameMode::ThreePlayerRedHalf, GameMode::FourPlayerRedHalf] {
+        let mut events = if mode.seat_count() == 3 {
+            three_player_start_events()
+        } else {
+            start_events()
+        };
+        let GameEvent::StartKyoku {
+            bakaze,
+            kyoku,
+            honba,
+            kyotaku,
+            oya,
+            ..
+        } = &mut events[1]
+        else {
+            unreachable!();
+        };
+        *bakaze = Wind::South;
+        *kyoku = 3;
+        *honba = 2;
+        *kyotaku = 3;
+        *oya = Seat::new(1).unwrap();
+        let mut next_round = events[1].clone();
+        let GameEvent::StartKyoku {
+            honba,
+            kyotaku,
+            oya,
+            ..
+        } = &mut next_round
+        else {
+            unreachable!();
+        };
+        *honba = 4;
+        *kyotaku = 1;
+        *oya = Seat::new(2).unwrap();
+        events.extend([
+            GameEvent::Reach {
+                actor: Seat::new(1).unwrap(),
+            },
+            GameEvent::ReachAccepted {
+                actor: Seat::new(1).unwrap(),
+            },
+            GameEvent::Hora {
+                actor: Seat::new(1).unwrap(),
+                target: Seat::new(0).unwrap(),
+                tile: None,
+                ura_markers: None,
+                yaku: None,
+                fu: None,
+                han: None,
+                scores: None,
+                delta: None,
+            },
+            GameEvent::EndKyoku,
+            next_round,
+        ]);
+        let frames = build_replay_frames_for_mode(&events, mode).unwrap();
+        let facts = |index: usize| {
+            let state = &frames[index].visible_state;
+            (
+                state.round,
+                state.kyoku,
+                state.dealer,
+                state.honba,
+                state.kyotaku,
+            )
+        };
+        assert_eq!(facts(0), (None, None, None, None, None));
+        let initial = (
+            Some(Wind::South),
+            Some(3),
+            Some(Seat::new(1).unwrap()),
+            Some(2),
+            Some(3),
+        );
+        assert_eq!(facts(1), initial);
+        assert_eq!(facts(2), initial, "declaration does not pay the deposit");
+        assert_eq!(
+            facts(3),
+            (
+                Some(Wind::South),
+                Some(3),
+                Some(Seat::new(1).unwrap()),
+                Some(2),
+                Some(4)
+            )
+        );
+        assert_eq!(
+            facts(4),
+            (
+                Some(Wind::South),
+                Some(3),
+                Some(Seat::new(1).unwrap()),
+                Some(2),
+                Some(0)
+            )
+        );
+        assert_eq!(facts(5), facts(4));
+        assert_eq!(
+            facts(6),
+            (
+                Some(Wind::South),
+                Some(3),
+                Some(Seat::new(2).unwrap()),
+                Some(4),
+                Some(1)
+            )
+        );
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.visible_state.remaining_wall.is_none()),
+            "do not invent an unknown wall count"
+        );
+        let json: serde_json::Value = serde_json::from_str(&frames[1].to_json().unwrap()).unwrap();
+        assert_eq!(json["visible_state"]["round"], "South");
+        assert_eq!(json["visible_state"]["kyoku"], 3);
+        assert_eq!(json["visible_state"]["honba"], 2);
+    }
+}
+
+#[test]
 fn reconstructed_frames_include_calls_kans_riichi_multi_ron_draws_and_score_updates() {
     let mut events = start_events();
     events.extend([
