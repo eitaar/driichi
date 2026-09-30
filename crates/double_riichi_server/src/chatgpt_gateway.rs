@@ -8,11 +8,12 @@ use axum::{
     response::Response,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
     ServerState,
-    mcp::{MCP_MAX_BODY_BYTES, McpRuntime},
+    mcp::{MCP_MAX_BODY_BYTES, McpRuntime, McpStatelessIdentity},
     oauth::OAuthError,
 };
 
@@ -106,6 +107,31 @@ pub(crate) async fn mcp_endpoint(
         .next()
         .is_some();
 
+    // The new MCP lifecycle carries authenticated per-request client context
+    // instead of a transport session. Never infer identity from client headers.
+    let sessionless = rpc_method.as_deref() != Some("initialize")
+        && request.headers().get("mcp-session-id").is_none()
+        && request
+            .headers()
+            .get("mcp-protocol-version")
+            .and_then(|value| value.to_str().ok())
+            == Some("2026-07-28")
+        && message.as_ref().is_some_and(|value| {
+            value
+                .get("params")
+                .and_then(|params| params.get("_meta"))
+                .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
+                .and_then(Value::as_str)
+                == Some("2026-07-28")
+        });
+    tracing::debug!(
+        rpc_method = ?rpc_method,
+        has_session_header = request.headers().contains_key("mcp-session-id"),
+        protocol_version = ?request.headers().get("mcp-protocol-version").and_then(|v| v.to_str().ok()),
+        sessionless,
+        "ChatGPT MCP request"
+    );
+    let mut stateless_identity = None;
     match bearer_token(request.headers()) {
         Some(access_token) => {
             let grant = match oauth
@@ -167,6 +193,15 @@ pub(crate) async fn mcp_endpoint(
                     unauthorized(&oauth.config.resource, "invalid_token")
                 };
             }
+            if sessionless {
+                // The grant family survives access-token rotation, but differs
+                // between independent OAuth connections. The ID never leaves
+                // this server and is not an MCP transport session identifier.
+                let fingerprint = Sha256::digest(grant.family_id.as_bytes());
+                stateless_identity = Some(McpStatelessIdentity(format!(
+                    "oauth-stateless:{fingerprint:x}"
+                )));
+            }
         }
         None if is_tool_call => {
             let failure = if authorization_supplied {
@@ -196,6 +231,9 @@ pub(crate) async fn mcp_endpoint(
         }
     };
 
+    if let Some(identity) = stateless_identity {
+        request.extensions_mut().insert(identity);
+    }
     request.headers_mut().remove(header::AUTHORIZATION);
     request.headers_mut().remove(header::ORIGIN);
     request

@@ -395,6 +395,49 @@ async fn tool_call(
     rpc_body(response).await
 }
 
+async fn stateless_tool_call(
+    app: &Router,
+    access_token: &str,
+    id: u64,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    // The 2026-07-28 lifecycle uses per-request metadata, not MCP sessions.
+    let mut request = rpc_request(
+        "/chatgpt/mcp",
+        "POST",
+        Some(access_token),
+        None,
+        Some(id),
+        "tools/call",
+        json!({
+            "name": name,
+            "arguments": arguments,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }),
+    );
+    request
+        .headers_mut()
+        .insert("mcp-protocol-version", "2026-07-28".parse().unwrap());
+    // SEP-2243 requires standard method/name headers for this protocol.
+    request
+        .headers_mut()
+        .insert("mcp-method", "tools/call".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("mcp-name", name.parse().unwrap());
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let has_session_header = response.headers().contains_key("mcp-session-id");
+    let body = rpc_body(response).await;
+    assert_eq!(status, StatusCode::OK, "transport error for {name}: {body}");
+    assert!(!has_session_header);
+    body
+}
+
 async fn mutate_scope(storage: &Storage, access_token: &str) {
     let options = SqliteConnectOptions::new()
         .filename(storage.database_path())
@@ -990,6 +1033,81 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
 
     fixture.state.shutdown().await;
     wrong_audience_state.shutdown().await;
+    fixture.storage.close().await;
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[tokio::test]
+async fn stateless_chatgpt_join_and_followup_calls_use_oauth_identity() {
+    let fixture = fixture("stateless-join", RESOURCE).await;
+    let access = mint_access(&fixture.app, RESOURCE, "stateless-join").await;
+    let _legacy_session = initialize(&fixture.app, &access).await;
+    let room = fixture
+        .state
+        .rooms()
+        .create(RoomConfig::new(
+            "Stateless ChatGPT",
+            GameMode::FourPlayerRedEast,
+            double_riichi_core::CharacterCatalog::starter(),
+        ))
+        .await
+        .unwrap();
+
+    let before = stateless_tool_call(&fixture.app, &access, 2, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&before)["code"], "session_expired");
+
+    let joined = stateless_tool_call(
+        &fixture.app,
+        &access,
+        3,
+        "join_room",
+        json!({
+            "room_code": room.join_code(),
+            "provider": "chatgpt",
+            "display_name": "ChatGPT"
+        }),
+    )
+    .await;
+    assert_ne!(joined["result"]["isError"], true, "{joined}");
+    let participant_id = tool_value(&joined)["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let state = stateless_tool_call(&fixture.app, &access, 4, "get_my_state", json!({})).await;
+    assert_ne!(state["result"]["isError"], true, "{state}");
+    assert_eq!(tool_value(&state)["participant_id"], participant_id);
+
+    let again = stateless_tool_call(&fixture.app, &access, 5, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&again)["participant_id"], participant_id);
+
+    // A separate OAuth grant cannot inherit this participant's private state.
+    let other_access = mint_access(&fixture.app, RESOURCE, "stateless-independent").await;
+    let other_before =
+        stateless_tool_call(&fixture.app, &other_access, 6, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&other_before)["code"], "session_expired");
+    let other_joined = stateless_tool_call(
+        &fixture.app,
+        &other_access,
+        7,
+        "join_room",
+        json!({
+            "room_code": room.join_code(),
+            "provider": "chatgpt",
+            "display_name": "Second connection"
+        }),
+    )
+    .await;
+    let other_participant = tool_value(&other_joined)["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(other_participant, participant_id);
+    let first_still =
+        stateless_tool_call(&fixture.app, &access, 8, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&first_still)["participant_id"], participant_id);
+
+    fixture.state.shutdown().await;
     fixture.storage.close().await;
     let _ = std::fs::remove_dir_all(fixture.root);
 }

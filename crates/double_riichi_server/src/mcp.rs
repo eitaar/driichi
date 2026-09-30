@@ -39,6 +39,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Digest;
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time,
@@ -66,6 +67,11 @@ const HISTORY_TEMPLATE: &str = "riichi://rooms/{code}/history";
 
 #[derive(Clone, Debug)]
 pub(crate) struct McpAuth(pub(crate) String);
+
+// Server-side identity for MCP requests using the sessionless protocol.
+// Only the authenticated OAuth gateway may insert this extension.
+#[derive(Clone, Debug)]
+pub(crate) struct McpStatelessIdentity(pub(crate) String);
 
 #[derive(Clone)]
 struct SessionEntry {
@@ -156,11 +162,18 @@ impl Default for RevisionWake {
 impl RevisionWake {
     fn record(&self, revision: u64, reason: impl Into<String>) -> bool {
         let mut state = self.state.lock().expect("MCP wake lock poisoned");
-        if revision <= state.revision {
+        let reason = reason.into();
+        if state.terminal
+            || revision < state.revision
+            || (revision == state.revision
+                && (reason != "my_decision" || state.reason == "my_decision"))
+        {
             return false;
         }
+        // ActionResolved and the following DecisionOpened can share a revision.
+        // Preserve the actionable wake if an opponent's riichi was recorded first.
         state.revision = revision;
-        state.reason = reason.into();
+        state.reason = reason;
         drop(state);
         self.notify.notify_waiters();
         true
@@ -474,7 +487,30 @@ impl McpRuntime {
                 .body(Body::from(r#"{"code":"origin_not_allowed"}"#))
                 .expect("MCP origin response is valid");
         }
+        let effective_token_id = request
+            .extensions()
+            .get::<McpStatelessIdentity>()
+            .map(|identity| format!("{}:{}", record.token_id(), identity.0))
+            .unwrap_or_else(|| record.token_id().to_owned());
         let session_id = header_session_id(&headers);
+        // Correlate transport requests without logging session IDs or credentials.
+        let session_fingerprint = session_id
+            .as_deref()
+            .map(|id| format!("{:x}", sha2::Sha256::digest(id.as_bytes())))
+            .map(|digest| digest[..12].to_owned());
+        let transport_exists = if let Some(id) = session_id.as_deref() {
+            self.manager.has_session(&id.to_owned().into()).await.ok()
+        } else {
+            None
+        };
+        tracing::debug!(
+            method = %request.method(),
+            has_session_header = session_id.is_some(),
+            session_fingerprint = ?session_fingerprint,
+            transport_exists = ?transport_exists,
+            has_stateless_identity = request.extensions().get::<McpStatelessIdentity>().is_some(),
+            "MCP request received"
+        );
         let expired = self.registry.expire_idle(Instant::now()).await;
         disconnect_entries(expired.entries.clone()).await;
         self.close_sessions(&expired).await;
@@ -483,7 +519,7 @@ impl McpRuntime {
                 .registry
                 .token_for(session_id)
                 .await
-                .is_some_and(|token| token != record.token_id())
+                .is_some_and(|token| token != effective_token_id)
         {
             return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
@@ -493,12 +529,12 @@ impl McpRuntime {
         }
         if let Some(session_id) = session_id.as_deref() {
             self.registry
-                .touch_transport(session_id, record.token_id())
+                .touch_transport(session_id, &effective_token_id)
                 .await;
         }
         request
             .extensions_mut()
-            .insert(McpAuth(record.token_id().to_owned()));
+            .insert(McpAuth(effective_token_id.clone()));
         let is_delete = request.method() == Method::DELETE;
         let response = self.service.clone().handle(request).await;
         let response_session = response
@@ -507,6 +543,11 @@ impl McpRuntime {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned)
             .or(session_id);
+        tracing::debug!(
+            status = %response.status(),
+            has_response_session = response_session.is_some(),
+            "MCP transport response"
+        );
         if let Some(session_id) = response_session {
             if is_delete {
                 if let Some(entry) = self.registry.remove(&session_id).await {
@@ -515,9 +556,9 @@ impl McpRuntime {
             } else if response.status().is_success() {
                 let _ = self
                     .registry
-                    .register_transport(session_id.clone(), record.token_id().to_owned())
+                    .register_transport(session_id.clone(), effective_token_id.clone())
                     .await;
-                self.registry.touch(&session_id, record.token_id()).await;
+                self.registry.touch(&session_id, &effective_token_id).await;
             }
         }
         let (parts, body) = response.into_parts();
@@ -640,6 +681,17 @@ impl McpSessionRegistry {
         }
     }
 
+    fn token_is_revoked(state: &RegistryState, token_id: &str) -> bool {
+        state.revoked_tokens.contains(token_id)
+            || token_id
+                .split_once(":oauth-stateless:")
+                .is_some_and(|(parent, _)| state.revoked_tokens.contains(parent))
+    }
+
+    fn token_matches_revocation(token_id: &str, revoked: &str) -> bool {
+        token_id == revoked || token_id.starts_with(&format!("{revoked}:oauth-stateless:"))
+    }
+
     async fn token_for(&self, session_id: &str) -> Option<String> {
         self.state
             .lock()
@@ -655,7 +707,7 @@ impl McpSessionRegistry {
         token_id: String,
     ) -> Result<(), McpFailure> {
         let mut state = self.state.lock().await;
-        if state.revoked_tokens.contains(&token_id) {
+        if Self::token_is_revoked(&state, &token_id) {
             return Err(McpFailure::InvalidCredentials);
         }
         if let Some(session) = state.transport_sessions.get(&session_id)
@@ -773,7 +825,9 @@ impl McpSessionRegistry {
         let session_ids: Vec<_> = state
             .transport_sessions
             .iter()
-            .filter_map(|(id, session)| (session.token_id == token_id).then_some(id.clone()))
+            .filter_map(|(id, session)| {
+                Self::token_matches_revocation(&session.token_id, token_id).then_some(id.clone())
+            })
             .collect();
         let mut entries = Vec::new();
         for id in &session_ids {
@@ -786,10 +840,10 @@ impl McpSessionRegistry {
         }
         state
             .participants
-            .retain(|(bound_token, _), _| bound_token != token_id);
+            .retain(|(bound_token, _), _| !Self::token_matches_revocation(bound_token, token_id));
         state
             .retired_participants
-            .retain(|(bound_token, _)| bound_token != token_id);
+            .retain(|(bound_token, _)| !Self::token_matches_revocation(bound_token, token_id));
         SessionCleanup {
             entries,
             session_ids,
@@ -837,7 +891,8 @@ impl McpSessionRegistry {
     }
 
     async fn token_revoked(&self, token_id: &str) -> bool {
-        self.state.lock().await.revoked_tokens.contains(token_id)
+        let state = self.state.lock().await;
+        Self::token_is_revoked(&*state, token_id)
     }
 
     async fn was_bound(&self, session_id: &str, token_id: &str) -> Result<bool, McpFailure> {
@@ -862,7 +917,7 @@ impl McpSessionRegistry {
         character_id: String,
     ) -> Result<(SessionEntry, Option<SessionEntry>), McpFailure> {
         let mut state = self.state.lock().await;
-        if state.revoked_tokens.contains(&token_id) {
+        if Self::token_is_revoked(&state, &token_id) {
             return Err(McpFailure::InvalidCredentials);
         }
         if let Some(current) = state.transport_sessions.get(&session_id)
@@ -1254,7 +1309,14 @@ impl McpHandler {
     }
 
     fn session_id(parts: &axum::http::request::Parts) -> Result<String, McpFailure> {
-        header_session_id(&parts.headers).ok_or(McpFailure::SessionExpired)
+        header_session_id(&parts.headers)
+            .or_else(|| {
+                parts
+                    .extensions
+                    .get::<McpStatelessIdentity>()
+                    .map(|identity| identity.0.clone())
+            })
+            .ok_or(McpFailure::SessionExpired)
     }
 
     fn auth(parts: &axum::http::request::Parts) -> Result<String, McpFailure> {
@@ -1309,7 +1371,10 @@ impl McpHandler {
             .await
             .map_err(|_| McpFailure::Internal)?;
         let initial = tokio::select! {
-            _ = entry.cancel.cancelled() => return Err(McpFailure::SessionExpired),
+            _ = entry.cancel.cancelled() => {
+                tracing::warn!("MCP watcher cancelled while awaiting initial event");
+                return Err(McpFailure::SessionExpired);
+            }
             event = connection.recv() => event.ok_or(McpFailure::Internal)?,
         };
         let initial_reason = match initial {
@@ -1476,7 +1541,15 @@ impl McpHandler {
     ) -> Result<Json<JoinRoomOutput>, CallToolResult> {
         let session_id = match Self::session_id(&parts) {
             Ok(value) => value,
-            Err(error) => return Err(error.result()),
+            Err(error) => {
+                tracing::warn!(
+                    has_session_header = header_session_id(&parts.headers).is_some(),
+                    has_stateless_identity =
+                        parts.extensions.get::<McpStatelessIdentity>().is_some(),
+                    "join_room: no validated session or stateless identity"
+                );
+                return Err(error.result());
+            }
         };
         let token_id = match Self::auth(&parts) {
             Ok(value) => value,
@@ -1616,6 +1689,10 @@ impl McpHandler {
                 .await;
         }
         if let Err(error) = self.attach_watcher(session_id.clone(), entry.clone()).await {
+            tracing::warn!(
+                reason = error.code(),
+                "join_room: watcher initialization failed"
+            );
             let _ = self.registry.rollback_binding(&session_id).await;
             entry.cancel.cancel();
             let _ = entry
@@ -2087,6 +2164,17 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
                 .any(|event| matches!(event, double_riichi_core::GameEvent::EndKyoku))
             {
                 Some((revision, "round_ended"))
+            } else if let Some(my_seat) = snapshot
+                .participants
+                .iter()
+                .find(|participant| participant.id == entry.participant_id)
+                .and_then(|participant| match participant.role {
+                    double_riichi_core::MatchRole::Player(seat) => Some(seat),
+                    _ => None,
+                })
+                && has_opponent_riichi(result.events(), my_seat)
+            {
+                Some((revision, "opponent_riichi"))
             } else {
                 None
             }
@@ -2111,6 +2199,20 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
         | RoomEvent::ParticipantJoined(_)
         | RoomEvent::ParticipantLeft(_) => None,
     }
+}
+
+fn has_opponent_riichi(
+    events: &[double_riichi_core::GameEvent],
+    my_seat: double_riichi_core::Seat,
+) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            double_riichi_core::GameEvent::Reach { actor }
+                | double_riichi_core::GameEvent::ReachAccepted { actor }
+                if *actor != my_seat
+        )
+    })
 }
 
 fn resources(entry: &SessionEntry) -> Vec<Resource> {
@@ -2161,7 +2263,12 @@ fn notification_uris(entry: &SessionEntry, reason: &str) -> Vec<String> {
     ];
     if matches!(
         reason,
-        "round_started" | "round_ended" | "game_ended" | "room_deleted" | "server_shutdown"
+        "opponent_riichi"
+            | "round_started"
+            | "round_ended"
+            | "game_ended"
+            | "room_deleted"
+            | "server_shutdown"
     ) {
         uris.push(McpHandler::uri(&entry.room_code, "", "history"));
     }
@@ -2483,6 +2590,7 @@ mod tests {
             ("selected", false),
             ("deselected", false),
             ("my_decision", false),
+            ("opponent_riichi", true),
             ("round_started", true),
             ("round_ended", true),
             ("game_ended", true),
@@ -2500,6 +2608,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn opponent_riichi_only_matches_another_players_declaration() {
+        use double_riichi_core::{GameEvent, Seat};
+        let mine = Seat::new(0).unwrap();
+        let other = Seat::new(1).unwrap();
+        assert!(has_opponent_riichi(
+            &[GameEvent::Reach { actor: other }],
+            mine
+        ));
+        assert!(has_opponent_riichi(
+            &[GameEvent::ReachAccepted { actor: other }],
+            mine
+        ));
+        assert!(!has_opponent_riichi(
+            &[GameEvent::Reach { actor: mine }],
+            mine
+        ));
+        assert!(!has_opponent_riichi(&[], mine));
+    }
+
     #[tokio::test]
     async fn notification_before_wait_and_old_revisions_do_not_race() {
         let wake = RevisionWake::default();
@@ -2509,6 +2637,12 @@ mod tests {
             (result.revision, result.reason.as_str()),
             (4, "my_decision")
         );
+
+        let same_revision = RevisionWake::default();
+        assert!(same_revision.record(5, "opponent_riichi"));
+        assert!(same_revision.record(5, "my_decision"));
+        assert_eq!(same_revision.current().reason, "my_decision");
+        assert!(!same_revision.record(5, "opponent_riichi"));
 
         let old = RevisionWake::default();
         assert!(!old.record(0, "old"));
