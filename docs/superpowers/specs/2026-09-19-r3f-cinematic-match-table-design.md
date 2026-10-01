@@ -226,7 +226,7 @@ Sol scores each candidate from 1–5 on composition, spacing, tile readability, 
 - Browser tests at 1024×600, 1280×720, 1600×900, and 1920×1080 for Live 4p, Live 3p, and Replay.
 - Keyboard/focus, dialog containment, Reduced Motion, WebGL fallback, connection states, asset fallback, and accessibility checks.
 - Render instrumentation proves non-zero real scene primitives and tiles.
-- Browser coverage verifies DPR 2, the MSAA context attribute, drawing-buffer dimensions, and motion-stable quality in a focused high-density case. Default CI uses bounded SwiftShader regression limits; `DRIICHI_HARDWARE_WEBGL=1` headed coverage enforces the stated desktop motion budgets on a hardware renderer.
+- Browser coverage verifies DPR 2, the MSAA context attribute, drawing-buffer dimensions, and motion-stable quality in a focused high-density case. Default CI uses SwiftShader to verify real rendering, motion completion, and fixed AA/DPR; software frame-count and timing telemetry is reported without fixed performance thresholds; nonzero rendering and motion completion remain mandatory. Separate `DRIICHI_HARDWARE_WEBGL=1` coverage enforces the stated desktop motion budgets after verifying that the browser actually selected a hardware renderer.
 
 ### Visual
 
