@@ -185,8 +185,14 @@ for (const viewport of [
     await page.goto("/room/123456/lobby");
     await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
     await expect(page.locator(".connection-state")).toHaveText("connected");
-    const readyButton = await page.getByRole("button", { name: /set ready/i }).boundingBox();
-    expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
+    await expect(page.locator(".ready-block .field-hint")).toHaveText(/available|could not be preloaded|needs/);
+    for (const fontFamily of ["", "monospace"]) {
+      // Also exercise wider fallback metrics without depending on the host OS font.
+      const override = fontFamily ? await page.addStyleTag({ content: `.lobby-shell { font-family: ${fontFamily}; }` }) : null;
+      const readyButton = await page.getByRole("button", { name: /set ready/i }).boundingBox();
+      expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
+      await override?.evaluate((element) => element.remove());
+    }
     await page.screenshot({ path: `test-results/task-11/lobby-${viewport.label}.png`, fullPage: false });
   });
 }
