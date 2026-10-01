@@ -67,7 +67,8 @@ def main() -> int:
             raise SystemExit("replay generator did not produce MJSON")
 
         processor = checkout / contract["replay_processor"]
-        digest = hashlib.sha256(processor.read_bytes()).hexdigest()
+        # Python source has the same semantics with Git LF or Windows CRLF endings.
+        digest = hashlib.sha256(processor.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         if digest != contract["replay_processor_sha256"]:
             raise SystemExit(f"ReplayProcessor checksum mismatch: {digest}")
 
