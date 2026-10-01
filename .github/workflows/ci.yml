@@ -64,6 +64,22 @@ jobs:
         with:
           python-version: 3.14
 
+      - name: Read pinned Yamai revision
+        id: yamai-contract
+        shell: bash
+        run: |
+          revision=$(python -c "import tomllib; print(tomllib.load(open('spec/external-contracts.toml', 'rb'))['yamai']['revision'])")
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Check out pinned Yamai
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: eitaar/yamai
+          ref: ${{ steps.yamai-contract.outputs.revision }}
+          path: .cache/yamai/${{ steps.yamai-contract.outputs.revision }}
+          token: ${{ secrets.YAMAI_READ_TOKEN }}
+          persist-credentials: false
+
       - name: Set up Rust
         shell: bash
         run: >
