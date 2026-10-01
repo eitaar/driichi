@@ -677,6 +677,8 @@ test("captures the complete 4p scene during active motion at 1024x600", async ({
 });
 
 test("completes motion at fixed quality and reports renderer performance", async ({ page }) => {
+  // Two WebGL setups and 26 motions share this deadline; each motion still has 5s checks.
+  test.setTimeout(60_000);
   async function measureAt(viewport: { width: number; height: number }) {
     await page.setViewportSize(viewport);
     await installCharacterFixtures(page);
