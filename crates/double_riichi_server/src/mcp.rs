@@ -66,7 +66,10 @@ const PUBLIC_STATE_TEMPLATE: &str = "riichi://rooms/{code}/public-state";
 const HISTORY_TEMPLATE: &str = "riichi://rooms/{code}/history";
 
 #[derive(Clone, Debug)]
-pub(crate) struct McpAuth(pub(crate) String);
+pub(crate) struct McpAuth {
+    identity_token_id: String,
+    bot_token_id: String,
+}
 
 // Server-side identity for MCP requests using the sessionless protocol.
 // Only the authenticated OAuth gateway may insert this extension.
@@ -527,14 +530,20 @@ impl McpRuntime {
                 .body(Body::from(r#"{"code":"invalid_credentials"}"#))
                 .expect("MCP auth response is valid");
         }
-        if let Some(session_id) = session_id.as_deref() {
+        if let Some(binding_id) = session_id.as_deref().or_else(|| {
+            request
+                .extensions()
+                .get::<McpStatelessIdentity>()
+                .map(|identity| identity.0.as_str())
+        }) {
             self.registry
-                .touch_transport(session_id, &effective_token_id)
+                .touch_transport(binding_id, &effective_token_id)
                 .await;
         }
-        request
-            .extensions_mut()
-            .insert(McpAuth(effective_token_id.clone()));
+        request.extensions_mut().insert(McpAuth {
+            identity_token_id: effective_token_id.clone(),
+            bot_token_id: record.token_id().to_owned(),
+        });
         let is_delete = request.method() == Method::DELETE;
         let response = self.service.clone().handle(request).await;
         let response_session = response
@@ -1323,7 +1332,7 @@ impl McpHandler {
         parts
             .extensions
             .get::<McpAuth>()
-            .map(|auth| auth.0.clone())
+            .map(|auth| auth.identity_token_id.clone())
             .ok_or(McpFailure::InvalidCredentials)
     }
 
@@ -1551,10 +1560,11 @@ impl McpHandler {
                 return Err(error.result());
             }
         };
-        let token_id = match Self::auth(&parts) {
-            Ok(value) => value,
-            Err(error) => return Err(error.result()),
+        let Some(auth) = parts.extensions.get::<McpAuth>() else {
+            return Err(McpFailure::InvalidCredentials.result());
         };
+        let token_id = auth.identity_token_id.clone();
+        let bot_token_id = auth.bot_token_id.clone();
         let Some(room_code) = normalize_room_code(&input.room_code) else {
             return Err(McpFailure::InvalidInput.result());
         };
@@ -1631,7 +1641,7 @@ impl McpHandler {
                         .send(RoomCommand::Join {
                             participant,
                             character_id: Some(default_character.clone()),
-                            token_id: Some(token_id.clone()),
+                            token_id: Some(bot_token_id.clone()),
                         })
                         .await
                         .map_err(room_failure)
@@ -1652,7 +1662,7 @@ impl McpHandler {
                     .send(RoomCommand::Join {
                         participant,
                         character_id: Some(default_character),
-                        token_id: Some(token_id.clone()),
+                        token_id: Some(bot_token_id.clone()),
                     })
                     .await
                     .map_err(room_failure)

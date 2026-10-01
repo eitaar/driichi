@@ -223,7 +223,7 @@ paths:
         - name: ui_locales
           in: query
           schema:
-            type: string
+            $ref: '#/components/schemas/OAuthAuthorizationForm/properties/ui_locales'
       responses:
         '200':
           $ref: '#/components/responses/OAuthPage'
@@ -1280,6 +1280,8 @@ components:
           const: S256
         ui_locales:
           type: string
+          maxLength: 4096
+          description: At most 4096 UTF-8 bytes; multibyte characters count toward the byte limit.
         csrf:
           type: string
           minLength: 1
