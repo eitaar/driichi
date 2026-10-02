@@ -335,17 +335,19 @@ export function ThreeTable({
 
   useEffect(() => {
     const active = activeMotionRef.current;
-    if (active && active.layout !== layout) {
+    const presentIds = new Set(animations.map((item) => item.id));
+    if (active && (active.layout !== layout || !presentIds.has(active.motion.itemId) || isFallback)) {
       blockedAnimationIdsRef.current.add(active.motion.itemId);
       activeMotionRef.current = null;
+      motionFrameTimesRef.current = [];
+      motionPixelRatioRef.current = null;
       setMotion(null);
       reportCancelled(active.motion.itemId);
     }
-    const presentIds = new Set(animations.map((item) => item.id));
     for (const id of blockedAnimationIdsRef.current) {
       if (!presentIds.has(id)) blockedAnimationIdsRef.current.delete(id);
     }
-  }, [animations, layout, reportCancelled]);
+  }, [animations, isFallback, layout, reportCancelled]);
 
   useEffect(() => {
     if (reducedMotion) {

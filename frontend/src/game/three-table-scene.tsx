@@ -19,8 +19,6 @@ import {
   PlaneGeometry,
   Quaternion,
   Scene,
-  Texture,
-  TextureLoader,
   Vector3,
 } from "three";
 import {
@@ -29,13 +27,6 @@ import {
   ATLAS_CELL_WIDTH,
   type TileAtlas,
 } from "./tile-atlas";
-import {
-  configureTableTexture,
-  disposeTableTextures,
-  TABLE_TEXTURE_SPECS,
-  TABLE_TEXTURE_URLS,
-  type TableTextureKey,
-} from "./table-materials";
 import { isDora } from "./dora";
 import { TableCenter } from "./table-center";
 import { dockLocalCalls } from "./three-table-dock";
@@ -149,10 +140,6 @@ export function tileFaceQuaternion(
   );
 }
 
-interface TableTextures {
-  felt: Texture;
-}
-
 function instanceMatrix(tile: SceneTile, face = false): Matrix4 {
   // Walls are deliberately a touch more separated than hands/rivers. The
   // shared tile geometry still does the work, but the ivory sidewalls can be
@@ -222,64 +209,6 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
   };
   material.customProgramCacheKey = () => `tile-atlas-${atlas.columns}x${atlas.rows}`;
   return material;
-}
-
-function loadTexture(
-  loader: TextureLoader,
-  key: TableTextureKey,
-): Promise<Texture> {
-  return new Promise((resolve, reject) => {
-    loader.load(
-      TABLE_TEXTURE_URLS[key],
-      (texture) => resolve(configureTableTexture(texture, TABLE_TEXTURE_SPECS[key])),
-      undefined,
-      reject,
-    );
-  });
-}
-
-function useTableTextures(): TableTextures | null {
-  const [textures, setTextures] = useState<TableTextures | null>(null);
-  const ownedRef = useRef<TableTextures | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    const loader = new TextureLoader();
-    const keys: readonly TableTextureKey[] = ["felt"];
-
-    // Readiness owns only the texture sampled by the felt material. Keeping the
-    // request set narrow prevents unused table art from blocking the scene.
-    void Promise.allSettled(
-      keys.map(async (key) => ({ key, texture: await loadTexture(loader, key) })),
-    ).then((results) => {
-      const loaded: Partial<Record<TableTextureKey, Texture>> = {};
-      let failed = false;
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          loaded[result.value.key] = result.value.texture;
-        } else {
-          failed = true;
-        }
-      }
-
-      if (failed || !active) {
-        disposeTableTextures(loaded);
-        return;
-      }
-
-      const next = { felt: loaded.felt! } satisfies TableTextures;
-      ownedRef.current = next;
-      setTextures(next);
-    });
-
-    return () => {
-      active = false;
-      disposeTableTextures(ownedRef.current);
-      ownedRef.current = null;
-    };
-  }, []);
-
-  return textures;
 }
 
 function updateAtlasCells(
@@ -754,9 +683,8 @@ function projectedTableRatios(
 
 function SceneReadiness({
   layout,
-  materialsReady,
   onRenderReady,
-}: Pick<MatchTableSceneProps, "layout" | "onRenderReady"> & { materialsReady: boolean }) {
+}: Pick<MatchTableSceneProps, "layout" | "onRenderReady">) {
   const invalidate = useThree((state) => state.invalidate);
   const scene = useThree((state) => state.scene);
   const gl = useThree((state) => state.gl);
@@ -767,11 +695,11 @@ function SceneReadiness({
   useEffect(() => {
     scheduled.current = false;
     reported.current = false;
-    if (materialsReady) invalidate();
-  }, [gl, invalidate, layout, materialsReady]);
+    invalidate();
+  }, [gl, invalidate, layout]);
 
   useFrame(() => {
-    if (!materialsReady || scheduled.current || reported.current) return;
+    if (scheduled.current || reported.current) return;
     scheduled.current = true;
     queueMicrotask(() => {
       scheduled.current = false;
@@ -923,7 +851,6 @@ export function MatchTableScene({
   onMotionFrame,
   onRenderReady,
 }: MatchTableSceneProps) {
-  const textures = useTableTextures();
   const gl = useThree((state) => state.gl);
   useLayoutEffect(() => {
     gl.shadowMap.enabled = true;
@@ -942,7 +869,6 @@ export function MatchTableScene({
       </group>
       <SceneReadiness
         layout={layout}
-        materialsReady={textures !== null}
         onRenderReady={onRenderReady}
       />
     </>

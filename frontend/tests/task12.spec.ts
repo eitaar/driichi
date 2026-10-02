@@ -568,6 +568,91 @@ test("falls back accessibly after WebGL context loss", async ({ page }) => {
   await expectNoAxeViolations(page, ".gameplay-main");
 });
 
+test("renders and completes motion when the unused felt asset is unavailable", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.route("**/table-felt.webp", (route) => route.fulfill({ status: 404, body: "unavailable felt" }));
+  await installCharacterFixtures(page);
+  await installSocket(page, "4p-red-east");
+  await page.goto("/room/123456/lobby");
+  const table = await expectRenderedTable(page);
+  await page.evaluate(() => {
+    const browser = window as unknown as {
+      __socket: { emit(value: unknown): void };
+      __state: unknown;
+    };
+    performance.clearMeasures("three-table-motion-event");
+    browser.__socket.emit({ type: "game_update", event: { type: "dahai", actor: 0, tile: 1 }, state: browser.__state });
+  });
+  await expect(table).toHaveAttribute("data-last-consumed-animation-id", "0");
+  await expect(table).toHaveAttribute("data-animation-state", "idle");
+  await expect(table).toHaveAttribute("data-webgl-fallback", "false");
+  expect(await page.evaluate(() => performance.getEntriesByName("three-table-motion-event", "measure").length)).toBe(1);
+  await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
+});
+
+for (const interruption of ["authoritative queue clearing", "transient reconnect", "WebGL context loss"] as const) {
+  test(`cancels interrupted motion on ${interruption}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await installCharacterFixtures(page);
+    await installSocket(page, "4p-red-east");
+    await page.goto("/room/123456/lobby");
+    const table = await expectRenderedTable(page);
+    await page.evaluate((interruption) => {
+      const browser = window as unknown as {
+        __socket: {
+          emit(value: unknown): void;
+          onclose: ((event: { code: number; reason: string }) => void) | null;
+        };
+        __room: Record<string, unknown>;
+        __state: unknown;
+        __interrupted: boolean;
+      };
+      const host = document.querySelector<HTMLElement>('[data-testid="three-table"]')!;
+      performance.clearMeasures("three-table-motion-event");
+      performance.clearMeasures("three-table-motion-frame");
+      browser.__interrupted = false;
+      const observer = new MutationObserver(() => {
+        if (host.dataset.animationState !== "active") return;
+        observer.disconnect();
+        browser.__interrupted = true;
+        if (interruption === "WebGL context loss") {
+          host.querySelector("canvas")!.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+        } else if (interruption === "transient reconnect") {
+          browser.__socket.onclose?.({ code: 1006, reason: "" });
+        } else {
+          browser.__socket.emit({ type: "game_update", room: { ...browser.__room, revision: Number(browser.__room.revision) + 3 } });
+        }
+      });
+      observer.observe(host, { attributes: true, attributeFilter: ["data-animation-state"] });
+      browser.__socket.emit({
+        type: "game_update",
+        room: { ...browser.__room, revision: Number(browser.__room.revision) + 1 },
+        event: { type: "dahai", actor: 0, tile: 1 },
+        state: browser.__state,
+      });
+    }, interruption);
+    await expect.poll(() => page.evaluate(() =>
+      (window as unknown as { __interrupted: boolean }).__interrupted,
+    )).toBe(true);
+    await expect(table).toHaveAttribute("data-animation-state", "idle");
+    await expect(table).toHaveAttribute("data-animation-item-id", "");
+    await expect(table).toHaveAttribute("data-last-consumed-animation-id", "");
+    expect(await page.evaluate(() => ({
+      events: performance.getEntriesByName("three-table-motion-event", "measure").length,
+      frames: performance.getEntriesByName("three-table-motion-frame", "measure").length,
+    }))).toEqual({ events: 0, frames: 0 });
+    if (interruption === "WebGL context loss") {
+      await expect(table).toHaveAttribute("data-webgl-fallback", "true");
+      await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
+    } else {
+      await expect(table).toHaveAttribute("data-webgl-fallback", "false");
+      await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
+    }
+  });
+}
+
 test("runs one bounded discard motion and stops invalidating after idle", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.emulateMedia({ reducedMotion: "no-preference" });
