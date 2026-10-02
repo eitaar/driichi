@@ -479,9 +479,10 @@ impl EngineAdapter {
                         markers
                             .iter()
                             .map(|&marker| {
-                                full.iter()
-                                    .filter(|&&id| id / 4 == next_kind(marker))
-                                    .count() as u32
+                                let kind = next_kind(marker);
+                                full.iter().filter(|&&id| id / 4 == kind).count() as u32
+                                    + u32::from(self.mode.is_three_player() && kind == 30)
+                                        * kita as u32
                             })
                             .sum()
                     };
@@ -1502,8 +1503,9 @@ mod tests {
                     .apply(Seat::new(1).unwrap(), &GameAction::Tsumo)
                     .unwrap()
             };
+            let capture = outcome.ended.unwrap();
             let record = adapter
-                .result_record(&outcome.ended.unwrap(), &roster, 1, 0, &outcome.events)
+                .result_record(&capture, &roster, 1, 0, &outcome.events)
                 .unwrap();
             assert_eq!(record.wins.len(), if ron { 2 } else { 1 });
             assert!(record.wins[0].concealed.iter().any(|tile| tile.id() == 52));
@@ -1514,14 +1516,38 @@ mod tests {
                     .any(|y| y.id == 32 && y.han == Some(1))
             );
             for win in &record.wins {
-                assert_eq!(win.concealed[win.winning_tile_index], win.winning_tile);
+                let (hand, drawn, discarded) = match &capture.pre_action {
+                    GameStateVariant::FourPlayer(s) => (
+                        &s.players[win.seat.index() as usize].hand,
+                        s.drawn_tile,
+                        s.last_discard,
+                    ),
+                    GameStateVariant::ThreePlayer(s) => (
+                        &s.players[win.seat.index() as usize].hand,
+                        s.drawn_tile,
+                        s.last_discard,
+                    ),
+                };
+                let expected_id = if ron {
+                    discarded.unwrap().1
+                } else {
+                    drawn.unwrap()
+                };
+                let expected_index = if ron {
+                    hand.len()
+                } else {
+                    hand.iter().position(|&id| id == expected_id).unwrap()
+                };
+                assert_eq!(expected_id, 77);
+                assert_eq!(win.winning_tile.id(), expected_id);
+                assert_eq!(win.winning_tile_index, expected_index);
+                assert_eq!(win.concealed[expected_index].id(), expected_id);
                 assert_eq!(
                     win.concealed
                         .iter()
-                        .enumerate()
-                        .filter(|(index, _)| *index == win.winning_tile_index)
+                        .filter(|tile| tile.id() / 4 == expected_id / 4)
                         .count(),
-                    1
+                    2
                 );
                 if win.seat.index() == 1 {
                     assert_ne!(win.win_points as i32, record.settlement.changes[1].delta);
@@ -1536,6 +1562,101 @@ mod tests {
                 if ron { vec![1, 2] } else { vec![1] }
             );
         }
+    }
+
+    #[test]
+    fn result_preserves_red_winning_physical_id() {
+        let mode = GameMode::FourPlayerRedEast;
+        let mut adapter = prepared_capture(mode, false, false);
+        let GameStateVariant::FourPlayer(state) = &mut adapter.state else {
+            unreachable!()
+        };
+        // Four complete groups after drawing red 5p; no pre-existing 5p physical ID.
+        let kinds = [9, 10, 11, 18, 19, 20, 22, 23, 24, 12, 14, 27, 27];
+        let mut copies = [0u8; 34];
+        state.players[1].hand = kinds
+            .iter()
+            .map(|&kind| {
+                let id = kind * 4 + copies[kind as usize];
+                copies[kind as usize] += 1;
+                id
+            })
+            .collect();
+        state.players[1].hand.push(52);
+        state.players[1].riichi_declared = true;
+        state.drawn_tile = Some(52);
+        let roster = (0..4)
+            .map(|seat| Participant::new(format!("p{seat}"), "same", crate::ParticipantKind::Human))
+            .collect::<Vec<_>>();
+        let outcome = adapter
+            .apply(Seat::new(1).unwrap(), &GameAction::Tsumo)
+            .unwrap();
+        let capture = outcome.ended.unwrap();
+        let GameStateVariant::FourPlayer(pre) = &capture.pre_action else {
+            unreachable!()
+        };
+        let expected_index = pre.players[1]
+            .hand
+            .iter()
+            .position(|&id| id == pre.drawn_tile.unwrap())
+            .unwrap();
+        assert_eq!(pre.drawn_tile, Some(52));
+        let record = adapter
+            .result_record(&capture, &roster, 1, 0, &outcome.events)
+            .unwrap();
+        let win = &record.wins[0];
+        assert_eq!(win.winning_tile.id(), 52);
+        assert_eq!(win.winning_tile_index, expected_index);
+        assert_eq!(win.concealed[expected_index].id(), 52);
+        assert_eq!(
+            win.concealed
+                .iter()
+                .filter(|tile| tile.id() / 4 == 13)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn result_counts_extracted_north_for_dora_and_ura() {
+        let mode = GameMode::ThreePlayerRedEast;
+        let mut adapter = prepared_capture(mode, false, false);
+        let GameStateVariant::ThreePlayer(state) = &mut adapter.state else {
+            unreachable!()
+        };
+        state.players[1].kita_tiles.push(120); // North removed from the winning hand.
+        state.players[1].riichi_declared = true;
+        state.wall.dora_indicators.push(116); // West -> North.
+        state.wall.ura_indicator_tiles[0] = 117; // Second West marker -> North ura.
+        let roster = (0..3)
+            .map(|seat| Participant::new(format!("p{seat}"), "same", crate::ParticipantKind::Human))
+            .collect::<Vec<_>>();
+        let outcome = adapter
+            .apply(Seat::new(1).unwrap(), &GameAction::Tsumo)
+            .unwrap();
+        let capture = outcome.ended.unwrap();
+        let record = adapter
+            .result_record(&capture, &roster, 1, 0, &outcome.events)
+            .unwrap();
+        for id in [31, 33, 34] {
+            assert_eq!(
+                record.wins[0]
+                    .yaku
+                    .iter()
+                    .find(|y| y.id == id)
+                    .and_then(|y| y.han),
+                Some(1),
+                "bonus ID {id}"
+            );
+        }
+        assert_eq!(
+            record.wins[0]
+                .concealed
+                .iter()
+                .filter(|tile| tile.id() / 4 == 30)
+                .count(),
+            0
+        );
     }
 
     #[test]
