@@ -6,7 +6,7 @@ use tokio::time::Instant;
 
 use crate::{
     ActionId, Decision, DecisionAction, DecisionId, DecisionKind, GameAction, GameMode,
-    Participant, ParticipantId, ParticipantKind, Seat, Tile, Wind,
+    Participant, ParticipantId, ParticipantKind, Seat, Tile, Wind, results::PublishedKyokuResults,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +154,13 @@ impl TableState {
         self
     }
 
+    pub(crate) fn with_scores(mut self, scores: &[i32]) -> Self {
+        for (player, score) in self.players.iter_mut().zip(scores) {
+            player.score = *score;
+        }
+        self
+    }
+
     pub fn with_decision(mut self, decision: Decision) -> Self {
         self.decision = Some(decision);
         self
@@ -206,6 +213,15 @@ pub enum AudienceProjection {
 }
 
 impl AudienceProjection {
+    pub(crate) fn with_kyoku_results(mut self, results: PublishedKyokuResults) -> Self {
+        match &mut self {
+            Self::Player(view) => view.kyoku_results = Some(results),
+            Self::Public(view) | Self::BenchmarkAdmin(view) => view.kyoku_results = Some(results),
+            Self::ReplayAdmin(view) => view.kyoku_results = Some(results),
+        }
+        self
+    }
+
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serialize_projection(self)
     }
@@ -224,6 +240,8 @@ pub struct PlayerProjection {
     pub players: Vec<VisiblePlayer>,
     pub dora_indicators: Vec<Tile>,
     pub decision: Option<PlayerDecisionProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kyoku_results: Option<PublishedKyokuResults>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +256,8 @@ pub struct PublicProjection {
     pub players: Vec<VisiblePlayer>,
     pub dora_indicators: Vec<Tile>,
     pub decision: Option<PublicDecisionProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kyoku_results: Option<PublishedKyokuResults>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -252,6 +272,8 @@ pub struct ReplayAdminProjection {
     pub players: Vec<VisiblePlayer>,
     pub dora_indicators: Vec<Tile>,
     pub decision: Option<ReplayDecisionProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kyoku_results: Option<PublishedKyokuResults>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,6 +365,7 @@ pub fn project_table_state(state: &TableState, audience: Audience) -> AudiencePr
                 .decision
                 .as_ref()
                 .and_then(|decision| player_decision(decision, viewer_seat)),
+            kyoku_results: None,
         }),
         Audience::Public | Audience::BenchmarkAdmin => {
             let projection = PublicProjection {
@@ -369,6 +392,7 @@ pub fn project_table_state(state: &TableState, audience: Audience) -> AudiencePr
                     .collect(),
                 dora_indicators: state.dora_indicators.clone(),
                 decision: state.decision.as_ref().map(public_decision),
+                kyoku_results: None,
             };
             if audience == Audience::BenchmarkAdmin {
                 AudienceProjection::BenchmarkAdmin(projection)
@@ -391,6 +415,7 @@ pub fn project_table_state(state: &TableState, audience: Audience) -> AudiencePr
                 .collect(),
             dora_indicators: state.dora_indicators.clone(),
             decision: state.decision.as_ref().map(replay_decision),
+            kyoku_results: None,
         }),
     }
 }

@@ -676,6 +676,34 @@ impl EngineAdapter {
         }
     }
 
+    pub(crate) fn ended_table_state(
+        &self,
+        ended: &EngineKyokuEnd,
+        participants: &[Participant],
+        before_scores: &[i32],
+    ) -> Result<TableState, EngineError> {
+        if participants.len() != self.mode.seat_count() || before_scores.len() != participants.len()
+        {
+            return Err(EngineError::Divergence(
+                "ended table roster/score count mismatch".into(),
+            ));
+        }
+        let mut snapshot = self.clone();
+        snapshot.state = ended.ended_copy.clone();
+        let table = snapshot.table_state(self.mode, participants)?;
+        if table
+            .players()
+            .iter()
+            .zip(participants)
+            .any(|(player, participant)| player.participant.id != participant.id)
+        {
+            return Err(EngineError::Divergence(
+                "ended table roster identity mismatch".into(),
+            ));
+        }
+        Ok(table.with_scores(before_scores))
+    }
+
     pub(crate) fn table_state(
         &self,
         mode: GameMode,

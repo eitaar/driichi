@@ -4025,6 +4025,13 @@ mod tests {
         }
         let (id, mut machine, roster) = state.build_match().unwrap();
         for _ in 0..10_000 {
+            if let Some(hold) = machine.held_kyoku() {
+                let steps = hold.wins.len();
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
             if machine.is_complete() {
                 break;
             }
