@@ -14,10 +14,11 @@ use crate::{
         GameAction, GameEvent, GameMode, MatchAbort, MatchPlayerResult, MatchResult, MatchStatus,
         Participant, ParticipantId, ParticipantKind, Seat,
     },
-    engine::{EngineAdapter, EngineError},
+    engine::{EngineAdapter, EngineApplyOutcome, EngineError},
     projection::{
         Audience, AudienceProjection, ProjectionError, project_table_state, serialize_projection,
     },
+    results::KyokuResultRecord,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -91,6 +92,7 @@ pub struct MatchMachine {
     engine: EngineAdapter,
     status: MatchStatus,
     events: Vec<GameEvent>,
+    results: Vec<KyokuResultRecord>,
     time_control: TimeControl,
     timing: TimingConfig,
     presence: Vec<Presence>,
@@ -171,6 +173,10 @@ impl MatchMachine {
 
     pub fn events(&self) -> &[GameEvent] {
         &self.events
+    }
+
+    pub fn kyoku_results(&self) -> &[KyokuResultRecord] {
+        &self.results
     }
 
     pub fn time_control(&self) -> TimeControl {
@@ -279,12 +285,11 @@ impl MatchMachine {
             return Err(MatchError::IllegalAction { seat });
         }
         self.decision = None;
-        let new_events = match self.engine.apply(seat, &action) {
-            Ok(outcome) => outcome.events,
-            Err(error @ EngineError::Rejected(_)) => return Err(self.abort_for_engine(error)),
-            Err(error) => return Err(self.abort_for_engine(error)),
-        };
-        self.record_events(new_events)
+        let outcome = self
+            .engine
+            .apply(seat, &action)
+            .map_err(|error| self.abort_for_engine(error))?;
+        self.record_outcome(outcome)
     }
 
     /// Open the one canonical Decision for the current engine state. A
@@ -457,7 +462,7 @@ impl MatchMachine {
             .map(|action| (action.seat, action.action.clone()))
             .collect();
         self.decision = None;
-        let new_events = if actions.len() == 1 {
+        let outcome = if actions.len() == 1 {
             self.engine
                 .apply(actions[0].0, &actions[0].1)
                 .map_err(|error| self.abort_for_engine(error))?
@@ -465,9 +470,8 @@ impl MatchMachine {
             self.engine
                 .apply_simultaneous(&actions)
                 .map_err(|error| self.abort_for_engine(error))?
-        }
-        .events;
-        self.record_events(new_events.clone())?;
+        };
+        let new_events = self.record_outcome(outcome)?;
         Ok(DecisionResult::Resolved {
             decision_id,
             actions: resolution.actions,
@@ -475,10 +479,58 @@ impl MatchMachine {
         })
     }
 
+    fn record_outcome(
+        &mut self,
+        outcome: EngineApplyOutcome,
+    ) -> Result<Vec<GameEvent>, MatchError> {
+        if let Some(ended) = &outcome.ended {
+            let sequence = self
+                .events
+                .iter()
+                .filter(|event| matches!(event, GameEvent::StartKyoku { .. }))
+                .count() as u64
+                + outcome
+                    .events
+                    .iter()
+                    .take_while(|event| !matches!(event, GameEvent::EndKyoku))
+                    .filter(|event| matches!(event, GameEvent::StartKyoku { .. }))
+                    .count() as u64;
+            let record = self
+                .engine
+                .result_record(
+                    ended,
+                    &self.players,
+                    sequence,
+                    self.events.len(),
+                    &outcome.events,
+                )
+                .map_err(|error| self.abort_for_engine(error))?;
+            self.results.push(record);
+        }
+        self.record_events(outcome.events)
+    }
+
     fn record_events(&mut self, new_events: Vec<GameEvent>) -> Result<Vec<GameEvent>, MatchError> {
         self.events.extend(new_events.iter().cloned());
         if self.engine.is_done() {
-            self.status = MatchStatus::Completed(self.build_result());
+            let result = self.build_result();
+            result
+                .validate()
+                .map_err(|error| self.abort_for_engine(EngineError::Divergence(error)))?;
+            if let Some(last) = self.results.last()
+                && last
+                    .settlement
+                    .changes
+                    .iter()
+                    .map(|change| change.after)
+                    .collect::<Vec<_>>()
+                    != result.final_scores
+            {
+                return Err(self.abort_for_engine(EngineError::Divergence(
+                    "final scores differ from settlement".into(),
+                )));
+            }
+            self.status = MatchStatus::Completed(result);
         }
         Ok(new_events)
     }
@@ -548,6 +600,7 @@ impl MatchMachine {
             engine,
             status: MatchStatus::Running,
             events,
+            results: Vec::new(),
             time_control: TimeControl::Casual,
             timing: TimingConfig::casual(),
             controllers,

@@ -5,6 +5,7 @@ mod domain;
 pub mod engine;
 mod match_machine;
 mod projection;
+mod results;
 pub mod room;
 
 pub use decision::{
@@ -23,6 +24,10 @@ pub use projection::{
     ProjectionError, PublicDecisionProjection, PublicProjection, ReplayAdminProjection,
     ReplayDecisionEntry, ReplayDecisionProjection, TablePlayerState, TableState, VisibleAction,
     VisibleMeld, VisiblePlayer, project_table_state, serialize_projection,
+};
+pub use results::{
+    KyokuResultRecord, KyokuSettlement, PublishedKyokuResults, ResultMeld, ResultMeldKind,
+    ScoreChange, ScoreLimit, WinEvaluation, WinResult, YakuValue,
 };
 pub use room::{
     CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, MatchId, MatchPlayerSnapshot,

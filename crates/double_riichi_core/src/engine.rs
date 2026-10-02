@@ -11,6 +11,10 @@ use thiserror::Error;
 use crate::{
     domain::{GameAction, GameEvent, GameMode, Participant, Seat, Tile, Wind},
     projection::{MeldState, TablePlayerState, TableState},
+    results::{
+        KyokuResultRecord, KyokuSettlement, ResultMeld, ResultMeldKind, ScoreChange, ScoreLimit,
+        WinEvaluation, WinResult, YakuValue,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -308,6 +312,360 @@ impl EngineAdapter {
             None
         };
         Ok(EngineApplyOutcome { events, ended })
+    }
+
+    pub(crate) fn result_record(
+        &self,
+        ended: &EngineKyokuEnd,
+        roster: &[Participant],
+        kyoku_sequence: u64,
+        first_event_index: usize,
+        events: &[GameEvent],
+    ) -> Result<KyokuResultRecord, EngineError> {
+        let invalid = |reason: &str| EngineError::Divergence(reason.into());
+        if roster.len() != self.mode.seat_count() || ended.real_after_scores.len() != roster.len() {
+            return Err(invalid("result roster size differs from engine"));
+        }
+        let (scores, pot_before) = match &ended.pre_action {
+            GameStateVariant::FourPlayer(s) => (
+                s.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                s.riichi_sticks,
+            ),
+            GameStateVariant::ThreePlayer(s) => (
+                s.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                s.riichi_sticks,
+            ),
+        };
+        let changes = roster
+            .iter()
+            .enumerate()
+            .map(|(i, player)| {
+                Ok(ScoreChange {
+                    participant_id: player.id.clone(),
+                    seat: Seat::new(i as u8).ok_or_else(|| invalid("invalid seat"))?,
+                    before: scores[i],
+                    delta: ended.real_after_scores[i]
+                        .checked_sub(scores[i])
+                        .ok_or_else(|| invalid("settlement overflow"))?,
+                    after: ended.real_after_scores[i],
+                })
+            })
+            .collect::<Result<Vec<_>, EngineError>>()?;
+        let mut wins = Vec::new();
+        let mut draw_reason = None;
+        let mut end_event_index = None;
+        for (index, event) in events.iter().enumerate() {
+            let event_index = first_event_index
+                .checked_add(index)
+                .ok_or_else(|| invalid("event index overflow"))?;
+            match event {
+                GameEvent::Hora {
+                    actor,
+                    target,
+                    tile,
+                    ura_markers,
+                    ..
+                } => {
+                    let seat = actor.index() as usize;
+                    let adjudicated = ended
+                        .win_results
+                        .get(&actor.index())
+                        .ok_or_else(|| invalid("missing adjudicated winner"))?;
+                    let (hand, melds, drawn, indicators, kita, dealer, rule) =
+                        match &ended.pre_action {
+                            GameStateVariant::FourPlayer(s) => (
+                                &s.players[seat].hand,
+                                &s.players[seat].melds,
+                                s.drawn_tile,
+                                &s.wall.dora_indicators,
+                                s.players[seat].kita_tiles.len(),
+                                s.oya,
+                                &s.rule,
+                            ),
+                            GameStateVariant::ThreePlayer(s) => (
+                                &s.players[seat].hand,
+                                &s.players[seat].melds,
+                                s.drawn_tile,
+                                &s.wall.dora_indicators,
+                                s.players[seat].kita_tiles.len(),
+                                s.oya,
+                                &s.rule,
+                            ),
+                        };
+                    let tsumo = actor == target;
+                    let winning_id = if tsumo {
+                        drawn.ok_or_else(|| invalid("missing drawn winning tile"))?
+                    } else {
+                        let discard = match &ended.pre_action {
+                            GameStateVariant::FourPlayer(s) => s.last_discard,
+                            GameStateVariant::ThreePlayer(s) => s.last_discard,
+                        }
+                        .ok_or_else(|| invalid("missing accepted ron physical tile"))?;
+                        if discard.0 != target.index() {
+                            return Err(invalid("ron target differs from captured discard"));
+                        }
+                        discard.1
+                    };
+                    if tile.is_some_and(|t| t.id() != winning_id) {
+                        return Err(invalid("winning event tile differs from draw"));
+                    }
+                    let mut concealed = hand
+                        .iter()
+                        .map(|&id| parse_engine_tile(self.mode, id))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let winning_tile_index = if tsumo {
+                        hand.iter()
+                            .position(|&id| id == winning_id)
+                            .ok_or_else(|| invalid("drawn physical tile missing from hand"))?
+                    } else {
+                        concealed.push(parse_engine_tile(self.mode, winning_id)?);
+                        concealed.len() - 1
+                    };
+                    let winning_tile = parse_engine_tile(self.mode, winning_id)?;
+                    let melds = melds
+                        .iter()
+                        .map(|m| {
+                            Ok(ResultMeld {
+                                kind: match m.meld_type {
+                                    riichienv_core::types::MeldType::Chi => ResultMeldKind::Chi,
+                                    riichienv_core::types::MeldType::Pon => ResultMeldKind::Pon,
+                                    riichienv_core::types::MeldType::Daiminkan => {
+                                        ResultMeldKind::Daiminkan
+                                    }
+                                    riichienv_core::types::MeldType::Ankan => ResultMeldKind::Ankan,
+                                    riichienv_core::types::MeldType::Kakan => ResultMeldKind::Kakan,
+                                },
+                                tiles: m
+                                    .tiles
+                                    .iter()
+                                    .map(|&t| parse_engine_tile(self.mode, t))
+                                    .collect::<Result<Vec<_>, _>>()?,
+                                opened: m.opened,
+                                from_who: if m.from_who < 0 {
+                                    None
+                                } else {
+                                    Some(parse_seat(m.from_who as usize, self.mode)?)
+                                },
+                                called_tile: m
+                                    .called_tile
+                                    .map(|t| parse_engine_tile(self.mode, t))
+                                    .transpose()?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, EngineError>>()?;
+                    let full = concealed
+                        .iter()
+                        .chain(melds.iter().flat_map(|m: &ResultMeld| m.tiles.iter()))
+                        .map(|tile| tile.id())
+                        .collect::<Vec<_>>();
+                    let next_kind = |id: u8| -> u8 {
+                        let kind = id / 4;
+                        if self.mode.is_three_player() && kind == 0 {
+                            return 8;
+                        }
+                        if self.mode.is_three_player() && kind == 8 {
+                            return 0;
+                        }
+                        match kind {
+                            8 => 0,
+                            17 => 9,
+                            26 => 18,
+                            30 => 27,
+                            33 => 31,
+                            _ => kind + 1,
+                        }
+                    };
+                    let count_dora = |markers: &[u8]| -> u32 {
+                        markers
+                            .iter()
+                            .map(|&marker| {
+                                full.iter()
+                                    .filter(|&&id| id / 4 == next_kind(marker))
+                                    .count() as u32
+                            })
+                            .sum()
+                    };
+                    let ura = ura_markers
+                        .as_ref()
+                        .map(|markers| markers.iter().map(|t| t.id()).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    let bonus = [
+                        count_dora(indicators),
+                        full.iter()
+                            .filter(|&&id| [16, 52, 88].contains(&id))
+                            .count() as u32,
+                        count_dora(&ura),
+                        kita as u32,
+                    ];
+                    let is_open = melds.iter().any(|m: &ResultMeld| m.opened);
+                    let mut yaku = Vec::new();
+                    for &id in &adjudicated.yaku {
+                        let name = riichienv_core::yaku::get_yaku_by_id(id)
+                            .ok_or_else(|| invalid("unknown adjudicated yaku ID"))?
+                            .name;
+                        let value = if adjudicated.yakuman {
+                            let multiplier = match id {
+                                47 if rule.is_junsei_chuurenpoutou_double => 2,
+                                48 if rule.is_suuankou_tanki_double => 2,
+                                49 if rule.is_kokushi_musou_13machi_double => 2,
+                                50 if rule.is_daisuushii_double => 2,
+                                35..=50 => 1,
+                                _ => return Err(invalid("ordinary ID in yakuman result")),
+                            };
+                            YakuValue {
+                                id,
+                                name,
+                                han: None,
+                                yakuman_multiplier: Some(multiplier),
+                            }
+                        } else {
+                            let han = match id {
+                                31..=34 => bonus[(id - 31) as usize],
+                                15..=17 | 26..=27 => {
+                                    if is_open {
+                                        if id >= 26 { 2 } else { 1 }
+                                    } else if id >= 26 {
+                                        3
+                                    } else {
+                                        2
+                                    }
+                                }
+                                29 => {
+                                    if is_open {
+                                        5
+                                    } else {
+                                        6
+                                    }
+                                }
+                                18..=25 => 2,
+                                28 => 3,
+                                1..=14 | 30 => 1,
+                                _ => return Err(invalid("invalid ordinary yaku ID")),
+                            };
+                            if han == 0 {
+                                return Err(invalid("zero-value adjudicated yaku"));
+                            }
+                            YakuValue {
+                                id,
+                                name,
+                                han: Some(han),
+                                yakuman_multiplier: None,
+                            }
+                        };
+                        yaku.push(value);
+                    }
+                    let total: u32 = yaku
+                        .iter()
+                        .map(|y| y.han.unwrap_or_else(|| y.yakuman_multiplier.unwrap() * 13))
+                        .sum();
+                    if total != adjudicated.han || adjudicated.han == 0 {
+                        return Err(invalid("yaku values differ from adjudicated han"));
+                    }
+                    let evaluation = if adjudicated.yakuman {
+                        WinEvaluation::Yakuman {
+                            multiplier: total / 13,
+                        }
+                    } else {
+                        let han = adjudicated.han;
+                        let fu = adjudicated.fu;
+                        if fu == 0 {
+                            return Err(invalid("ordinary win has no fu"));
+                        }
+                        let limit = match han {
+                            0..=4 => {
+                                if (if fu == 25 { 25 } else { fu.div_ceil(10) * 10 })
+                                    .checked_shl(han + 2)
+                                    .is_some_and(|v| v > 2000)
+                                {
+                                    Some(ScoreLimit::Mangan)
+                                } else {
+                                    None
+                                }
+                            }
+                            5 => Some(ScoreLimit::Mangan),
+                            6..=7 => Some(ScoreLimit::Haneman),
+                            8..=10 => Some(ScoreLimit::Baiman),
+                            11..=12 => Some(ScoreLimit::Sanbaiman),
+                            _ => Some(ScoreLimit::CountedYakuman),
+                        };
+                        WinEvaluation::Ordinary { han, fu, limit }
+                    };
+                    let scoring_han = if !adjudicated.yakuman && total >= 13 {
+                        13
+                    } else {
+                        total
+                    };
+                    let score = riichienv_core::score::calculate_score(
+                        u8::try_from(scoring_han).map_err(|_| invalid("scoring han overflow"))?,
+                        u8::try_from(adjudicated.fu).map_err(|_| invalid("fu overflow"))?,
+                        actor.index() == dealer,
+                        tsumo,
+                        0,
+                        self.mode.seat_count() as u8,
+                    );
+                    let honba = match &ended.pre_action {
+                        GameStateVariant::FourPlayer(s) => u32::from(s.honba),
+                        GameStateVariant::ThreePlayer(s) => u32::from(s.honba),
+                    };
+                    let applied_honba = if tsumo || wins.is_empty() { honba } else { 0 };
+                    let adjudicated_base = riichienv_core::score::calculate_score(
+                        u8::try_from(scoring_han).map_err(|_| invalid("scoring han overflow"))?,
+                        u8::try_from(adjudicated.fu).map_err(|_| invalid("fu overflow"))?,
+                        actor.index() == dealer,
+                        tsumo,
+                        applied_honba,
+                        self.mode.seat_count() as u8,
+                    );
+                    if !adjudicated.is_win
+                        || adjudicated.ron_agari != adjudicated_base.pay_ron
+                        || adjudicated.tsumo_agari_oya != adjudicated_base.pay_tsumo_oya
+                        || adjudicated.tsumo_agari_ko != adjudicated_base.pay_tsumo_ko
+                    {
+                        return Err(invalid("adjudicated payment differs from calculated score"));
+                    }
+                    wins.push(WinResult {
+                        event_index,
+                        winner: roster[seat].id.clone(),
+                        seat: *actor,
+                        target: *target,
+                        tsumo,
+                        concealed,
+                        melds,
+                        winning_tile,
+                        winning_tile_index,
+                        yaku,
+                        evaluation,
+                        win_points: score.total,
+                    });
+                }
+                GameEvent::Ryukyoku { reason, .. } => {
+                    draw_reason = Some(
+                        reason
+                            .clone()
+                            .ok_or_else(|| invalid("missing engine draw reason"))?,
+                    );
+                }
+                GameEvent::EndKyoku => {
+                    end_event_index = Some(event_index);
+                }
+                _ => {}
+            }
+        }
+        let result = KyokuResultRecord {
+            version: 1,
+            kyoku_sequence,
+            mode: self.mode,
+            end_event_index: end_event_index.ok_or_else(|| invalid("missing end kyoku event"))?,
+            wins,
+            settlement: KyokuSettlement {
+                changes,
+                pot_before,
+                pot_after: ended.real_after_pot,
+                draw_reason,
+            },
+        };
+        result.validate(roster).map_err(EngineError::Divergence)?;
+        Ok(result)
     }
 
     fn riichi_sticks(&self) -> u32 {
@@ -1113,6 +1471,113 @@ mod tests {
     }
 
     #[test]
+    fn result_preserves_physical_winning_position() {
+        let mode = GameMode::FourPlayerRedEast;
+        let roster = (0..4)
+            .map(|seat| {
+                Participant::new(
+                    format!("p{seat}"),
+                    "same name",
+                    crate::ParticipantKind::Human,
+                )
+            })
+            .collect::<Vec<_>>();
+        for ron in [false, true] {
+            let mut adapter = prepared_capture(mode, ron, false);
+            let outcome = if ron {
+                adapter
+                    .apply_simultaneous(&[
+                        (
+                            Seat::new(1).unwrap(),
+                            GameAction::Ron(Seat::new(0).unwrap()),
+                        ),
+                        (
+                            Seat::new(2).unwrap(),
+                            GameAction::Ron(Seat::new(0).unwrap()),
+                        ),
+                    ])
+                    .unwrap()
+            } else {
+                adapter
+                    .apply(Seat::new(1).unwrap(), &GameAction::Tsumo)
+                    .unwrap()
+            };
+            let record = adapter
+                .result_record(&outcome.ended.unwrap(), &roster, 1, 0, &outcome.events)
+                .unwrap();
+            assert_eq!(record.wins.len(), if ron { 2 } else { 1 });
+            assert!(record.wins[0].concealed.iter().any(|tile| tile.id() == 52));
+            assert!(
+                record.wins[0]
+                    .yaku
+                    .iter()
+                    .any(|y| y.id == 32 && y.han == Some(1))
+            );
+            for win in &record.wins {
+                assert_eq!(win.concealed[win.winning_tile_index], win.winning_tile);
+                assert_eq!(
+                    win.concealed
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| *index == win.winning_tile_index)
+                        .count(),
+                    1
+                );
+                if win.seat.index() == 1 {
+                    assert_ne!(win.win_points as i32, record.settlement.changes[1].delta);
+                }
+            }
+            assert_eq!(
+                record
+                    .wins
+                    .iter()
+                    .map(|w| w.seat.index())
+                    .collect::<Vec<_>>(),
+                if ron { vec![1, 2] } else { vec![1] }
+            );
+        }
+    }
+
+    #[test]
+    fn settlement_uses_real_scores_and_final_pot() {
+        for (mode, expected_points) in [
+            (GameMode::ThreePlayerRedEast, 6_000),
+            (GameMode::FourPlayerRedEast, 8_000),
+        ] {
+            let mut adapter = prepared_capture(mode, false, false);
+            let roster = (0..mode.seat_count())
+                .map(|seat| {
+                    Participant::new(format!("p{seat}"), "same", crate::ParticipantKind::Human)
+                })
+                .collect::<Vec<_>>();
+            let outcome = adapter
+                .apply(Seat::new(1).unwrap(), &GameAction::Tsumo)
+                .unwrap();
+            let record = adapter
+                .result_record(&outcome.ended.unwrap(), &roster, 1, 0, &outcome.events)
+                .unwrap();
+            assert!(
+                record
+                    .settlement
+                    .changes
+                    .iter()
+                    .all(|c| c.before.checked_add(c.delta) == Some(c.after))
+            );
+            assert_eq!(record.settlement.pot_before, 2);
+            assert_eq!(record.settlement.pot_after, 0);
+            assert_eq!(
+                record.wins[0].evaluation,
+                WinEvaluation::Ordinary {
+                    han: 4,
+                    fu: 40,
+                    limit: Some(ScoreLimit::Mangan)
+                }
+            );
+            assert_eq!(record.wins[0].win_points, expected_points); // Excludes honba/deposits.
+        }
+    }
+
+    #[test]
     fn pre_action_capture_survives_next_round() {
         for mode in [
             GameMode::FourPlayerRedEast,
@@ -1246,6 +1711,19 @@ mod tests {
                 };
                 if let Some(capture) = outcome.ended {
                     ended += 1;
+                    let roster = (0..mode.seat_count())
+                        .map(|seat| {
+                            Participant::new(
+                                format!("seeded-{seat}"),
+                                "same",
+                                crate::ParticipantKind::Human,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let record = adapter
+                        .result_record(&capture, &roster, 1, 0, &outcome.events)
+                        .unwrap();
+                    assert_eq!(record.settlement.changes.len(), mode.seat_count());
                     assert_eq!(capture.real_after_scores, adapter.scores());
                     assert_eq!(capture.real_after_pot, adapter.riichi_sticks());
                     assert!(
