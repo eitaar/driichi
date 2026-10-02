@@ -35,6 +35,21 @@ enum ApplyCommand {
     RiichiDiscard { tile: u8 },
 }
 
+pub(crate) struct EngineApplyOutcome {
+    pub events: Vec<GameEvent>,
+    #[allow(dead_code)] // Read by the result adapter in Task 2.
+    pub ended: Option<EngineKyokuEnd>,
+}
+
+#[allow(dead_code)] // Consumed by result projection in Task 2.
+pub(crate) struct EngineKyokuEnd {
+    pub pre_action: GameStateVariant,
+    pub ended_copy: GameStateVariant,
+    pub win_results: HashMap<u8, riichienv_core::types::WinResult>,
+    pub real_after_scores: Vec<i32>,
+    pub real_after_pot: u32,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct EngineAdapter {
     mode: GameMode,
@@ -88,7 +103,7 @@ impl EngineAdapter {
         &mut self,
         seat: Seat,
         action: &GameAction,
-    ) -> Result<Vec<GameEvent>, EngineError> {
+    ) -> Result<EngineApplyOutcome, EngineError> {
         self.validate_seat(seat)?;
         let action = action.clone().canonicalize();
         let legal = self.legal_actions(seat)?;
@@ -100,35 +115,49 @@ impl EngineAdapter {
 
         let (raw, _) = self.raw_legal_actions(seat)?;
         let command = self.find_command(seat, &action, &raw)?;
+        // ponytail: one whole-state/log clone per batch and a second engine evaluation
+        // only at a terminal boundary; measure cost before optimizing in Task 8.
+        let before = self.state.clone();
+        let mut batch = Vec::new();
         match command {
-            ApplyCommand::One(engine_action) => self.step_once(seat, engine_action)?,
+            ApplyCommand::One(engine_action) => {
+                let mut commands = HashMap::new();
+                commands.insert(seat.index(), engine_action);
+                batch.push(commands);
+            }
             ApplyCommand::RiichiDiscard { tile } => {
-                self.step_once(
-                    seat,
+                let mut first = HashMap::new();
+                first.insert(
+                    seat.index(),
                     Action::new(ActionType::Riichi, None, Vec::new(), Some(seat.index())),
-                )?;
-                self.step_once(
-                    seat,
+                );
+                batch.push(first);
+                let mut second = HashMap::new();
+                second.insert(
+                    seat.index(),
                     Action::new(
                         ActionType::Discard,
                         Some(tile),
                         Vec::new(),
                         Some(seat.index()),
                     ),
-                )?;
+                );
+                batch.push(second);
             }
         }
-
-        while self.needs_initialize_next_round() {
-            self.step_once_without_action()?;
+        for commands in &batch {
+            step_variant(&mut self.state, commands);
+            if let Some(error) = last_error(&self.state) {
+                return Err(EngineError::Rejected(error));
+            }
         }
-        self.drain_events(&[(seat, action)])
+        self.finish_apply(before, &batch, &[(seat, action)])
     }
 
     pub(crate) fn apply_simultaneous(
         &mut self,
         actions: &[(Seat, GameAction)],
-    ) -> Result<Vec<GameEvent>, EngineError> {
+    ) -> Result<EngineApplyOutcome, EngineError> {
         let mut commands = HashMap::new();
         let mut applied_actions = Vec::with_capacity(actions.len());
         let mut seen = HashMap::new();
@@ -159,14 +188,133 @@ impl EngineAdapter {
             }
             applied_actions.push((*seat, action));
         }
+        let before = self.state.clone();
         step_variant(&mut self.state, &commands);
         if let Some(error) = last_error(&self.state) {
             return Err(EngineError::Rejected(error));
         }
+        self.finish_apply(before, &[commands], &applied_actions)
+    }
+
+    fn finish_apply(
+        &mut self,
+        before: GameStateVariant,
+        batch: &[HashMap<u8, Action>],
+        actions: &[(Seat, GameAction)],
+    ) -> Result<EngineApplyOutcome, EngineError> {
         while self.needs_initialize_next_round() {
             self.step_once_without_action()?;
         }
-        self.drain_events(&applied_actions)
+        let events = self.drain_events(actions)?;
+        let ended = if events
+            .iter()
+            .any(|event| matches!(event, GameEvent::EndKyoku))
+        {
+            let mut copy = before.clone();
+            let cursor = state_logs(&copy).len();
+            match &mut copy {
+                GameStateVariant::FourPlayer(state) => state.game_mode = 0,
+                GameStateVariant::ThreePlayer(state) => state.game_mode = 3,
+            }
+            for commands in batch {
+                step_variant(&mut copy, commands);
+                if let Some(error) = last_error(&copy) {
+                    return Err(EngineError::Divergence(format!(
+                        "capture rejected command: {error}"
+                    )));
+                }
+            }
+            let actual_terminals: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    matches!(event, GameEvent::Hora { .. } | GameEvent::Ryukyoku { .. })
+                })
+                .cloned()
+                .collect();
+            let copied_events = state_logs(&copy)[cursor..]
+                .iter()
+                .map(|line| parse_event(line, self.mode, actions))
+                .collect::<Result<Vec<_>, _>>()?;
+            if !match &copy {
+                GameStateVariant::FourPlayer(state) => state.is_done,
+                GameStateVariant::ThreePlayer(state) => state.is_done,
+            } || copied_events
+                .iter()
+                .any(|event| matches!(event, GameEvent::StartKyoku { .. }))
+            {
+                return Err(EngineError::Divergence(
+                    "capture did not stop at the ended kyoku".into(),
+                ));
+            }
+            let copied_terminals = copied_events
+                .into_iter()
+                .filter(|event| {
+                    matches!(event, GameEvent::Hora { .. } | GameEvent::Ryukyoku { .. })
+                })
+                .collect::<Vec<_>>();
+            if actual_terminals != copied_terminals {
+                return Err(EngineError::Divergence(
+                    "captured terminal events differ from real resolution".into(),
+                ));
+            }
+            let (win_results, copy_scores, copy_pot) = match &copy {
+                GameStateVariant::FourPlayer(state) => (
+                    state.win_results.clone(),
+                    state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                    state.riichi_sticks,
+                ),
+                GameStateVariant::ThreePlayer(state) => (
+                    state.win_results.clone(),
+                    state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                    state.riichi_sticks,
+                ),
+            };
+            let winner_count = actual_terminals
+                .iter()
+                .filter(|event| matches!(event, GameEvent::Hora { .. }))
+                .count();
+            if win_results.len() != winner_count {
+                return Err(EngineError::Divergence(format!(
+                    "capture has {} results for {winner_count} winners",
+                    win_results.len()
+                )));
+            }
+            let scores = self.scores();
+            let pot = self.riichi_sticks();
+            let mut expected = copy_scores;
+            if self.is_done() && copy_pot > 0 && pot == 0 {
+                let top = (0..expected.len())
+                    .max_by_key(|&seat| (expected[seat], std::cmp::Reverse(seat)))
+                    .unwrap();
+                expected[top] += (copy_pot as i32) * 1000;
+            } else if pot != copy_pot {
+                return Err(EngineError::Divergence(
+                    "captured pot differs from real resolution".into(),
+                ));
+            }
+            if scores != expected {
+                return Err(EngineError::Divergence(format!(
+                    "captured scores {expected:?} differ from real {scores:?}"
+                )));
+            }
+            Some(EngineKyokuEnd {
+                pre_action: before,
+                ended_copy: copy,
+                win_results,
+                real_after_scores: scores,
+                real_after_pot: pot,
+            })
+        } else {
+            None
+        };
+        Ok(EngineApplyOutcome { events, ended })
+    }
+
+    fn riichi_sticks(&self) -> u32 {
+        match &self.state {
+            GameStateVariant::FourPlayer(state) => state.riichi_sticks,
+            GameStateVariant::ThreePlayer(state) => state.riichi_sticks,
+        }
     }
 
     pub(crate) fn table_state(
@@ -496,16 +644,6 @@ impl EngineAdapter {
         Some((Seat::new(raw.0)?, parse_engine_tile(self.mode, raw.1).ok()?))
     }
 
-    fn step_once(&mut self, seat: Seat, action: Action) -> Result<(), EngineError> {
-        let mut actions = HashMap::new();
-        actions.insert(seat.index(), action);
-        step_variant(&mut self.state, &actions);
-        if let Some(error) = last_error(&self.state) {
-            return Err(EngineError::Rejected(error));
-        }
-        Ok(())
-    }
-
     fn step_once_without_action(&mut self) -> Result<(), EngineError> {
         step_variant(&mut self.state, &HashMap::new());
         if let Some(error) = last_error(&self.state) {
@@ -624,6 +762,13 @@ fn step_variant(state: &mut GameStateVariant, actions: &HashMap<u8, Action>) {
     match state {
         GameStateVariant::FourPlayer(state) => state.step(actions),
         GameStateVariant::ThreePlayer(state) => state.step(actions),
+    }
+}
+
+fn state_logs(state: &GameStateVariant) -> &[String] {
+    match state {
+        GameStateVariant::FourPlayer(state) => &state.mjai_log,
+        GameStateVariant::ThreePlayer(state) => &state.mjai_log,
     }
 }
 
@@ -893,6 +1038,227 @@ fn _engine_type_names(_: ActionType) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepared_capture(mode: GameMode, ron: bool, kokushi: bool) -> EngineAdapter {
+        use riichienv_core::action::Phase;
+        let (mut adapter, _) = EngineAdapter::new(mode, Some(230)).unwrap();
+        macro_rules! prepare {
+            ($state:expr) => {{
+                let state = $state;
+                for player in state.players.iter_mut() {
+                    player.score = 100_000;
+                }
+                state.is_first_turn = false;
+                state.honba = 2;
+                state.riichi_sticks = 2;
+                state.wall.dora_indicators.clear();
+                state.mjai_log.clear();
+                state.current_player = if ron { 0 } else { 1 };
+                state.needs_tsumo = false;
+                state.phase = if ron {
+                    Phase::WaitResponse
+                } else {
+                    Phase::WaitAct
+                };
+                state.active_players = if ron { vec![1, 2] } else { vec![1] };
+                state.current_claims.clear();
+                let win = if kokushi { 1 } else { 77 };
+                for seat in 1..if ron { 3 } else { 2 } {
+                    let player = &mut state.players[seat];
+                    let kinds: &[u8] = if kokushi {
+                        &[0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33]
+                    } else {
+                        &[9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 18, 18, 19]
+                    };
+                    let mut copies = [0u8; 34];
+                    player.hand = kinds
+                        .iter()
+                        .map(|&kind| {
+                            let id = kind * 4
+                                + ((if seat == 1 { 0 } else { 2 }) + copies[kind as usize]) % 4;
+                            copies[kind as usize] += 1;
+                            id
+                        })
+                        .collect();
+                    player.melds.clear();
+                    player.riichi_declared = false;
+                    player.double_riichi_declared = false;
+                    player.ippatsu_cycle = false;
+                    player.missed_agari_doujun = false;
+                    player.missed_agari_riichi = false;
+                    if !ron {
+                        player.hand.push(win);
+                    }
+                    if ron {
+                        state.current_claims.insert(
+                            seat as u8,
+                            vec![Action::new(ActionType::Ron, None, vec![], Some(seat as u8))],
+                        );
+                    }
+                }
+                if ron {
+                    state.last_discard = Some((0, win));
+                    state.drawn_tile = None;
+                } else {
+                    state.drawn_tile = Some(win);
+                }
+            }};
+        }
+        match &mut adapter.state {
+            GameStateVariant::FourPlayer(state) => prepare!(state),
+            GameStateVariant::ThreePlayer(state) => prepare!(state),
+        }
+        adapter.log_cursor = 0;
+        adapter
+    }
+
+    #[test]
+    fn pre_action_capture_survives_next_round() {
+        for mode in [
+            GameMode::FourPlayerRedEast,
+            GameMode::FourPlayerRedHalf,
+            GameMode::ThreePlayerRedEast,
+            GameMode::ThreePlayerRedHalf,
+        ] {
+            for kokushi in [false, true] {
+                let mut adapter = prepared_capture(mode, false, kokushi);
+                let outcome = adapter
+                    .apply(Seat::new(1).unwrap(), &GameAction::Tsumo)
+                    .unwrap();
+                let capture = outcome.ended.unwrap();
+                assert_eq!(capture.real_after_scores, adapter.scores());
+                assert_eq!(capture.win_results.len(), 1);
+                if kokushi {
+                    assert_eq!(capture.win_results[&1].han, 13);
+                }
+                assert!(
+                    outcome
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, GameEvent::EndKyoku))
+                );
+                assert!(match &adapter.state {
+                    GameStateVariant::FourPlayer(s) => s.win_results.is_empty(),
+                    GameStateVariant::ThreePlayer(s) => s.win_results.is_empty(),
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn simultaneous_capture_uses_one_resolution() {
+        for mode in [
+            GameMode::FourPlayerRedEast,
+            GameMode::FourPlayerRedHalf,
+            GameMode::ThreePlayerRedEast,
+            GameMode::ThreePlayerRedHalf,
+        ] {
+            for kokushi in [false, true] {
+                let mut adapter = prepared_capture(mode, true, kokushi);
+                let outcome = adapter
+                    .apply_simultaneous(&[
+                        (
+                            Seat::new(1).unwrap(),
+                            GameAction::Ron(Seat::new(0).unwrap()),
+                        ),
+                        (
+                            Seat::new(2).unwrap(),
+                            GameAction::Ron(Seat::new(0).unwrap()),
+                        ),
+                    ])
+                    .unwrap();
+                let capture = outcome.ended.unwrap();
+                assert_eq!(capture.win_results.len(), 2);
+                assert_eq!(capture.real_after_scores, adapter.scores());
+                if kokushi {
+                    assert_eq!(capture.win_results[&1].han, 13);
+                }
+                assert_eq!(
+                    outcome
+                        .events
+                        .iter()
+                        .filter(|e| matches!(e, GameEvent::Hora { .. }))
+                        .count(),
+                    2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn capture_rejection_is_not_adopted() {
+        let (mut adapter, _) = EngineAdapter::new(GameMode::FourPlayerRedEast, Some(0)).unwrap();
+        let seat = Seat::new(0).unwrap();
+        assert!(matches!(
+            adapter.apply(seat, &GameAction::Tsumo),
+            Err(EngineError::Rejected(_))
+        ));
+        assert!(adapter.scores().iter().all(|&score| score == 25_000));
+    }
+
+    #[test]
+    fn seeded_legal_action_lifecycle_reaches_capture() {
+        for mode in [
+            GameMode::FourPlayerRedEast,
+            GameMode::FourPlayerRedHalf,
+            GameMode::ThreePlayerRedEast,
+            GameMode::ThreePlayerRedHalf,
+        ] {
+            let (mut adapter, _) = EngineAdapter::new(mode, Some(230)).unwrap();
+            let mut ended = 0;
+            for _ in 0..2000 {
+                if adapter.is_done() || ended > 0 {
+                    break;
+                }
+                let eligible = Seat::all(mode)
+                    .into_iter()
+                    .filter_map(|seat| {
+                        let legal = adapter.legal_actions(seat).unwrap();
+                        (!legal.is_empty()).then_some((seat, legal))
+                    })
+                    .collect::<Vec<_>>();
+                assert!(!eligible.is_empty());
+                let actions = eligible
+                    .iter()
+                    .map(|(seat, legal)| {
+                        let action = legal
+                            .iter()
+                            .find(|action| matches!(action, GameAction::Tsumo | GameAction::Ron(_)))
+                            .or_else(|| {
+                                legal
+                                    .iter()
+                                    .find(|action| matches!(action, GameAction::Pass))
+                            })
+                            .or_else(|| {
+                                legal
+                                    .iter()
+                                    .find(|action| matches!(action, GameAction::Discard { .. }))
+                            })
+                            .unwrap()
+                            .clone();
+                        (*seat, action)
+                    })
+                    .collect::<Vec<_>>();
+                let outcome = if actions.len() == 1 {
+                    adapter.apply(actions[0].0, &actions[0].1).unwrap()
+                } else {
+                    adapter.apply_simultaneous(&actions).unwrap()
+                };
+                if let Some(capture) = outcome.ended {
+                    ended += 1;
+                    assert_eq!(capture.real_after_scores, adapter.scores());
+                    assert_eq!(capture.real_after_pot, adapter.riichi_sticks());
+                    assert!(
+                        outcome
+                            .events
+                            .iter()
+                            .any(|event| matches!(event, GameEvent::EndKyoku))
+                    );
+                }
+            }
+            assert_eq!(ended, 1, "{mode:?} never terminated a kyoku");
+        }
+    }
 
     #[test]
     fn malformed_consumed_tile_is_adapter_divergence() {

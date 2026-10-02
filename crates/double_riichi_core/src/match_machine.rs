@@ -280,7 +280,7 @@ impl MatchMachine {
         }
         self.decision = None;
         let new_events = match self.engine.apply(seat, &action) {
-            Ok(events) => events,
+            Ok(outcome) => outcome.events,
             Err(error @ EngineError::Rejected(_)) => return Err(self.abort_for_engine(error)),
             Err(error) => return Err(self.abort_for_engine(error)),
         };
@@ -465,7 +465,8 @@ impl MatchMachine {
             self.engine
                 .apply_simultaneous(&actions)
                 .map_err(|error| self.abort_for_engine(error))?
-        };
+        }
+        .events;
         self.record_events(new_events.clone())?;
         Ok(DecisionResult::Resolved {
             decision_id,
