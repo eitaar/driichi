@@ -131,10 +131,20 @@ async fn response_bytes(
 ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let status = response.status();
     let headers = response.headers().clone();
-    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+    // These are finite, in-process static assets, not untrusted API response bodies.
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     (status, headers, body.to_vec())
+}
+
+#[tokio::test]
+async fn response_reader_preserves_frontend_assets_larger_than_one_mib() {
+    let asset = vec![b'x'; 1024 * 1024 + 1];
+    let response = axum::response::Response::new(Body::from(asset.clone()));
+    let (status, _, body) = response_bytes(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, asset);
 }
 
 fn referenced_asset(index: &[u8]) -> String {

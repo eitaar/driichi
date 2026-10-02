@@ -84,8 +84,9 @@ test("admin route exposes the room workspace at desktop sizes", async ({ page })
     });
   });
   await page.goto("/admin");
-  await expect(page.getByRole("heading", { name: /admin rooms/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name: /credentials for agents/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^rooms$/i })).toBeVisible();
+  await page.getByText("Bot tokens", { exact: true }).click();
+  await expect(page.getByRole("textbox", { name: /token name/i })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
 });
 
@@ -139,7 +140,8 @@ for (const viewport of [
     });
     await page.goto("/admin/rooms/123456");
     await expect(page.getByRole("heading", { name: /night market/i })).toBeVisible();
-    await expect(page.getByRole("heading", { name: /credentials for agents/i })).toBeVisible();
+    await page.getByText("Bot tokens", { exact: true }).click();
+    await expect(page.getByRole("textbox", { name: /token name/i })).toBeVisible();
     await page.screenshot({ path: `test-results/task-11/admin-${viewport.label}.png`, fullPage: false });
   });
 
@@ -183,8 +185,14 @@ for (const viewport of [
     await page.goto("/room/123456/lobby");
     await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
     await expect(page.locator(".connection-state")).toHaveText("connected");
-    const readyButton = await page.getByRole("button", { name: /set ready/i }).boundingBox();
-    expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
+    await expect(page.locator(".ready-block .field-hint")).toHaveText(/available|could not be preloaded|needs/);
+    for (const fontFamily of ["", "monospace"]) {
+      // Also exercise wider fallback metrics without depending on the host OS font.
+      const override = fontFamily ? await page.addStyleTag({ content: `.lobby-shell { font-family: ${fontFamily}; }` }) : null;
+      const readyButton = await page.getByRole("button", { name: /set ready/i }).boundingBox();
+      expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
+      await override?.evaluate((element) => element.remove());
+    }
     await page.screenshot({ path: `test-results/task-11/lobby-${viewport.label}.png`, fullPage: false });
   });
 }

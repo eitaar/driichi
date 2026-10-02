@@ -12,6 +12,7 @@ const webglArgs = hardwareWebgl
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: true,
+  workers: 1, // Isolate SwiftShader scenes, particularly the renderer-budget probe.
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: [["list"], ["html", { outputFolder: "playwright-report", open: "never" }]],

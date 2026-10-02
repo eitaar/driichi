@@ -10,7 +10,7 @@ use crate::{
 };
 use double_riichi_core::{
     Audience, GameEvent, GameMode, MeldState, Participant, ParticipantId, ParticipantKind,
-    ReplayAdminProjection, Seat, TablePlayerState, TableState, Tile, project_table_state,
+    ReplayAdminProjection, Seat, TablePlayerState, TableState, Tile, Wind, project_table_state,
 };
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -56,6 +56,7 @@ struct ReplayState {
     riichi: Vec<bool>,
     dora_indicators: Vec<Tile>,
     kyoku_active: bool,
+    round_data: Option<(Wind, u8, Seat, u8, u32)>,
 }
 
 impl ReplayState {
@@ -79,6 +80,7 @@ impl ReplayState {
             riichi: vec![false; mode.seat_count()],
             dora_indicators: Vec::new(),
             kyoku_active: false,
+            round_data: None,
         }
     }
 
@@ -102,10 +104,14 @@ impl ReplayState {
                 }
             }
             GameEvent::StartKyoku {
+                bakaze,
+                kyoku,
+                oya,
+                honba,
+                kyotaku,
                 scores,
                 tehais,
                 dora_marker,
-                ..
             } => {
                 if self.kyoku_active {
                     return Err(ReplayError::InvalidEvent(
@@ -118,6 +124,7 @@ impl ReplayState {
                         "start_kyoku does not match replay mode".into(),
                     ));
                 }
+                self.round_data = Some((*bakaze, *kyoku, *oya, *honba, u32::from(*kyotaku)));
                 self.scores.clone_from(scores);
                 self.hands.clone_from(tehais);
                 self.discards.iter_mut().for_each(Vec::clear);
@@ -216,12 +223,22 @@ impl ReplayState {
                 });
             }
             GameEvent::Dora { dora_marker } => self.dora_indicators.push(*dora_marker),
-            GameEvent::Reach { actor } | GameEvent::ReachAccepted { actor } => {
+            GameEvent::Reach { actor } => {
                 *self.player_mut(*actor)?.riichi = true;
+            }
+            GameEvent::ReachAccepted { actor } => {
+                *self.player_mut(*actor)?.riichi = true;
+                if let Some((_, _, _, _, kyotaku)) = &mut self.round_data {
+                    // The timeline is bounded by MAX_REPLAY_EVENTS, well below u32::MAX.
+                    *kyotaku += 1;
+                }
             }
             GameEvent::Hora { scores, .. } => {
                 if let Some(scores) = scores {
                     self.set_scores(scores)?;
+                }
+                if let Some((_, _, _, _, kyotaku)) = &mut self.round_data {
+                    *kyotaku = 0;
                 }
             }
             GameEvent::Ryukyoku { tehais, scores, .. } => {
@@ -308,7 +325,16 @@ impl ReplayState {
         let table = TableState::new(self.mode, players, self.dora_indicators.clone())
             .map_err(|error| ReplayError::InvalidEvent(error.to_string()))?;
         match project_table_state(&table, Audience::ReplayAdmin) {
-            double_riichi_core::AudienceProjection::ReplayAdmin(projection) => Ok(projection),
+            double_riichi_core::AudienceProjection::ReplayAdmin(mut projection) => {
+                if let Some((round, kyoku, dealer, honba, kyotaku)) = self.round_data {
+                    projection.round = Some(round);
+                    projection.kyoku = Some(kyoku);
+                    projection.dealer = Some(dealer);
+                    projection.honba = Some(honba);
+                    projection.kyotaku = Some(kyotaku);
+                }
+                Ok(projection)
+            }
             _ => unreachable!("ReplayAdmin projection policy returned another audience"),
         }
     }

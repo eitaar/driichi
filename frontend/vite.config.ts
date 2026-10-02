@@ -17,6 +17,7 @@ export default defineConfig({
       : undefined,
   },
   test: {
+    maxWorkers: 2, // Bound jsdom/Three worker memory on 16 GB development machines.
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
     include: ["src/**/*.test.{ts,tsx}"],

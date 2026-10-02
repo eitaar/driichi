@@ -31,6 +31,7 @@ function replayFrame(index: number, event: string, auxiliary_events: unknown[] =
       mode: "FourPlayerRedEast",
       round: "East",
       kyoku: index < 2 ? 1 : 2,
+      honba: 0,
       remaining_wall: Math.max(0, 66 - index * 7),
       players: [0, 1, 2, 3].map((seat) => ({
         seat,
@@ -116,26 +117,28 @@ for (const viewport of [
     await page.getByRole("link", { name: /view replay match15/i }).click();
     await expect(page.getByRole("heading", { name: /night market replay/i })).toBeVisible();
     const stage = page.locator(".replay-table-stage");
+    const replayControls = page.locator(".replay-playback");
     await expect(stage).toBeVisible();
+    await expect(replayControls).toBeVisible();
     const foldComposition = await stage.evaluate((element) => {
       const stage = element.getBoundingClientRect();
+      const playback = document.querySelector<HTMLElement>(".replay-playback")!.getBoundingClientRect();
       const eventLog = document.querySelector<HTMLElement>(".replay-event-log")?.getBoundingClientRect();
       return {
-        viewport: { width: window.innerWidth, height: window.innerHeight },
+        viewport: { width: document.documentElement.clientWidth, height: window.innerHeight },
         stage: { top: stage.top, right: stage.right, bottom: stage.bottom, left: stage.left, width: stage.width, height: stage.height },
+        playback: { top: playback.top, bottom: playback.bottom },
         eventLogTop: eventLog?.top ?? 0,
       };
     });
-    expect(foldComposition.stage.top).toBeGreaterThanOrEqual(72);
-    expect(foldComposition.stage.bottom).toBeLessThanOrEqual(foldComposition.viewport.height);
-    expect(foldComposition.stage.width / foldComposition.stage.height).toBeCloseTo(16 / 9, 2);
-    expect(foldComposition.stage.width).toBeGreaterThanOrEqual(
-      Math.min(
-        foldComposition.viewport.width * 0.9,
-        (foldComposition.viewport.height - 72) * (16 / 9) * 0.98,
-      ),
-    );
-    expect(foldComposition.eventLogTop).toBeGreaterThanOrEqual(foldComposition.stage.bottom);
+    // DESIGN.md: full-width table above a separate, visible playback area.
+    expect(foldComposition.stage.top).toBe(0);
+    expect(foldComposition.stage.left).toBe(0);
+    expect(foldComposition.stage.width).toBe(foldComposition.viewport.width);
+    expect(foldComposition.stage.height).toBeGreaterThan(0);
+    expect(foldComposition.playback.top).toBeGreaterThanOrEqual(foldComposition.stage.bottom);
+    expect(foldComposition.playback.bottom).toBeLessThanOrEqual(foldComposition.viewport.height);
+    expect(foldComposition.eventLogTop).toBeGreaterThanOrEqual(foldComposition.playback.bottom);
     const statusBounds = await page.locator(".replay-status-toast").evaluate((element) => {
       const status = element.getBoundingClientRect();
       const stage = element.closest(".replay-table-stage")?.getBoundingClientRect();
@@ -149,8 +152,7 @@ for (const viewport of [
     expect(statusBounds.status.right).toBeLessThanOrEqual(statusBounds.stage!.right);
     expect(statusBounds.status.top).toBeGreaterThanOrEqual(statusBounds.stage!.top);
     expect(statusBounds.status.bottom).toBeLessThanOrEqual(statusBounds.stage!.top + statusBounds.stage!.height * 0.10);
-    const replayControls = stage.locator(".replay-controls-overlay");
-    await expect(replayControls).toBeVisible();
+    await expect(stage.locator(".replay-controls-overlay")).toHaveCount(0);
     await expect(stage.locator(".replay-status-toast")).toBeVisible();
     await expect(page.locator(".replay-event-log")).toBeVisible();
     {
@@ -162,7 +164,7 @@ for (const viewport of [
           const rect = control.getBoundingClientRect();
           return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
         });
-        const stage = element.parentElement?.getBoundingClientRect();
+        const stage = element.closest(".replay-viewer")?.getBoundingClientRect();
         return {
           container: {
             left: container.left,
@@ -213,10 +215,10 @@ for (const viewport of [
     await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
     const tableHeightRatio = Number(await table.getAttribute("data-table-height-ratio"));
     const tableWidthRatio = Number(await table.getAttribute("data-table-width-ratio"));
-    expect(tableWidthRatio).toBeGreaterThanOrEqual(0.82);
-    expect(tableWidthRatio).toBeLessThanOrEqual(0.9);
-    expect(tableHeightRatio).toBeGreaterThanOrEqual(0.78);
-    expect(tableHeightRatio).toBeLessThanOrEqual(0.88);
+    expect(tableWidthRatio).toBeGreaterThanOrEqual(0.98);
+    expect(tableWidthRatio).toBeLessThanOrEqual(1);
+    expect(tableHeightRatio).toBeGreaterThan(0);
+    expect(tableHeightRatio).toBeLessThanOrEqual(1);
     expect(Number(await table.getAttribute("data-rendered-tile-count"))).toBeGreaterThanOrEqual(100);
     await expect(page.locator(".table-player-frame")).toHaveCount(4);
     await expect(page.locator(".table-player-icon")).toHaveCount(4);
@@ -226,14 +228,10 @@ for (const viewport of [
     await expect(page.locator('.table-player-frame[data-position="top"]')).toHaveCount(1);
     const composition = await stage.evaluate((element) => {
       const bounds = element.getBoundingClientRect();
-      const safeHand = {
-        left: bounds.left + bounds.width * .18,
-        right: bounds.right - bounds.width * .18,
-        top: bounds.top + bounds.height * .64,
-        bottom: bounds.top + bounds.height * .8,
-      };
+      const hand = element.querySelector<HTMLElement>(".table-replay-hand")!.getBoundingClientRect();
+      const safeHand = { left: hand.left, right: hand.right, top: hand.top, bottom: hand.bottom };
       const boxes = Array.from(
-        element.querySelectorAll<HTMLElement>(".table-player-frame, .replay-controls-overlay"),
+        element.querySelectorAll<HTMLElement>(".table-player-frame"),
       ).map((target) => {
         const rect = target.getBoundingClientRect();
         return {
@@ -250,7 +248,7 @@ for (const viewport of [
         boxes,
       };
     });
-    expect(composition.boxes).toHaveLength(5);
+    expect(composition.boxes).toHaveLength(4);
     for (const box of composition.boxes) {
       expect(box.left).toBeGreaterThanOrEqual(composition.bounds.left);
       expect(box.right).toBeLessThanOrEqual(composition.bounds.right);
@@ -264,28 +262,24 @@ for (const viewport of [
     }
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await expect(page.getByRole("status")).toContainText(/disconnected/i);
-    await expectNoAxeViolations(page, ".replay-table-stage");
+    await expectNoAxeViolations(page, ".replay-viewer");
     await page.getByRole("button", { name: /next event/i }).click();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
-    const play = replayControls.getByRole("button", { name: /^play$/i });
-    await play.focus();
-    await expect(play).toBeFocused();
+    await replayControls.getByRole("button", { name: /previous event/i }).focus();
     await page.keyboard.press("Tab");
-    await expect(replayControls.getByRole("button", { name: /previous event/i })).toBeFocused();
+    await expect(replayControls.getByRole("button", { name: /^play$/i })).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(replayControls.getByRole("button", { name: /next event/i })).toBeFocused();
     await page.keyboard.press("Tab");
-    await expect(replayControls.getByRole("button", { name: "0.5x" })).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(replayControls.getByRole("button", { name: "1x" })).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(replayControls.getByRole("button", { name: "2x" })).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(replayControls.getByRole("button", { name: "4x" })).toBeFocused();
+    const speed = replayControls.getByRole("combobox", { name: /playback speed/i });
+    await expect(speed).toBeFocused();
+    expect(await speed.locator("option").evaluateAll((options) =>
+      options.map((option) => (option as HTMLOptionElement).value),
+    )).toEqual(["0.5", "1", "2", "4", "8", "16", "32", "64"]);
     await page.keyboard.press("Tab");
     await expect(replayControls.getByRole("combobox", { name: /jump to kyoku/i })).toBeFocused();
-    await replayControls.getByRole("button", { name: "2x" }).click();
-    await expect(page.getByRole("button", { name: "2x" })).toHaveAttribute("aria-pressed", "true");
+    await speed.selectOption("2");
+    await expect(speed).toHaveValue("2");
     await page.screenshot({ path: `test-results/task-15/viewer-${viewport.label}.png`, fullPage: false });
 
     await page.getByRole("link", { name: /back to replay library/i }).click();

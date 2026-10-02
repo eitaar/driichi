@@ -4,9 +4,10 @@
 .gameplay-main .table-letterbox{width:100%;height:100%;max-height:none;aspect-ratio:auto;border:0;box-shadow:none;background:#eef0f2}
 .gameplay-shell .three-table,.replay-table-wrap .three-table{background:#eef0f2}
 .gameplay-shell .gameplay-controls{color:#283342}
-.gameplay-shell .gameplay-controls .connection-state,.gameplay-shell .audio-settings summary{border:1px solid #bcc6cf;background:#fafbfc;color:#283342}
+.gameplay-shell .gameplay-controls .connection-state,.gameplay-shell .audio-settings summary,.gameplay-shell .audio-settings[open] summary{border:1px solid #bcc6cf;background:#fafbfc;color:#283342}
 .gameplay-shell .audio-settings,.gameplay-shell .audio-settings-body{font-family:"Segoe UI",system-ui,sans-serif;color:#283342}
 .gameplay-shell .audio-settings-body{background:#fafbfc;border-color:#bcc6cf;box-shadow:none}
+.gameplay-shell .audio-settings-body .audio-toggle{color:inherit}
 .gameplay-shell .gameplay-toast{background:#fafbfc;color:#283342;box-shadow:none}
 .gameplay-shell .table-player-overlays,.replay-table-wrap .table-player-overlays{pointer-events:none}
 .gameplay-shell .table-player-frame,.replay-table-wrap .table-player-frame{width:clamp(86px,9vw,120px);display:flex;flex-direction:column;gap:5px;padding:0;min-height:0;border:0;background:none;box-shadow:none;text-align:center;color:#283342}

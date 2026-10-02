@@ -52,6 +52,7 @@ pub(crate) struct TokenPair {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AccessGrant {
+    pub(crate) family_id: String,
     pub(crate) client_id: String,
     pub(crate) subject: String,
     pub(crate) resource: String,
@@ -422,7 +423,7 @@ impl OAuthStore {
     ) -> Result<AccessGrant, OAuthError> {
         let now = now_unix_seconds();
         let row = sqlx::query(
-            "SELECT f.client_id, f.subject, f.scope AS family_scope, a.resource, a.scope \
+            "SELECT f.family_id, f.client_id, f.subject, f.scope AS family_scope, a.resource, a.scope \
              FROM oauth_access_tokens a \
              JOIN oauth_refresh_families f ON f.family_id = a.family_id \
              WHERE a.token_hash = ? AND a.resource = ? \
@@ -446,6 +447,7 @@ impl OAuthStore {
             return Err(OAuthError::InvalidGrant);
         }
         Ok(AccessGrant {
+            family_id: row.try_get("family_id").map_err(|_| OAuthError::Storage)?,
             client_id: row.try_get("client_id").map_err(|_| OAuthError::Storage)?,
             subject: row.try_get("subject").map_err(|_| OAuthError::Storage)?,
             resource: row.try_get("resource").map_err(|_| OAuthError::Storage)?,

@@ -64,7 +64,7 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 function serverBinary(): string {
-  return join(repositoryRoot, "target", "release", process.platform === "win32" ? "driichi.exe" : "driichi");
+  return join(resolve(repositoryRoot, process.env.CARGO_TARGET_DIR ?? "target"), "release", process.platform === "win32" ? "driichi.exe" : "driichi");
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -118,13 +118,14 @@ async function runCommand(
 }
 
 async function ensureServerBinary(): Promise<string> {
-  if (!existsSync(resolve(frontendRoot, "dist"))) {
-    await runCommand(npmCommand(), npmArgs(["run", "build"]), frontendRoot);
-  }
+  // Never embed an older dist left by a previous run or restored by the release gate.
+  await runCommand(npmCommand(), npmArgs(["run", "build"]), frontendRoot);
   await runCommand(
     cargoCommand(),
     ["build", "--release", "--locked", "-p", "double_riichi_server"],
     repositoryRoot,
+    undefined,
+    600_000, // Cold release builds exceed the ordinary command timeout.
   );
   const binary = serverBinary();
   if (!existsSync(binary)) throw new Error(`server binary was not produced: ${binary}`);

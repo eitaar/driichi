@@ -395,6 +395,49 @@ async fn tool_call(
     rpc_body(response).await
 }
 
+async fn stateless_tool_call(
+    app: &Router,
+    access_token: &str,
+    id: u64,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    // The 2026-07-28 lifecycle uses per-request metadata, not MCP sessions.
+    let mut request = rpc_request(
+        "/chatgpt/mcp",
+        "POST",
+        Some(access_token),
+        None,
+        Some(id),
+        "tools/call",
+        json!({
+            "name": name,
+            "arguments": arguments,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }),
+    );
+    request
+        .headers_mut()
+        .insert("mcp-protocol-version", "2026-07-28".parse().unwrap());
+    // SEP-2243 requires standard method/name headers for this protocol.
+    request
+        .headers_mut()
+        .insert("mcp-method", "tools/call".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("mcp-name", name.parse().unwrap());
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let has_session_header = response.headers().contains_key("mcp-session-id");
+    let body = rpc_body(response).await;
+    assert_eq!(status, StatusCode::OK, "transport error for {name}: {body}");
+    assert!(!has_session_header);
+    body
+}
+
 async fn mutate_scope(storage: &Storage, access_token: &str) {
     let options = SqliteConnectOptions::new()
         .filename(storage.database_path())
@@ -450,10 +493,13 @@ async fn expire_access(storage: &Storage, access_token: &str) {
     pool.close().await;
 }
 
-#[tokio::test]
-async fn startup_disables_oauth_routes_without_an_active_dedicated_token() {
-    let root = root("startup-disabled");
-    std::fs::create_dir_all(&root).unwrap();
+fn test_runtime_config(
+    root: &PathBuf,
+    origin: &str,
+    idle_seconds: u64,
+    oauth_enabled: bool,
+) -> RuntimeConfig {
+    std::fs::create_dir_all(root).unwrap();
     let characters = root.join("character-packs");
     for (id, usage, name) in [
         ("player-red", "human", "Player Red"),
@@ -492,10 +538,11 @@ async fn startup_disables_oauth_routes_without_an_active_dedicated_token() {
     std::fs::write(
         &config_path,
         format!(
-            r#"public_origin = "https://driichi.example.com"
+            r#"public_origin = "{origin}"
+mcp_session_idle_seconds = {idle_seconds}
 
 [chatgpt_oauth]
-enabled = true
+enabled = {oauth_enabled}
 client_id = "{CLIENT_ID}"
 redirect_uri = "{REDIRECT_URI}"
 allowed_origins = ["{CHATGPT_ORIGIN}"]
@@ -504,7 +551,13 @@ allowed_origins = ["{CHATGPT_ORIGIN}"]
     )
     .unwrap();
 
-    let config = RuntimeConfig::from_path(&config_path).unwrap();
+    RuntimeConfig::from_path(&config_path).unwrap()
+}
+
+#[tokio::test]
+async fn startup_disables_oauth_routes_without_an_active_dedicated_token() {
+    let root = root("startup-disabled");
+    let config = test_runtime_config(&root, "https://driichi.example.com", 30 * 60, true);
     let state = Arc::new(ServerState::from_config(config).await.unwrap());
     let app = server_router(state.clone());
 
@@ -990,6 +1043,254 @@ async fn gateway_rejects_bad_origin_identity_audience_scope_and_expiry() {
 
     fixture.state.shutdown().await;
     wrong_audience_state.shutdown().await;
+    fixture.storage.close().await;
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[tokio::test]
+async fn stateless_chatgpt_join_and_followup_calls_use_oauth_identity() {
+    let fixture = fixture("stateless-join", RESOURCE).await;
+    let access = mint_access(&fixture.app, RESOURCE, "stateless-join").await;
+    let _legacy_session = initialize(&fixture.app, &access).await;
+    let room = fixture
+        .state
+        .rooms()
+        .create(RoomConfig::new(
+            "Stateless ChatGPT",
+            GameMode::FourPlayerRedEast,
+            double_riichi_core::CharacterCatalog::starter(),
+        ))
+        .await
+        .unwrap();
+
+    let before = stateless_tool_call(&fixture.app, &access, 2, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&before)["code"], "session_expired");
+
+    let joined = stateless_tool_call(
+        &fixture.app,
+        &access,
+        3,
+        "join_room",
+        json!({
+            "room_code": room.join_code(),
+            "provider": "chatgpt",
+            "display_name": "ChatGPT"
+        }),
+    )
+    .await;
+    assert_ne!(joined["result"]["isError"], true, "{joined}");
+    let participant_id = tool_value(&joined)["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let state = stateless_tool_call(&fixture.app, &access, 4, "get_my_state", json!({})).await;
+    assert_ne!(state["result"]["isError"], true, "{state}");
+    assert_eq!(tool_value(&state)["participant_id"], participant_id);
+
+    let again = stateless_tool_call(&fixture.app, &access, 5, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&again)["participant_id"], participant_id);
+
+    // A separate OAuth grant cannot inherit this participant's private state.
+    let other_access = mint_access(&fixture.app, RESOURCE, "stateless-independent").await;
+    let other_before =
+        stateless_tool_call(&fixture.app, &other_access, 6, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&other_before)["code"], "session_expired");
+    let other_joined = stateless_tool_call(
+        &fixture.app,
+        &other_access,
+        7,
+        "join_room",
+        json!({
+            "room_code": room.join_code(),
+            "provider": "chatgpt",
+            "display_name": "Second connection"
+        }),
+    )
+    .await;
+    let other_participant = tool_value(&other_joined)["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(other_participant, participant_id);
+    let first_still =
+        stateless_tool_call(&fixture.app, &access, 8, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&first_still)["participant_id"], participant_id);
+
+    fixture.state.shutdown().await;
+    fixture.storage.close().await;
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[tokio::test]
+async fn stateless_parent_token_revocation_removes_lobby_and_retires_active_players() {
+    use double_riichi_core::{PermanentAutoReason, RoomController};
+    use std::time::Duration;
+
+    let fixture = fixture("stateless-revocation", RESOURCE).await;
+    let mut rooms = Vec::new();
+    for playing in [false, true] {
+        let room = fixture
+            .state
+            .rooms()
+            .create(RoomConfig::new(
+                "Stateless revocation",
+                GameMode::FourPlayerRedEast,
+                double_riichi_core::CharacterCatalog::starter(),
+            ))
+            .await
+            .unwrap();
+        let access = mint_access(&fixture.app, RESOURCE, &format!("revoke-{playing}")).await;
+        let joined = stateless_tool_call(
+            &fixture.app,
+            &access,
+            1,
+            "join_room",
+            json!({
+                "room_code": room.join_code(), "provider": "chatgpt", "display_name": "ChatGPT"
+            }),
+        )
+        .await;
+        assert_ne!(joined["result"]["isError"], true, "{joined}");
+        let participant_id = tool_value(&joined)["participant_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if playing {
+            room.send(RoomCommand::select(participant_id.as_str()))
+                .await
+                .unwrap();
+            // Interactive peers keep the Match open while revocation is delivered.
+            for index in 0..3 {
+                let id = format!("human-{index}");
+                room.send(RoomCommand::join(double_riichi_core::Participant::new(
+                    id.as_str(),
+                    "Human",
+                    double_riichi_core::ParticipantKind::Human,
+                )))
+                .await
+                .unwrap();
+                room.send(RoomCommand::select(id.as_str())).await.unwrap();
+            }
+            let snapshot = room.snapshot().await.unwrap();
+            let characters = snapshot
+                .participants
+                .iter()
+                .map(|p| p.character_id.clone())
+                .collect::<Vec<_>>();
+            for peer in snapshot
+                .participants
+                .iter()
+                .filter(|p| p.kind == double_riichi_core::ParticipantKind::Human)
+            {
+                room.send(RoomCommand::set_ready(peer.id.clone(), characters.clone()))
+                    .await
+                    .unwrap();
+            }
+            room.send(RoomCommand::start()).await.unwrap();
+            assert!(matches!(
+                room.snapshot().await.unwrap().phase,
+                double_riichi_core::RoomPhase::Playing(_)
+            ));
+        }
+        rooms.push((room, participant_id, playing));
+    }
+    let token = fixture
+        .service
+        .authenticate(&fixture.dedicated_token)
+        .unwrap();
+    fixture
+        .service
+        .revoke(token.token_id(), 2, "stateless-revoke")
+        .await
+        .unwrap();
+    for (room, id, playing) in rooms {
+        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = room.snapshot().await.unwrap();
+                let participant = snapshot.participants.iter().find(|p| p.id.as_str() == id);
+                let revoked = if playing {
+                    participant.is_some_and(|p| {
+                        p.controller
+                            == RoomController::PermanentAuto(PermanentAutoReason::TokenRevoked)
+                    })
+                } else {
+                    participant.is_none()
+                };
+                if revoked {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            outcome.is_ok(),
+            "parent token revocation must reach stateless Room participants (playing={playing}): {:?}",
+            room.snapshot().await.unwrap().participants
+        );
+    }
+    fixture.state.shutdown().await;
+    fixture.storage.close().await;
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[tokio::test]
+async fn stateless_polling_renews_idle_binding_but_quiet_connections_expire() {
+    use std::time::Duration;
+
+    let fixture = fixture("stateless-idle", RESOURCE).await;
+    let config = test_runtime_config(&fixture.root, ISSUER, 1, false);
+    let state = Arc::new(
+        ServerState::from_config(config)
+            .await
+            .unwrap()
+            .with_bot_token_service(fixture.service.clone())
+            .with_chatgpt_oauth_for_tests(oauth_config(RESOURCE), fixture.storage.clone())
+            .with_chatgpt_bot_token_for_tests(&fixture.dedicated_token),
+    );
+    let app = server_router(state.clone());
+    let access = mint_access(&app, RESOURCE, "stateless-idle").await;
+    let mut catalog = double_riichi_core::CharacterCatalog::starter();
+    catalog.insert("mcp-agent", double_riichi_core::CharacterUsage::Mcp);
+    let room = state
+        .rooms()
+        .create(RoomConfig::new(
+            "Quiet Lobby",
+            GameMode::FourPlayerRedEast,
+            catalog,
+        ))
+        .await
+        .unwrap();
+    let joined = stateless_tool_call(
+        &app,
+        &access,
+        1,
+        "join_room",
+        json!({
+            "room_code": room.join_code(), "provider": "chatgpt", "display_name": "ChatGPT"
+        }),
+    )
+    .await;
+    assert_ne!(joined["result"]["isError"], true, "{joined}");
+    let participant_id = tool_value(&joined)["participant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for id in 2..=6 {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let response = stateless_tool_call(&app, &access, id, "get_my_state", json!({})).await;
+        assert_ne!(
+            response["result"]["isError"], true,
+            "active stateless binding expired: {response}"
+        );
+        assert_eq!(tool_value(&response)["participant_id"], participant_id);
+    }
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let expired = stateless_tool_call(&app, &access, 7, "get_my_state", json!({})).await;
+    assert_eq!(tool_value(&expired)["code"], "session_expired");
+    state.shutdown().await;
+    fixture.state.shutdown().await;
     fixture.storage.close().await;
     let _ = std::fs::remove_dir_all(fixture.root);
 }
