@@ -154,10 +154,11 @@ impl TableState {
         self
     }
 
-    pub(crate) fn with_scores(mut self, scores: &[i32]) -> Self {
+    pub(crate) fn with_settlement_state(mut self, scores: &[i32], pot: u32) -> Self {
         for (player, score) in self.players.iter_mut().zip(scores) {
             player.score = *score;
         }
+        self.kyotaku = Some(pot);
         self
     }
 

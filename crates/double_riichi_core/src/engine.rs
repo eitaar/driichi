@@ -681,6 +681,7 @@ impl EngineAdapter {
         ended: &EngineKyokuEnd,
         participants: &[Participant],
         before_scores: &[i32],
+        pot_before: u32,
     ) -> Result<TableState, EngineError> {
         if participants.len() != self.mode.seat_count() || before_scores.len() != participants.len()
         {
@@ -701,7 +702,7 @@ impl EngineAdapter {
                 "ended table roster identity mismatch".into(),
             ));
         }
-        Ok(table.with_scores(before_scores))
+        Ok(table.with_settlement_state(before_scores, pot_before))
     }
 
     pub(crate) fn table_state(
@@ -1423,10 +1424,10 @@ fn parse_wind(value: &str) -> Result<Wind, EngineError> {
 fn _engine_type_names(_: ActionType) {}
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn prepared_capture(mode: GameMode, ron: bool, kokushi: bool) -> EngineAdapter {
+    pub(crate) fn prepared_capture(mode: GameMode, ron: bool, kokushi: bool) -> EngineAdapter {
         use riichienv_core::action::Phase;
         let (mut adapter, _) = EngineAdapter::new(mode, Some(230)).unwrap();
         macro_rules! prepare {

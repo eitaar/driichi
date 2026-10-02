@@ -49,6 +49,68 @@ fn state(mode: GameMode) -> TableState {
 }
 
 #[test]
+fn held_kyoku_projection_serializes_only_published_results_without_next_decision() {
+    let mode = GameMode::FourPlayerRedEast;
+    let mut machine =
+        MatchMachine::with_seed(mode, (0..4).map(participant).collect(), 0xD0).unwrap();
+    for _ in 0..2000 {
+        if machine.held_kyoku().is_some() {
+            break;
+        }
+        let (seat, action) = Seat::all(mode)
+            .into_iter()
+            .find_map(|seat| {
+                let actions = machine.legal_actions(seat).unwrap();
+                let chosen = actions
+                    .iter()
+                    .find(|action| matches!(action, GameAction::Discard { .. } | GameAction::Pass))
+                    .or_else(|| actions.first())?;
+                Some((seat, chosen.clone()))
+            })
+            .unwrap();
+        machine.apply(seat, action).unwrap();
+    }
+    let wins = machine.held_kyoku().expect("ended Kyoku").wins.len();
+    let before = machine.serialize(Audience::Public).unwrap();
+    assert!(!before.contains("kyoku_results"));
+    assert!(!before.contains("\"hand\""));
+    assert!(machine.current_decision().unwrap().is_none());
+    machine.publish_kyoku_step(0).unwrap();
+    for audience in [
+        Audience::Public,
+        Audience::Player(Seat::new(0).unwrap()),
+        Audience::ReplayAdmin,
+        Audience::BenchmarkAdmin,
+    ] {
+        let json: serde_json::Value =
+            serde_json::from_str(&machine.serialize(audience).unwrap()).unwrap();
+        assert!(json["decision"].is_null());
+        assert_eq!(
+            json["kyoku_results"]["wins"].as_array().unwrap().len(),
+            usize::from(wins > 0)
+        );
+        assert_eq!(json["kyoku_results"]["settlement"].is_object(), wins == 0);
+        if matches!(audience, Audience::Public) {
+            assert!(
+                json["players"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|p| p.get("hand").is_none())
+            );
+        }
+    }
+    assert_eq!(
+        machine
+            .events()
+            .iter()
+            .filter(|event| matches!(event, double_riichi_core::GameEvent::StartKyoku { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn player_public_and_replay_admin_json_have_distinct_visibility_for_four_players() {
     let state = state(GameMode::FourPlayerRedEast);
     let player = serialize_projection(&project_table_state(
