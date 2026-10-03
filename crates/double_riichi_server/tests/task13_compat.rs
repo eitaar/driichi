@@ -443,6 +443,70 @@ async fn live_room_mjai_enforces_token_ownership_replacement_and_three_player_li
     storage.close().await;
 }
 
+fn canonical_kyoku_intervals_have_terminal_events(
+    events: &[double_riichi_core::GameEvent],
+) -> bool {
+    use double_riichi_core::GameEvent;
+    let (mut open, mut terminal, mut completed) = (false, false, 0usize);
+    for event in events {
+        match event {
+            GameEvent::StartKyoku { .. } if !open => {
+                open = true;
+                terminal = false;
+            }
+            GameEvent::Hora { .. } | GameEvent::Ryukyoku { .. } if open => terminal = true,
+            GameEvent::EndKyoku if open && terminal => {
+                open = false;
+                completed += 1;
+            }
+            GameEvent::StartKyoku { .. }
+            | GameEvent::Hora { .. }
+            | GameEvent::Ryukyoku { .. }
+            | GameEvent::EndKyoku => return false,
+            _ => {}
+        }
+    }
+    !open && completed > 0
+}
+
+#[test]
+fn replay_order_rejects_terminal_missing_from_current_kyoku() {
+    use double_riichi_core::{GameEvent, Seat, Tile, Wind};
+    let start = || GameEvent::StartKyoku {
+        bakaze: Wind::East,
+        kyoku: 1,
+        honba: 0,
+        kyotaku: 0,
+        oya: Seat::new(0).unwrap(),
+        scores: vec![25000; 4],
+        dora_marker: Tile::from_id(0).unwrap(),
+        tehais: vec![vec![]; 4],
+    };
+    let terminal = GameEvent::Ryukyoku {
+        reason: None,
+        tehais: None,
+        delta: None,
+        scores: None,
+    };
+    assert!(!canonical_kyoku_intervals_have_terminal_events(&[
+        start(),
+        terminal.clone(),
+        GameEvent::EndKyoku,
+        start(),
+        GameEvent::EndKyoku,
+        GameEvent::EndGame,
+    ]));
+    assert!(canonical_kyoku_intervals_have_terminal_events(&[
+        start(),
+        terminal.clone(),
+        GameEvent::EndKyoku,
+        start(),
+        terminal,
+        GameEvent::EndKyoku,
+        GameEvent::EndGame,
+    ]));
+}
+
 #[tokio::test]
 async fn live_ranked_bot_completes_and_persists_mjson_metadata() {
     let (state, _service, storage, raw) = fixture("ranked").await;
@@ -473,6 +537,26 @@ async fn live_ranked_bot_completes_and_persists_mjson_metadata() {
         events.last(),
         Some(double_riichi_core::GameEvent::EndGame)
     ));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, double_riichi_core::GameEvent::EndGame))
+            .count(),
+        1
+    );
+    let ends = events
+        .iter()
+        .filter(|event| matches!(event, double_riichi_core::GameEvent::EndKyoku))
+        .count();
+    assert!(ends > 0);
+    assert_eq!(
+        ends,
+        events
+            .iter()
+            .filter(|event| matches!(event, double_riichi_core::GameEvent::StartKyoku { .. }))
+            .count()
+    );
+    assert!(canonical_kyoku_intervals_have_terminal_events(&events));
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM match_players")
             .fetch_one(storage.pool())

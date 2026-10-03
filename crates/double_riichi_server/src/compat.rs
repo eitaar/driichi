@@ -1488,6 +1488,38 @@ impl CompatMatch {
             if self.machine.is_complete() {
                 break;
             }
+            if let Some(hold) = self.machine.held_kyoku() {
+                // Standalone compatibility matches have no seated Humans: every
+                // result step has an empty confirmation cohort and releases now.
+                let steps = hold.wins.len();
+                let mut released = Vec::new();
+                for step in 0..=steps {
+                    match self.machine.publish_kyoku_step(step) {
+                        Ok(events) => released.extend(events),
+                        Err(_) => {
+                            self.close(CLOSE_PROTOCOL, "protocol_error");
+                            self.abort_replay().await;
+                            return;
+                        }
+                    }
+                }
+                match self.machine.release_kyoku() {
+                    Ok(events) => released.extend(events),
+                    Err(_) => {
+                        self.close(CLOSE_PROTOCOL, "protocol_error");
+                        self.abort_replay().await;
+                        return;
+                    }
+                }
+                if !self.broadcast(&released).await {
+                    self.close(CLOSE_PROTOCOL, "protocol_error");
+                    self.abort_replay().await;
+                    return;
+                }
+                recent = released;
+                event_cursor = self.machine.events().len();
+                continue;
+            }
             match self.machine.resolve_expired() {
                 Ok(Some(result)) => {
                     recent = result.events().to_vec();
@@ -2141,6 +2173,7 @@ async fn sync_room(
             match_id,
             events,
             projection,
+            ..
         }) => (match_id, events, projection),
         _ => return false,
     };

@@ -1425,21 +1425,27 @@ impl McpHandler {
     }
 
     async fn read_state(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
-        let snapshot = entry
+        let (snapshot, projection) = match entry
             .room
-            .snapshot()
+            .send(RoomCommand::GetMatchView {
+                participant_id: entry.participant_id.clone(),
+            })
             .await
-            .map_err(|_| McpFailure::Internal)?;
-        let projection = entry
-            .room
-            .projection(entry.participant_id.clone())
-            .await
-            .map_err(|_| McpFailure::Internal)?;
+            .map_err(|_| McpFailure::Internal)?
+        {
+            RoomResponse::MatchView {
+                snapshot,
+                projection,
+                ..
+            } => (snapshot, projection),
+            _ => return Err(McpFailure::Internal),
+        };
         let mut value = json!({
             "revision": snapshot.revision,
             "phase": snapshot.phase,
             "room_code": entry.room_code,
             "participant_id": entry.participant_id,
+            "kyoku_end": snapshot.kyoku_end,
         });
         if let Some(projection) = projection {
             let projection = serde_json::to_value(projection).map_err(|_| McpFailure::Internal)?;
@@ -1463,17 +1469,20 @@ impl McpHandler {
     }
 
     async fn read_public(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
-        let snapshot = entry
+        let (snapshot, projection) = match entry
             .room
-            .snapshot()
+            .send(RoomCommand::GetPublicMatchView)
             .await
-            .map_err(|_| McpFailure::Internal)?;
-        let projection = entry
-            .room
-            .public_projection()
-            .await
-            .map_err(|_| McpFailure::Internal)?;
-        let mut value = json!({"revision": snapshot.revision, "phase": snapshot.phase, "room_code": entry.room_code});
+            .map_err(|_| McpFailure::Internal)?
+        {
+            RoomResponse::MatchView {
+                snapshot,
+                projection,
+                ..
+            } => (snapshot, projection),
+            _ => return Err(McpFailure::Internal),
+        };
+        let mut value = json!({"revision": snapshot.revision, "phase": snapshot.phase, "room_code": entry.room_code, "kyoku_end": snapshot.kyoku_end});
         if let Some(projection) = projection
             && let (Some(target), Some(object)) = (
                 value.as_object_mut(),
@@ -1492,16 +1501,19 @@ impl McpHandler {
     }
 
     async fn read_history(&self, entry: &SessionEntry, uri: &str) -> Result<Value, McpFailure> {
-        let snapshot = entry
+        let (snapshot, history) = match entry
             .room
-            .snapshot()
+            .send(RoomCommand::GetMatchView {
+                participant_id: entry.participant_id.clone(),
+            })
             .await
-            .map_err(|_| McpFailure::Internal)?;
-        let history = entry
-            .room
-            .history_projection(entry.participant_id.clone())
-            .await
-            .map_err(|_| McpFailure::Internal)?;
+            .map_err(|_| McpFailure::Internal)?
+        {
+            RoomResponse::MatchView {
+                snapshot, history, ..
+            } => (snapshot, history),
+            _ => return Err(McpFailure::Internal),
+        };
         let mut history = serde_json::to_value(history).map_err(|_| McpFailure::Internal)?;
         redact_private_history(&mut history);
         let events = history
@@ -2205,8 +2217,8 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
         RoomEvent::Snapshot(_) => None,
         RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
         RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
-        RoomEvent::KyokuEndStepChanged { .. }
-        | RoomEvent::StorageDegraded
+        RoomEvent::KyokuEndStepChanged { .. } => Some((revision, "round_ended")),
+        RoomEvent::StorageDegraded
         | RoomEvent::ParticipantJoined(_)
         | RoomEvent::ParticipantLeft(_) => None,
     }
@@ -2593,6 +2605,16 @@ mod tests {
 
         room.send(RoomCommand::select("agent")).await.unwrap();
         let revision = room.snapshot().await.unwrap().revision;
+        assert_eq!(
+            watcher_reason(
+                &watcher,
+                RoomEvent::KyokuEndStepChanged {
+                    match_id: double_riichi_core::room::MatchId::new("match1").unwrap(),
+                }
+            )
+            .await,
+            Some((revision, "round_ended"))
+        );
         assert_eq!(
             watcher_reason(&watcher, RoomEvent::SelectionChanged).await,
             Some((revision, "selected"))

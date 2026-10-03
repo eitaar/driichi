@@ -693,6 +693,7 @@ pub struct BenchmarkProgress {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResultStepId {
     pub match_id: String,
     pub kyoku_sequence: u64,
@@ -982,6 +983,7 @@ pub enum RoomCommand {
     GetMatchView {
         participant_id: ParticipantId,
     },
+    GetPublicMatchView,
     GetHistoryProjection {
         participant_id: ParticipantId,
     },
@@ -1179,9 +1181,11 @@ pub enum RoomResponse {
     Action(DecisionResult),
     MatchEvents(Vec<GameEvent>),
     MatchView {
+        snapshot: RoomSnapshot,
         match_id: Option<MatchId>,
         events: Vec<GameEvent>,
         projection: Option<AudienceProjection>,
+        history: RoomHistoryProjection,
     },
     HistoryProjection(RoomHistoryProjection),
     Deleted,
@@ -2506,6 +2510,7 @@ impl RoomState {
             | RoomCommand::GetBenchmarkAdminProjection
             | RoomCommand::GetMatchEvents
             | RoomCommand::GetMatchView { .. }
+            | RoomCommand::GetPublicMatchView
             | RoomCommand::GetHistoryProjection { .. }
             | RoomCommand::GetPublicHistoryProjection => {
                 return Err(RoomError::Match("actor-only command".into()));
@@ -2852,6 +2857,7 @@ impl Actor {
             )),
             RoomCommand::GetMatchView { participant_id } => {
                 let projection = self.state.projection_for(&participant_id)?;
+                let history = self.state.history_projection(&participant_id)?;
                 let match_id = match &self.state.phase {
                     RoomPhase::Playing(id) | RoomPhase::PostMatch(id) => Some(id.clone()),
                     RoomPhase::Lobby => None,
@@ -2863,9 +2869,31 @@ impl Actor {
                     .map(|machine| machine.events().to_vec())
                     .unwrap_or_default();
                 Ok(RoomResponse::MatchView {
+                    snapshot: self.state.snapshot(),
                     match_id,
                     events,
                     projection,
+                    history,
+                })
+            }
+            RoomCommand::GetPublicMatchView => {
+                let projection = self.state.public_projection()?;
+                let match_id = match &self.state.phase {
+                    RoomPhase::Playing(id) | RoomPhase::PostMatch(id) => Some(id.clone()),
+                    RoomPhase::Lobby => None,
+                };
+                let events = self
+                    .state
+                    .match_machine
+                    .as_ref()
+                    .map(|machine| machine.events().to_vec())
+                    .unwrap_or_default();
+                Ok(RoomResponse::MatchView {
+                    snapshot: self.state.snapshot(),
+                    match_id,
+                    events,
+                    projection,
+                    history: self.state.public_history_projection(),
                 })
             }
             RoomCommand::GetHistoryProjection { participant_id } => self
@@ -4609,6 +4637,124 @@ mod tests {
             machine.apply(seat, action).unwrap();
         }
         panic!("seed did not reach a win")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn live_view_pairs_published_step_projection_and_history_at_one_revision() {
+        let (state, id) = held_result_state(true);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        for public in [false, true] {
+            let response = handle
+                .send(if public {
+                    RoomCommand::GetPublicMatchView
+                } else {
+                    RoomCommand::GetMatchView {
+                        participant_id: ParticipantId::new("p0"),
+                    }
+                })
+                .await
+                .unwrap();
+            let RoomResponse::MatchView {
+                snapshot,
+                match_id,
+                events,
+                projection,
+                history,
+            } = response
+            else {
+                panic!("expected coherent match view")
+            };
+            let step = snapshot.kyoku_end.expect("held step");
+            assert_eq!(match_id.unwrap().to_string(), id.to_string());
+            assert_eq!(step.id.match_id, id.to_string());
+            let current = history.current_kyoku.unwrap();
+            let released = current.authoritative_results.unwrap();
+            assert_eq!(released.wins.len(), 1);
+            assert!(released.settlement.is_none());
+            match projection.unwrap() {
+                AudienceProjection::Player(view) => {
+                    assert!(view.decision.is_none());
+                    assert_eq!(view.kyoku_results, Some(released.clone()));
+                }
+                AudienceProjection::Public(view) => {
+                    assert!(view.decision.is_none());
+                    assert_eq!(view.kyoku_results, Some(released.clone()));
+                }
+                _ => panic!("wrong audience"),
+            }
+            let current_start = events
+                .iter()
+                .rposition(|event| matches!(event, GameEvent::StartKyoku { .. }))
+                .unwrap();
+            assert!(
+                !events[current_start..]
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::EndKyoku))
+            );
+        }
+        let before = handle.send(RoomCommand::GetPublicMatchView).await.unwrap();
+        let RoomResponse::MatchView {
+            snapshot: before, ..
+        } = before
+        else {
+            panic!("view")
+        };
+        tokio::time::advance(Duration::from_secs(5)).await;
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let after = handle.send(RoomCommand::GetPublicMatchView).await.unwrap();
+        let RoomResponse::MatchView {
+            snapshot: after,
+            history,
+            ..
+        } = after
+        else {
+            panic!("view")
+        };
+        assert_ne!(before.kyoku_end.unwrap().id, after.kyoku_end.unwrap().id);
+        let settled = history
+            .current_kyoku
+            .unwrap()
+            .authoritative_results
+            .unwrap();
+        assert_eq!(settled.wins.len(), 1);
+        assert!(settled.settlement.is_some());
+        tokio::time::advance(Duration::from_secs(5)).await;
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let released = handle
+            .send(RoomCommand::GetMatchView {
+                participant_id: ParticipantId::new("p0"),
+            })
+            .await
+            .unwrap();
+        let RoomResponse::MatchView {
+            snapshot,
+            projection,
+            events,
+            history,
+            ..
+        } = released
+        else {
+            panic!("view")
+        };
+        assert!(snapshot.kyoku_end.is_none());
+        let AudienceProjection::Player(player) = projection.unwrap() else {
+            panic!("player view")
+        };
+        if matches!(snapshot.phase, RoomPhase::Playing(_)) {
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::EndKyoku))
+            );
+            assert!(history.current_kyoku.is_some());
+            if let Some(decision) = player.decision {
+                assert!(!decision.actions.is_empty());
+            }
+        } else {
+            assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+            assert!(player.decision.is_none());
+        }
     }
 
     #[tokio::test(start_paused = true)]

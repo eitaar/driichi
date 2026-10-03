@@ -15,7 +15,7 @@ use double_riichi_server::{
     AdminAuthenticator, BUILD_COMMIT, BUILD_VERSION, BotTokenAuthority, BotTokenService,
     RuntimeConfig, ServerState, Storage, TracingFormat, hash_password, server_router,
 };
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::cookie::{CookieStore, Jar};
 use serde_json::{Value, json};
 use tokio_tungstenite::{
@@ -687,6 +687,34 @@ async fn human_snapshot_matches_the_retained_fixture_shape() {
     }
     assert!(actual["room"]["revision"].as_u64().is_some());
     assert!(actual["state"].is_object() || actual["state"].is_null());
+    assert!(actual["room"].get("kyoku_end").is_some());
+    socket
+        .send(Message::Text(
+            json!({
+                "type": "confirm_result",
+                "step_id": {"match_id": "unrelated", "kyoku_sequence": 999, "step_index": 0}
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    break serde_json::from_str::<Value>(&text).unwrap();
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("expected current snapshot for stale confirmation, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(response["type"], "snapshot");
+    assert_eq!(response["room"]["revision"], actual["room"]["revision"]);
+    assert_eq!(response["room"]["kyoku_end"], Value::Null);
     server.abort();
     state.shutdown().await;
 }

@@ -26,8 +26,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use double_riichi_core::{
     AudienceProjection, CharacterCatalog, CharacterUsage as CoreCharacterUsage, GameAction,
     GameEvent, GameMode, MatchPlayerSnapshot, MatchRole, Participant, ParticipantId,
-    ParticipantKind, Presence, RoomCommand, RoomConfig, RoomController, RoomError, RoomEvent,
-    RoomHandle, RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomRemoval,
+    ParticipantKind, Presence, ResultStepId, RoomCommand, RoomConfig, RoomController, RoomError,
+    RoomEvent, RoomHandle, RoomJoinCode, RoomPhase, RoomRegistry, RoomRegistryError, RoomRemoval,
     RoomResponse, RoomSnapshot, Seat, TimeControl,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -3504,16 +3504,32 @@ async fn send_snapshot(
     room: &RoomHandle,
     participant_id: &ParticipantId,
 ) -> bool {
-    let Ok(snapshot) = room.snapshot().await else {
-        return enqueue(outbound, close_message(4002, "room_deleted"));
-    };
-    let projection = match room.projection(participant_id.clone()).await {
-        Ok(projection) => projection,
-        Err(_) => return enqueue(outbound, close_message(4006, "session_expired")),
-    };
+    match room
+        .send(RoomCommand::GetMatchView {
+            participant_id: participant_id.clone(),
+        })
+        .await
+    {
+        Ok(RoomResponse::MatchView {
+            snapshot,
+            projection,
+            ..
+        }) => enqueue_snapshot(outbound, &snapshot, projection),
+        Err(RoomError::Deleted | RoomError::Closed) => {
+            enqueue(outbound, close_message(4002, "room_deleted"))
+        }
+        _ => enqueue(outbound, close_message(4006, "session_expired")),
+    }
+}
+
+fn enqueue_snapshot(
+    outbound: &mpsc::Sender<Message>,
+    snapshot: &RoomSnapshot,
+    projection: Option<AudienceProjection>,
+) -> bool {
     let value = json!({
         "type": "snapshot",
-        "room": room_snapshot_value(&snapshot),
+        "room": room_snapshot_value(snapshot),
         "state": projection_value(projection),
     });
     enqueue(outbound, Message::text(value.to_string()))
@@ -3525,19 +3541,55 @@ async fn queue_room_event(
     participant_id: &ParticipantId,
     event: RoomEvent,
 ) -> bool {
-    let Ok(snapshot) = room.snapshot().await else {
-        return false;
-    };
     if let RoomEvent::ParticipantLeft(left_id) = &event
         && left_id == participant_id
     {
         return enqueue(outbound, close_message(4006, "session_expired"));
     }
-    let projection = match room.projection(participant_id.clone()).await {
-        Ok(projection) => projection,
-        Err(_) => return enqueue(outbound, close_message(4006, "session_expired")),
+    let (snapshot, events, projection) = match room
+        .send(RoomCommand::GetMatchView {
+            participant_id: participant_id.clone(),
+        })
+        .await
+    {
+        Ok(RoomResponse::MatchView {
+            snapshot,
+            events,
+            projection,
+            ..
+        }) => (snapshot, events, projection),
+        _ => return enqueue(outbound, close_message(4006, "session_expired")),
     };
     let viewer_seat = projection.as_ref().and_then(projection_viewer_seat);
+    // Queued notifications may outlive their publication step. Never attach their
+    // old payload to a newer projection (or to a different Match).
+    let current_match = match &snapshot.phase {
+        RoomPhase::Playing(id) | RoomPhase::PostMatch(id) => Some(id),
+        RoomPhase::Lobby => None,
+    };
+    match &event {
+        RoomEvent::ActionResolved { match_id, result } if current_match == Some(match_id) => {
+            if result.events().is_empty() || !events.ends_with(result.events()) {
+                return enqueue_snapshot(outbound, &snapshot, projection);
+            }
+        }
+        RoomEvent::ActionResolved { .. } => {
+            return enqueue_snapshot(outbound, &snapshot, projection);
+        }
+        RoomEvent::DecisionOpened { match_id, decision }
+            if current_match != Some(match_id)
+                || projection.as_ref().and_then(|view| match view {
+                    AudienceProjection::Player(player) => player
+                        .decision
+                        .as_ref()
+                        .map(|open| open.decision_id.as_str()),
+                    _ => None,
+                }) != Some(decision.id().as_str()) =>
+        {
+            return enqueue_snapshot(outbound, &snapshot, projection);
+        }
+        _ => {}
+    }
     let value = match event {
         RoomEvent::ActionResolved { result, .. } => json!({
             "type": "game_update",
@@ -3657,6 +3709,14 @@ async fn handle_human_message(
                 Ok(_) => HumanMessageOutcome::Invalid,
             }
         }
+        HumanInput::ConfirmResult { step_id } => {
+            // The socket credential, never the message, identifies the confirming participant.
+            let _ = room
+                .send(RoomCommand::confirm_result(participant_id.clone(), step_id))
+                .await;
+            let _ = send_snapshot(outbound, room, participant_id).await;
+            HumanMessageOutcome::Continue
+        }
         HumanInput::Leave => {
             let operation = state.connections.operation_lock(participant_id).await;
             let result = room.send(RoomCommand::leave(participant_id.clone())).await;
@@ -3679,6 +3739,9 @@ enum HumanInput {
     SubmitAction {
         decision_id: String,
         action_id: String,
+    },
+    ConfirmResult {
+        step_id: ResultStepId,
     },
     Leave,
 }
@@ -4104,6 +4167,7 @@ fn room_snapshot_value(snapshot: &RoomSnapshot) -> Value {
         "match_players": snapshot.match_players.iter().map(match_player_view).collect::<Vec<_>>(),
         "roster": snapshot.roster.iter().map(match_player_view).collect::<Vec<_>>(),
         "result": snapshot.result.clone(),
+        "kyoku_end": snapshot.kyoku_end,
     })
 }
 
@@ -4776,6 +4840,35 @@ fn _unused_types(_: &GameAction, _: &RoomJoinCode) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_confirmation_is_not_a_game_action() {
+        let input: HumanInput = serde_json::from_value(json!({
+            "type": "confirm_result",
+            "step_id": {"match_id": "match1", "kyoku_sequence": 1, "step_index": 0}
+        }))
+        .unwrap();
+        assert!(matches!(input, HumanInput::ConfirmResult { step_id }
+            if step_id.match_id == "match1" && step_id.kyoku_sequence == 1 && step_id.step_index == 0));
+        for unknown in ["participant_id", "unexpected"] {
+            let mut step = json!({"match_id": "match1", "kyoku_sequence": 1, "step_index": 0});
+            step[unknown] = json!("other");
+            assert!(
+                serde_json::from_value::<HumanInput>(json!({
+                    "type": "confirm_result", "step_id": step
+                }))
+                .is_err(),
+                "unknown nested {unknown}"
+            );
+        }
+        assert!(
+            serde_json::from_value::<HumanInput>(json!({
+                "type": "confirm_result", "participant_id": "other",
+                "step_id": {"match_id": "match1", "kyoku_sequence": 1, "step_index": 0}
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn kyoku_end_notification_contains_no_private_result_payload() {
