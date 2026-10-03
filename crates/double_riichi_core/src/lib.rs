@@ -30,12 +30,12 @@ pub use results::{
     ScoreChange, ScoreLimit, WinEvaluation, WinResult, YakuValue,
 };
 pub use room::{
-    CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, MatchId, MatchPlayerSnapshot,
-    MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY, ROOM_EFFECT_CAPACITY, RoomActor,
-    RoomAuxiliaryEvent, RoomAuxiliaryPhase, RoomCommand, RoomConfig, RoomConnection,
-    RoomController, RoomEffect, RoomEffectError, RoomError, RoomEvent, RoomHandle,
-    RoomHistoryEvent, RoomHistoryProjection, RoomId, RoomJoinCode, RoomKyokuProjection,
-    RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot, RoomPersistenceFailure, RoomPhase,
-    RoomRegistry, RoomRegistryError, RoomRemoval, RoomResponse, RoomSnapshot, RoomState,
-    ShutdownMode,
+    CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, KyokuEndContent, KyokuEndStep,
+    MatchId, MatchPlayerSnapshot, MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY,
+    ROOM_EFFECT_CAPACITY, ResultStepId, RoomActor, RoomAuxiliaryEvent, RoomAuxiliaryPhase,
+    RoomCommand, RoomConfig, RoomConnection, RoomController, RoomEffect, RoomEffectError,
+    RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomHistoryProjection, RoomId,
+    RoomJoinCode, RoomKyokuProjection, RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot,
+    RoomPersistenceFailure, RoomPhase, RoomRegistry, RoomRegistryError, RoomRemoval, RoomResponse,
+    RoomSnapshot, RoomState, ShutdownMode,
 };

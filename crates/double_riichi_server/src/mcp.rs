@@ -2205,7 +2205,8 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
         RoomEvent::Snapshot(_) => None,
         RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
         RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
-        RoomEvent::StorageDegraded
+        RoomEvent::KyokuEndStepChanged { .. }
+        | RoomEvent::StorageDegraded
         | RoomEvent::ParticipantJoined(_)
         | RoomEvent::ParticipantLeft(_) => None,
     }

@@ -13,6 +13,44 @@ fn config() -> RoomConfig {
     )
 }
 
+#[test]
+fn result_confirmation_is_bound_to_match_kyoku_and_step() {
+    use double_riichi_core::room::ResultStepId;
+    let id = ResultStepId {
+        match_id: "m".into(),
+        kyoku_sequence: 1,
+        step_index: 0,
+    };
+    assert_ne!(
+        id,
+        ResultStepId {
+            match_id: "other".into(),
+            kyoku_sequence: 1,
+            step_index: 0
+        }
+    );
+    assert_ne!(
+        id,
+        ResultStepId {
+            match_id: "m".into(),
+            kyoku_sequence: 2,
+            step_index: 0
+        }
+    );
+    assert_ne!(
+        id,
+        ResultStepId {
+            match_id: "m".into(),
+            kyoku_sequence: 1,
+            step_index: 1
+        }
+    );
+    assert!(matches!(
+        RoomCommand::confirm_result("h", id),
+        RoomCommand::ConfirmResult { .. }
+    ));
+}
+
 fn human(id: &str, _character: &str) -> Participant {
     Participant::new(id, id, ParticipantKind::Human)
 }

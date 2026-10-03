@@ -3716,6 +3716,9 @@ fn room_event_value(event: &RoomEvent) -> Value {
         RoomEvent::MatchStarted(match_id) => {
             json!({"type": "match_started", "match_id": match_id.as_str()})
         }
+        RoomEvent::KyokuEndStepChanged { match_id } => {
+            json!({"type": "kyoku_end_step_changed", "match_id": match_id.as_str()})
+        }
         RoomEvent::ActionResolved { .. } => json!({"type": "action_resolved"}),
         RoomEvent::MatchCompleted { .. } => json!({"type": "match_completed"}),
         RoomEvent::MatchAborted { .. } => json!({"type": "match_aborted"}),
@@ -4773,6 +4776,17 @@ fn _unused_types(_: &GameAction, _: &RoomJoinCode) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kyoku_end_notification_contains_no_private_result_payload() {
+        let event = RoomEvent::KyokuEndStepChanged {
+            match_id: double_riichi_core::room::MatchId::new("match1").unwrap(),
+        };
+        assert_eq!(
+            room_event_value(&event),
+            json!({"type": "kyoku_end_step_changed", "match_id": "match1"})
+        );
+    }
 
     #[test]
     fn frontend_asset_cache_recognizes_base64url_hashes() {
