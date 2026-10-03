@@ -2998,7 +2998,10 @@ impl Actor {
                     self.state.deleted = true;
                     self.publish(RoomEvent::RoomDeleted);
                 }
-                Ok(response)
+                Ok(match response {
+                    RoomResponse::Accepted(_) => RoomResponse::Accepted(self.state.snapshot()),
+                    other => other,
+                })
             }
         }
     }
@@ -4732,12 +4735,21 @@ mod tests {
         let current = handle.snapshot().await.unwrap().kyoku_end.unwrap();
         assert_eq!(current.id, step.id);
         assert_eq!(current.confirmed.len(), 2);
-        handle.send(RoomCommand::disconnect("p2")).await.unwrap();
-        handle.send(RoomCommand::disconnect("p3")).await.unwrap();
-        assert_ne!(
-            handle.snapshot().await.unwrap().kyoku_end.unwrap().id,
-            step.id
-        );
+        let RoomResponse::Accepted(after_p2) =
+            handle.send(RoomCommand::disconnect("p2")).await.unwrap()
+        else {
+            panic!("disconnect response")
+        };
+        assert_eq!(after_p2, handle.snapshot().await.unwrap());
+        let RoomResponse::Accepted(after_p3) =
+            handle.send(RoomCommand::disconnect("p3")).await.unwrap()
+        else {
+            panic!("disconnect response")
+        };
+        let settled = handle.snapshot().await.unwrap();
+        assert_eq!(after_p3.kyoku_end, settled.kyoku_end);
+        assert_eq!(after_p3.revision, settled.revision);
+        assert_ne!(settled.kyoku_end.unwrap().id, step.id);
         handle
             .send(RoomCommand::confirm_result("p1", step.id))
             .await
