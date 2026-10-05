@@ -73,6 +73,12 @@ export interface RoomParticipantSnapshot {
   [key: string]: unknown;
 }
 
+export interface ResultStepId {
+  match_id: string;
+  kyoku_sequence: number;
+  step_index: number;
+}
+
 export interface RoomSnapshot {
   join_code: string;
   room_name: string;
@@ -83,6 +89,7 @@ export interface RoomSnapshot {
   match_players: RoomPlayerSnapshot[];
   roster: RoomPlayerSnapshot[];
   result: unknown;
+  kyoku_end?: unknown;
   [key: string]: unknown;
 }
 

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { decodeKyokuEndStep } from "./results";
 import {
   animationEvents,
   animationKindForEvent,
@@ -9,6 +10,7 @@ import type {
   GameEventEnvelope,
   PendingAction,
   ProjectedState,
+  ResultStepId,
   RoomSnapshot,
   WebSocketStatus,
 } from "./types";
@@ -31,6 +33,10 @@ export interface GameStoreState {
   commandError: string;
   actionError: string;
   pendingAction: PendingAction | null;
+  /** Local-only acknowledgement for the currently displayed result step. */
+  confirmedResultStep: ResultStepId | null;
+  /** Local monotonic deadline capped on every receipt of the same server step. */
+  resultDeadline: number | null;
   animationQueue: AnimationItem[];
   /** Monotonic queue identity prevents a just-consumed motion id from racing a new event. */
   nextAnimationId: number;
@@ -49,6 +55,7 @@ export interface GameStoreState {
   preserveForTerminal: (reason: string) => void;
   setTransport: (transport: Transport | null) => void;
   submitAction: (decisionId: string, actionId: string, transport?: Transport) => boolean;
+  confirmResult: (stepId: ResultStepId, transport?: Transport) => boolean;
   receiveSnapshot: (room: RoomSnapshot | null, projection: unknown) => void;
   receiveUpdate: (room: RoomSnapshot | null, projection: unknown, envelope?: GameEventEnvelope | unknown) => void;
   receiveActionResult: (result: ActionResult) => void;
@@ -66,6 +73,8 @@ const initialState = {
   commandError: "",
   actionError: "",
   pendingAction: null,
+  confirmedResultStep: null as ResultStepId | null,
+  resultDeadline: null as number | null,
   animationQueue: [] as AnimationItem[],
   nextAnimationId: 0,
   connectionGeneration: 0,
@@ -91,6 +100,26 @@ function isDiscontinuous(previous: number | null, next: number | null): boolean 
   return previous !== null && next !== null && (next < previous || next > previous + 1);
 }
 
+function stepIdFromRoom(room: RoomSnapshot | null): ResultStepId | null {
+  return decodeKyokuEndStep(room?.kyoku_end, room?.game_mode ?? "")?.id ?? null;
+}
+
+function sameStep(left: ResultStepId | null, right: ResultStepId | null): boolean {
+  return left !== null && right !== null
+    && left.match_id === right.match_id
+    && left.kyoku_sequence === right.kyoku_sequence
+    && left.step_index === right.step_index;
+}
+
+function resultDeadlineFor(room: RoomSnapshot | null, state: GameStoreState): number | null {
+  const step = decodeKyokuEndStep(room?.kyoku_end, room?.game_mode ?? "");
+  if (!step) return null;
+  const deadline = performance.now() + step.remaining_ms;
+  return state.resultDeadline !== null && sameStep(stepIdFromRoom(state.room), step.id)
+    ? Math.min(state.resultDeadline, deadline)
+    : deadline;
+}
+
 export const useGameStore = create<GameStoreState>((set, get) => ({
   ...initialState,
   setStatus: (status, reason = "") => set({ status, reason }),
@@ -104,6 +133,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     commandError: "",
     actionError: "",
     pendingAction: null,
+    confirmedResultStep: null,
     animationQueue: [],
     lastRevision: null,
     lastEvents: [],
@@ -122,6 +152,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     commandError: "",
     actionError: "",
     pendingAction: null,
+    confirmedResultStep: null,
     animationQueue: [],
     lastEvents: [],
     lastActionResult: null,
@@ -144,16 +175,35 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     set({ pendingAction: { decisionId, actionId }, actionError: "", commandError: "" });
     return true;
   },
+  confirmResult: (stepId, transport) => {
+    const state = get();
+    if (state.status !== "connected" || !sameStep(stepIdFromRoom(state.room), stepId)
+      || state.resultDeadline === null || performance.now() >= state.resultDeadline
+      || sameStep(state.confirmedResultStep, stepId)) return false;
+    const send = transport ?? state.transport;
+    if (!send) return false;
+    const message = { type: "confirm_result", step_id: stepId };
+    try {
+      if (send(message) === false) return false;
+    } catch {
+      return false;
+    }
+    set({ confirmedResultStep: { ...stepId } });
+    return true;
+  },
   receiveSnapshot: (room, projection) => set((state) => {
     const nextProjection = projectedState(projection);
     const sameOpenDecision = Boolean(state.actionError)
       && state.projection?.decision?.decision_id !== undefined
       && state.projection.decision.decision_id === nextProjection?.decision?.decision_id;
+    const serverStep = stepIdFromRoom(room);
     return {
       room,
+      resultDeadline: resultDeadlineFor(room, state),
       projection: nextProjection,
       animationQueue: [],
       pendingAction: null,
+      confirmedResultStep: sameStep(state.confirmedResultStep, serverStep) ? state.confirmedResultStep : null,
       actionError: sameOpenDecision ? state.actionError : "",
       commandError: "",
       lastRevision: numericRevision(room),
@@ -173,9 +223,12 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     const pending = state.pendingAction && projectionValue?.decision?.decision_id !== state.pendingAction.decisionId
       ? null
       : state.pendingAction;
+    const serverStep = stepIdFromRoom(room ?? state.room);
     return {
       room: room ?? state.room,
+      resultDeadline: resultDeadlineFor(room ?? state.room, state),
       projection: projectionValue,
+      confirmedResultStep: sameStep(state.confirmedResultStep, serverStep) ? state.confirmedResultStep : null,
       animationQueue: result.queue,
       nextAnimationId: state.nextAnimationId
         + (!discontinuity ? enqueuedEvents : 0),

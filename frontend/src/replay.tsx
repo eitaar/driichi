@@ -3,7 +3,8 @@ import { ArrowLeft, ArrowRight, Pause, Play, Trash, WarningCircle } from "@phosp
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, problemFrom, type ProblemDetails, type ReplayFrame, type ReplaySummary, type ReplayView } from "./api";
 import { AudioManager } from "./game/audio";
-import { portraitFromEvents, preloadRosterAssets, voiceEvents } from "./game/gameplay";
+import { RoundWinSurface, ResultsPanel, ScoreTransfer, winEffectFromResult, preloadRosterAssets, voiceEvents } from "./game/gameplay";
+import { decodeWinResult, decodeSettlement } from "./game/results";
 import { ThreeTable } from "./game/three-table";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
@@ -337,7 +338,12 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
   const room = useMemo(() => replayRoom(replay, !genericPresentation), [replay, genericPresentation]);
   const rounds = useMemo(() => roundDestinations(frames), [frames]);
   useReplayAudio(frame, room, position, !genericPresentation && rate <= 2);
-  const portraitEffect = !genericPresentation && frame ? portraitFromEvents([frame.visible_event], room) : null;
+  const win = frame ? decodeWinResult(frame.result, replay.game_mode) : null;
+  const winEffect = win && win.event_index === frame?.event_index ? winEffectFromResult(win, room) : null;
+  const portraitEffect = !genericPresentation ? winEffect : null;
+  const settlement = decodeSettlement(frame?.settlement, replay.game_mode);
+  const assets = Object.fromEntries(replay.players.flatMap((player) => player.character_id ? [[player.character_id, !genericPresentation]] : []));
+  const finalFrame = frame && /^end_?game$/i.test(eventKind(frame.visible_event));
   useEffect(() => {
     if (!playing || position >= frames.length - 1) return;
     const timer = window.setTimeout(() => {
@@ -360,8 +366,11 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
         data-testid="replay-viewer"
         data-motion={reducedMotion || rate > 2 ? "static" : "cinematic"}
       >
-        <div className="replay-table-stage">
+        <div className="replay-table-stage gameplay-shell">
           <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} portraitEffect={rate > 2 ? null : portraitEffect} surface="replay" /></div>
+          {winEffect && <div className="round-win-overlay"><RoundWinSurface key={frame.event_index} effect={winEffect} assets={assets} reducedMotion={reducedMotion || rate > 2} /></div>}
+          {settlement && <div className="round-win-overlay"><ScoreTransfer settlement={settlement} room={room} /></div>}
+          {finalFrame && replay.result != null && <div className="results-overlay"><ResultsPanel room={{ ...room, result: replay.result }} assets={assets} /></div>}
           <div className="replay-status-toast" role="status" aria-live="polite">
             <span className="replay-live-state">{presentationLabel}</span>
             <span className="state-label">EVENT {String(position + 1).padStart(3, "0")}</span>

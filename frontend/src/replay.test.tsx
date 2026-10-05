@@ -224,7 +224,9 @@ describe("Replay Admin workspace", () => {
       ...replay,
       frames: [
         replay.frames[0],
-        { ...replay.frames[1], visible_event: { type: "hora", actor: 0, target: 0, han: 5, fu: 30 } },
+        { ...replay.frames[1], visible_event: { type: "hora", actor: 0, target: 0, han: 5, fu: 30 },
+          result: { event_index: 1, winner: "P0", seat: 0, target: 0, tsumo: true, concealed: [16, 17], melds: [], winning_tile: 16, winning_tile_index: 0, yaku: [{ id: 31, name: "dora", han: 5, yakuman_multiplier: null }], evaluation: { Ordinary: { han: 5, fu: 30, limit: null } }, win_points: 8000 },
+        },
       ],
     };
     fetchMock.mockImplementation((input, init) => {
@@ -240,6 +242,102 @@ describe("Replay Admin workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: /next event/i }));
     await waitFor(() => expect(mockPlayVoices).toHaveBeenCalledWith([{ characterId: "ordinary-pack", kind: "tsumo" }]));
     expect(screen.getByTestId("replay-three-table")).toHaveAttribute("data-portrait", "ordinary-pack");
+  });
+
+  it("seeks saved authoritative results without inference or gameplay confirmation requests", async () => {
+    mockDecodeCharacterAsset.mockRejectedValue(new Error("asset_unavailable"));
+    const savedWin = {
+      event_index: 1, winner: "P0", seat: 0, target: 1, tsumo: false,
+      concealed: [0, 1, 16, 17], melds: [], winning_tile: 16, winning_tile_index: 2,
+      yaku: [{ id: 1, name: "riichi", han: 1, yakuman_multiplier: null }],
+      evaluation: { Ordinary: { han: 1, fu: 30, limit: null } }, win_points: 1000,
+    };
+    const savedSettlement = { changes: [0, 1, 2, 3].map((seat) => ({ participant_id: `P${seat}`, seat, before: 25000, delta: seat === 0 ? 1000 : seat === 1 ? -1000 : 0, after: seat === 0 ? 26000 : seat === 1 ? 24000 : 25000 })), pot_before: 0, pot_after: 0, draw_reason: null };
+    const saved = { ...replay,
+      result: { mode: "FourPlayerRedEast", players: [0, 1, 2, 3].map((seat) => ({ participant_id: `P${seat}`, display_name: `Seat ${seat}`, kind: "BuiltInBot", seat, final_score: [26000, 24000, 25000, 25000][seat], rank: [1, 4, 2, 3][seat] })), final_scores: [26000, 24000, 25000, 25000] },
+      frames: [frame(0, "start_kyoku"), { ...frame(1, "hora"), visible_event: { type: "hora", actor: 0, target: 1, delta: [99999, -99999, 0, 0] }, result: savedWin }, { ...frame(2, "end_kyoku"), settlement: savedSettlement }, frame(3, "end_game")],
+    };
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation((input) => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? saved : [])));
+    render(<App />);
+    await screen.findByText("GENERIC / SILENT");
+    fireEvent.click(screen.getByRole("button", { name: /next event/i }));
+    expect(screen.getAllByTestId("winning-tile")).toHaveLength(1);
+    expect(screen.getByLabelText("Ron win details")).toHaveTextContent("1,000");
+    expect(screen.queryByText("99,999")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: /playback speed/i }), { target: { value: "64" } });
+    fireEvent.click(screen.getByRole("button", { name: /next event/i }));
+    expect(screen.getByLabelText("Score transfer")).toHaveTextContent("26,000");
+    expect(screen.queryByTestId("round-win-surface")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /next event/i }));
+    expect(screen.getByRole("list", { name: "Final standings" })).toHaveTextContent("Seat 0");
+    expect(screen.getByRole("button", { name: /^play$/i })).toBeDisabled();
+    fireEvent.change(screen.getByRole("slider", { name: /replay position/i }), { target: { value: "1" } });
+    expect(screen.getByTestId("round-win-surface")).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Final standings" })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
+  it("restores a recorded draw reason with its settlement without inferring a missing reason", async () => {
+    const settlement = { changes: [0, 1, 2, 3].map((seat) => ({ participant_id: `P${seat}`, seat, before: 25000, delta: 0, after: 25000 })), pot_before: 0, pot_after: 0, draw_reason: "suucha_riichi" };
+    const saved = { ...replay, frames: [
+      { ...frame(0, "end_kyoku"), settlement },
+      { ...frame(1, "end_kyoku"), settlement: { ...settlement, draw_reason: null }, visible_event: { type: "ryukyoku", reason: "not_saved" } },
+    ] };
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation((input) => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? saved : [])));
+    render(<App />);
+    const transfer = await screen.findByLabelText("Score transfer");
+    expect(within(transfer).getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
+    expect(transfer).toHaveTextContent("+0");
+    expect(transfer).toHaveTextContent("25,000");
+    fireEvent.click(screen.getByRole("button", { name: /next event/i }));
+    expect(screen.queryByText("suucha_riichi")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Score transfer")).getByRole("heading", { name: "Score transfer" })).toBeVisible();
+    expect(screen.getByLabelText("Score transfer")).not.toHaveTextContent("not_saved");
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+  });
+
+  it("distinguishes recorded closed and open kans while seeking Replay", async () => {
+    mockDecodeCharacterAsset.mockRejectedValue(new Error("asset_unavailable"));
+    const closedMeld = { kind: "Ankan", tiles: [52, 53, 54, 55], opened: false, from_who: null, called_tile: null };
+    const win = { event_index: 0, winner: "P0", seat: 0, target: 1, tsumo: false,
+      concealed: [0, 1, 16, 17], melds: [closedMeld], winning_tile: 16, winning_tile_index: 2,
+      yaku: [{ id: 31, name: "dora", han: 1, yakuman_multiplier: null }], evaluation: { Ordinary: { han: 1, fu: 30, limit: null } }, win_points: 1000 };
+    const saved = { ...replay, frames: [
+      { ...frame(0, "hora"), result: win },
+      { ...frame(1, "hora"), result: { ...win, event_index: 1, melds: [{ ...closedMeld, kind: "Daiminkan", opened: true, from_who: 1, called_tile: 52 }] } },
+    ] };
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation((input) => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? saved : [])));
+    render(<App />);
+    await screen.findByText("GENERIC / SILENT");
+    const closedTiles = within(screen.getByRole("group", { name: "Closed Ankan" })).getAllByRole("img");
+    expect(closedTiles[0]).toHaveAttribute("src", expect.stringMatching(/\/Back\.svg$/));
+    expect(closedTiles[3]).toHaveAttribute("src", expect.stringMatching(/\/Back\.svg$/));
+    expect(closedTiles[1]).not.toHaveAttribute("src", expect.stringMatching(/\/Back\.svg$/));
+    fireEvent.click(screen.getByRole("button", { name: /next event/i }));
+    const openTiles = within(screen.getByRole("group", { name: "Open Daiminkan" })).getAllByRole("img");
+    expect(openTiles).toHaveLength(4);
+    for (const tile of openTiles) expect(tile).not.toHaveAttribute("src", expect.stringMatching(/\/Back\.svg$/));
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /previous event/i }));
+    expect(screen.getByRole("group", { name: "Closed Ankan" })).toBeVisible();
+  });
+
+  it("legacy replay keeps missing fields absent instead of using event deltas or current hands", async () => {
+    mockDecodeCharacterAsset.mockRejectedValue(new Error("asset_unavailable"));
+    const legacy = { ...replay, game_mode: "3p-red-east", players: replay.players.slice(0, 3), frames: [{ ...frame(0, "hora"), visible_state: { ...frame(0, "hora").visible_state, players: frame(0, "hora").visible_state.players.slice(0, 3) }, visible_event: { type: "hora", actor: 0, target: 1, delta: [99999, -99999, 0], han: 0, fu: 0 } }] };
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation((input) => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? legacy : [])));
+    render(<App />);
+    await screen.findByText("GENERIC / SILENT");
+    expect(screen.getByTestId("replay-three-table")).toHaveTextContent("3 players");
+    expect(screen.queryByTestId("round-win-surface")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 fu")).not.toBeInTheDocument();
+    expect(screen.queryByText("99,999")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Some tiles remain private/)).not.toBeInTheDocument();
   });
 
   it("switches to generic silent playback when a Room pack cannot load", async () => {
