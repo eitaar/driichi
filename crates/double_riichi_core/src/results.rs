@@ -92,6 +92,8 @@ pub struct KyokuResultRecord {
     pub end_event_index: usize,
     pub wins: Vec<WinResult>,
     pub settlement: KyokuSettlement,
+    // Private v1 producer evidence: emitted draw delta minus the actual pre-award movement.
+    pub draw_event_delta_adjustment: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,9 +128,37 @@ impl KyokuResultRecord {
         if self.wins.is_empty() == self.settlement.draw_reason.is_none() {
             return Err("draw reason and wins disagree".into());
         }
+        if self.wins.is_empty() {
+            if self.draw_event_delta_adjustment.as_ref().map(Vec::len) != Some(roster.len()) {
+                return Err("missing or malformed draw delta evidence".into());
+            }
+        } else if self.draw_event_delta_adjustment.is_some() {
+            return Err("win carries draw delta evidence".into());
+        }
         let mut winners = HashSet::new();
         let mut previous = None;
         for win in &self.wins {
+            // Restored serde values bypass Tile::from_id; validate every private tile.
+            if win
+                .concealed
+                .iter()
+                .chain(win.melds.iter().flat_map(|meld| meld.tiles.iter()))
+                .chain(
+                    win.melds
+                        .iter()
+                        .filter_map(|meld| meld.called_tile.as_ref()),
+                )
+                .chain(std::iter::once(&win.winning_tile))
+                .any(|tile| Tile::from_id(tile.id()).is_none() || !tile.is_valid_for(self.mode))
+            {
+                return Err("result contains an invalid tile for its mode".into());
+            }
+            if win.melds.iter().any(|meld| {
+                meld.from_who
+                    .is_some_and(|seat| seat.index() as usize >= roster.len())
+            }) {
+                return Err("result contains an invalid meld source seat for its mode".into());
+            }
             let seat = win.seat.index() as usize;
             if seat >= roster.len()
                 || win.winner != roster[seat].id
@@ -250,6 +280,7 @@ mod tests {
             mode: GameMode::ThreePlayerRedEast,
             end_event_index: 5,
             wins: vec![],
+            draw_event_delta_adjustment: Some(vec![0; 3]),
             settlement: KyokuSettlement {
                 changes,
                 pot_before: 2,
@@ -270,6 +301,52 @@ mod tests {
         let mut duplicate = participants.clone();
         duplicate[1].id = duplicate[0].id.clone();
         assert!(record.validate(&duplicate).is_err());
+    }
+
+    #[test]
+    fn result_requires_exact_draw_evidence_and_forbids_win_evidence() {
+        let participants = roster();
+        let changes = participants
+            .iter()
+            .enumerate()
+            .map(|(index, participant)| ScoreChange {
+                participant_id: participant.id.clone(),
+                seat: Seat::new(index as u8).unwrap(),
+                before: 25_000,
+                delta: 0,
+                after: 25_000,
+            })
+            .collect();
+        let mut record = KyokuResultRecord {
+            version: 1,
+            kyoku_sequence: 1,
+            mode: GameMode::ThreePlayerRedEast,
+            end_event_index: 5,
+            wins: vec![],
+            draw_event_delta_adjustment: Some(vec![0; 3]),
+            settlement: KyokuSettlement {
+                changes,
+                pot_before: 0,
+                pot_after: 0,
+                draw_reason: Some("exhaustive_draw".into()),
+            },
+        };
+        assert!(record.validate(&participants).is_ok());
+        let mut missing: serde_json::Value = serde_json::to_value(&record).unwrap();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("draw_event_delta_adjustment");
+        let missing: KyokuResultRecord = serde_json::from_value(missing).unwrap();
+        assert!(missing.validate(&participants).is_err());
+        record.draw_event_delta_adjustment = Some(vec![0; 2]);
+        assert!(record.validate(&participants).is_err());
+        record.draw_event_delta_adjustment = Some(vec![0; 4]);
+        assert!(record.validate(&participants).is_err());
+        record.draw_event_delta_adjustment = Some(vec![0; 3]);
+        record.settlement.changes[0].before = i32::MAX;
+        record.settlement.changes[0].delta = 1;
+        assert!(record.validate(&participants).is_err());
     }
 
     #[test]

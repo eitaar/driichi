@@ -1197,8 +1197,16 @@ async fn live_mcp_bridge_protocol_bot_completes_resource_driven_match() {
             assert_no_private_data(&public, &participant_id);
             assert_no_private_data(&history, &participant_id);
 
+            assert!(
+                private_revision >= wait_revision,
+                "resource revision regressed behind wake"
+            );
             if is_post_match(&private) {
-                assert_eq!(reason, "game_ended");
+                // Resources are later reads; require phase/reason agreement only
+                // when they describe the same revision as the earlier wake.
+                if private_revision == wait_revision {
+                    assert_eq!(reason, "game_ended");
+                }
                 assert!(!history["result"].is_null(), "Post-Match has no result");
                 let projection = &history["history"];
                 let current_events = projection["current_kyoku"]["events"]

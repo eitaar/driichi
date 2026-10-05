@@ -2217,7 +2217,14 @@ async fn watcher_reason(entry: &SessionEntry, event: RoomEvent) -> Option<(u64, 
         RoomEvent::Snapshot(_) => None,
         RoomEvent::RoomDeleted => Some((revision, "room_deleted")),
         RoomEvent::ServerShutdown => Some((revision, "server_shutdown")),
-        RoomEvent::KyokuEndStepChanged { .. } => Some((revision, "round_ended")),
+        RoomEvent::KyokuEndStepChanged { .. } => Some((
+            revision,
+            if matches!(snapshot.phase, RoomPhase::PostMatch(_)) {
+                "game_ended"
+            } else {
+                "round_ended"
+            },
+        )),
         RoomEvent::StorageDegraded
         | RoomEvent::ParticipantJoined(_)
         | RoomEvent::ParticipantLeft(_) => None,
@@ -2639,6 +2646,43 @@ mod tests {
                 usize::from(includes_history)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn delayed_kyoku_step_wake_reports_current_post_match_revision() {
+        let mut config = RoomConfig::new(
+            "MCP terminal boundary",
+            GameMode::FourPlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.replay_save = false;
+        let (room, _effects) = RoomActor::spawn_with_effect_channel(config);
+        room.send(RoomCommand::fill_with_bots()).await.unwrap();
+        let watcher = entry(room.clone(), "session", "token", "123456", "spectator");
+        let prior_revision = room.snapshot().await.unwrap().revision;
+        assert!(watcher.wake.record(prior_revision, "selected"));
+        let prior_wake = watcher
+            .wake
+            .wait(prior_revision - 1, Duration::from_millis(1))
+            .await;
+        let match_id = match room.send(RoomCommand::start()).await.unwrap() {
+            RoomResponse::Started(id) => id,
+            other => panic!("unexpected start: {other:?}"),
+        };
+        let snapshot = room.snapshot().await.unwrap();
+        assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+        // A resource read is a later operation, not an atomic part of wait_for_turn.
+        assert!(snapshot.revision > prior_wake.revision);
+        assert_eq!(prior_wake.reason, "selected");
+        // Queued step events use the CURRENT snapshot revision, so their reason
+        // must describe PostMatch at that revision, not the earlier result hold.
+        assert_eq!(
+            watcher_reason(&watcher, RoomEvent::KyokuEndStepChanged { match_id }).await,
+            Some((snapshot.revision, "game_ended"))
+        );
+        room.send(RoomCommand::shutdown(ShutdownMode::Graceful))
+            .await
+            .unwrap();
     }
 
     #[test]

@@ -1,13 +1,15 @@
 use std::{fs, path::PathBuf, time::UNIX_EPOCH};
 
 use double_riichi_core::{
-    Audience, GameEvent, GameMode, Participant, ParticipantKind, Seat, TableState, Tile, Wind,
+    Audience, GameEvent, GameMode, KyokuResultRecord, KyokuSettlement, Participant,
+    ParticipantKind, ScoreChange, Seat, TableState, Tile, WinEvaluation, WinResult, Wind,
+    YakuValue,
 };
 use double_riichi_replay::{
     AuxiliaryEvent, AuxiliaryPhase, CanonicalEvent, MAX_REPLAY_FRAME_BYTES, ReplayError,
-    ReplayFrame, ReplayWriter, build_replay_frames, build_replay_frames_for_mode,
-    encode_replay_frames, frames_from_artifact, parse_mjson, resolve_replay_path, serialize_event,
-    startup_cleanup,
+    ReplayFrame, ReplayWriter, attach_result_records, build_replay_frames,
+    build_replay_frames_for_mode, encode_replay_frames, frames_from_artifact, parse_mjson,
+    resolve_replay_path, serialize_event, startup_cleanup,
 };
 
 fn three_player_start_events() -> Vec<CanonicalEvent> {
@@ -81,6 +83,674 @@ fn start_events() -> Vec<CanonicalEvent> {
             tehais: vec![vec![Tile::from_id(0).unwrap(); 13]; 4],
         },
     ]
+}
+
+fn result_draw_record(
+    sequence: u64,
+    end: usize,
+    before: [i32; 4],
+    delta: [i32; 4],
+    pot_before: u32,
+    pot_after: u32,
+) -> KyokuResultRecord {
+    KyokuResultRecord {
+        version: 1,
+        kyoku_sequence: sequence,
+        mode: GameMode::FourPlayerRedEast,
+        end_event_index: end,
+        wins: vec![],
+        draw_event_delta_adjustment: Some(vec![0; 4]),
+        settlement: KyokuSettlement {
+            changes: (0..4)
+                .map(|seat| ScoreChange {
+                    participant_id: format!("seat{seat}").into(),
+                    seat: Seat::new(seat as u8).unwrap(),
+                    before: before[seat],
+                    delta: delta[seat],
+                    after: before[seat] + delta[seat],
+                })
+                .collect(),
+            pot_before,
+            pot_after,
+            draw_reason: Some("fanpai".into()),
+        },
+    }
+}
+
+fn result_draw_events() -> Vec<GameEvent> {
+    let mut events = start_events();
+    events.extend([
+        GameEvent::Ryukyoku {
+            reason: Some("fanpai".into()),
+            tehais: None,
+            delta: Some(vec![0; 4]),
+            scores: Some(vec![25_000; 4]),
+        },
+        GameEvent::EndKyoku,
+        GameEvent::EndGame,
+    ]);
+    events
+}
+
+#[test]
+fn result_pinned_draw_captures_join_without_canonical_rewrite() {
+    // Frozen direct pinned-engine terminal suffix + explicitly controlled prefix;
+    // core's unit test verifies this exact fixture against fresh EngineAdapter output.
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-draw-captures.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
+        let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
+        let scenario = case["scenario"].as_str().unwrap();
+        let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
+        attach_result_records(&mut frames, &[record.clone()])
+            .unwrap_or_else(|error| panic!("{scenario} {:?}: {error}", record.mode));
+        let end = record.end_event_index;
+        assert_eq!(frames[end].settlement, Some(record.settlement.clone()));
+        assert_eq!(frames[end - 1].visible_event, events[end - 1]);
+        let mut invalid = record.clone();
+        invalid.draw_event_delta_adjustment.as_mut().unwrap()[0] += 1;
+        let original = encode_replay_frames(&frames).unwrap();
+        assert!(attach_result_records(&mut frames, &[invalid]).is_err());
+        assert_eq!(encode_replay_frames(&frames).unwrap(), original);
+        let mut missing = case["record"].clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("draw_event_delta_adjustment");
+        let missing: KyokuResultRecord = serde_json::from_value(missing).unwrap();
+        assert!(attach_result_records(&mut frames, &[missing]).is_err());
+        let mut wrong_scores = record.clone();
+        wrong_scores.settlement.changes[0].after += 1;
+        wrong_scores.settlement.changes[0].delta += 1;
+        assert!(attach_result_records(&mut frames, &[wrong_scores]).is_err());
+        let mut wrong_pot = record.clone();
+        wrong_pot.settlement.pot_after = if scenario == "final" { 1 } else { 0 };
+        assert!(attach_result_records(&mut frames, &[wrong_pot]).is_err());
+        assert_eq!(encode_replay_frames(&frames).unwrap(), original);
+        let mut tampered = events.clone();
+        if let GameEvent::Ryukyoku {
+            delta: Some(delta), ..
+        } = &mut tampered[end - 1]
+        {
+            delta[0] += 1;
+        } else {
+            panic!("expected pinned draw event");
+        }
+        let mut bad_frames = build_replay_frames_for_mode(&tampered, record.mode).unwrap();
+        assert!(attach_result_records(&mut bad_frames, &[record]).is_err());
+    }
+}
+
+#[test]
+fn result_draw_delta_evidence_reconciles_paid_reach_without_rewriting_canonical_event() {
+    let mut events = start_events();
+    events.extend([
+        GameEvent::ReachAccepted {
+            actor: Seat::new(0).unwrap(),
+        },
+        GameEvent::Tsumo {
+            actor: Seat::new(1).unwrap(),
+            tile: Tile::from_id(0).unwrap(),
+        },
+        GameEvent::Dahai {
+            actor: Seat::new(1).unwrap(),
+            tile: Tile::from_id(0).unwrap(),
+            tsumogiri: true,
+        },
+        GameEvent::Ryukyoku {
+            reason: Some("exhaustive_draw".into()),
+            tehais: None,
+            delta: Some(vec![-1_000, 0, 0, 0]),
+            scores: Some(vec![24_000, 25_000, 25_000, 25_000]),
+        },
+        GameEvent::EndKyoku,
+    ]);
+    let mut record = result_draw_record(1, 6, [24_000, 25_000, 25_000, 25_000], [0; 4], 1, 1);
+    record.settlement.draw_reason = Some("exhaustive_draw".into());
+    record.draw_event_delta_adjustment = Some(vec![-1_000, 0, 0, 0]);
+    let frames = build_replay_frames(&events).unwrap();
+    let mut valid = frames.clone();
+    attach_result_records(&mut valid, &[record.clone()]).unwrap();
+    assert_eq!(valid[5].visible_event, events[5]);
+    let mut corrupted = record.clone();
+    corrupted.draw_event_delta_adjustment.as_mut().unwrap()[0] = 0;
+    let mut candidate = frames.clone();
+    assert!(attach_result_records(&mut candidate, &[corrupted]).is_err());
+    assert_eq!(
+        encode_replay_frames(&candidate).unwrap(),
+        encode_replay_frames(&frames).unwrap()
+    );
+    let mut events = events;
+    if let GameEvent::Ryukyoku {
+        delta: Some(delta), ..
+    } = &mut events[5]
+    {
+        delta[0] = 0;
+    }
+    assert!(attach_result_records(&mut build_replay_frames(&events).unwrap(), &[record]).is_err());
+}
+
+#[test]
+fn result_unknown_version_and_duplicate_terminal_index_are_corrupt() {
+    let mut events = result_draw_events();
+    events.pop();
+    let mut second = events[1].clone();
+    if let GameEvent::StartKyoku { kyoku, .. } = &mut second {
+        *kyoku = 2;
+    }
+    let terminal = events[2].clone();
+    events.extend([second, terminal, GameEvent::EndKyoku, GameEvent::EndGame]);
+    let mut frames = build_replay_frames(&events).unwrap();
+    let first = result_draw_record(1, 3, [25_000; 4], [0; 4], 0, 0);
+    let second = result_draw_record(2, 6, [25_000; 4], [0; 4], 0, 0);
+    assert!(attach_result_records(&mut frames, &[first.clone(), second.clone()]).is_ok());
+    let mut invalid = first.clone();
+    invalid.version = 2;
+    assert!(attach_result_records(&mut frames, &[invalid, second.clone()]).is_err());
+    let mut duplicate = second;
+    duplicate.end_event_index = first.end_event_index;
+    assert!(attach_result_records(&mut frames, &[first.clone(), duplicate]).is_err());
+    assert_eq!(frames[3].settlement, Some(first.settlement));
+    assert!(frames[6].settlement.is_some());
+}
+
+#[test]
+fn result_rejects_canonical_delta_score_and_round_continuity_contradictions() {
+    let events = result_draw_events();
+    let mut frames = build_replay_frames(&events).unwrap();
+    let contradictory = result_draw_record(
+        1,
+        3,
+        [26_000, 24_000, 25_000, 25_000],
+        [-1_000, 1_000, 0, 0],
+        0,
+        0,
+    );
+    assert!(attach_result_records(&mut frames, &[contradictory]).is_err());
+    let wrong_delta = result_draw_record(1, 3, [25_000; 4], [-100, 100, 0, 0], 0, 0);
+    assert!(attach_result_records(&mut frames, &[wrong_delta]).is_err());
+    let mut bad_scores = events.clone();
+    if let GameEvent::Ryukyoku {
+        scores: Some(scores),
+        ..
+    } = &mut bad_scores[2]
+    {
+        scores[0] += 100;
+    }
+    let mut bad_frames = build_replay_frames(&bad_scores).unwrap();
+    assert!(
+        attach_result_records(
+            &mut bad_frames,
+            &[result_draw_record(1, 3, [25_000; 4], [0; 4], 0, 0)]
+        )
+        .is_err()
+    );
+    let mut events = events;
+    let mut next = events[1].clone();
+    if let GameEvent::StartKyoku { kyoku, scores, .. } = &mut next {
+        *kyoku = 2;
+        scores[0] += 100;
+    }
+    events.pop();
+    let terminal = events[2].clone();
+    events.extend([next, terminal, GameEvent::EndKyoku, GameEvent::EndGame]);
+    let mut frames = build_replay_frames(&events).unwrap();
+    let records = [
+        result_draw_record(1, 3, [25_000; 4], [0; 4], 0, 0),
+        result_draw_record(2, 6, [25_100, 25_000, 25_000, 25_000], [0; 4], 0, 0),
+    ];
+    assert!(attach_result_records(&mut frames, &records).is_err());
+}
+
+#[test]
+fn result_fourth_reach_accepted_inside_terminal_resolution_is_not_paid_twice() {
+    let mut events = start_events();
+    for actor in 0..4 {
+        let seat = Seat::new(actor).unwrap();
+        events.extend([
+            GameEvent::Reach { actor: seat },
+            GameEvent::Dahai {
+                actor: seat,
+                tile: Tile::from_id(0).unwrap(),
+                tsumogiri: false,
+            },
+            GameEvent::ReachAccepted { actor: seat },
+        ]);
+        if actor < 3 {
+            events.push(GameEvent::Tsumo {
+                actor: Seat::new(actor + 1).unwrap(),
+                tile: Tile::from_id(0).unwrap(),
+            });
+        }
+    }
+    events.push(GameEvent::Ryukyoku {
+        reason: Some("suucha_riichi".into()),
+        tehais: None,
+        delta: Some(vec![0; 4]),
+        scores: None,
+    });
+    events.push(GameEvent::EndKyoku);
+    let first_end_index = events.len() - 1;
+    let mut next = events[1].clone();
+    if let GameEvent::StartKyoku {
+        kyoku,
+        scores,
+        kyotaku,
+        ..
+    } = &mut next
+    {
+        *kyoku = 2;
+        scores.fill(24_000);
+        *kyotaku = 4;
+    }
+    events.extend([
+        next,
+        GameEvent::Ryukyoku {
+            reason: Some("fanpai".into()),
+            tehais: None,
+            delta: Some(vec![0; 4]),
+            scores: None,
+        },
+        GameEvent::EndKyoku,
+    ]);
+    let second_end_index = events.len() - 1;
+    let mut frames = build_replay_frames(&events).unwrap();
+    let mut first = result_draw_record(
+        1,
+        first_end_index,
+        [24_000, 24_000, 24_000, 25_000],
+        [0, 0, 0, -1_000],
+        3,
+        4,
+    );
+    first.settlement.draw_reason = Some("suucha_riichi".into());
+    first.draw_event_delta_adjustment = Some(vec![0, 0, 0, 1_000]);
+    let second = result_draw_record(2, second_end_index, [24_000; 4], [0; 4], 4, 4);
+    attach_result_records(&mut frames, &[first.clone(), second.clone()]).unwrap();
+    assert_eq!(
+        frames[first_end_index].settlement,
+        Some(first.settlement.clone())
+    );
+    let mut impossible = result_draw_record(1, first_end_index, [25_000; 4], [-1_000; 4], 0, 4);
+    impossible.settlement.draw_reason = Some("suucha_riichi".into());
+    impossible.draw_event_delta_adjustment = Some(vec![1_000; 4]);
+    assert!(attach_result_records(&mut frames, &[impossible, second]).is_err());
+}
+
+#[test]
+fn result_rejects_earlier_reach_separated_from_terminal_batch() {
+    let mut events = start_events();
+    events.extend([
+        GameEvent::ReachAccepted {
+            actor: Seat::new(0).unwrap(),
+        },
+        GameEvent::Tsumo {
+            actor: Seat::new(1).unwrap(),
+            tile: Tile::from_id(0).unwrap(),
+        },
+        GameEvent::Dahai {
+            actor: Seat::new(1).unwrap(),
+            tile: Tile::from_id(0).unwrap(),
+            tsumogiri: true,
+        },
+        GameEvent::Ryukyoku {
+            reason: Some("fanpai".into()),
+            tehais: None,
+            delta: Some(vec![0; 4]),
+            scores: None,
+        },
+        GameEvent::EndKyoku,
+    ]);
+    let mut frames = build_replay_frames(&events).unwrap();
+    let impossible = result_draw_record(1, 6, [25_000; 4], [-1_000, 0, 0, 0], 0, 1);
+    assert!(attach_result_records(&mut frames, &[impossible]).is_err());
+}
+
+#[test]
+fn result_allows_paid_reach_and_verified_final_remaining_pot_award() {
+    let mut events = start_events();
+    events.extend([
+        GameEvent::ReachAccepted {
+            actor: Seat::new(0).unwrap(),
+        },
+        GameEvent::Ryukyoku {
+            reason: Some("fanpai".into()),
+            tehais: None,
+            delta: Some(vec![0; 4]),
+            scores: None,
+        },
+        GameEvent::EndKyoku,
+        GameEvent::EndGame,
+    ]);
+    let mut frames = build_replay_frames(&events).unwrap();
+    let record = result_draw_record(
+        1,
+        4,
+        [24_000, 25_000, 25_000, 25_000],
+        [0, 1_000, 0, 0],
+        1,
+        0,
+    );
+    attach_result_records(&mut frames, &[record.clone()]).unwrap();
+    assert_eq!(frames[4].settlement, Some(record.settlement));
+}
+
+#[test]
+fn result_rejects_invalid_restored_tiles_without_mutating_existing_join() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
+        let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
+        let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
+        attach_result_records(&mut frames, &[record.clone()]).unwrap();
+        let before = encode_replay_frames(&frames).unwrap();
+        for id in [255, 4] {
+            if id == 4 && !record.mode.is_three_player() {
+                continue;
+            }
+            for field in ["winning", "concealed", "meld", "called"] {
+                let mut payload = case["record"].clone();
+                let win = &mut payload["wins"][0];
+                match field {
+                    "winning" => {
+                        win["winning_tile"] = serde_json::json!(id);
+                        win["concealed"][record.wins[0].winning_tile_index] = serde_json::json!(id);
+                    }
+                    "concealed" => win["concealed"][0] = serde_json::json!(id),
+                    // Adversarial restored meld fields, not a new producer capture.
+                    "meld" | "called" => {
+                        win["melds"] = serde_json::json!([{
+                            "kind": "Pon", "tiles": [0, 1, if field == "meld" { id } else { 2 }],
+                            "opened": true, "from_who": 0,
+                            "called_tile": if field == "called" { id } else { 0 }
+                        }]);
+                    }
+                    _ => unreachable!(),
+                }
+                let corrupted: KyokuResultRecord = serde_json::from_value(payload).unwrap();
+                let borrowed_before = corrupted.clone();
+                let outcome = attach_result_records(&mut frames, std::slice::from_ref(&corrupted));
+                assert!(
+                    matches!(outcome, Err(ReplayError::InvalidEvent(_))),
+                    "{:?} {field} tile {id} must be corrupt: {outcome:?}",
+                    record.mode
+                );
+                assert_eq!(corrupted, borrowed_before);
+                assert_eq!(encode_replay_frames(&frames).unwrap(), before);
+            }
+        }
+    }
+}
+
+#[test]
+fn result_rejects_invalid_restored_meld_seats_without_mutating_existing_join() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
+        let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
+        let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
+        attach_result_records(&mut frames, &[record.clone()]).unwrap();
+        let before = encode_replay_frames(&frames).unwrap();
+        // Adversarial private fields, not an additional producer capture.
+        let mut payload = case["record"].clone();
+        payload["wins"][0]["melds"] = serde_json::json!([{
+            "kind": "Pon", "tiles": [0, 1, 2], "opened": true,
+            "from_who": 0, "called_tile": 0
+        }]);
+        for source in [serde_json::json!(0), serde_json::Value::Null] {
+            payload["wins"][0]["melds"][0]["from_who"] = source;
+            let control: KyokuResultRecord = serde_json::from_value(payload.clone()).unwrap();
+            let mut control_frames = frames.clone();
+            attach_result_records(&mut control_frames, &[control]).unwrap();
+        }
+        for seat in [255, record.mode.seat_count() as u8] {
+            payload["wins"][0]["melds"][0]["from_who"] = serde_json::json!(seat);
+            let corrupted: KyokuResultRecord = serde_json::from_value(payload.clone()).unwrap();
+            let borrowed_before = corrupted.clone();
+            let outcome = attach_result_records(&mut frames, std::slice::from_ref(&corrupted));
+            assert!(
+                matches!(outcome, Err(ReplayError::InvalidEvent(_))),
+                "{:?} meld source {seat} must be corrupt: {outcome:?}",
+                record.mode
+            );
+            assert_eq!(corrupted, borrowed_before);
+            assert_eq!(encode_replay_frames(&frames).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn result_pinned_multi_ron_captures_join_ordered_winners_and_combined_settlement() {
+    // Frozen real 4p/3p EngineAdapter multi-Ron terminal resolution and record;
+    // only the preceding StartKyoku/Tsumo/Dahai prefix is test-controlled.
+    // The core unit test compares this identical payload to fresh pinned output.
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
+        let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
+        let indices = record
+            .wins
+            .iter()
+            .map(|win| win.event_index)
+            .collect::<Vec<_>>();
+        assert_eq!(record.draw_event_delta_adjustment, None);
+        assert_eq!(record.wins.len(), 2);
+        assert!(indices[0] < indices[1] && indices[1] < record.end_event_index);
+        let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
+        let unjoined_events = frames
+            .iter()
+            .map(|frame| frame.visible_event.clone())
+            .collect::<Vec<_>>();
+        attach_result_records(&mut frames, &[record.clone()]).unwrap();
+        assert_eq!(frames[indices[0]].result, Some(record.wins[0].clone()));
+        assert_eq!(frames[indices[1]].result, Some(record.wins[1].clone()));
+        assert!(frames[indices[0]].settlement.is_none() && frames[indices[1]].settlement.is_none());
+        assert_eq!(
+            frames[record.end_event_index].settlement,
+            Some(record.settlement.clone())
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame.visible_event.clone())
+                .collect::<Vec<_>>(),
+            unjoined_events
+        );
+        let before = encode_replay_frames(&frames).unwrap();
+        assert!(
+            !std::str::from_utf8(&before)
+                .unwrap()
+                .contains("draw_event_delta_adjustment")
+        );
+        let mut wrong_evidence = record.clone();
+        wrong_evidence.draw_event_delta_adjustment = Some(vec![0; record.mode.seat_count()]);
+        assert!(attach_result_records(&mut frames, &[wrong_evidence]).is_err());
+        let mut wrong_index = record.clone();
+        wrong_index.wins[0].event_index = indices[1];
+        assert!(attach_result_records(&mut frames, &[wrong_index]).is_err());
+        assert_eq!(encode_replay_frames(&frames).unwrap(), before);
+        let mut changed = events.clone();
+        if let GameEvent::Hora {
+            delta: Some(delta), ..
+        } = &mut changed[indices[1]]
+        {
+            delta[0] += 100;
+        } else {
+            panic!("pinned second Ron delta missing");
+        }
+        let mut bad_frames = build_replay_frames_for_mode(&changed, record.mode).unwrap();
+        assert!(attach_result_records(&mut bad_frames, &[record]).is_err());
+        assert!(
+            bad_frames
+                .iter()
+                .all(|frame| frame.result.is_none() && frame.settlement.is_none())
+        );
+    }
+}
+
+#[test]
+fn result_oversized_borrowed_identity_preserves_existing_join() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
+    ))
+    .unwrap();
+    let case = &cases.as_array().unwrap()[0];
+    let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
+    let mut record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
+    let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
+    attach_result_records(&mut frames, std::slice::from_ref(&record)).unwrap();
+    let before = encode_replay_frames(&frames).unwrap();
+    let seat = record.wins[0].seat.index() as usize;
+    let identity = "q".repeat(MAX_REPLAY_FRAME_BYTES + 1);
+    record.wins[0].winner = identity.clone().into();
+    record.settlement.changes[seat].participant_id = identity.into();
+    let borrowed_len = record.wins[0].winner.as_str().len();
+
+    assert!(matches!(
+        attach_result_records(&mut frames, std::slice::from_ref(&record)),
+        Err(ReplayError::ReplayTooLarge { .. })
+    ));
+    assert_eq!(encode_replay_frames(&frames).unwrap(), before);
+    assert_eq!(record.wins[0].winner.as_str().len(), borrowed_len);
+    assert_eq!(
+        record.wins[0].winner,
+        record.settlement.changes[seat].participant_id
+    );
+}
+
+#[test]
+fn result_allows_ordered_multi_ron_with_one_combined_settlement() {
+    let mut events = start_events();
+    if let GameEvent::StartKyoku { kyotaku, .. } = &mut events[1] {
+        *kyotaku = 1;
+    }
+    for (actor, delta) in [
+        (1, vec![-1_000, 2_000, 0, 0]),
+        (2, vec![-2_000, 0, 2_000, 0]),
+    ] {
+        events.push(GameEvent::Hora {
+            actor: Seat::new(actor).unwrap(),
+            target: Seat::new(0).unwrap(),
+            tile: Some(Tile::from_id(0).unwrap()),
+            ura_markers: None,
+            yaku: None,
+            fu: None,
+            han: None,
+            scores: None,
+            delta: Some(delta),
+        });
+    }
+    events.extend([GameEvent::EndKyoku, GameEvent::EndGame]);
+    let mut frames = build_replay_frames(&events).unwrap();
+    let mut record = result_draw_record(1, 4, [25_000; 4], [-3_000, 2_000, 2_000, 0], 1, 0);
+    record.settlement.draw_reason = None;
+    record.draw_event_delta_adjustment = None;
+    record.wins = (1..=2)
+        .map(|seat| WinResult {
+            event_index: seat + 1,
+            winner: format!("seat{seat}").into(),
+            seat: Seat::new(seat as u8).unwrap(),
+            target: Seat::new(0).unwrap(),
+            tsumo: false,
+            concealed: vec![Tile::from_id(0).unwrap()],
+            melds: vec![],
+            winning_tile: Tile::from_id(0).unwrap(),
+            winning_tile_index: 0,
+            yaku: vec![YakuValue {
+                id: 2,
+                name: "立直".into(),
+                han: Some(1),
+                yakuman_multiplier: None,
+            }],
+            evaluation: WinEvaluation::Ordinary {
+                han: 1,
+                fu: 30,
+                limit: None,
+            },
+            win_points: 1_000,
+        })
+        .collect();
+    attach_result_records(&mut frames, &[record.clone()]).unwrap();
+    assert_eq!(frames[2].result, Some(record.wins[0].clone()));
+    assert_eq!(frames[3].result, Some(record.wins[1].clone()));
+    assert!(frames[2].settlement.is_none() && frames[3].settlement.is_none());
+    assert_eq!(frames[4].settlement, Some(record.settlement));
+}
+
+#[test]
+fn result_join_size_error_preserves_caller_frames() {
+    let mut frames = build_replay_frames(&result_draw_events()).unwrap();
+    let record = result_draw_record(1, 3, [25_000; 4], [0; 4], 0, 0);
+    // Existing unrelated and target-index metadata must survive an error too.
+    frames[0].settlement = Some(record.settlement.clone());
+    frames[3].settlement = Some(KyokuSettlement {
+        changes: vec![],
+        pot_before: 0,
+        pot_after: 0,
+        draw_reason: None,
+    });
+    let previous_target_settlement = frames[3].settlement.clone();
+    frames[3].result = Some(WinResult {
+        event_index: 3,
+        winner: "seat0".into(),
+        seat: Seat::new(0).unwrap(),
+        target: Seat::new(0).unwrap(),
+        tsumo: true,
+        concealed: vec![],
+        melds: vec![],
+        winning_tile: Tile::from_id(0).unwrap(),
+        winning_tile_index: 0,
+        yaku: vec![],
+        evaluation: WinEvaluation::Ordinary {
+            han: 1,
+            fu: 30,
+            limit: None,
+        },
+        win_points: 1,
+    });
+    let original_result = frames[3].result.clone();
+    let original_settlement = frames[0].settlement.clone();
+    let original_size = encode_replay_frames(&frames).unwrap().len();
+    // Leave space for the original frame but not for the added settlement.
+    frames[0].visible_state.players[0].display_name =
+        "X".repeat(MAX_REPLAY_FRAME_BYTES - original_size - 32);
+    assert!(encode_replay_frames(&frames).is_ok());
+    assert!(matches!(
+        attach_result_records(&mut frames, &[record]),
+        Err(ReplayError::ReplayTooLarge { .. })
+    ));
+    assert_eq!(frames[3].result, original_result);
+    assert_eq!(frames[0].settlement, original_settlement);
+    assert_eq!(frames[3].settlement, previous_target_settlement);
+    assert_eq!(
+        frames[0].visible_state.players[0].display_name.len(),
+        MAX_REPLAY_FRAME_BYTES - original_size - 32
+    );
+}
+
+#[test]
+fn result_legacy_replay_omits_unknown_details() {
+    let mut events = start_events();
+    events.push(GameEvent::EndKyoku);
+    events.push(GameEvent::EndGame);
+    let frames = build_replay_frames(&events).unwrap();
+    assert!(
+        frames
+            .iter()
+            .all(|frame| frame.result.is_none() && frame.settlement.is_none())
+    );
 }
 
 #[test]
@@ -525,6 +1195,14 @@ fn generated_four_player_match_events_are_valid_canonical_mjson_and_reconstructa
         if machine.is_complete() {
             break;
         }
+        if let Some(held) = machine.held_kyoku() {
+            let winner_count = held.wins.len();
+            for step in 0..=winner_count {
+                machine.publish_kyoku_step(step).unwrap();
+            }
+            machine.release_kyoku().unwrap();
+            continue;
+        }
         let mut progressed = false;
         for seat in Seat::all(GameMode::FourPlayerRedEast) {
             let actions = machine.legal_actions(seat).unwrap();
@@ -611,6 +1289,14 @@ fn three_player_frames_have_no_dummy_fourth_player() {
     for _ in 0..20_000 {
         if machine.is_complete() {
             break;
+        }
+        if let Some(held) = machine.held_kyoku() {
+            let winner_count = held.wins.len();
+            for step in 0..=winner_count {
+                machine.publish_kyoku_step(step).unwrap();
+            }
+            machine.release_kyoku().unwrap();
+            continue;
         }
         let mut progressed = false;
         for seat in Seat::all(GameMode::ThreePlayerRedEast) {

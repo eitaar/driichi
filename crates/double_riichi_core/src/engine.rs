@@ -290,7 +290,13 @@ impl EngineAdapter {
                 let top = (0..expected.len())
                     .max_by_key(|&seat| (expected[seat], std::cmp::Reverse(seat)))
                     .unwrap();
-                expected[top] += (copy_pot as i32) * 1000;
+                let award = i32::try_from(copy_pot)
+                    .ok()
+                    .and_then(|sticks| sticks.checked_mul(1_000))
+                    .ok_or_else(|| EngineError::Divergence("captured pot award overflow".into()))?;
+                expected[top] = expected[top].checked_add(award).ok_or_else(|| {
+                    EngineError::Divergence("captured score award overflow".into())
+                })?;
             } else if pot != copy_pot {
                 return Err(EngineError::Divergence(
                     "captured pot differs from real resolution".into(),
@@ -652,12 +658,54 @@ impl EngineAdapter {
                 _ => {}
             }
         }
+        let draw_event_delta_adjustment = if draw_reason.is_some() {
+            let deltas = events
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::Ryukyoku { delta, .. } => Some(delta.as_ref()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let delta = match deltas.as_slice() {
+                [Some(delta)] if delta.len() == roster.len() => *delta,
+                _ => return Err(invalid("missing or malformed canonical draw delta")),
+            };
+            let ended_scores = match &ended.ended_copy {
+                GameStateVariant::FourPlayer(state) => {
+                    state.players.iter().map(|p| p.score).collect::<Vec<_>>()
+                }
+                GameStateVariant::ThreePlayer(state) => {
+                    state.players.iter().map(|p| p.score).collect::<Vec<_>>()
+                }
+            };
+            if ended_scores.len() != scores.len() {
+                return Err(invalid("captured draw score count differs from roster"));
+            }
+            Some(
+                delta
+                    .iter()
+                    .zip(&scores)
+                    .zip(ended_scores)
+                    .map(|((&emitted, &before), after)| {
+                        let movement = after
+                            .checked_sub(before)
+                            .ok_or_else(|| invalid("draw movement overflow"))?;
+                        emitted
+                            .checked_sub(movement)
+                            .ok_or_else(|| invalid("draw adjustment overflow"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        } else {
+            None
+        };
         let result = KyokuResultRecord {
             version: 1,
             kyoku_sequence,
             mode: self.mode,
             end_event_index: end_event_index.ok_or_else(|| invalid("missing end kyoku event"))?,
             wins,
+            draw_event_delta_adjustment,
             settlement: KyokuSettlement {
                 changes,
                 pot_before,
@@ -1498,6 +1546,534 @@ pub(crate) mod tests {
         }
         adapter.log_cursor = 0;
         adapter
+    }
+
+    #[test]
+    fn draw_event_delta_adjustment_actual_all_tenpai_paid_reach() {
+        use riichienv_core::action::Phase;
+        for mode in [GameMode::FourPlayerRedEast, GameMode::ThreePlayerRedEast] {
+            let (mut adapter, _) = EngineAdapter::new(mode, Some(230)).unwrap();
+            let count = mode.seat_count();
+            macro_rules! prepare {
+                ($state:expr) => {{
+                    let state = $state;
+                    state.mjai_log.clear();
+                    state.phase = Phase::WaitResponse;
+                    state.active_players = (1..count as u8).collect();
+                    state.current_claims.clear();
+                    state.current_player = 0;
+                    state.last_discard = Some((0, 36));
+                    state.drawn_tile = None;
+                    state.needs_tsumo = false;
+                    state.is_first_turn = false;
+                    state.wall.drawable_count = 0;
+                    state.riichi_sticks = 1;
+                    for (seat, player) in state.players.iter_mut().enumerate() {
+                        player.hand = (9..=21).map(|kind| kind * 4 + seat as u8).collect();
+                        player.nagashi_eligible = false;
+                        player.score = if seat == 0 { 24_000 } else { 25_000 };
+                        player.score_delta = if seat == 0 { -1_000 } else { 0 };
+                    }
+                }};
+            }
+            match &mut adapter.state {
+                GameStateVariant::FourPlayer(state) => prepare!(state),
+                GameStateVariant::ThreePlayer(state) => prepare!(state),
+            }
+            adapter.log_cursor = 0;
+            let actions = (1..count as u8)
+                .map(|seat| (Seat::new(seat).unwrap(), GameAction::Pass))
+                .collect::<Vec<_>>();
+            let outcome = adapter.apply_simultaneous(&actions).unwrap();
+            let capture = outcome.ended.unwrap();
+            let roster = (0..count)
+                .map(|seat| {
+                    Participant::new(format!("p{seat}"), "same", crate::ParticipantKind::Human)
+                })
+                .collect::<Vec<_>>();
+            let record = adapter
+                .result_record(&capture, &roster, 1, 0, &outcome.events)
+                .unwrap();
+            let emitted = outcome
+                .events
+                .iter()
+                .find_map(|event| match event {
+                    GameEvent::Ryukyoku { delta, .. } => delta.as_ref(),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(emitted[0], -1_000);
+            assert!(
+                record
+                    .settlement
+                    .changes
+                    .iter()
+                    .all(|change| change.delta == 0)
+            );
+            assert_eq!(
+                record.draw_event_delta_adjustment,
+                Some([vec![-1_000], vec![0; count - 1]].concat())
+            );
+            let mut corrupt = EngineKyokuEnd {
+                pre_action: capture.pre_action.clone(),
+                ended_copy: capture.ended_copy.clone(),
+                win_results: capture.win_results.clone(),
+                real_after_scores: capture.real_after_scores.clone(),
+                real_after_pot: capture.real_after_pot,
+            };
+            match &mut corrupt.pre_action {
+                GameStateVariant::FourPlayer(state) => state.players[0].score = 0,
+                GameStateVariant::ThreePlayer(state) => state.players[0].score = 0,
+            }
+            match &mut corrupt.ended_copy {
+                GameStateVariant::FourPlayer(state) => state.players[0].score = i32::MAX,
+                GameStateVariant::ThreePlayer(state) => state.players[0].score = i32::MAX,
+            }
+            assert!(
+                adapter
+                    .result_record(&corrupt, &roster, 1, 0, &outcome.events)
+                    .is_err()
+            );
+        }
+    }
+
+    // The prefix is a controlled fixture (not a recorded deal); every terminal
+    // event and result below comes from the pinned engine's real resolution.
+    fn draw_fixture(mode: GameMode, scenario: &str) -> serde_json::Value {
+        use riichienv_core::action::Phase;
+        let (mut adapter, mut prefix) = EngineAdapter::new(mode, Some(230)).unwrap();
+        let count = mode.seat_count();
+        let final_round = scenario == "final";
+        macro_rules! prepare {
+            ($state:expr) => {{
+                let state = $state;
+                state.mjai_log.clear();
+                state.phase = Phase::WaitResponse;
+                state.active_players = (1..count as u8).collect();
+                state.current_claims.clear();
+                state.current_player = 0;
+                state.last_discard = Some((0, 36));
+                state.drawn_tile = None;
+                state.needs_tsumo = false;
+                state.is_first_turn = false;
+                state.wall.drawable_count = 0;
+                state.riichi_sticks = 1;
+                if final_round {
+                    state.kyoku_idx = (count - 1) as u8;
+                    state.oya = (count - 1) as u8;
+                }
+                for (seat, player) in state.players.iter_mut().enumerate() {
+                    let tenpai = scenario == "all_tenpai" || (scenario == "mixed" && seat == 0);
+                    let kinds: &[u8] = if tenpai {
+                        &[9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+                    } else {
+                        &[9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 27]
+                    };
+                    player.hand = kinds.iter().map(|kind| kind * 4 + seat as u8).collect();
+                    player.nagashi_eligible = scenario == "nagashi" && seat == 1;
+                    player.score = if seat == 0 {
+                        24_000
+                    } else if final_round && seat == 1 {
+                        if count == 3 { 40_000 } else { 30_000 }
+                    } else {
+                        25_000
+                    };
+                    player.score_delta = if seat == 0 { -1_000 } else { 0 };
+                }
+            }};
+        }
+        match &mut adapter.state {
+            GameStateVariant::FourPlayer(state) => prepare!(state),
+            GameStateVariant::ThreePlayer(state) => prepare!(state),
+        }
+        adapter.log_cursor = 0;
+        let (scores, pot, kyoku, oya) = match &adapter.state {
+            GameStateVariant::FourPlayer(state) => (
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                state.riichi_sticks,
+                state.kyoku_idx,
+                state.oya,
+            ),
+            GameStateVariant::ThreePlayer(state) => (
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                state.riichi_sticks,
+                state.kyoku_idx,
+                state.oya,
+            ),
+        };
+        let GameEvent::StartKyoku {
+            scores: start_scores,
+            kyotaku,
+            kyoku: start_kyoku,
+            oya: start_oya,
+            ..
+        } = &mut prefix[1]
+        else {
+            panic!("missing start");
+        };
+        *start_scores = scores;
+        *kyotaku = pot as u8;
+        *start_kyoku = kyoku + 1;
+        *start_oya = Seat::new(oya).unwrap();
+        // The paid deposit preceded this terminal action, so canonical prefix
+        // records its acceptance while the captured pre-action already paid it.
+        prefix.push(GameEvent::ReachAccepted {
+            actor: Seat::new(0).unwrap(),
+        });
+        prefix.push(GameEvent::Tsumo {
+            actor: Seat::new(1).unwrap(),
+            tile: parse_engine_tile(mode, 40).unwrap(),
+        });
+        prefix.push(GameEvent::Dahai {
+            actor: Seat::new(1).unwrap(),
+            tile: parse_engine_tile(mode, 40).unwrap(),
+            tsumogiri: true,
+        });
+        // Prefix StartKyoku must precede the earlier, paid ReachAccepted.
+        if let GameEvent::StartKyoku {
+            scores, kyotaku, ..
+        } = &mut prefix[1]
+        {
+            scores[0] = 25_000;
+            *kyotaku = 0;
+        }
+        let actions = (1..count as u8)
+            .map(|seat| (Seat::new(seat).unwrap(), GameAction::Pass))
+            .collect::<Vec<_>>();
+        let outcome = adapter.apply_simultaneous(&actions).unwrap();
+        let capture = outcome.ended.unwrap();
+        let end = outcome
+            .events
+            .iter()
+            .position(|event| matches!(event, GameEvent::EndKyoku))
+            .unwrap();
+        let roster = (0..count)
+            .map(|seat| {
+                Participant::new(format!("seat{seat}"), "same", crate::ParticipantKind::Human)
+            })
+            .collect::<Vec<_>>();
+        let record = adapter
+            .result_record(&capture, &roster, 1, prefix.len(), &outcome.events)
+            .unwrap();
+        let original_terminal = outcome
+            .events
+            .iter()
+            .find(|event| matches!(event, GameEvent::Ryukyoku { .. }))
+            .unwrap();
+        let GameEvent::Ryukyoku {
+            delta: Some(delta), ..
+        } = original_terminal
+        else {
+            panic!("missing canonical delta");
+        };
+        let delta = delta.clone();
+        let before = record
+            .settlement
+            .changes
+            .iter()
+            .map(|change| change.before)
+            .collect::<Vec<_>>();
+        let copy = match &capture.ended_copy {
+            GameStateVariant::FourPlayer(state) => {
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>()
+            }
+            GameStateVariant::ThreePlayer(state) => {
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>()
+            }
+        };
+        let mut events = prefix;
+        events.extend(
+            outcome
+                .events
+                .into_iter()
+                .take(end + 1 + usize::from(final_round)),
+        );
+        serde_json::json!({"scenario": scenario, "mode": mode, "events": events, "record": record,
+            "captured_before": before, "ended_copy_scores": copy, "actual_after_scores": capture.real_after_scores,
+            "raw_draw_delta": delta, "raw_engine_log": state_logs(&capture.ended_copy),
+            "actual_after_pot": capture.real_after_pot})
+    }
+
+    fn fourth_riichi_fixture() -> serde_json::Value {
+        use riichienv_core::action::Phase;
+        let mode = GameMode::FourPlayerRedEast;
+        let (mut adapter, mut events) = EngineAdapter::new(mode, Some(230)).unwrap();
+        let GameStateVariant::FourPlayer(state) = &mut adapter.state else {
+            unreachable!()
+        };
+        state.mjai_log.clear();
+        state.phase = Phase::WaitResponse;
+        state.active_players = vec![0, 1, 2];
+        state.current_claims.clear();
+        state.current_player = 3;
+        state.last_discard = Some((3, 111));
+        state.drawn_tile = None;
+        state.needs_tsumo = false;
+        state.is_first_turn = false;
+        state.turn_count = 11;
+        state.riichi_sticks = 3;
+        state.riichi_pending_acceptance = Some(3);
+        for (seat, player) in state.players.iter_mut().enumerate() {
+            player.hand = (9..=21).map(|kind| kind * 4 + seat as u8).collect();
+            player.nagashi_eligible = false;
+            player.score = if seat == 3 { 25_000 } else { 24_000 };
+            player.score_delta = if seat == 3 { 0 } else { -1_000 };
+            player.riichi_declared = seat != 3;
+        }
+        adapter.log_cursor = 0;
+        for seat in 0..3 {
+            events.push(GameEvent::ReachAccepted {
+                actor: Seat::new(seat).unwrap(),
+            });
+            events.push(GameEvent::Tsumo {
+                actor: Seat::new(seat + 1).unwrap(),
+                tile: parse_engine_tile(mode, 40).unwrap(),
+            });
+            events.push(GameEvent::Dahai {
+                actor: Seat::new(seat + 1).unwrap(),
+                tile: parse_engine_tile(mode, 40).unwrap(),
+                tsumogiri: true,
+            });
+        }
+        // The last ReachAccepted is not fabricated; it is emitted by this
+        // response resolution, immediately before the real abortive terminal.
+        let actions = (0..3)
+            .map(|seat| (Seat::new(seat).unwrap(), GameAction::Pass))
+            .collect::<Vec<_>>();
+        let outcome = adapter.apply_simultaneous(&actions).unwrap();
+        let capture = outcome.ended.unwrap();
+        let end = outcome
+            .events
+            .iter()
+            .position(|event| matches!(event, GameEvent::EndKyoku))
+            .unwrap();
+        let roster = (0..4)
+            .map(|seat| {
+                Participant::new(format!("seat{seat}"), "same", crate::ParticipantKind::Human)
+            })
+            .collect::<Vec<_>>();
+        let record = adapter
+            .result_record(&capture, &roster, 1, events.len(), &outcome.events)
+            .unwrap();
+        let GameEvent::Ryukyoku {
+            delta: Some(delta), ..
+        } = outcome
+            .events
+            .iter()
+            .find(|event| matches!(event, GameEvent::Ryukyoku { .. }))
+            .unwrap()
+        else {
+            panic!("missing draw");
+        };
+        let delta = delta.clone();
+        let before = record
+            .settlement
+            .changes
+            .iter()
+            .map(|change| change.before)
+            .collect::<Vec<_>>();
+        let GameStateVariant::FourPlayer(copy) = &capture.ended_copy else {
+            unreachable!()
+        };
+        let copy_scores = copy.players.iter().map(|p| p.score).collect::<Vec<_>>();
+        events.extend(outcome.events.into_iter().take(end + 1));
+        serde_json::json!({"scenario": "same_resolution_fourth_riichi", "mode": mode, "events": events,
+            "record": record, "captured_before": before, "ended_copy_scores": copy_scores,
+            "actual_after_scores": capture.real_after_scores, "raw_draw_delta": delta,
+            "raw_engine_log": state_logs(&capture.ended_copy), "actual_after_pot": capture.real_after_pot})
+    }
+
+    // Only StartGame/StartKyoku and the preceding discard are test-controlled;
+    // both Hora, EndKyoku, raw MJAI logs and the settlement are pinned output.
+    fn multi_ron_fixture(mode: GameMode) -> serde_json::Value {
+        let mut adapter = prepared_capture(mode, true, false);
+        let (_, mut prefix) = EngineAdapter::new(mode, Some(230)).unwrap();
+        let count = mode.seat_count();
+        let GameEvent::StartKyoku {
+            scores,
+            kyotaku,
+            honba,
+            tehais,
+            ..
+        } = &mut prefix[1]
+        else {
+            panic!("missing fixture start");
+        };
+        *scores = vec![100_000; count];
+        *kyotaku = 2;
+        *honba = 2;
+        tehais[0][0] = parse_engine_tile(mode, 77).unwrap();
+        let GameEvent::Tsumo { actor, tile } = &mut prefix[2] else {
+            panic!("missing controlled pre-discard draw");
+        };
+        *actor = Seat::new(0).unwrap();
+        *tile = parse_engine_tile(mode, 77).unwrap();
+        prefix.push(GameEvent::Dahai {
+            actor: Seat::new(0).unwrap(),
+            tile: parse_engine_tile(mode, 77).unwrap(),
+            tsumogiri: false,
+        });
+        let outcome = adapter
+            .apply_simultaneous(&[
+                (
+                    Seat::new(1).unwrap(),
+                    GameAction::Ron(Seat::new(0).unwrap()),
+                ),
+                (
+                    Seat::new(2).unwrap(),
+                    GameAction::Ron(Seat::new(0).unwrap()),
+                ),
+            ])
+            .unwrap();
+        let capture = outcome.ended.unwrap();
+        let end = outcome
+            .events
+            .iter()
+            .position(|event| matches!(event, GameEvent::EndKyoku))
+            .unwrap();
+        let roster = (0..count)
+            .map(|seat| {
+                Participant::new(format!("seat{seat}"), "same", crate::ParticipantKind::Human)
+            })
+            .collect::<Vec<_>>();
+        let record = adapter
+            .result_record(&capture, &roster, 1, prefix.len(), &outcome.events)
+            .unwrap();
+        assert_eq!(record.draw_event_delta_adjustment, None);
+        assert_eq!(record.wins.len(), 2);
+        let terminal_indices = outcome
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| {
+                matches!(event, GameEvent::Hora { .. }).then_some(prefix.len() + index)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            record
+                .wins
+                .iter()
+                .map(|win| win.event_index)
+                .collect::<Vec<_>>(),
+            terminal_indices
+        );
+        assert!(record.wins[0].event_index < record.wins[1].event_index);
+        let captured_before = match &capture.pre_action {
+            GameStateVariant::FourPlayer(state) => {
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>()
+            }
+            GameStateVariant::ThreePlayer(state) => {
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>()
+            }
+        };
+        let (ended_copy_scores, copy_pot) = match &capture.ended_copy {
+            GameStateVariant::FourPlayer(state) => (
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                state.riichi_sticks,
+            ),
+            GameStateVariant::ThreePlayer(state) => (
+                state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
+                state.riichi_sticks,
+            ),
+        };
+        assert_eq!(record.settlement.pot_before, 2);
+        assert_eq!(record.settlement.pot_after, capture.real_after_pot);
+        assert_eq!(ended_copy_scores, capture.real_after_scores);
+        assert_eq!(copy_pot, capture.real_after_pot);
+        for (seat, change) in record.settlement.changes.iter().enumerate() {
+            assert_eq!(change.before, captured_before[seat]);
+            assert_eq!(change.after, capture.real_after_scores[seat]);
+            assert_eq!(change.before.checked_add(change.delta), Some(change.after));
+        }
+        let raw_hora_deltas = outcome
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::Hora { delta, .. } => delta.clone(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(raw_hora_deltas.len(), 2);
+        let include_end_game = matches!(outcome.events.get(end + 1), Some(GameEvent::EndGame));
+        let mut events = prefix;
+        events.extend(
+            outcome
+                .events
+                .into_iter()
+                .take(end + 1 + usize::from(include_end_game)),
+        );
+        serde_json::json!({"scenario": "ordered_multi_ron", "mode": mode, "events": events,
+            "record": record, "captured_before": captured_before,
+            "ended_copy_scores": ended_copy_scores, "actual_after_scores": capture.real_after_scores,
+            "raw_engine_log": state_logs(&capture.ended_copy), "raw_hora_deltas": raw_hora_deltas,
+            "actual_after_pot": capture.real_after_pot})
+    }
+
+    #[test]
+    fn multi_ron_fixture_matches_pinned_engine_capture() {
+        // Immutable test-only original terminal payload; normal tests read,
+        // never regenerate it. Replay joins these same records and events.
+        let frozen: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/authoritative-multi-ron-captures.json"
+        ))
+        .unwrap();
+        let cases = [GameMode::FourPlayerRedEast, GameMode::ThreePlayerRedEast]
+            .into_iter()
+            .map(multi_ron_fixture)
+            .collect::<Vec<_>>();
+        assert_eq!(serde_json::Value::Array(cases), frozen);
+    }
+
+    #[test]
+    fn draw_fixture_matches_pinned_engine_capture() {
+        // Frozen once from the pinned EngineAdapter resolution. Never regenerate
+        // during normal tests; Replay consumes these same original terminal events.
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/authoritative-draw-captures.json"
+        ))
+        .unwrap();
+        let cases = [GameMode::FourPlayerRedEast, GameMode::ThreePlayerRedEast]
+            .into_iter()
+            .flat_map(|mode| {
+                ["all_tenpai", "mixed", "nagashi", "final"]
+                    .map(move |scenario| draw_fixture(mode, scenario))
+            })
+            .chain(std::iter::once(fourth_riichi_fixture()))
+            .collect::<Vec<_>>();
+        assert_eq!(serde_json::Value::Array(cases), expected);
+    }
+
+    #[test]
+    fn draw_evidence_absent_for_pinned_wins_and_checked_on_capture() {
+        for mode in [GameMode::FourPlayerRedEast, GameMode::ThreePlayerRedEast] {
+            let mut adapter = prepared_capture(mode, false, false);
+            let roster = (0..mode.seat_count())
+                .map(|seat| {
+                    Participant::new(format!("p{seat}"), "same", crate::ParticipantKind::Human)
+                })
+                .collect::<Vec<_>>();
+            let outcome = adapter
+                .apply(Seat::new(1).unwrap(), &GameAction::Tsumo)
+                .unwrap();
+            let record = adapter
+                .result_record(&outcome.ended.unwrap(), &roster, 1, 0, &outcome.events)
+                .unwrap();
+            assert_eq!(record.draw_event_delta_adjustment, None);
+            assert!(record.validate(&roster).is_ok());
+            let mut corrupt = record;
+            corrupt.draw_event_delta_adjustment = Some(vec![0; mode.seat_count()]);
+            assert!(corrupt.validate(&roster).is_err());
+        }
+        let value = draw_fixture(GameMode::FourPlayerRedEast, "all_tenpai");
+        let mut corrupt: KyokuResultRecord =
+            serde_json::from_value(value["record"].clone()).unwrap();
+        corrupt.draw_event_delta_adjustment = None;
+        let roster = (0..4)
+            .map(|seat| {
+                Participant::new(format!("seat{seat}"), "same", crate::ParticipantKind::Human)
+            })
+            .collect::<Vec<_>>();
+        assert!(corrupt.validate(&roster).is_err());
     }
 
     #[test]

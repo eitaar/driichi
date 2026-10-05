@@ -16,10 +16,10 @@ use axum::{
     response::Response,
 };
 use double_riichi_core::{
-    AudienceProjection, Decision, DecisionId, GameEvent, GameMode, MatchId, MatchMachine,
-    Participant, ParticipantId, ParticipantKind, PlayerDecisionProjection, ROOM_COMMAND_CAPACITY,
-    RoomCommand, RoomError, RoomEvent, RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl,
-    TimingConfig,
+    AudienceProjection, Decision, DecisionId, GameEvent, GameMode, KyokuResultRecord, MatchId,
+    MatchMachine, Participant, ParticipantId, ParticipantKind, PlayerDecisionProjection,
+    ROOM_COMMAND_CAPACITY, RoomCommand, RoomError, RoomEvent, RoomHandle, RoomRegistry,
+    RoomResponse, Seat, TimeControl, TimingConfig,
 };
 use double_riichi_mjai::{
     AckStatus, ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition,
@@ -73,6 +73,7 @@ struct CompatReplay {
     metadata_open: bool,
     failed: bool,
     match_id: String,
+    records: Vec<KyokuResultRecord>,
 }
 
 struct QueuedBot {
@@ -1202,6 +1203,7 @@ impl CompatReplay {
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs() as i64,
+                    &self.records,
                 )
                 .await
             {
@@ -1403,6 +1405,7 @@ fn prepare_match(
                     metadata_open: false,
                     failed: false,
                     match_id: replay_id.clone(),
+                    records: Vec::new(),
                 }),
                 Err(error) => {
                     replay_health.store(true, Ordering::Release);
@@ -1492,6 +1495,16 @@ impl CompatMatch {
                 // Standalone compatibility matches have no seated Humans: every
                 // result step has an empty confirmation cohort and releases now.
                 let steps = hold.wins.len();
+                if let Some(replay) = self.replay.as_mut() {
+                    if hold.validate(self.machine.players()).is_err()
+                        || hold.kyoku_sequence != replay.records.len() as u64 + 1
+                    {
+                        replay.failed = true;
+                        replay.mark_degraded();
+                    } else {
+                        replay.records.push(hold.clone());
+                    }
+                }
                 let mut released = Vec::new();
                 for step in 0..=steps {
                     match self.machine.publish_kyoku_step(step) {
@@ -2722,6 +2735,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ranked_saved_results_equal_live_authority() {
+        use double_riichi_core::GameAction;
+        let mode = GameMode::FourPlayerRedEast;
+        let seed = 0xD0_u64;
+        let root =
+            std::env::temp_dir().join(format!("double-riichi-compat-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let players = (0..mode.seat_count())
+            .map(|seat| {
+                Participant::new(
+                    format!("actual-{seat}"),
+                    format!("Actual {seat}"),
+                    ParticipantKind::BuiltInBot,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut machine = MatchMachine::with_seed(mode, players, seed).unwrap();
+        let match_id = "compat-real-seed";
+        let writer = ReplayWriter::new(storage.replay_root(), match_id, mode).unwrap();
+        let mut replay = CompatReplay {
+            writer: Some(writer),
+            storage: Some(storage.clone()),
+            replay_health: Arc::new(AtomicBool::new(false)),
+            cleanup_tasks: Arc::new(Mutex::new(Vec::new())),
+            metadata_open: false,
+            failed: false,
+            match_id: match_id.to_owned(),
+            records: Vec::new(),
+        };
+        replay.open(mode, machine.players()).await;
+        assert!(replay.metadata_open);
+        for _ in 0..20_000 {
+            if let Some(held) = machine.held_kyoku() {
+                let steps = held.wins.len();
+                replay.records.push(held.clone());
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
+            if machine.is_complete() {
+                break;
+            }
+            let (seat, action) = Seat::all(mode)
+                .into_iter()
+                .find_map(|seat| {
+                    let actions = machine.legal_actions(seat).unwrap();
+                    let action = actions
+                        .iter()
+                        .find(|action| matches!(action, GameAction::Discard { .. }))
+                        .or_else(|| {
+                            actions
+                                .iter()
+                                .find(|action| matches!(action, GameAction::Pass))
+                        })
+                        .or_else(|| {
+                            actions
+                                .iter()
+                                .find(|action| matches!(action, GameAction::Nuki { .. }))
+                        })
+                        .or_else(|| actions.first())?;
+                    Some((seat, action.clone()))
+                })
+                .expect("actual machine exposes a legal choice");
+            machine.apply(seat, action).unwrap();
+        }
+        let actual_result = machine
+            .result()
+            .expect("seeded actual Match completes")
+            .clone();
+        let actual_records = replay.records.clone();
+        assert!(!actual_records.is_empty());
+        replay.record(machine.events());
+        assert!(!replay.failed);
+        replay.finish(Some(&actual_result)).await;
+        let view = storage.load_replay(match_id).await.unwrap();
+        assert_eq!(view.result, Some(actual_result.clone()));
+        let saved: Vec<String> = sqlx::query_scalar("SELECT payload_json FROM match_kyoku_results WHERE match_id = ? ORDER BY kyoku_sequence")
+            .bind(match_id).fetch_all(storage.pool()).await.unwrap();
+        assert_eq!(saved.len(), actual_records.len());
+        for (saved, expected) in saved.iter().zip(&actual_records) {
+            assert_eq!(
+                &serde_json::from_str::<KyokuResultRecord>(saved).unwrap(),
+                expected
+            );
+            for win in &expected.wins {
+                assert_eq!(view.frames[win.event_index].result.as_ref(), Some(win));
+            }
+            assert_eq!(
+                view.frames[expected.end_event_index].settlement.as_ref(),
+                Some(&expected.settlement)
+            );
+        }
+        let saved_result: String =
+            sqlx::query_scalar("SELECT authoritative_result_json FROM matches WHERE match_id = ?")
+                .bind(match_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<double_riichi_core::MatchResult>(&saved_result).unwrap(),
+            actual_result
+        );
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn aborted_compat_replay_cleans_partial_file_and_metadata() {
         let root =
             std::env::temp_dir().join(format!("double-riichi-compat-abort-{}", std::process::id()));
@@ -2757,6 +2879,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "abortmatch".to_owned(),
+            records: Vec::new(),
         }
         .abort()
         .await;
@@ -2812,6 +2935,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "failurematch".to_owned(),
+            records: Vec::new(),
         };
         replay.record(&[GameEvent::StartGame {
             names: Some(vec![
@@ -2861,6 +2985,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "cleanup-failure".to_owned(),
+            records: Vec::new(),
         };
         replay.cleanup_finalized_replay(relative_path).await;
         assert!(!replay.metadata_open);
@@ -2872,6 +2997,16 @@ mod tests {
             .await
             .unwrap(),
             1
+        );
+        let registered: String = sqlx::query_scalar(
+            "SELECT replay_path FROM matches WHERE match_id = 'cleanup-failure'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            registered, relative_path,
+            "cleanup retry keeps the registered path"
         );
         storage.close().await;
         let _ = std::fs::remove_dir_all(&root);
@@ -2915,6 +3050,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "shutdownmatch".to_owned(),
+            records: Vec::new(),
         });
         state.shutdown().await;
         let count: i64 =

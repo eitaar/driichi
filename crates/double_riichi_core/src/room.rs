@@ -22,7 +22,7 @@ use crate::{
     },
     match_machine::DecisionResult,
     projection::{Audience, AudienceProjection},
-    results::{KyokuSettlement, PublishedKyokuResults, WinResult},
+    results::{KyokuResultRecord, KyokuSettlement, PublishedKyokuResults, WinResult},
 };
 
 pub const ROOM_COMMAND_CAPACITY: usize = 256;
@@ -832,6 +832,7 @@ pub enum RoomEffect {
     },
     FlushKyoku {
         match_id: MatchId,
+        record: KyokuResultRecord,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
     CreateBenchmarkRun {
@@ -3768,24 +3769,42 @@ impl Actor {
         {
             self.start_result_step(Instant::now())?;
         }
+        let record = self
+            .state
+            .match_machine
+            .as_ref()
+            .and_then(MatchMachine::held_kyoku)
+            .cloned();
         let private = self
             .state
             .match_machine
             .as_mut()
             .map(MatchMachine::take_persistence_events)
             .unwrap_or_default();
-        self.persist_events(match_id.clone(), private).await;
+        self.persist_events(match_id.clone(), private, record).await;
         self.publish(RoomEvent::ActionResolved { match_id, result });
         self.publish(RoomEvent::Snapshot(self.state.snapshot()));
         Ok(())
     }
 
-    async fn persist_events(&mut self, match_id: MatchId, events: Vec<GameEvent>) {
+    async fn persist_events(
+        &mut self,
+        match_id: MatchId,
+        events: Vec<GameEvent>,
+        record: Option<KyokuResultRecord>,
+    ) {
         for event in events {
             let end = matches!(event, GameEvent::EndKyoku);
             self.send_append(match_id.clone(), vec![event]).await;
             if end {
-                let _ = self.flush_kyoku(match_id.clone()).await;
+                if let Some(record) = record.as_ref() {
+                    let _ = self.flush_kyoku(match_id.clone(), record.clone()).await;
+                } else if self.state.config.replay_save && self.state.replay_available {
+                    self.fail_replay(
+                        match_id.clone(),
+                        "kyoku ended without an authoritative record".to_owned(),
+                    );
+                }
             }
         }
     }
@@ -3807,13 +3826,18 @@ impl Actor {
         }
     }
 
-    async fn flush_kyoku(&mut self, match_id: MatchId) -> Result<(), RoomError> {
+    async fn flush_kyoku(
+        &mut self,
+        match_id: MatchId,
+        record: KyokuResultRecord,
+    ) -> Result<(), RoomError> {
         if !self.state.config.replay_save || !self.state.replay_available {
             return Ok(());
         }
         let (completion, receiver) = oneshot::channel();
         let effect = RoomEffect::FlushKyoku {
             match_id: match_id.clone(),
+            record,
             completion,
         };
         if self.send_ack_effect(effect, receiver).await.is_err() {
