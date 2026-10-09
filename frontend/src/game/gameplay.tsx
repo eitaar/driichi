@@ -11,6 +11,7 @@ import { AudioManager, type AudioSettings, type VoiceKind } from "./audio";
 import { decodeCharacterAsset } from "./assets";
 import { ThreeTable, type PortraitEffect } from "./three-table";
 import { isDora } from "./dora";
+import { TableAppearanceSettings, useTableAppearance } from "./table-appearance";
 import { seatPositionFor, seatPositions } from "./orientation";
 import { useGameStore, type Transport } from "./store";
 import type {
@@ -326,7 +327,7 @@ function useVoiceManager(
   return managerRef.current;
 }
 
-function AudioSettingsPanel({ manager }: { manager: AudioManager }) {
+function AudioSettingsPanel({ manager, appearance }: { manager: AudioManager; appearance: ReturnType<typeof useTableAppearance> }) {
   const [settings, setSettings] = useState<AudioSettings>(
     () => manager.settings,
   );
@@ -377,6 +378,7 @@ function AudioSettingsPanel({ manager }: { manager: AudioManager }) {
           />
           Voice enabled
         </label>
+        <TableAppearanceSettings settings={appearance} />
       </div>
     </details>
   );
@@ -385,9 +387,11 @@ function AudioSettingsPanel({ manager }: { manager: AudioManager }) {
 function GameplayControls({
   status,
   manager,
+  appearance,
 }: {
   status: GameplayProps["status"];
   manager: AudioManager;
+  appearance: ReturnType<typeof useTableAppearance>;
 }) {
   return (
     <div className="gameplay-controls">
@@ -395,7 +399,7 @@ function GameplayControls({
         <span className="state-dot" aria-hidden="true" />
         <span>{status}</span>
       </div>
-      <AudioSettingsPanel manager={manager} />
+      <AudioSettingsPanel manager={manager} appearance={appearance} />
     </div>
   );
 }
@@ -473,7 +477,7 @@ function TileHitLayer({
             type="button"
             className={`table-tile-hit${action ? " is-legal" : ""}${isDora(tile, indicators) ? " is-dora" : ""}`}
             data-action-id={candidates.length === 1 ? action?.action_id : ""}
-            aria-label={action ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(tile)}` : `Your ${tileLabel(tile)}`}
+            aria-label={`${action ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(tile)}` : `Your ${tileLabel(tile)}`}${isDora(tile, indicators) ? ", Dora" : ""}`}
             disabled={disabled || !action}
             onClick={() => onAction(candidates)}
           >
@@ -1061,6 +1065,8 @@ export function GameplaySurface({
   const legalDiscardActions = grouped.discard.length > 0
     ? grouped.discard
     : grouped.riichiDiscard;
+  const appearance = useTableAppearance();
+  const tableSheenRef = useRef<HTMLDivElement>(null);
   const resultDismissRef = useRef<HTMLButtonElement>(null);
   const step = decodeKyokuEndStep(room?.kyoku_end, room?.game_mode ?? projection?.mode ?? "");
   const receivedDeadline = useGameStore((state) => state.room === room ? state.resultDeadline : null);
@@ -1122,6 +1128,7 @@ export function GameplaySurface({
     || actionResultHistory.some((result) => result.decision_id === decision.decision_id && result.status === "accepted");
   return (
     <div
+      ref={tableSheenRef}
       className="app-shell gameplay-shell"
       data-testid="gameplay-shell"
       data-gameplay-mode={mode}
@@ -1136,7 +1143,7 @@ export function GameplaySurface({
       data-animation-enqueued-count={animationEnqueuedCount}
       data-animation-consumed-count={animationConsumedCount}
     >
-      <GameplayControls status={status} manager={manager} />
+      <GameplayControls status={status} manager={manager} appearance={appearance} />
       <GameplayToast
         status={status}
         commandError={commandError}
@@ -1188,6 +1195,8 @@ export function GameplaySurface({
                 useGameStore.getState().cancelAnimations([id])
               }
               surface="live"
+              sheenHost={tableSheenRef}
+              appearance={appearance.appearance}
             />
             <TileHitLayer
               hand={ownPlayer?.hand ?? []}

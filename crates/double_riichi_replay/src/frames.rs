@@ -106,6 +106,8 @@ struct ReplayState {
     discards: Vec<Vec<Tile>>,
     melds: Vec<Vec<MeldState>>,
     riichi: Vec<bool>,
+    riichi_pending: Vec<bool>,
+    riichi_discard_index: Vec<Option<usize>>,
     dora_indicators: Vec<Tile>,
     kyoku_active: bool,
     round_data: Option<(Wind, u8, Seat, u8, u32)>,
@@ -130,6 +132,8 @@ impl ReplayState {
             discards: vec![Vec::new(); mode.seat_count()],
             melds: vec![Vec::new(); mode.seat_count()],
             riichi: vec![false; mode.seat_count()],
+            riichi_pending: vec![false; mode.seat_count()],
+            riichi_discard_index: vec![None; mode.seat_count()],
             dora_indicators: Vec::new(),
             kyoku_active: false,
             round_data: None,
@@ -182,6 +186,8 @@ impl ReplayState {
                 self.discards.iter_mut().for_each(Vec::clear);
                 self.melds.iter_mut().for_each(Vec::clear);
                 self.riichi.fill(false);
+                self.riichi_pending.fill(false);
+                self.riichi_discard_index.fill(None);
                 self.dora_indicators.clear();
                 self.dora_indicators.push(*dora_marker);
                 self.kyoku_active = true;
@@ -192,6 +198,10 @@ impl ReplayState {
             GameEvent::Dahai { actor, tile, .. } => {
                 let player = self.player_mut(*actor)?;
                 remove_required_tile(player.hand, *tile)?;
+                if *player.riichi_pending {
+                    *player.riichi_discard_index = Some(player.discards.len());
+                    *player.riichi_pending = false;
+                }
                 player.discards.push(*tile);
             }
             GameEvent::Pon {
@@ -276,7 +286,9 @@ impl ReplayState {
             }
             GameEvent::Dora { dora_marker } => self.dora_indicators.push(*dora_marker),
             GameEvent::Reach { actor } => {
-                *self.player_mut(*actor)?.riichi = true;
+                let player = self.player_mut(*actor)?;
+                *player.riichi = true;
+                *player.riichi_pending = true;
             }
             GameEvent::ReachAccepted { actor } => {
                 *self.player_mut(*actor)?.riichi = true;
@@ -356,6 +368,8 @@ impl ReplayState {
             discards: &mut self.discards[index],
             melds: &mut self.melds[index],
             riichi: &mut self.riichi[index],
+            riichi_pending: &mut self.riichi_pending[index],
+            riichi_discard_index: &mut self.riichi_discard_index[index],
         })
     }
 
@@ -372,6 +386,7 @@ impl ReplayState {
                 discards: self.discards[index].clone(),
                 melds: self.melds[index].clone(),
                 riichi: self.riichi[index],
+                riichi_discard_index: self.riichi_discard_index[index],
             })
             .collect();
         let table = TableState::new(self.mode, players, self.dora_indicators.clone())
@@ -397,6 +412,8 @@ struct PlayerStateMut<'a> {
     discards: &'a mut Vec<Tile>,
     melds: &'a mut Vec<MeldState>,
     riichi: &'a mut bool,
+    riichi_pending: &'a mut bool,
+    riichi_discard_index: &'a mut Option<usize>,
 }
 
 impl PlayerStateMut<'_> {

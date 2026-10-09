@@ -6,21 +6,23 @@ import {
   BufferGeometry,
   Float32BufferAttribute,
   Color,
-  CanvasTexture,
-  AdditiveBlending,
   Euler,
+  ExtrudeGeometry,
+  Path,
+  Shape,
   InstancedBufferAttribute,
   Group,
   InstancedMesh,
   Matrix4,
   MeshBasicMaterial,
-  MeshLambertMaterial,
+  MeshPhongMaterial,
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
   Scene,
   Vector3,
 } from "three";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import {
   ATLAS_CELL_HEIGHT,
   ATLAS_CELL_INSET_TEXELS,
@@ -28,6 +30,8 @@ import {
   type TileAtlas,
 } from "./tile-atlas";
 import { isDora } from "./dora";
+import type { DoraSheenClock } from "./dora-sheen";
+import { createTableImageTexture, type LocalTableImage, type TableAppearance } from "./table-appearance";
 import { TableCenter } from "./table-center";
 import { dockLocalCalls } from "./three-table-dock";
 import type { ProjectedState } from "./types";
@@ -61,6 +65,8 @@ interface MatchTableSceneProps {
   layout: MatchSceneLayout;
   projection: ProjectedState;
   atlas: TileAtlas;
+  sheen: DoraSheenClock;
+  appearance?: TableAppearance;
   motion: SceneMotion | null;
   onMotionComplete(itemId: number): void;
   onMotionFrame(now: number, pixelRatio: number): void;
@@ -71,7 +77,7 @@ interface MatchTableSceneProps {
 // dimensions; in particular, no axis is scaled at runtime.
 const BODY_SIZE = [TILE_BODY_SIZE.width, TILE_BODY_SIZE.height, TILE_BODY_SIZE.depth] as const;
 // The vendored 300:400 source face is preserved on a smaller plane so the
-// shared ivory body reads as an intentional ceramic rim instead of a hairline.
+// shared white body reads as an intentional ceramic rim instead of a hairline.
 export const FACE_SIZE = [TILE_BODY_SIZE.width, TILE_BODY_SIZE.depth] as const;
 export const BACK_FACE_SIZE = [0.54, 0.78] as const;
 const MAX_TILE_INSTANCES = 256;
@@ -83,7 +89,7 @@ export function createBackFaceGeometry(): PlaneGeometry {
 /**
  * Keep one shared top-rim and four vertical sidewalls for every tile. The
  * face plane is intentionally inset, so the top rim is part of the visible
- * ivory material; the occluded bottom surface remains omitted.
+ * white material; the occluded bottom surface remains omitted.
  */
 export function createTileSideGeometry(): BufferGeometry {
   const halfWidth = BODY_SIZE[0] / 2;
@@ -140,20 +146,20 @@ export function tileFaceQuaternion(
   );
 }
 
-function instanceMatrix(tile: SceneTile, face = false): Matrix4 {
+export function instanceMatrix(tile: SceneTile, face = false): Matrix4 {
   // Walls are deliberately a touch more separated than hands/rivers. The
-  // shared tile geometry still does the work, but the ivory sidewalls can be
+  // shared tile geometry still does the work, but the white sidewalls can be
   // read as individual pieces instead of one continuous strip at distance.
   const tileScale = tile.scale;
   const bodyHeight = tile.scale === LOCAL_TILE_SIZE
     ? TILE_BODY_HEIGHTS.local
     : TILE_BODY_HEIGHTS.remote;
-  const concealedHand = tile.group === "hand" && tile.face === "back";
+  const backFace = tile.face === "back";
   const orientation = face
     ? tileFaceQuaternion(tile.rotation)
     : new Quaternion().setFromEuler(new Euler(...tile.rotation));
-  if (face && concealedHand) orientation.multiply(new Quaternion().setFromEuler(new Euler(Math.PI, 0, 0)));
-  const offset = new Vector3(0, face ? (bodyHeight / 2 + 0.003) * (concealedHand ? -1 : 1) : 0, 0)
+  if (face && backFace) orientation.multiply(new Quaternion().setFromEuler(new Euler(Math.PI, 0, 0)));
+  const offset = new Vector3(0, face ? (bodyHeight / 2 + 0.003) * (backFace ? -1 : 1) : 0, 0)
     .applyEuler(new Euler(...tile.rotation));
   return new Matrix4().compose(
     new Vector3(...tile.position).add(offset),
@@ -177,9 +183,11 @@ function applyMatrices(
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
-  const material = new MeshBasicMaterial({
+function atlasMaterial(atlas: TileAtlas, sheen: DoraSheenClock): MeshPhongMaterial {
+  const material = new MeshPhongMaterial({
     color: new Color("#ffffff"),
+    specular: new Color("#9da7ae"),
+    shininess: 24,
     map: atlas.texture,
     toneMapped: false,
   });
@@ -189,14 +197,16 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
   ] as const;
   const inset = `vec2(${cellInset[0].toFixed(8)}, ${cellInset[1].toFixed(8)})`;
   material.onBeforeCompile = (shader) => {
+    shader.uniforms.doraSweep = sheen.sweep;
+    shader.uniforms.doraStrength = sheen.strength;
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
-        "#include <common>\nattribute vec2 atlasCell;\nvarying vec2 vAtlasCell;",
+        "#include <common>\nattribute vec2 atlasCell;\nattribute float doraFace;\nvarying vec2 vAtlasCell;\nvarying float vDoraFace;\nvarying vec2 vTileFaceUv;",
       )
-      .replace("#include <begin_vertex>", "vAtlasCell = atlasCell;\n#include <begin_vertex>");
+      .replace("#include <begin_vertex>", "vAtlasCell = atlasCell; vDoraFace = doraFace; vTileFaceUv = uv;\n#include <begin_vertex>");
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying vec2 vAtlasCell;")
+      .replace("#include <common>", "#include <common>\nvarying vec2 vAtlasCell;\nvarying float vDoraFace;\nvarying vec2 vTileFaceUv;\nuniform float doraSweep;\nuniform float doraStrength;")
       .replace(
         "#include <map_fragment>",
         `#ifdef USE_MAP
@@ -205,9 +215,16 @@ function atlasMaterial(atlas: TileAtlas): MeshBasicMaterial {
           vec4 sampledDiffuseColor = texture2D(map, atlasUv);
           diffuseColor *= sampledDiffuseColor;
         #endif`,
-      );
+      )
+      .replace("#include <opaque_fragment>", `
+        float diagonal = vTileFaceUv.x - vTileFaceUv.y;
+        float band = exp(-pow((diagonal - mix(-1.15, 1.15, doraSweep)) / 0.085, 2.0));
+        float gleam = band * vDoraFace * doraStrength;
+        outgoingLight = mix(outgoingLight, max(outgoingLight, vec3(2.4)), gleam);
+        #include <opaque_fragment>
+      `);
   };
-  material.customProgramCacheKey = () => `tile-atlas-${atlas.columns}x${atlas.rows}`;
+  material.customProgramCacheKey = () => `tile-atlas-soft-sheen-${atlas.columns}x${atlas.rows}`;
   return material;
 }
 
@@ -228,7 +245,9 @@ function updateAtlasCells(
 function InstancedTiles({
   layout,
   atlas,
-}: Pick<MatchTableSceneProps, "layout" | "atlas">) {
+  projection,
+  sheen,
+}: Pick<MatchTableSceneProps, "layout" | "atlas" | "projection" | "sheen">) {
   const invalidate = useThree((state) => state.invalidate);
   const frontTiles = useMemo(
     () => layout.tiles.filter((tile) => tile.face === "front" && tile.tile !== null),
@@ -250,25 +269,26 @@ function InstancedTiles({
     const faceGeometry = new PlaneGeometry(...FACE_SIZE);
     const faceCells = new Float32Array(MAX_TILE_INSTANCES * 2);
     faceGeometry.setAttribute("atlasCell", new InstancedBufferAttribute(faceCells, 2));
+    faceGeometry.setAttribute("doraFace", new InstancedBufferAttribute(new Float32Array(MAX_TILE_INSTANCES), 1));
     return {
       bodyGeometry,
       faceGeometry,
       backGeometry: createBackFaceGeometry(),
       // Front and concealed tiles share one persistent, lit ceramic body.
       // A single material keeps ownership and draw cost clear.
-      bodyMaterial: new MeshLambertMaterial({
-        color: new Color("#fafbfc"),
-        emissive: new Color("#dce4ed"),
-        emissiveIntensity: 0.02,
+      bodyMaterial: new MeshPhongMaterial({
+        color: new Color("#ffffff"),
+        specular: new Color("#9da7ae"),
+        shininess: 24,
       }),
-      faceMaterial: atlasMaterial(atlas),
-      backMaterial: new MeshLambertMaterial({
-        color: new Color("#8a9fb7"),
-        emissive: new Color("#586574"),
-        emissiveIntensity: 0.02,
+      faceMaterial: atlasMaterial(atlas, sheen),
+      backMaterial: new MeshPhongMaterial({
+        color: new Color("#dca542"),
+        specular: new Color("#957b55"),
+        shininess: 18,
       }),
     };
-  }, [atlas]);
+  }, [atlas, sheen]);
 
   useEffect(
     () => () => {
@@ -284,11 +304,21 @@ function InstancedTiles({
 
   useLayoutEffect(() => {
     updateAtlasCells(resources.faceGeometry, frontTiles, atlas);
+    const doraFaces = resources.faceGeometry.getAttribute("doraFace") as InstancedBufferAttribute;
+    frontTiles.forEach((tile, index) => doraFaces.setX(index,
+      tile.group !== "dora" && tile.group !== "wall" && isDora(tile.tile, projection.dora_indicators ?? []) ? 1 : 0));
+    doraFaces.needsUpdate = true;
     applyMatrices(body.current, bodyTiles, false);
     applyMatrices(frontFaces.current, frontTiles, true);
     applyMatrices(backFaces.current, backTiles, true);
     invalidate();
-  }, [atlas, backTiles, bodyTiles, frontTiles, invalidate, resources.faceGeometry]);
+  }, [atlas, backTiles, bodyTiles, frontTiles, projection.dora_indicators, invalidate, resources.faceGeometry]);
+
+  useEffect(() => {
+    sheen.listeners.add(invalidate);
+    invalidate();
+    return () => { sheen.listeners.delete(invalidate); };
+  }, [sheen, invalidate]);
 
   return (
     <group name="persistent-tile-renderer" dispose={null}>
@@ -481,177 +511,6 @@ function FixedCamera() {
 }
 
 
-type TablePart = {
-  position: readonly [number, number, number];
-  scale: readonly [number, number, number];
-  rotation?: readonly [number, number, number];
-};
-
-const OUTER_CHASSIS_PARTS: readonly TablePart[] = [
-  { position: [0, -0.35, 5.1], scale: [13.6, 0.8, 0.8] },
-  { position: [0, -0.35, -5.1], scale: [13.6, 0.8, 0.8] },
-  { position: [6.5, -0.35, 0], scale: [0.6, 0.8, 10.2] },
-  { position: [-6.5, -0.35, 0], scale: [0.6, 0.8, 10.2] },
-];
-const WALNUT_RAIL_PARTS: readonly TablePart[] = [
-  { position: [0, 0.15, 4.46], scale: [12.15, 0.22, 0.6] },
-  { position: [0, 0.15, -4.46], scale: [12.15, 0.22, 0.6] },
-  { position: [5.86, 0.15, 0], scale: [0.5, 0.22, 8.54] },
-  { position: [-5.86, 0.15, 0], scale: [0.5, 0.22, 8.54] },
-];
-const BRONZE_INLAY_PARTS: readonly TablePart[] = [
-  { position: [0, 0.29, 4.26], scale: [11.98, 0.045, 0.07] },
-  { position: [0, 0.29, -4.26], scale: [11.98, 0.045, 0.07] },
-  { position: [5.66, 0.29, 0], scale: [0.07, 0.045, 8.27] },
-  { position: [-5.66, 0.29, 0], scale: [0.07, 0.045, 8.27] },
-];
-const CORNER_CAP_PARTS: readonly TablePart[] = [
-  { position: [-5.72, 0.26, -4.14], scale: [0.74, 0.16, 0.55] },
-  { position: [5.72, 0.26, -4.14], scale: [0.74, 0.16, 0.55] },
-  { position: [5.72, 0.26, 4.14], scale: [0.74, 0.16, 0.55] },
-  { position: [-5.72, 0.26, 4.14], scale: [0.74, 0.16, 0.55] },
-];
-const CORNER_ACCENT_PARTS: readonly TablePart[] = CORNER_CAP_PARTS.map(({ position }) => ({
-  position: [position[0], 0.36, position[2]],
-  scale: [0.34, 0.035, 0.07],
-}));
-// Keep the hardware warm and material-led while separating it decisively from
-// the #050709 surround. Uniform tone-mapped-off materials make these authored
-// rail colors deterministic in the screenshot surface; bronze stays an
-// accent rather than becoming an all-over plastic gold.
-export const TABLE_RAIL_PALETTE = {
-  chassis: "#8497a6",
-  walnut: "#9daebb",
-  bronze: "#aabac8",
-  cornerCaps: "#8497a6",
-  cornerAccents: "#aabac8",
-} as const;
-const RAIL_BATCHES = [
-  { name: "table-rails", parts: OUTER_CHASSIS_PARTS, material: "chassis" },
-  { name: "table-walnut-inner-rail", parts: WALNUT_RAIL_PARTS, material: "walnut" },
-  { name: "table-bronze-inlay", parts: BRONZE_INLAY_PARTS, material: "bronze" },
-  { name: "table-corner-caps", parts: CORNER_CAP_PARTS, material: "cornerCaps" },
-  { name: "table-corner-accents", parts: CORNER_ACCENT_PARTS, material: "bronze" },
-] as const;
-const RAIL_BATCH_NAMES = RAIL_BATCHES.map(({ name }) => name);
-
-function applyTableParts(
-  mesh: InstancedMesh | null,
-  parts: readonly TablePart[],
-): void {
-  if (!mesh) return;
-  mesh.count = parts.length;
-  parts.forEach((part, index) => {
-    const rotation = part.rotation
-      ? new Quaternion().setFromEuler(new Euler(...part.rotation))
-      : new Quaternion();
-    mesh.setMatrixAt(index, new Matrix4().compose(
-      new Vector3(...part.position),
-      rotation,
-      new Vector3(...part.scale),
-    ));
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-}
-
-export function TableRails() {
-  const invalidate = useThree((state) => state.invalidate);
-  const chassisRef = useRef<InstancedMesh>(null);
-  const walnutRef = useRef<InstancedMesh>(null);
-  const bronzeInlayRef = useRef<InstancedMesh>(null);
-  const cornerCapsRef = useRef<InstancedMesh>(null);
-  const cornerAccentsRef = useRef<InstancedMesh>(null);
-  const resources = useMemo(() => ({
-    // Every rail batch shares this persistent unit box; only each batch's
-    // instance matrices and count vary. Uniform materials avoid the broken
-    // per-instance color path in SwiftShader while keeping the palette explicit.
-    geometry: new BoxGeometry(1, 1, 1),
-    materials: {
-      chassis: new MeshBasicMaterial({
-        color: new Color(TABLE_RAIL_PALETTE.chassis),
-        toneMapped: false,
-      }),
-      walnut: new MeshBasicMaterial({
-        color: new Color(TABLE_RAIL_PALETTE.walnut),
-        toneMapped: false,
-      }),
-      bronze: new MeshBasicMaterial({
-        color: new Color(TABLE_RAIL_PALETTE.bronze),
-        toneMapped: false,
-      }),
-      cornerCaps: new MeshBasicMaterial({
-        color: new Color(TABLE_RAIL_PALETTE.cornerCaps),
-        toneMapped: false,
-      }),
-    },
-  }), []);
-
-  useEffect(() => () => {
-    resources.geometry.dispose();
-    resources.materials.chassis.dispose();
-    resources.materials.walnut.dispose();
-    resources.materials.bronze.dispose();
-    resources.materials.cornerCaps.dispose();
-  }, [resources]);
-
-  useLayoutEffect(() => {
-    applyTableParts(chassisRef.current, OUTER_CHASSIS_PARTS);
-    applyTableParts(walnutRef.current, WALNUT_RAIL_PARTS);
-    applyTableParts(bronzeInlayRef.current, BRONZE_INLAY_PARTS);
-    applyTableParts(cornerCapsRef.current, CORNER_CAP_PARTS);
-    applyTableParts(cornerAccentsRef.current, CORNER_ACCENT_PARTS);
-    invalidate();
-  }, [invalidate]);
-
-  return (
-    <group
-      name="table-rail-batches"
-      userData={{
-        // Five bounded batches retain the legacy diagnostic names while the
-        // bronze material is intentionally shared by both bronze batches.
-        railBatches: RAIL_BATCH_NAMES,
-      }}
-      dispose={null}
-    >
-      <instancedMesh
-        ref={chassisRef}
-        name="table-rails"
-        args={[resources.geometry, resources.materials.chassis, OUTER_CHASSIS_PARTS.length]}
-        frustumCulled={false}
-        dispose={null}
-      />
-      <instancedMesh
-        ref={walnutRef}
-        name="table-walnut-inner-rail"
-        args={[resources.geometry, resources.materials.walnut, WALNUT_RAIL_PARTS.length]}
-        frustumCulled={false}
-        dispose={null}
-      />
-      <instancedMesh
-        ref={bronzeInlayRef}
-        name="table-bronze-inlay"
-        args={[resources.geometry, resources.materials.bronze, BRONZE_INLAY_PARTS.length]}
-        frustumCulled={false}
-        dispose={null}
-      />
-      <instancedMesh
-        ref={cornerCapsRef}
-        name="table-corner-caps"
-        args={[resources.geometry, resources.materials.cornerCaps, CORNER_CAP_PARTS.length]}
-        frustumCulled={false}
-        dispose={null}
-      />
-      <instancedMesh
-        ref={cornerAccentsRef}
-        name="table-corner-accents"
-        args={[resources.geometry, resources.materials.bronze, CORNER_ACCENT_PARTS.length]}
-        frustumCulled={false}
-        dispose={null}
-      />
-    </group>
-  );
-}
-
 function projectedTableRatios(
   scene: Scene,
   camera: PerspectiveCamera,
@@ -731,73 +590,7 @@ function SceneReadiness({
   return null;
 }
 
-export function CenterTrim() {
-  const invalidate = useThree((state) => state.invalidate);
-  const meshRef = useRef<InstancedMesh>(null);
-  const resources = useMemo(() => ({
-    geometry: new BoxGeometry(1, 1, 1),
-    material: new MeshBasicMaterial({
-      color: new Color("#9a7042"),
-      toneMapped: false,
-    }),
-  }), []);
-
-  useLayoutEffect(() => {
-    const trims: readonly TablePart[] = [
-      { position: [0, 0.49, -1.02], scale: [2.72, 0.045, 0.055] },
-      { position: [0, 0.49, 1.02], scale: [2.72, 0.045, 0.055] },
-      { position: [-1.38, 0.49, 0], scale: [0.055, 0.045, 1.94] },
-      { position: [1.38, 0.49, 0], scale: [0.055, 0.045, 1.94] },
-      { position: [-1.3, 0.5, -0.91], scale: [0.13, 0.055, 0.13] },
-      { position: [1.3, 0.5, -0.91], scale: [0.13, 0.055, 0.13] },
-      { position: [1.3, 0.5, 0.91], scale: [0.13, 0.055, 0.13] },
-      { position: [-1.3, 0.5, 0.91], scale: [0.13, 0.055, 0.13] },
-    ];
-    applyTableParts(meshRef.current, trims);
-    invalidate();
-  }, [invalidate]);
-
-  useEffect(() => () => {
-    resources.geometry.dispose();
-    resources.material.dispose();
-  }, [resources]);
-
-  return (
-    <instancedMesh
-      ref={meshRef}
-      name="center-device-trim"
-      args={[resources.geometry, resources.material, 8]}
-      frustumCulled={false}
-      dispose={null}
-    />
-  );
-}
-
-function DoraGlows({ layout }: { layout: MatchSceneLayout }) {
-  const texture = useMemo(() => {
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 64;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    const gradient = ctx.createRadialGradient(32, 32, 10, 32, 32, 32);
-    gradient.addColorStop(0, "rgba(220,166,74,0.7)");
-    gradient.addColorStop(1, "rgba(220,166,74,0)");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 64, 64);
-    return new CanvasTexture(canvas);
-  }, []);
-  useEffect(() => () => texture?.dispose(), [texture]);
-  const indicators = layout.tiles.filter((tile) => tile.group === "dora" && tile.tile !== null).map((tile) => tile.tile!);
-  if (!texture) return null;
-  return <group name="actual-dora-glows">{layout.tiles.filter((tile) => tile.face === "front" && tile.group !== "dora" && tile.group !== "wall" && isDora(tile.tile, indicators)).map((tile) => (
-    <mesh key={tile.key} position={[tile.position[0], tile.position[1] + 0.14, tile.position[2]]} rotation={[-Math.PI / 2, 0, tile.rotation[1]]} scale={tile.scale}>
-      <planeGeometry args={[1.2, 1.5]} />
-      <meshBasicMaterial map={texture} transparent depthWrite={false} blending={AdditiveBlending} toneMapped={false} />
-    </mesh>
-  ))}</group>;
-}
-
-function DockedTiles({ layout, atlas, motion, onMotionComplete, onMotionFrame }: Omit<MatchTableSceneProps, "projection" | "onRenderReady">) {
+function DockedTiles({ layout, atlas, projection, sheen, motion, onMotionComplete, onMotionFrame }: Omit<MatchTableSceneProps, "onRenderReady">) {
   const camera = useThree((state) => state.camera) as PerspectiveCamera;
   const size = useThree((state) => state.size);
   const [docked, setDocked] = useState(layout);
@@ -805,40 +598,67 @@ function DockedTiles({ layout, atlas, motion, onMotionComplete, onMotionFrame }:
     setDocked(dockLocalCalls(layout, camera, size.width, size.height));
   }, [layout, camera, size.width, size.height]);
   return <>
-    <InstancedTiles layout={docked} atlas={atlas} />
-    <DoraGlows layout={docked} />
+    <InstancedTiles layout={docked} atlas={atlas} projection={projection} sheen={sheen} />
     <MotionController layout={docked} motion={motion} onMotionComplete={onMotionComplete} onMotionFrame={onMotionFrame} />
   </>;
 }
 
+function roundedPath<T extends Shape | Path>(path: T, width: number, depth: number, radius: number): T {
+  const x = width / 2, z = depth / 2;
+  path.moveTo(-x + radius, -z);
+  path.lineTo(x - radius, -z); path.quadraticCurveTo(x, -z, x, -z + radius);
+  path.lineTo(x, z - radius); path.quadraticCurveTo(x, z, x - radius, z);
+  path.lineTo(-x + radius, z); path.quadraticCurveTo(-x, z, -x, z - radius);
+  path.lineTo(-x, -z + radius); path.quadraticCurveTo(-x, -z, -x + radius, -z);
+  return path;
+}
+
+export function createTableFrameGeometry(width: number, depth: number, innerWidth: number, innerDepth: number, radius: number, height: number): ExtrudeGeometry {
+  const shape = roundedPath(new Shape(), width, depth, radius);
+  shape.holes.push(roundedPath(new Path(), innerWidth, innerDepth, Math.max(0.05, radius - (width - innerWidth) / 2)));
+  const geometry = new ExtrudeGeometry(shape, { depth: height, bevelEnabled: true, bevelSize: 0.045, bevelThickness: 0.035, bevelSegments: 2, steps: 1, curveSegments: 10 });
+  geometry.rotateX(-Math.PI / 2);
+  return geometry;
+}
+
 function ProceduralTable({
-  projection, wallCount,
+  projection, wallCount, surface,
 }: {
   projection: ProjectedState;
   wallCount: number;
+  surface?: LocalTableImage | null;
 }) {
+  const surfaceTexture = useMemo(() => createTableImageTexture(surface, 13.2 * TABLE_WIDTH_STRETCH / 11.8), [surface]);
+  useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
+  const resources = useMemo(() => {
+    const width = 13.2 * TABLE_WIDTH_STRETCH, depth = 11.8;
+    return {
+      shell: new RoundedBoxGeometry(width + 0.95, 0.5, depth + 0.95, 5, 0.22),
+      frame: createTableFrameGeometry(width + 0.9, depth + 0.9, width, depth, 0.48, 0.15),
+      felt: new RoundedBoxGeometry(width, 0.1, depth, 4, 0.045),
+      console: new RoundedBoxGeometry(3.32, 0.28, 2.68, 5, 0.11),
+      bezel: createTableFrameGeometry(3.28, 2.65, 3.04, 2.41, 0.16, 0.018),
+    };
+  }, []);
+  useEffect(() => () => { Object.values(resources).forEach((geometry) => geometry.dispose()); }, [resources]);
   return (
-    <group name="table-body-root">
-      {/* A recessed, textile-covered playfield leaves the perimeter visibly built up. */}
-      <mesh position={[0, 0.075, 0]} receiveShadow>
-        <boxGeometry args={[13.2 * TABLE_WIDTH_STRETCH, 0.12, 11.8]} />
-        <meshLambertMaterial color="#647b8d" />
+    <group name="table-body-root" dispose={null}>
+      <mesh name="table-shell" geometry={resources.shell} position={[0, -0.18, 0]} receiveShadow castShadow>
+        <meshPhongMaterial color="#263947" specular="#637887" shininess={24} />
       </mesh>
-
-      {/* Machined center console: dark housing, bronze frame, restrained material inset. */}
-      <mesh position={[0, 0.255, 0]}>
-        <boxGeometry args={[3.3, 0.32, 2.68]} />
-        <meshBasicMaterial color="#cbd4de" toneMapped={false} />
+      <mesh name="table-frame" geometry={resources.frame} position={[0, 0.13, 0]} receiveShadow castShadow>
+        <meshPhongMaterial color="#344959" specular="#7c94a4" shininess={28} />
       </mesh>
-      <mesh position={[0, 0.43, 0]}>
-        <boxGeometry args={[3.02, 0.055, 2.4]} />
-        <meshBasicMaterial color="#cbd4de" toneMapped={false} />
+      <mesh name="table-felt" geometry={resources.felt} position={[0, 0.085, 0]} receiveShadow>
+        <meshPhongMaterial color={surfaceTexture ? "#ffffff" : "#647f96"} map={surfaceTexture} specular="#182a3b" shininess={8} />
+      </mesh>
+      <mesh name="center-housing" geometry={resources.console} position={[0, 0.285, 0]} castShadow>
+        <meshPhongMaterial color="#263947" specular="#637887" shininess={24} />
+      </mesh>
+      <mesh name="center-bezel" geometry={resources.bezel} position={[0, 0.435, 0]}>
+        <meshPhongMaterial color="#8ea7be" specular="#8ea7be" shininess={16} />
       </mesh>
       <TableCenter projection={projection} wallCount={wallCount} />
-      <mesh position={[0, -0.15, 0]} receiveShadow>
-        <boxGeometry args={[13.65 * TABLE_WIDTH_STRETCH, 0.42, 12.25]} />
-        <meshLambertMaterial color="#9daebb" />
-      </mesh>
     </group>
   );
 }
@@ -846,12 +666,17 @@ export function MatchTableScene({
   layout,
   projection,
   atlas,
+  sheen,
+  appearance,
   motion,
   onMotionComplete,
   onMotionFrame,
   onRenderReady,
 }: MatchTableSceneProps) {
   const gl = useThree((state) => state.gl);
+  const size = useThree((state) => state.size);
+  const surroundTexture = useMemo(() => createTableImageTexture(appearance?.surround, Math.max(1, size.width) / Math.max(1, size.height)), [appearance?.surround, size.width, size.height]);
+  useEffect(() => () => surroundTexture?.dispose(), [surroundTexture]);
   useLayoutEffect(() => {
     gl.shadowMap.enabled = true;
     gl.shadowMap.needsUpdate = true;
@@ -859,13 +684,13 @@ export function MatchTableScene({
 
   return (
     <>
-      <color attach="background" args={["#eef0f2"]} />
+      {surroundTexture ? <primitive attach="background" object={surroundTexture} /> : <color attach="background" args={["#eef0f2"]} />}
       <hemisphereLight args={["#fafbfc", "#354a66", 0.75]} />
       <directionalLight position={[-4, 9, 5]} color="#fafbfc" intensity={1.6} castShadow shadow-mapSize={[2048, 2048]} shadow-camera-left={-9} shadow-camera-right={9} shadow-camera-top={9} shadow-camera-bottom={-9} shadow-normalBias={0.02} />
       <FixedCamera />
       <group position={TABLE_RENDER_OFFSET}>
-        <ProceduralTable projection={projection} wallCount={layout.wallCount} />
-        <DockedTiles layout={layout} atlas={atlas} motion={motion} onMotionComplete={onMotionComplete} onMotionFrame={onMotionFrame} />
+        <ProceduralTable projection={projection} wallCount={layout.wallCount} surface={appearance?.surface} />
+        <DockedTiles layout={layout} atlas={atlas} projection={projection} sheen={sheen} motion={motion} onMotionComplete={onMotionComplete} onMotionFrame={onMotionFrame} />
       </group>
       <SceneReadiness
         layout={layout}

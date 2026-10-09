@@ -6,6 +6,7 @@ import { AudioManager } from "./game/audio";
 import { RoundWinSurface, ResultsPanel, ScoreTransfer, winEffectFromResult, preloadRosterAssets, voiceEvents } from "./game/gameplay";
 import { decodeWinResult, decodeSettlement } from "./game/results";
 import { ThreeTable } from "./game/three-table";
+import { TableAppearanceSettings, useTableAppearance } from "./game/table-appearance";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
 import { signOutAdmin } from "./admin-session";
@@ -331,6 +332,7 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   const reducedMotion = useReducedMotionPreference();
+  const appearance = useTableAppearance();
   const frames = replay.frames;
   const frame = frames[position] ?? frames[0];
   const assetStatus = useReplayAssetStatus(replay);
@@ -367,7 +369,8 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
         data-motion={reducedMotion || rate > 2 ? "static" : "cinematic"}
       >
         <div className="replay-table-stage gameplay-shell">
-          <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} portraitEffect={rate > 2 ? null : portraitEffect} surface="replay" /></div>
+          <div className="gameplay-controls"><details className="audio-settings"><summary>Settings</summary><div className="audio-settings-body"><TableAppearanceSettings settings={appearance} /></div></details></div>
+          <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} portraitEffect={rate > 2 ? null : portraitEffect} surface="replay" appearance={appearance.appearance} /></div>
           {winEffect && <div className="round-win-overlay"><RoundWinSurface key={frame.event_index} effect={winEffect} assets={assets} reducedMotion={reducedMotion || rate > 2} /></div>}
           {settlement && <div className="round-win-overlay"><ScoreTransfer settlement={settlement} room={room} /></div>}
           {finalFrame && replay.result != null && <div className="results-overlay"><ResultsPanel room={{ ...room, result: replay.result }} assets={assets} /></div>}

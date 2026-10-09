@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 build = "build.rs"
 
+[features]
+default = []
+task8-test-support = ["double_riichi_core/task8-test-support"]
+
 [dependencies]
 argon2 = { version = "=0.5.3", features = ["std"] }
 axum = { version = "=0.8.9", default-features = false, features = ["json", "tokio", "http1", "ws", "matched-path"] }

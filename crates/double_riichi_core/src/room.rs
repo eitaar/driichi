@@ -1275,6 +1275,11 @@ pub struct RoomConnection {
 }
 
 impl RoomConnection {
+    #[cfg(feature = "task8-test-support")]
+    pub fn task8_receiver_is_closed(&self) -> bool {
+        self.receiver.is_closed()
+    }
+
     pub async fn recv(&mut self) -> Option<RoomEvent> {
         self.receiver.recv().await
     }
@@ -2163,6 +2168,27 @@ impl RoomState {
         } else {
             MatchMachine::with_time_control
         };
+        #[cfg(feature = "task8-test-support")]
+        let fixture =
+            std::env::var("DRIICHI_TASK8_FIXTURE")
+                .map(Some)
+                .or_else(|error| match error {
+                    std::env::VarError::NotPresent => Ok(None),
+                    _ => Err(RoomError::Match("invalid Task8 fixture selector".into())),
+                })?;
+        #[cfg(feature = "task8-test-support")]
+        let mut machine = if let Some(fixture) = fixture {
+            MatchMachine::with_task8_fixture(
+                self.config.mode,
+                participants,
+                self.config.time_control,
+                &fixture,
+            )
+        } else {
+            constructor(self.config.mode, participants, self.config.time_control)
+        }
+        .map_err(|error| RoomError::Match(error.to_string()))?;
+        #[cfg(not(feature = "task8-test-support"))]
         let mut machine = constructor(self.config.mode, participants, self.config.time_control)
             .map_err(|error| RoomError::Match(error.to_string()))?;
         if all_bots {
@@ -4967,6 +4993,51 @@ mod tests {
                 .settlement
                 .is_some()
         );
+    }
+
+    #[cfg(feature = "task8-test-support")]
+    #[tokio::test]
+    async fn task8_room_connection_closed_detects_removed_sender_with_buffered_snapshot() {
+        let state = RoomState::new(RoomConfig::new(
+            "subscription",
+            GameMode::FourPlayerRedEast,
+            CharacterCatalog::starter(),
+        ))
+        .unwrap();
+        let (_, receiver) = mpsc::channel(ROOM_COMMAND_CAPACITY);
+        let (effects, _) = mpsc::channel(ROOM_EFFECT_CAPACITY);
+        let (failure_sender, failures) = mpsc::channel(ROOM_EFFECT_CAPACITY);
+        let (sender, buffered) = mpsc::channel(1);
+        let mut connection = RoomConnection {
+            id: 1,
+            receiver: buffered,
+        };
+        let mut actor = Actor {
+            state,
+            receiver,
+            effects,
+            failure_sender,
+            failures,
+            cleanup_requested: HashSet::new(),
+            subscriptions: HashMap::from([(1, sender)]),
+            next_subscription: 2,
+        };
+        assert!(!connection.task8_receiver_is_closed());
+        actor.publish(RoomEvent::Snapshot(actor.state.snapshot()));
+        assert!(!connection.task8_receiver_is_closed());
+        actor.publish(RoomEvent::Snapshot(actor.state.snapshot())); // actual Full removal
+        assert!(actor.subscriptions.is_empty());
+        assert!(connection.task8_receiver_is_closed());
+        assert!(matches!(
+            connection.recv().await,
+            Some(RoomEvent::Snapshot(_))
+        ));
+        assert!(connection.recv().await.is_none());
+        let (sender, dropped_receiver) = mpsc::channel(1);
+        actor.subscriptions.insert(2, sender);
+        drop(dropped_receiver);
+        actor.publish(RoomEvent::Snapshot(actor.state.snapshot())); // actual Closed removal
+        assert!(actor.subscriptions.is_empty());
     }
 
     #[tokio::test(start_paused = true)]

@@ -17,15 +17,15 @@ The renderer must remain presentation-only. Existing projection, Decision, actio
 Replace the shared PixiJS Match/Replay table with Three.js and `@react-three/fiber` v9.
 
 - One `ThreeTable` React adapter and one shared `MatchTableScene` render Live 4p, Live 3p, and Replay.
-- React DOM continues to own every semantic control, status, dialog, focus behavior, blocking state, and Replay transport.
+- React DOM continues to own every semantic control, status, dialog, focus behavior, blocking state, and Replay transport. The local concealed hand is DOM-only in both Live and Replay; the scene does not duplicate it.
 - The R3F Canvas is visual-only and sits behind DOM overlays.
 - The scene uses a fixed perspective camera and procedural geometry. It does not add camera controls, physics, or a major GLTF asset pipeline.
 - Tiles use beveled shared geometry, the existing tile faces through one atlas-aware material, and instancing for repeated visible faces and backs.
 - The Canvas uses `frameloop="demand"`, bounded DPR, one bounded shadow source, shared resources, and explicit disposal.
 - Canvas fallback and an error boundary preserve DOM gameplay when WebGL is unavailable or the renderer fails.
-- Sol-approved Live 4p, Live 3p, and Replay concepts are implementation authority. Sol also performs the final screenshot comparison.
+- Human-approved table/Dora resolutions #8/#9 set the current visual direction: soft Phong-like shading, white tile bodies/atlas backing, ochre backs, rounded dark blue-gray frame and lighter felt, compact dark names, and restrained high-resolution central facts. The original concept review is not integrated human/GPU acceptance under #11.
 
-The detailed camera, dimensions, materials, lighting, motion, performance, fallback, and acceptance contracts live in `docs/superpowers/specs/2026-09-19-r3f-cinematic-match-table-design.md`.
+The original architecture specification is `docs/superpowers/specs/2026-09-19-r3f-cinematic-match-table-design.md`; its supersession note identifies the later visual/acceptance contracts. Current integration is scoped by `docs/superpowers/plans/2026-10-02-approved-table-integration.md` and `DESIGN.md`. Ordinary-Dora face sheen shares a DOM/3D clock and invalidates only during its active pass or event motion; gaps, hidden tabs, no targets and Reduced Motion do not continuously render. Result tiles have no sheen. These are requirements, not claims that integrated browser/GPU gates have passed.
 
 ## Consequences
 

@@ -1246,7 +1246,7 @@ Results show rank, display name, final points, and Permanent Auto annotation for
 
 Gameplay officially supports desktop and tablet landscape viewports at least 1024 by 600. Smaller viewports show guidance rather than a separate gameplay layout.
 
-The table maintains a fixed aspect ratio and letterboxes instead of distorting tiles.
+Live uses the viewport; Replay reserves its bottom transport region. The shared fixed camera/procedural geometry preserves tile proportions without the former fixed-aspect letterbox. The approved soft-table/Dora integration in `DESIGN.md` and ADR0014 supersedes the original presentation rules; browser, human visual and target-GPU acceptance remain required.
 
 Orientation:
 
@@ -1259,15 +1259,15 @@ There is no v1 perspective switch.
 
 ### 18.1 Rendering ownership
 
-Pixi renders:
+Three.js / React Three Fiber renders:
 
-- Table and tiles
-- Hands, discards, and melds
-- Character portrait effects
-- Game animation
+- Table, remote hands, public discards, melds, count-only wall diagrams and Dora indicators
+- Visual portrait effects and bounded event animation
+- Ordinary-Dora face sheen with demand rendering only during its active pass; idle gaps/no targets/hidden tabs stop continuous updates and Reduced Motion preserves static meaning
 
 React DOM renders:
 
+- The local concealed hand in Live and Replay, without duplicate 3D instances
 - Action buttons
 - Candidate popups
 - Timer text

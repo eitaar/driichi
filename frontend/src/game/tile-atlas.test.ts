@@ -94,7 +94,7 @@ describe("createTileAtlas", () => {
     );
     expect(loadedUrls).toHaveLength(representatives.length);
     expect(new Set(loadedUrls).size).toBe(representatives.length);
-    expect(fillStyle).toBe("#eee5d2");
+    expect(fillStyle).toBe("#ffffff");
     expect(fillRect).toHaveBeenCalledTimes(representatives.length);
     expect(fillRect).toHaveBeenNthCalledWith(
       1,

@@ -150,7 +150,7 @@ export async function createTileAtlas(signal?: AbortSignal): Promise<TileAtlas> 
     if (signal?.aborted) throw abortError();
     const x = (index % ATLAS_COLUMNS) * CELL_WIDTH;
     const y = Math.floor(index / ATLAS_COLUMNS) * CELL_HEIGHT;
-    context.fillStyle = "#eee5d2";
+    context.fillStyle = "#ffffff";
     context.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
     context.drawImage(image, x, y, CELL_WIDTH, CELL_HEIGHT);
   }

@@ -26,6 +26,7 @@ pub struct TablePlayerState {
     pub discards: Vec<Tile>,
     pub melds: Vec<MeldState>,
     pub riichi: bool,
+    pub riichi_discard_index: Option<usize>,
 }
 
 impl TablePlayerState {
@@ -38,6 +39,7 @@ impl TablePlayerState {
             discards: Vec::new(),
             melds: Vec::new(),
             riichi: false,
+            riichi_discard_index: None,
         }
     }
 }
@@ -290,6 +292,8 @@ pub struct VisiblePlayer {
     pub discards: Vec<Tile>,
     pub melds: Vec<VisibleMeld>,
     pub riichi: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub riichi_discard_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -458,6 +462,9 @@ fn visible_player(player: &TablePlayerState, visibility: HandVisibility) -> Visi
             .map(|meld| visible_meld(meld, reveal_closed_melds))
             .collect(),
         riichi: player.riichi,
+        riichi_discard_index: player
+            .riichi_discard_index
+            .filter(|&index| index < player.discards.len()),
     }
 }
 

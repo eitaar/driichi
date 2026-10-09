@@ -1,10 +1,10 @@
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, type WriteStream } from "node:fs";
+import { closeSync, createWriteStream, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 
 const frontendRoot = process.cwd();
 const repositoryRoot = resolve(frontendRoot, "..");
@@ -16,6 +16,23 @@ export interface RealServerHarness {
   readonly adminUsername: string;
   readonly adminPassword: string;
   stop(): Promise<void>;
+}
+
+export interface RealServerOptions {
+  task8?: { fixture: "double-ron" | "double-ron-final"; evidenceRoot: string };
+}
+
+interface Task8Build {
+  root: string;
+  target: string;
+}
+
+function preserveUtf8(path: string, text: string): void {
+  if (text.includes("\0")) throw new Error(`NUL in evidence: ${path}`);
+  const descriptor = openSync(path, "wx");
+  try { writeFileSync(descriptor, text, "utf8"); fsyncSync(descriptor); }
+  finally { closeSync(descriptor); }
+  if (readFileSync(path, "utf8") !== text) throw new Error(`evidence readback mismatch: ${path}`);
 }
 
 interface RunningProcess {
@@ -63,8 +80,8 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-function serverBinary(): string {
-  return join(resolve(repositoryRoot, process.env.CARGO_TARGET_DIR ?? "target"), "release", process.platform === "win32" ? "driichi.exe" : "driichi");
+function serverBinary(target?: string): string {
+  return join(resolve(repositoryRoot, target ?? process.env.CARGO_TARGET_DIR ?? "target"), "release", process.platform === "win32" ? "driichi.exe" : "driichi");
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -77,9 +94,12 @@ async function runCommand(
   cwd: string,
   input?: string,
   timeoutMilliseconds = 180_000,
+  task8?: Task8Build,
 ): Promise<{ stdout: string; stderr: string }> {
+  const started = Date.now();
   const child = spawn(command, args, {
     cwd,
+    env: task8 ? { ...process.env, CARGO_TARGET_DIR: task8.target } : process.env,
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -90,11 +110,16 @@ async function runCommand(
   child.stdout.on("data", (chunk: string) => { stdout += chunk; });
   child.stderr.on("data", (chunk: string) => { stderr += chunk; });
   child.stdin.end(input);
-  const exit = await new Promise<number>((resolvePromise, reject) => {
+  let timedOut = false;
+  let observedCloseCode: number | null | undefined;
+  let exit: number;
+  try {
+    exit = await new Promise<number>((resolvePromise, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      timedOut = true;
       killProcessTree(child, "SIGKILL");
       reject(new Error(`${command} ${args.join(" ")} exceeded ${timeoutMilliseconds}ms`));
     }, timeoutMilliseconds);
@@ -108,27 +133,72 @@ async function runCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      observedCloseCode = code;
       resolvePromise(code ?? 1);
     });
-  });
+    });
+  } catch (error) {
+    if (task8) {
+      const name = `${started}-${randomBytes(4).toString("hex")}`;
+      preserveUtf8(join(task8.root, `${name}.stdout.log`), stdout);
+      preserveUtf8(join(task8.root, `${name}.stderr.log`), stderr);
+      preserveUtf8(join(task8.root, `${name}.command.json`), JSON.stringify({ command, args, cwd, target: task8.target, pid: child.pid, started, ended: Date.now(), exit: null, observed_close: false, incomplete: true, timed_out: timedOut, timeout_ms: timeoutMilliseconds, error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error) }));
+    }
+    throw error;
+  }
+  if (task8) {
+    const name = `${started}-${randomBytes(4).toString("hex")}`;
+    preserveUtf8(join(task8.root, `${name}.command.json`), JSON.stringify({ command, args, cwd, target: task8.target, pid: child.pid, started, ended: Date.now(), exit: observedCloseCode, observed_close: true, incomplete: false, timed_out: false, timeout_ms: timeoutMilliseconds }));
+    preserveUtf8(join(task8.root, `${name}.stdout.log`), stdout);
+    preserveUtf8(join(task8.root, `${name}.stderr.log`), stderr);
+  }
   if (exit !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed with exit ${exit}: ${stderr.slice(-2_000)}`);
+    throw new Error(`${command} ${args.join(" ")} failed with exit ${exit}: ${stderr.slice(0, 2_000)}\n${stderr.slice(-2_000)}\nstdout: ${stdout.slice(-2_000)}`);
   }
   return { stdout, stderr };
 }
 
-async function ensureServerBinary(): Promise<string> {
+async function ensureServerBinary(task8?: Task8Build): Promise<string> {
+  const proofPath = process.env.DRIICHI_TASK8_VERIFIED_BUILD;
+  if (task8 && proofPath) {
+    const proof = JSON.parse(readFileSync(proofPath, "utf8")) as { sourceBefore: string; sourceAfter: string; buildCommand: string; binaryReceipt: string };
+    const before = JSON.parse(readFileSync(proof.sourceBefore, "utf8")) as Record<string, { sha256: string }>;
+    const after = JSON.parse(readFileSync(proof.sourceAfter, "utf8"));
+    const names = [...new Set(execFileSync("git", ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: repositoryRoot, encoding: "utf8" }).split("\0"))]
+      .filter(name => name && !["node_modules/", ".vitest/", "scripts/release/__pycache__/", "frontend/playwright-real-report/", "frontend/playwright-report/"].some(prefix => name.startsWith(prefix))
+        && existsSync(resolve(repositoryRoot, name)) && statSync(resolve(repositoryRoot, name)).isFile()).sort();
+    if (JSON.stringify(names) !== JSON.stringify(Object.keys(before).sort()) || JSON.stringify(before) !== JSON.stringify(after)) throw new Error("verified build source coverage/custody mismatch");
+    for (const name of names) {
+      // Only test orchestration may differ; every compiled/product input must remain exact.
+      if (name === "frontend/tests/kyoku-results-real-server.spec.ts" || name === "frontend/tests/support/real-server.ts") continue;
+      if (createHash("sha256").update(readFileSync(resolve(repositoryRoot, name))).digest("hex") !== before[name].sha256) throw new Error(`verified build source mismatch: ${name}`);
+    }
+    const build = JSON.parse(readFileSync(proof.buildCommand, "utf8"));
+    const args = ["build", "--release", "--locked", "-p", "double_riichi_server", "--features", "task8-test-support", "-j", "1"];
+    if (build.exit !== 0 || build.observed_close !== true || build.incomplete !== false || build.timed_out !== false
+      || resolve(build.cwd) !== repositoryRoot || JSON.stringify(build.args) !== JSON.stringify(args)) throw new Error("verified build command mismatch");
+    const recorded = JSON.parse(readFileSync(proof.binaryReceipt, "utf8"));
+    const binary = serverBinary(task8.target);
+    const sha256 = createHash("sha256").update(readFileSync(binary)).digest("hex");
+    if (resolve(recorded.binary) !== binary || resolve(recorded.target) !== task8.target || recorded.sha256 !== sha256
+      || JSON.stringify(recorded.features) !== JSON.stringify(["task8-test-support"])) throw new Error("verified build binary/feature mismatch");
+    preserveUtf8(join(task8.root, "binary.json"), JSON.stringify({ binary, sha256, features: ["task8-test-support"], target: task8.target }));
+    preserveUtf8(join(task8.root, "reused-build-proof.json"), JSON.stringify({ proofPath, ...proof }));
+    return binary;
+  }
   // Never embed an older dist left by a previous run or restored by the release gate.
-  await runCommand(npmCommand(), npmArgs(["run", "build"]), frontendRoot);
+  await runCommand(npmCommand(), npmArgs(["run", "build"]), frontendRoot, undefined, 180_000, task8);
   await runCommand(
     cargoCommand(),
-    ["build", "--release", "--locked", "-p", "double_riichi_server"],
+    ["build", "--release", "--locked", "-p", "double_riichi_server", ...(task8 ? ["--features", "task8-test-support", "-j", "1"] : [])],
     repositoryRoot,
     undefined,
     600_000, // Cold release builds exceed the ordinary command timeout.
+    task8,
   );
-  const binary = serverBinary();
+  const binary = serverBinary(task8?.target);
   if (!existsSync(binary)) throw new Error(`server binary was not produced: ${binary}`);
+  if (task8) preserveUtf8(join(task8.root, "binary.json"), JSON.stringify({ binary, sha256: createHash("sha256").update(readFileSync(binary)).digest("hex"), features: ["task8-test-support"], target: task8.target }));
   return binary;
 }
 
@@ -236,9 +306,13 @@ function startProcess(
   return { child, log, closed };
 }
 
-export async function startRealServer(): Promise<RealServerHarness> {
-  const binary = await ensureServerBinary();
-  const root = await mkdtemp(join(tmpdir(), "driichi-task16-e2e-"));
+export async function startRealServer(options: RealServerOptions = {}): Promise<RealServerHarness> {
+  if (options.task8 && !["double-ron", "double-ron-final"].includes(options.task8.fixture)) throw new Error("unknown Task8 fixture");
+  if (options.task8) mkdirSync(options.task8.evidenceRoot, { recursive: true });
+  const task8Root = options.task8 ? await mkdtemp(join(options.task8.evidenceRoot, "task8-")) : undefined;
+  const task8 = options.task8 && task8Root ? { root: task8Root, target: resolve(repositoryRoot, "target", "task8-be72f5cf") } : undefined;
+  const binary = await ensureServerBinary(task8);
+  const root = task8Root ?? await mkdtemp(join(tmpdir(), "driichi-task16-e2e-"));
   let server: RunningProcess | undefined;
   let vite: RunningProcess | undefined;
   try {
@@ -293,7 +367,7 @@ export async function startRealServer(): Promise<RealServerHarness> {
 
     const serverLog = join(root, "server.log");
     const viteLog = join(root, "vite.log");
-    server = startProcess(binary, ["--config", configPath], repositoryRoot, { ...process.env }, serverLog);
+    server = startProcess(binary, ["--config", configPath], repositoryRoot, { ...process.env, ...(options.task8 ? { DRIICHI_TASK8_FIXTURE: options.task8.fixture } : {}) }, serverLog);
     await waitForHttp(`${rustOrigin}/status`);
     vite = startProcess(
       npmCommand(),
@@ -318,10 +392,12 @@ export async function startRealServer(): Promise<RealServerHarness> {
           try { await stopProcess(process); }
           catch (error) { firstError ??= error; }
         }
-        try {
-          await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-        } catch (error) {
-          firstError ??= error;
+        if (!task8) {
+          try {
+            await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+          } catch (error) {
+            firstError ??= error;
+          }
         }
         if (firstError) throw firstError;
       },
@@ -329,7 +405,7 @@ export async function startRealServer(): Promise<RealServerHarness> {
   } catch (error) {
     try { await stopProcess(vite); } catch { /* preserve the startup failure */ }
     try { await stopProcess(server); } catch { /* preserve the startup failure */ }
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    if (!task8) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     throw error;
   }
 }

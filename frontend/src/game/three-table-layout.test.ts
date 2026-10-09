@@ -8,6 +8,7 @@ import {
   FACE_SIZE,
   createBackFaceGeometry,
   createTileSideGeometry,
+  instanceMatrix,
   tileFaceQuaternion,
 } from "./three-table-scene";
 import type { ProjectedState } from "./types";
@@ -304,15 +305,42 @@ describe("three-dimensional table layout", () => {
     expect(dora.map(({ position }) => position[0])).toEqual([...dora.map(({ position }) => position[0])].sort((a, b) => a - b));
   });
 
+  it.each(["3p-red-east", "4p-red-east"] as const)("shows one partial live stack at most and seven separate dead-wall stacks in %s", (mode) => {
+    for (const remaining of [0, 1, 7, 35, 69]) {
+      const layout = buildMatchSceneLayout(projection({ mode, remaining_wall: remaining }), null);
+      const live = layout.tiles.filter(({ key }) => key.startsWith("wall-"));
+      const dead = layout.tiles.filter(({ key }) => key.startsWith("dead-wall-"));
+      expect(live).toHaveLength(remaining);
+      expect(dead).toHaveLength(14);
+      const stacks = new Map<string, number[]>();
+      for (const tile of live) {
+        const key = `${tile.position[0]}:${tile.position[2]}`;
+        stacks.set(key, [...(stacks.get(key) ?? []), tile.position[1]]);
+      }
+      expect([...stacks.values()].filter((heights) => heights.length === 1)).toHaveLength(remaining % 2);
+      for (const heights of stacks.values()) {
+        expect(heights).toEqual(heights.length === 1 ? [0.24] : [0.24, 0.45]);
+      }
+      expect(new Set(dead.map(({ position }) => `${position[0]}:${position[2]}`)).size).toBe(7);
+      if (mode.startsWith("3p")) expect([...live, ...dead].some(({ key }) => key.includes("-top-"))).toBe(false);
+      expect([...live, ...dead].every(({ tile, face }) => tile === null && face === "back")).toBe(true);
+      for (const tile of [...live, ...dead]) {
+        const matrix = instanceMatrix(tile, true);
+        expect(new Vector3(0, 0, 1).transformDirection(matrix).y).toBeCloseTo(1);
+        expect(new Vector3().applyMatrix4(matrix).y).toBeGreaterThan(tile.position[1]);
+      }
+    }
+  });
+
   it("normalizes malformed remaining wall values and creates matching instances", () => {
     for (const [remainingWall, expected] of [
       [-1, 0],
       [Number.NaN, 0],
-      [999, 136],
+      [999, 122],
     ] as const) {
       const layout = buildMatchSceneLayout(projection({ remaining_wall: remainingWall }), null);
       expect(layout.wallCount).toBe(expected);
-      expect(layout.tiles.filter(({ group }) => group === "wall")).toHaveLength(expected);
+      expect(layout.tiles.filter(({ key }) => key.startsWith("wall-"))).toHaveLength(expected);
     }
   });
 
@@ -322,7 +350,7 @@ describe("three-dimensional table layout", () => {
       null,
     );
     expect(layout.wallCount).toBe(3);
-    expect(layout.tiles.filter(({ group }) => group === "wall")).toHaveLength(3);
+    expect(layout.tiles.filter(({ key }) => key.startsWith("wall-"))).toHaveLength(3);
   });
 
   it("is deterministic with unique keys and finite transforms", () => {
@@ -358,6 +386,76 @@ describe("three-dimensional table layout", () => {
   it("does not duplicate the local hand on the 3D table", () => {
     const layout = buildMatchSceneLayout(projection({ players: [player(0, "local", { hand: Array.from({ length: 14 }, (_, index) => index) })] }), null);
     expect(layout.tiles.filter(({ group }) => group === "hand")).toHaveLength(0);
+  });
+
+  it.each([
+    ["3p-red-east", "live"],
+    ["3p-red-east", "replay"],
+    ["4p-red-east", "live"],
+    ["4p-red-east", "replay"],
+  ] as const)("advances each river from its owner's left and wraps outward on %s %s", (mode, surface) => {
+    const count = mode.startsWith("3p") ? 3 : 4;
+    const rowDirections = {
+      bottom: [1, 0, 0], right: [0, 0, -1], top: [-1, 0, 0], left: [0, 0, 1],
+    } as const;
+    const outwardDirections = {
+      bottom: [0, 0, 1], right: [1, 0, 0], top: [0, 0, -1], left: [-1, 0, 0],
+    } as const;
+    for (let viewerSeat = 0; viewerSeat < count; viewerSeat += 1) {
+      const source = projection({
+        mode, viewer_seat: viewerSeat,
+        players: Array.from({ length: count }, (_, seat) => player(seat, `seat-${seat}`, {
+          discards: Array.from({ length: 7 }, (_, index) => seat * 8 + index),
+        })),
+      });
+      const layout = buildMatchSceneLayout(source, null, surface);
+      for (const { seat, position } of layout.players) {
+        const river = layout.tiles.filter((tile) => tile.group === "discard" && tile.key.includes(`seat-${seat}-`));
+        expect(river.map(({ tile }) => tile)).toEqual(source.players?.[seat].discards);
+        const rowDirection = new Vector3(...rowDirections[position]);
+        for (let index = 1; index < 6; index += 1) {
+          const step = new Vector3(...river[index].position).sub(new Vector3(...river[index - 1].position));
+          expect(step.dot(rowDirection), `${position} progresses toward its owner's right`).toBeCloseTo(0.55);
+        }
+        const wrap = new Vector3(...river[6].position).sub(new Vector3(...river[0].position));
+        expect(wrap.dot(rowDirection)).toBeCloseTo(0);
+        expect(wrap.dot(new Vector3(...outwardDirections[position]))).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it.each(["live", "replay"] as const)("rotates only an explicit declaration and widens its row on %s", (surface) => {
+    for (const mode of ["3p-red-east", "4p-red-east"]) {
+      const count = mode.startsWith("3p") ? 3 : 4;
+      for (let viewer = 0; viewer < count; viewer += 1) {
+        for (const declaration of [0, 5, 6, 11, 12, 23]) {
+          const players = Array.from({ length: count }, (_, seat) => player(seat, `seat-${seat}`, {
+            discards: Array.from({ length: 24 }, (_, index) => index),
+            riichi: true, riichi_discard_index: declaration,
+          }));
+          const normal = buildMatchSceneLayout(projection({ mode, viewer_seat: viewer, players: players.map((p) => ({ ...p, riichi_discard_index: undefined })) }), null, surface);
+          const actual = buildMatchSceneLayout(projection({ mode, viewer_seat: viewer, players }), null, surface);
+          for (const { seat } of actual.players) {
+            const river = actual.tiles.filter((t) => t.group === "discard" && t.key.includes(`seat-${seat}-`));
+            const baseline = normal.tiles.filter((t) => t.group === "discard" && t.key.includes(`seat-${seat}-`));
+            expect(river.map((t) => t.tile)).toEqual(baseline.map((t) => t.tile));
+            river.forEach((t, index) => {
+              expect(t.rotation[1] - baseline[index].rotation[1]).toBeCloseTo(index === declaration ? Math.PI / 2 : 0);
+              expect(aabbIntersects(sceneTileAabb(t), CENTER_DEVICE_AABB)).toBe(false);
+              if (Math.floor(index / 6) !== Math.floor(declaration / 6)) expect(t.position).toEqual(baseline[index].position);
+              if (index % 6 !== 0) expect(aabbIntersects(sceneTileAabb(t), sceneTileAabb(river[index - 1]))).toBe(false);
+            });
+          }
+        }
+      }
+    }
+  });
+
+  it.each([undefined, null, -1, 24, 1.5, NaN, "3"])("does not guess a declaration for invalid index %s", (index) => {
+    const input = { discards: [0, 1, 2, 3], riichi: true };
+    const baseline = buildMatchSceneLayout(projection({ players: [player(0, "local", input)] }), null);
+    const actual = buildMatchSceneLayout(projection({ players: [player(0, "local", { ...input, riichi_discard_index: index })] }), null);
+    expect(actual).toEqual(baseline);
   });
 
   it("wraps a seven-discard river after six tiles", () => {

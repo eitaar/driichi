@@ -77,12 +77,13 @@ function simultaneousDiscardState(): Record<string, any> {
 
 function finalResult() {
   return {
-    mode: "4p-red-east",
+    mode: "FourPlayerRedEast",
+    final_scores: [45_000, 30_000, 15_000, 10_000],
     players: [
-      { participant_id: "P1", display_name: "Mika", rank: 1, final_score: 45_000, delta: 8_000 },
-      { participant_id: "P2", display_name: "Nori", rank: 2, final_score: 30_000, delta: -8_000 },
-      { participant_id: "P3", display_name: "Ren", rank: 3, final_score: 15_000 },
-      { participant_id: "P4", display_name: "Aya", rank: 4, final_score: 10_000 },
+      { participant_id: "P1", display_name: "Mika", kind: "Human", seat: 0, rank: 1, final_score: 45_000, delta: 8_000 },
+      { participant_id: "P2", display_name: "Nori", kind: "BuiltInBot", seat: 1, rank: 2, final_score: 30_000, delta: -8_000 },
+      { participant_id: "P3", display_name: "Ren", kind: "BuiltInBot", seat: 2, rank: 3, final_score: 15_000 },
+      { participant_id: "P4", display_name: "Aya", kind: "BuiltInBot", seat: 3, rank: 4, final_score: 10_000 },
     ],
   };
 }

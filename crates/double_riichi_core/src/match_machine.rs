@@ -153,6 +153,29 @@ impl MatchMachine {
         Ok(machine)
     }
 
+    #[cfg(feature = "task8-test-support")]
+    pub fn with_task8_fixture(
+        mode: GameMode,
+        participants: Vec<Participant>,
+        time_control: TimeControl,
+        fixture: &str,
+    ) -> Result<Self, MatchError> {
+        let (engine, events) = match fixture {
+            "double-ron" => EngineAdapter::task8_double_ron(mode),
+            "double-ron-final" => EngineAdapter::task8_double_ron_final(mode),
+            "dealer-tenhou" => EngineAdapter::task8_dealer_tenhou(mode),
+            "final-draw" => EngineAdapter::task8_final_draw(mode),
+            _ => return Err(MatchError::Aborted("unknown Task8 fixture".into())),
+        }
+        .map_err(|error| MatchError::Aborted(error.to_string()))?;
+        let mut machine = Self::new_internal(mode, participants, 230, false)?;
+        machine.engine = engine;
+        machine.journal_event_count = events.len();
+        machine.events = events;
+        machine.time_control = time_control;
+        Ok(machine)
+    }
+
     pub fn mode(&self) -> GameMode {
         self.mode
     }
@@ -971,6 +994,199 @@ mod tests {
             machine.apply(seat, action).unwrap();
         }
         panic!("no ended kyoku");
+    }
+
+    #[cfg(feature = "task8-test-support")]
+    #[test]
+    fn task8_final_draw_holds_pot_and_tied_ranks_until_one_release_in_four_modes() {
+        for mode in [
+            GameMode::FourPlayerRedEast,
+            GameMode::FourPlayerRedHalf,
+            GameMode::ThreePlayerRedEast,
+            GameMode::ThreePlayerRedHalf,
+        ] {
+            let count = mode.seat_count();
+            let humans = (0..count)
+                .map(|i| Participant::new(format!("tie-{i}"), "same", ParticipantKind::Human))
+                .collect();
+            let mut machine = MatchMachine::with_task8_fixture(
+                mode,
+                humans,
+                TimeControl::Unlimited,
+                "final-draw",
+            )
+            .unwrap();
+            let mut submitted = 0;
+            for _ in 0..280 {
+                if machine.held_kyoku().is_some() {
+                    break;
+                }
+                let decision = machine
+                    .current_decision()
+                    .unwrap()
+                    .expect("actual final draw decision");
+                for entry in decision.entries() {
+                    let action = entry
+                        .actions
+                        .iter()
+                        .find(|a| {
+                            matches!(
+                                a.action,
+                                GameAction::Pass
+                                    | GameAction::Discard {
+                                        tsumogiri: true,
+                                        ..
+                                    }
+                            )
+                        })
+                        .unwrap();
+                    machine
+                        .submit_action(entry.seat, decision.id(), &action.id)
+                        .unwrap();
+                    submitted += 1;
+                    assert!(submitted <= 280);
+                }
+            }
+            let held = machine.held_kyoku().unwrap();
+            assert!(held.wins.is_empty());
+            assert_eq!(
+                held.settlement.draw_reason.as_deref(),
+                Some("exhaustive_draw")
+            );
+            assert_eq!(
+                (held.settlement.pot_before, held.settlement.pot_after),
+                (2, 0)
+            );
+            assert!(machine.result().is_none());
+            assert!(machine.current_decision().unwrap().is_none());
+            assert!(
+                !machine
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::EndKyoku | GameEvent::EndGame))
+            );
+            machine.publish_kyoku_step(0).unwrap();
+            assert!(machine.result().is_none());
+            assert!(machine.current_decision().unwrap().is_none());
+            let suffix = machine.release_kyoku().unwrap();
+            assert_eq!(suffix, vec![GameEvent::EndKyoku, GameEvent::EndGame]);
+            let result = machine.result().unwrap();
+            let mut scores = vec![100000; count];
+            scores[0] = 102000;
+            assert_eq!(result.final_scores, scores);
+            assert_eq!(
+                result.players.iter().map(|p| p.rank).collect::<Vec<_>>(),
+                (1..=count as u8).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                result
+                    .players
+                    .iter()
+                    .map(|p| p.seat.index())
+                    .collect::<Vec<_>>(),
+                (0..count as u8).collect::<Vec<_>>()
+            );
+            assert!(machine.release_kyoku().is_err());
+            assert_eq!(
+                machine
+                    .events()
+                    .iter()
+                    .filter(|e| matches!(e, GameEvent::EndGame))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(feature = "task8-test-support")]
+    #[test]
+    fn task8_final_double_ron_holds_canonical_end_and_literal_standings_until_release() {
+        for (mode, scores, ranks) in [
+            (
+                GameMode::ThreePlayerRedEast,
+                vec![-4_600, 105_000, 102_600],
+                vec![3, 1, 2],
+            ),
+            (
+                GameMode::FourPlayerRedEast,
+                vec![-4_800, 105_200, 102_600, 100_000],
+                vec![4, 1, 2, 3],
+            ),
+        ] {
+            let humans = (0..mode.seat_count())
+                .map(|i| Participant::new(format!("p{i}"), "same", ParticipantKind::Human))
+                .collect();
+            let mut machine = MatchMachine::with_task8_fixture(
+                mode,
+                humans,
+                TimeControl::Unlimited,
+                "double-ron-final",
+            )
+            .unwrap();
+            assert_eq!(machine.journal_event_count, 3);
+            assert_eq!(machine.events().len(), 3);
+            let decision = machine.current_decision().unwrap().unwrap();
+            let dealer = Seat::new(0).unwrap();
+            let discard = decision.actions_for(dealer).iter().find(|offer| {
+                matches!(&offer.action, GameAction::Discard { tile, .. } if tile.id() == 77)
+            }).unwrap();
+            machine
+                .submit_action(dealer, decision.id(), &discard.id)
+                .unwrap();
+            let response = machine.current_decision().unwrap().unwrap();
+            for entry in response.entries() {
+                let action = entry
+                    .actions
+                    .iter()
+                    .find(|offer| {
+                        if entry.seat.index() <= 2 {
+                            matches!(offer.action, GameAction::Ron(_))
+                        } else {
+                            matches!(offer.action, GameAction::Pass)
+                        }
+                    })
+                    .unwrap();
+                machine
+                    .submit_action(entry.seat, response.id(), &action.id)
+                    .unwrap();
+            }
+            assert!(machine.held_kyoku().is_some());
+            assert!(machine.result().is_none());
+            assert!(machine.current_decision().unwrap().is_none());
+            assert!(
+                !machine
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::EndGame))
+            );
+            for step in 0..=2 {
+                machine.publish_kyoku_step(step).unwrap();
+                assert!(machine.result().is_none());
+                assert!(machine.current_decision().unwrap().is_none());
+                assert!(
+                    !machine
+                        .events()
+                        .iter()
+                        .any(|e| matches!(e, GameEvent::EndGame))
+                );
+            }
+            let suffix = machine.release_kyoku().unwrap();
+            assert_eq!(suffix, [GameEvent::EndKyoku, GameEvent::EndGame]);
+            let result = machine.result().unwrap();
+            assert_eq!(result.final_scores, scores);
+            assert_eq!(
+                result.players.iter().map(|p| p.rank).collect::<Vec<_>>(),
+                ranks
+            );
+            assert_eq!(
+                result
+                    .players
+                    .iter()
+                    .map(|p| p.seat.index())
+                    .collect::<Vec<_>>(),
+                (0..mode.seat_count() as u8).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

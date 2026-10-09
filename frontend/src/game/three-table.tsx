@@ -2,6 +2,7 @@ import {
   Component,
   type ErrorInfo,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -18,6 +19,9 @@ import { nextSceneMotion, type SceneMotion } from "./three-table-motion";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
 import { buildMatchSceneLayout, CAMERA, type TableSurface } from "./three-table-layout";
 import { tileAssetUrl, tileLabel } from "./tiles";
+import { isDora } from "./dora";
+import { startDoraSheen, type DoraSheenClock } from "./dora-sheen";
+import type { TableAppearance } from "./table-appearance";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 
 export interface PortraitEffect {
@@ -39,6 +43,8 @@ export interface ThreeTableProps {
   onAnimationConsumed?: (id: number) => void;
   onAnimationCancelled?: (id: number) => void;
   surface?: TableSurface;
+  sheenHost?: RefObject<HTMLElement | null>;
+  appearance?: TableAppearance;
 }
 
 export interface TablePlayerOverlayProps {
@@ -224,6 +230,8 @@ export function ThreeTable({
   onAnimationConsumed: _onAnimationConsumed,
   onAnimationCancelled: _onAnimationCancelled,
   surface = "live",
+  sheenHost,
+  appearance,
 }: ThreeTableProps) {
   const [atlas, setAtlas] = useState<TileAtlas | null>(null);
   const [atlasFailed, setAtlasFailed] = useState(false);
@@ -235,6 +243,7 @@ export function ThreeTable({
   const [motion, setMotion] = useState<SceneMotion | null>(null);
   const [lastConsumedAnimationId, setLastConsumedAnimationId] = useState<number | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const sheen = useMemo<DoraSheenClock>(() => ({ sweep: { value: -10 }, strength: { value: 0 }, listeners: new Set() }), []);
   const contextCleanupRef = useRef<(() => void) | null>(null);
   const motionFrameTimesRef = useRef<number[]>([]);
   const motionPixelRatioRef = useRef<number | null>(null);
@@ -255,6 +264,15 @@ export function ThreeTable({
     () => (projection ? buildMatchSceneLayout(projection, room, surface) : null),
     [projection, surface],
   );
+
+  const localHand = projection?.players?.find((player) => player.seat === layout?.players.find((seat) => seat.isLocal)?.seat)?.hand ?? [];
+  const indicators = projection?.dora_indicators ?? [];
+  const hasSheenTargets = Boolean(layout?.tiles.some((tile) => tile.face === "front" && tile.group !== "dora" && tile.group !== "wall" && isDora(tile.tile, indicators)))
+    || ((surface === "replay" || projection?.audience === "player") && localHand.some((tile) => isDora(tile, indicators)));
+  useEffect(() => {
+    const host = sheenHost?.current ?? hostRef.current;
+    if (host) return startDoraSheen(host, sheen, hasSheenTargets, reducedMotion);
+  }, [sheenHost, sheen, hasSheenTargets, reducedMotion]);
 
   useEffect(() => {
     if (!hasProjection) return;
@@ -447,6 +465,8 @@ export function ThreeTable({
       data-renderer-pixel-ratio={rendererPixelRatio || ""}
       data-rendered-scene-triangles={renderedTriangleCount}
       data-wall-tile-count={layout?.wallCount ?? 0}
+      data-wall-layout="count-only-diagram"
+      data-dead-wall-tile-count={layout?.tiles.filter(({ key }) => key.startsWith("dead-wall-")).length ?? 0}
       data-webgl-fallback={String(isFallback)}
       data-animation-state={animationState}
       data-animation-item-id={motion?.itemId ?? ""}
@@ -468,9 +488,11 @@ export function ThreeTable({
         </div>
       )}
       {surface === "replay" && projection?.players?.find((player) => player.seat === layout?.players.find((seat) => seat.position === "bottom")?.seat)?.hand && (
-        <div className="table-replay-hand" aria-label="Your concealed hand">
-          {projection.players.find((player) => player.seat === layout?.players.find((seat) => seat.position === "bottom")?.seat)!.hand!.map((tile, index) => (
-            <img key={`${tile}-${index}`} src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+        <div className="table-replay-hand" role="group" aria-label="Your concealed hand">
+          {localHand.map((tile, index) => (
+            <span key={`${tile}-${index}`} className={`table-replay-tile${isDora(tile, indicators) ? " is-dora" : ""}`}>
+              <img src={tileAssetUrl(tile)} alt={`${tileLabel(tile)}${isDora(tile, indicators) ? ", Dora" : ""}`} />
+            </span>
           ))}
         </div>
       )}
@@ -533,6 +555,8 @@ export function ThreeTable({
               layout={layout}
               projection={projection}
               atlas={atlas}
+              sheen={sheen}
+              appearance={appearance}
               motion={motion}
               onMotionComplete={completeMotion}
               onMotionFrame={recordMotionFrame}

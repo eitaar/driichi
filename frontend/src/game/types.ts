@@ -19,6 +19,7 @@ export interface ProjectedPlayer {
   discards?: number[];
   melds?: ProjectedMeld[];
   riichi?: boolean;
+  riichi_discard_index?: number;
   [key: string]: unknown;
 }
 

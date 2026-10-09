@@ -86,9 +86,9 @@ export function aabbIntersects(left: SceneAabb, right: SceneAabb): boolean {
 
 const HAND_ANCHORS: Record<SceneSeat, Vec3> = {
   bottom: [0, 0.58, 4.72],
-  right: [5.35, 0.48, 0],
-  top: [0, 0.48, -4.13],
-  left: [-5.35, 0.48, 0],
+  right: [4.69, 0.48, 0],
+  top: [0, 0.48, -3.61],
+  left: [-4.69, 0.48, 0],
 };
 
 const SEAT_ROTATIONS: Record<SceneSeat, Vec3> = {
@@ -101,12 +101,6 @@ const SEAT_ROTATIONS: Record<SceneSeat, Vec3> = {
 };
 
 const WALL_EDGE_ORDER: readonly SceneSeat[] = ["bottom", "right", "top", "left"];
-const WALL_ANCHORS: Record<SceneSeat, Vec3> = {
-  bottom: [-3.44, 0.18, 3.17],
-  right: [4.25, 0.18, 2.69],
-  top: [3.44, 0.18, -3.17],
-  left: [-4.25, 0.18, -2.69],
-};
 
 function nonNegativeInteger(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
@@ -192,13 +186,17 @@ function addHandTiles(
   }
 }
 
-function discardPosition(position: SceneSeat, index: number): Vec3 {
+function discardPosition(position: SceneSeat, index: number, declaration: number | null): Vec3 {
   const column = index % 6;
   const row = Math.floor(index / 6);
-  const offset = (column - 2.5) * 0.55;
+  let offset = (column - 2.5) * 0.55;
+  if (declaration !== null && Math.floor(declaration / 6) === row) {
+    const extra = (TILE_BODY_SIZE.depth - TILE_BODY_SIZE.width) * REMOTE_TILE_SIZE / 2;
+    offset += column < declaration % 6 ? -extra : column > declaration % 6 ? extra : 0;
+  }
   if (position === "bottom") return [offset, 0.2, 1.73 + row * 0.66];
-  if (position === "top") return [offset, 0.2, -1.73 - row * 0.66];
-  if (position === "right") return [2.55 + row * 0.55, 0.2, offset];
+  if (position === "top") return [-offset, 0.2, -1.73 - row * 0.66];
+  if (position === "right") return [2.55 + row * 0.55, 0.2, -offset];
   return [-2.55 - row * 0.55, 0.2, offset];
 }
 
@@ -208,13 +206,17 @@ function addDiscardTiles(
   seat: number,
   position: SceneSeat,
 ): void {
-  for (const [index, tile] of (player.discards ?? []).entries()) {
+  const discards = player.discards ?? [];
+  const known = player.riichi_discard_index;
+  const declaration = typeof known === "number" && Number.isInteger(known) && known >= 0 && known < discards.length ? known : null;
+  for (const [index, tile] of discards.entries()) {
+    const rotation: Vec3 = [0, SEAT_ROTATIONS[position][1] + (index === declaration ? Math.PI / 2 : 0), 0];
     tiles.push(
       sceneTile(
         `discard-${position}-seat-${seat}-${index}`,
         tile,
-        discardPosition(position, index),
-        SEAT_ROTATIONS[position],
+        discardPosition(position, index, declaration),
+        rotation,
         REMOTE_TILE_SIZE,
         "front",
         "discard",
@@ -277,32 +279,29 @@ function addDoraTiles(tiles: SceneTile[], indicators: unknown): void {
   }
 }
 
-function wallPosition(index: number): { edge: SceneSeat; position: Vec3 } {
-  const edge = WALL_EDGE_ORDER[index % WALL_EDGE_ORDER.length];
-  const stack = Math.floor(index / (WALL_EDGE_ORDER.length * 2));
-  const height = 0.24 + Math.floor(index / WALL_EDGE_ORDER.length) % 2 * 0.21;
-  const anchor = WALL_ANCHORS[edge];
-  if (edge === "bottom") return { edge, position: [anchor[0] + stack * 0.43, height, anchor[2]] };
-  if (edge === "right") return { edge, position: [anchor[0], height, 3.44 - stack * 0.43] };
-  if (edge === "top") return { edge, position: [anchor[0] - stack * 0.43, height, anchor[2]] };
-  return { edge, position: [anchor[0], height, -3.44 + stack * 0.43] };
-}
-
-function addWallTiles(tiles: SceneTile[], count: number): void {
-  for (let index = 0; index < count; index += 1) {
-    const { edge, position } = wallPosition(index);
-    const slot = Math.floor(index / WALL_EDGE_ORDER.length);
-    tiles.push(
-      sceneTile(
-        `wall-${edge}-${slot}-${index}`,
-        null,
-        position,
-        SEAT_ROTATIONS[edge],
-        0.65,
-        "back",
-        "wall",
-      ),
-    );
+function addWallTiles(tiles: SceneTile[], count: number, mode: string | undefined): void {
+  const threePlayer = mode?.startsWith("3p");
+  const edges = threePlayer ? ["bottom", "right", "left"] as const : WALL_EDGE_ORDER;
+  const stacksPerEdge = threePlayer ? 18 : 17;
+  const liveCapacity = edges.length * stacksPerEdge * 2 - 14;
+  // shortcut: count-only diagram, upgrade only when authoritative cut/rinshan positions exist.
+  for (const dead of [false, true]) {
+    const length = dead ? 14 : count;
+    for (let index = 0; index < length; index += 1) {
+      const slot = dead ? liveCapacity + index : index;
+      const edge = edges[Math.floor(slot / (stacksPerEdge * 2))];
+      const stack = Math.floor(slot / 2) % stacksPerEdge;
+      const offset = (stack - (stacksPerEdge - 1) / 2) * 0.411;
+      const height = slot % 2 === 0 ? 0.24 : 0.45;
+      const position: Vec3 = edge === "bottom" ? [offset, height, 3.17]
+        : edge === "right" ? [4.25, height, -offset]
+        : edge === "top" ? [-offset, height, -3.17]
+        : [-4.25, height, offset];
+      tiles.push(sceneTile(
+        `${dead ? "dead-wall" : "wall"}-${edge}-${stack}-${slot % 2}`,
+        null, position, [Math.PI, SEAT_ROTATIONS[edge][1], 0], 0.65, "back", "wall",
+      ));
+    }
   }
 }
 
@@ -332,8 +331,8 @@ export function buildMatchSceneLayout(
   }
 
   addDoraTiles(tiles, projection.dora_indicators);
-  const wallCount = wallTileCount(projection.remaining_wall);
-  addWallTiles(tiles, wallCount);
+  const wallCount = wallTileCount(projection.remaining_wall, projection.mode?.startsWith("3p") ? 94 : 122);
+  addWallTiles(tiles, wallCount, projection.mode);
 
   return { players, tiles, wallCount };
 }

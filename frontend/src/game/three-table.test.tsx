@@ -133,6 +133,26 @@ afterEach(() => {
 });
 
 describe("ThreeTable", () => {
+  it("shares a static ordinary-Dora face sheen with the Replay DOM hand without treating red artwork as Dora", async () => {
+    const handProjection = projection({
+      dora_indicators: [12],
+      players: [player(0, "local", { hand: [16, 17, 0] })],
+    });
+    const view = render(<ThreeTable projection={handProjection} room={room} surface="replay" reducedMotion />);
+    await waitFor(() => expect(sceneCalls).toHaveBeenCalled());
+    const host = screen.getByTestId("three-table");
+    expect(host.style.getPropertyValue("--dora-sheen-opacity")).toBe("0.28");
+    const tiles = screen.getByRole("group", { name: "Your concealed hand" }).querySelectorAll(".is-dora");
+    expect(tiles).toHaveLength(2);
+    expect([...tiles].map((tile) => tile.querySelector("img")?.getAttribute("alt"))).toEqual(["5m red, Dora", "5m, Dora"]);
+    const scene = sceneCalls.mock.lastCall?.[0] as { sheen: { sweep: { value: number }; strength: { value: number } } };
+    expect(scene.sheen.sweep.value).toBe(0.5);
+    expect(scene.sheen.strength.value).toBe(0.28);
+    view.rerender(<ThreeTable projection={{ ...handProjection, dora_indicators: [] }} room={room} surface="replay" reducedMotion />);
+    expect(host.style.getPropertyValue("--dora-sheen-opacity")).toBe("0");
+    expect(screen.getByRole("group", { name: "Your concealed hand" }).querySelectorAll(".is-dora")).toHaveLength(0);
+  });
+
   it("uses demand rendering, bounded DPR, and the fixed camera", async () => {
     render(<ThreeTable projection={projection()} room={room} />);
 

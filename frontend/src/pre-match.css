@@ -8,7 +8,8 @@
 :is(.entry-shell,.pre-match-shell,.lobby-shell) h2{font-size:22px;font-weight:600;letter-spacing:0;line-height:1.3}
 :is(.entry-shell,.pre-match-shell,.lobby-shell) input{font-family:inherit;font-size:16px}
 :is(.entry-shell,.pre-match-shell,.lobby-shell) :is(button,input,select,a,summary):focus-visible{outline:3px solid #2762ab;outline-offset:3px}
-:is(.entry-shell,.pre-match-shell,.lobby-shell) .button-primary{background:#354a66;color:#fafbfc;border-color:#354a66}
+/* Swap foreground/background together so enabling never interpolates through unreadable contrast. */
+:is(.entry-shell,.pre-match-shell,.lobby-shell) .button-primary{background:#354a66;color:#fafbfc;border-color:#354a66;transition:transform .2s ease,border-color .2s ease}
 :is(.entry-shell,.pre-match-shell,.lobby-shell) .button-primary:hover:not(:disabled){background:#283342}
 :is(.entry-shell,.pre-match-shell,.lobby-shell) .button-primary:disabled{background:#dce4ed;color:#586574;border-color:#bcc6cf}
 :is(.entry-shell,.pre-match-shell,.lobby-shell) .form-error{color:#a72e3f;background:transparent;border-color:#a72e3f}

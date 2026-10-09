@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+task8-test-support = []
+
 [dependencies]
 rand = "0.10.1"
 riichienv-core = "=0.4.10"

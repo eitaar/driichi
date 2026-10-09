@@ -44,6 +44,84 @@ use crate::http::{
 };
 use crate::{BotTokenRecord, BotTokenService, Storage, TokenRevoked};
 
+#[cfg(not(feature = "task8-test-support"))]
+type RoomOutput = Message;
+#[cfg(feature = "task8-test-support")]
+enum RoomOutput {
+    Message(Message),
+    Marker {
+        payload: Value,
+        receipt: mpsc::Sender<Value>,
+    },
+}
+
+#[cfg(feature = "task8-test-support")]
+struct Task8RoomProbe {
+    receipt: mpsc::Sender<Value>,
+    health: mpsc::Sender<oneshot::Sender<Value>>,
+    health_rx: Option<mpsc::Receiver<oneshot::Sender<Value>>>,
+    generation: Option<u64>,
+}
+
+#[cfg(feature = "task8-test-support")]
+impl ServerState {
+    pub fn task8_attach_room_mjai_probe(
+        &self,
+        participant_id: ParticipantId,
+    ) -> mpsc::Receiver<Value> {
+        assert!(matches!(
+            std::env::var("DRIICHI_TASK8_FIXTURE").as_deref(),
+            Ok("double-ron") | Ok("double-ron-final")
+        ));
+        let (receipt, receiver) = mpsc::channel(16);
+        let (health, health_rx) = mpsc::channel(16);
+        let old = self.compat.task8_room_probes.lock().unwrap().insert(
+            participant_id,
+            Task8RoomProbe {
+                receipt,
+                health,
+                health_rx: Some(health_rx),
+                generation: None,
+            },
+        );
+        assert!(old.is_none(), "duplicate private attachment");
+        receiver
+    }
+
+    pub async fn task8_room_mjai_health(&self, participant_id: &ParticipantId) -> Value {
+        let health = self
+            .compat
+            .task8_room_probes
+            .lock()
+            .unwrap()
+            .get(participant_id)
+            .expect("attached probe")
+            .health
+            .clone();
+        let (send, receive) = oneshot::channel();
+        health.try_send(send).expect("bounded health query");
+        receive.await.expect("live health sampler")
+    }
+}
+
+fn queue_room_output(output: &mpsc::Sender<RoomOutput>, message: Message) -> bool {
+    #[cfg(not(feature = "task8-test-support"))]
+    {
+        queue_output(output, message)
+    }
+    #[cfg(feature = "task8-test-support")]
+    {
+        if !matches!(message, Message::Close(_)) && output.capacity() <= 1 {
+            let _ = output.try_send(RoomOutput::Message(close_message(
+                CLOSE_SLOW_CONSUMER,
+                "slow_consumer",
+            )));
+            return false;
+        }
+        output.try_send(RoomOutput::Message(message)).is_ok()
+    }
+}
+
 const RANKED_FILL_DELAY: Duration = Duration::from_secs(5);
 const OUTBOUND_CAPACITY: usize = 64;
 const INPUT_CAPACITY: usize = 64;
@@ -138,6 +216,8 @@ pub(crate) struct CompatState {
     revocation_task: Mutex<Option<JoinHandle<()>>>,
     inner: AsyncMutex<CompatInner>,
     pub(crate) room_connections: Arc<AgentConnections>,
+    #[cfg(feature = "task8-test-support")]
+    task8_room_probes: Mutex<HashMap<ParticipantId, Task8RoomProbe>>,
 }
 
 impl CompatState {
@@ -162,6 +242,8 @@ impl CompatState {
                 shutting_down: false,
             }),
             room_connections: Arc::new(AgentConnections::default()),
+            #[cfg(feature = "task8-test-support")]
+            task8_room_probes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1326,7 +1408,26 @@ fn prepare_match(
         ));
     }
     let mut machine = None;
-    if kind == CompatKind::Validate {
+    #[cfg(feature = "task8-test-support")]
+    {
+        let fixture = match std::env::var("DRIICHI_TASK8_FIXTURE") {
+            Ok(fixture) => Some(fixture),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(_) => return Err(((), bots)),
+        };
+        if let Some(fixture) = fixture {
+            machine = match MatchMachine::with_task8_fixture(
+                mode,
+                participants.clone(),
+                TimeControl::RiichiDev,
+                &fixture,
+            ) {
+                Ok(machine) => Some(machine),
+                Err(_) => return Err(((), bots)),
+            };
+        }
+    }
+    if machine.is_none() && kind == CompatKind::Validate {
         let external = participants[0].id.clone();
         for seed in 0..512 {
             if let Ok(candidate) = MatchMachine::with_seed(mode, participants.clone(), seed)
@@ -2058,9 +2159,59 @@ async fn run_room_socket(
         }
     };
     let (mut sender, mut receiver) = socket.split();
-    let (output, mut output_rx) = mpsc::channel(OUTBOUND_CAPACITY + 1);
+    #[cfg(feature = "task8-test-support")]
+    let (probe_receipt, mut health_rx) = {
+        let mut probes = state.compat.task8_room_probes.lock().unwrap();
+        match probes.get_mut(&participant_id) {
+            Some(probe) => {
+                assert!(probe.generation.is_none(), "probe generation replacement");
+                probe.generation = Some(generation);
+                (Some(probe.receipt.clone()), probe.health_rx.take())
+            }
+            None => (None, None),
+        }
+    };
+    #[cfg(feature = "task8-test-support")]
+    let capture = probe_receipt.is_some();
+    let (output, mut output_rx) = mpsc::channel::<RoomOutput>(OUTBOUND_CAPACITY + 1);
     let mut writer = tokio::spawn(async move {
-        while let Some(message) = output_rx.recv().await {
+        #[cfg(feature = "task8-test-support")]
+        let (mut texts, mut text_bytes) = (Vec::<String>::new(), 0usize);
+        while let Some(envelope) = output_rx.recv().await {
+            #[cfg(not(feature = "task8-test-support"))]
+            let message = envelope;
+            #[cfg(feature = "task8-test-support")]
+            let message = match envelope {
+                RoomOutput::Message(message) => message,
+                RoomOutput::Marker {
+                    mut payload,
+                    receipt,
+                } => {
+                    payload["texts"] = json!(texts);
+                    payload["text_count"] = json!(texts.len());
+                    payload["text_bytes"] = json!(text_bytes);
+                    if receipt.try_send(payload).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            #[cfg(feature = "task8-test-support")]
+            let text = if capture {
+                if let Message::Text(text) = &message {
+                    if texts.len() >= 4096
+                        || text.len() > MAX_FRAME_BYTES
+                        || text_bytes.saturating_add(text.len()) > MAX_FRAME_BYTES * 16
+                    {
+                        break;
+                    }
+                    Some(text.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let close = matches!(message, Message::Close(_));
             if !matches!(
                 time::timeout(Duration::from_secs(1), sender.send(message)).await,
@@ -2068,6 +2219,11 @@ async fn run_room_socket(
             ) || close
             {
                 break;
+            }
+            #[cfg(feature = "task8-test-support")]
+            if let Some(text) = text {
+                text_bytes += text.len();
+                texts.push(text);
             }
         }
     });
@@ -2094,6 +2250,10 @@ async fn run_room_socket(
         deadline_ms: 0,
     };
     let mut request_opened = Instant::now();
+    #[cfg(feature = "task8-test-support")]
+    let mut same_read = None;
+    #[cfg(feature = "task8-test-support")]
+    let mut last_probe_revision = None;
     if !sync_room(
         &room,
         &participant_id,
@@ -2107,6 +2267,8 @@ async fn run_room_socket(
         &mut request_time,
         &mut request_opened,
         &output,
+        #[cfg(feature = "task8-test-support")]
+        &mut same_read,
     )
     .await
     {
@@ -2116,9 +2278,21 @@ async fn run_room_socket(
         drop(permit);
         return;
     }
+    #[cfg(not(feature = "task8-test-support"))]
+    macro_rules! room_socket_select { ($($branches:tt)*) => { tokio::select! { $($branches)* } }; }
+    #[cfg(feature = "task8-test-support")]
+    macro_rules! room_socket_select { ($($branches:tt)*) => { tokio::select! {
+        query = async { match health_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+            match query {
+                Some(reply) => { let _ = reply.send(json!({"closed":connection.task8_receiver_is_closed(),"subscriber_id":connection.id(),"generation":generation,"generation_current":state.compat.room_connections.is_current(&participant_id, generation)})); }
+                None => { health_rx = None; }
+            }
+        }
+        $($branches)*
+    } }; }
     loop {
-        tokio::select! {
-            command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = queue_output(&output, close_message(code, reason)); close_queued = true; } break; }
+        room_socket_select! {
+            command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = queue_room_output(&output, close_message(code, reason)); close_queued = true; } break; }
             message = receiver.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let transition = state
@@ -2130,13 +2304,13 @@ async fn run_room_socket(
                         .await
                         .expect("agent transition semaphore closed");
                     if !state.compat.room_connections.is_current(&participant_id, generation) {
-                        let _ = queue_output(&output, close_message(CLOSE_REPLACED, "connected_elsewhere"));
+                        let _ = queue_room_output(&output, close_message(CLOSE_REPLACED, "connected_elsewhere"));
                         close_queued = true;
                         drop(transition);
                         break;
                     }
                     if text.len() > MAX_FRAME_BYTES {
-                        let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large"));
+                        let _ = queue_room_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large"));
                         close_queued = true;
                         drop(transition);
                         break;
@@ -2144,13 +2318,41 @@ async fn run_room_socket(
                     room_reply(&room, &participant_id, mode, &mut adapter, &mut timing, request_time, request_opened, &mut last_decision, &mut last_request_id, &output, text.as_bytes()).await;
                     drop(transition);
                 }
-                Some(Ok(Message::Ping(payload))) => { let _ = queue_output(&output, Message::Pong(payload)); }
+                Some(Ok(Message::Ping(payload))) => { let _ = queue_room_output(&output, Message::Pong(payload)); }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             },
-            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_match_id, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
+            event = connection.recv() => {
+                let Some(event) = event else { break; };
+                if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_room_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; }
+                #[cfg(feature = "task8-test-support")]
+                let (closed_before, cursor_before) = (connection.task8_receiver_is_closed(), cursor);
+                if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_match_id, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output,
+                    #[cfg(feature = "task8-test-support")]
+                    &mut same_read,
+                ).await { close_queued = true; break; }
+                #[cfg(feature = "task8-test-support")]
+                if let (Some(receipt), RoomEvent::Snapshot(snapshot)) = (&probe_receipt, &event) {
+                    if snapshot.kyoku_end.as_ref().is_some_and(|step| step.confirmed.is_empty()) && last_probe_revision != Some(snapshot.revision) {
+                        last_probe_revision = Some(snapshot.revision);
+                        let read = same_read.as_ref().expect("same actor read");
+                        let step = snapshot.kyoku_end.as_ref().unwrap();
+                        let actual = read.kyoku_end.as_ref();
+                        let exact = read.revision == snapshot.revision && actual.is_some_and(|current| current.id == step.id && current.published_at_ms == step.published_at_ms && current.deadline_at_ms == step.deadline_at_ms && current.required == step.required && current.confirmed == step.confirmed);
+                        let payload = json!({"subscriber_id":connection.id(),"generation":generation,"generation_current":state.compat.room_connections.is_current(&participant_id,generation),"snapshot_revision":snapshot.revision,"snapshot_step":step,"read_revision":read.revision,"read_step":actual,"exact_same_read":exact,"closed_before":closed_before,"closed_after_read":connection.task8_receiver_is_closed(),"cursor_before":cursor_before,"cursor_after":cursor,"last_request_id":last_request_id,"last_decision":last_decision});
+                        if output.try_send(RoomOutput::Marker { payload, receipt:receipt.clone() }).is_err() { break; }
+                    }
+                }
+            }
         }
     }
+    #[cfg(feature = "task8-test-support")]
+    state
+        .compat
+        .task8_room_probes
+        .lock()
+        .unwrap()
+        .remove(&participant_id);
     teardown_room_connection(&state, &room, &participant_id, generation).await;
     drop(output);
     if close_queued {
@@ -2173,10 +2375,11 @@ async fn sync_room(
     last_request_id: &mut Option<u64>,
     request_time: &mut RequestTime,
     request_opened: &mut Instant,
-    output: &mpsc::Sender<Message>,
+    output: &mpsc::Sender<RoomOutput>,
+    #[cfg(feature = "task8-test-support")] same_read: &mut Option<double_riichi_core::RoomSnapshot>,
 ) -> bool {
     // Identity, events and private projection must belong to the same actor read.
-    let (match_id, events, projection) = match room
+    let (match_id, events, projection, snapshot) = match room
         .send(RoomCommand::GetMatchView {
             participant_id: participant_id.clone(),
         })
@@ -2186,10 +2389,17 @@ async fn sync_room(
             match_id,
             events,
             projection,
+            snapshot,
             ..
-        }) => (match_id, events, projection),
+        }) => (match_id, events, projection, snapshot),
         _ => return false,
     };
+    #[cfg(feature = "task8-test-support")]
+    {
+        *same_read = Some(snapshot);
+    }
+    #[cfg(not(feature = "task8-test-support"))]
+    let _ = snapshot;
     if *last_match_id != match_id {
         if let Some(request_id) = last_request_id.take() {
             let _ = adapter.retire_request(request_id);
@@ -2219,7 +2429,7 @@ async fn sync_room(
         let Ok(text) = encode_compat_event(event, seat, mode, &scores) else {
             return false;
         };
-        if !queue_output(output, Message::text(text)) {
+        if !queue_room_output(output, Message::text(text)) {
             return false;
         }
         if matches!(event, GameEvent::EndKyoku) {
@@ -2261,7 +2471,7 @@ async fn sync_room(
     let Ok(text) = serde_json::to_string(&request) else {
         return false;
     };
-    if !queue_output(output, Message::text(text)) {
+    if !queue_room_output(output, Message::text(text)) {
         return false;
     }
     *last_decision = Some(decision.decision_id.clone());
@@ -2293,7 +2503,7 @@ async fn room_reply(
     request_opened: Instant,
     last_decision: &mut Option<DecisionId>,
     last_request_id: &mut Option<u64>,
-    output: &mpsc::Sender<Message>,
+    output: &mpsc::Sender<RoomOutput>,
     bytes: &[u8],
 ) {
     let request_id = match request_id_from_frame(bytes) {
@@ -2509,9 +2719,9 @@ async fn room_reply(
         }
     }
 }
-fn send_ack(output: &mpsc::Sender<Message>, ack: Option<ActionAck>) -> bool {
+fn send_ack(output: &mpsc::Sender<RoomOutput>, ack: Option<ActionAck>) -> bool {
     ack.and_then(|ack| serde_json::to_string(&ack).ok())
-        .is_some_and(|text| queue_output(output, Message::text(text)))
+        .is_some_and(|text| queue_room_output(output, Message::text(text)))
 }
 fn room_error_reason(error: &RoomError) -> &'static str {
     match error {

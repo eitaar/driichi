@@ -39,6 +39,62 @@ fn three_player_start_events() -> Vec<CanonicalEvent> {
     ]
 }
 
+#[test]
+fn replay_riichi_discard_index_tracks_declaration_not_latest_discard_and_resets() {
+    for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+        let mut events = three_player_start_events();
+        if mode.seat_count() == 4 {
+            if let GameEvent::StartKyoku { scores, tehais, .. } = &mut events[1] {
+                scores.push(25_000);
+                tehais.push(vec![Tile::from_id(0).unwrap(); 13]);
+            }
+        }
+        let start = events[1].clone();
+        let actor = Seat::new(0).unwrap();
+        let discard = GameEvent::Dahai {
+            actor,
+            tile: Tile::from_id(0).unwrap(),
+            tsumogiri: false,
+        };
+        events.extend([
+            discard.clone(),
+            GameEvent::Reach { actor },
+            discard.clone(),
+            GameEvent::ReachAccepted { actor },
+            discard,
+        ]);
+        events.extend([GameEvent::EndKyoku, start]);
+        let frames = build_replay_frames_for_mode(&events, mode).unwrap();
+        let player =
+            |index: usize| serde_json::to_value(&frames[index].visible_state.players[0]).unwrap();
+        assert!(player(2).get("riichi_discard_index").is_none());
+        assert!(
+            player(3).get("riichi_discard_index").is_none(),
+            "Reach alone has no committed discard"
+        );
+        for index in 4..=7 {
+            assert_eq!(player(index)["riichi_discard_index"], 1);
+        }
+        assert_eq!(frames[6].visible_state.players[0].discards.len(), 3);
+        assert!(
+            player(8).get("riichi_discard_index").is_none(),
+            "new Kyoku resets declaration"
+        );
+        let accepted_only = [
+            events[..2].to_vec(),
+            vec![GameEvent::ReachAccepted { actor }],
+        ]
+        .concat();
+        let frames = build_replay_frames_for_mode(&accepted_only, mode).unwrap();
+        assert!(
+            serde_json::to_value(&frames[2].visible_state.players[0])
+                .unwrap()
+                .get("riichi_discard_index")
+                .is_none()
+        );
+    }
+}
+
 fn default_action(actions: &[double_riichi_core::GameAction]) -> double_riichi_core::GameAction {
     actions
         .iter()

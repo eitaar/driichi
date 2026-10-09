@@ -47,6 +47,14 @@ const liveProjection: ProjectedState = { audience: "player", viewer_seat: 0, mod
 const liveProps = { projection: liveProjection, status: "connected" as const, reason: "", commandError: "", connectionGeneration: 0, send: () => true, reducedMotion: false, participantId: "p0" };
 
 describe("result surfaces", () => {
+  it("offers local surface and surround images inside the existing Settings without replacing audio controls", () => {
+    render(<GameplaySurface {...liveProps} room={liveRoom()} />);
+    expect(screen.getByLabelText("Table surface image")).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
+    expect(screen.getByLabelText("Table surround image")).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
+    expect(screen.getByLabelText("Master")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear surface image", hidden: true })).toBeDisabled();
+  });
+
   afterEach(() => { vi.useRealTimers(); });
 
   it("does not substitute delta or rank for missing authoritative result facts", () => {

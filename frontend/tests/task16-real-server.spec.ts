@@ -608,6 +608,13 @@ async function verifyReplayAndOpenRoutes(
   await adminPage.locator(".skip-link").focus();
   await expect(adminPage.locator(".skip-link")).toBeFocused();
   await adminPage.keyboard.press("Tab");
+  const settings = adminPage.locator(".audio-settings summary");
+  await expect(settings).toBeFocused();
+  await adminPage.keyboard.press("Enter");
+  await expect(adminPage.locator(".audio-settings[open]")).toBeVisible();
+  await adminPage.keyboard.press("Enter");
+  await expect(adminPage.locator(".audio-settings[open]")).toHaveCount(0);
+  await adminPage.keyboard.press("Tab");
   await expect(replayControls.getByRole("slider", { name: /replay position/i })).toBeFocused();
 }
 
