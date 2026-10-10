@@ -3,6 +3,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { waitForGameplayReady } from "./support/gameplay-ready";
 
 test.describe.configure({ mode: "serial" });
 
@@ -212,6 +213,35 @@ test("keeps Human startup and updates independent of a held renderer module", as
     expect(await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; })).toEqual(baseline);
   } finally {
     if (held && !released) await held.continue().catch(() => undefined);
+  }
+});
+
+test("waits for deferred gameplay readiness before finite result clocks", async ({ page }) => {
+  const state = simultaneousDiscardState();
+  const room = structuredClone(projectionFixture.room_envelopes["4p-red-east"]);
+  const lobby = { ...room, phase: "lobby" };
+  await installCharacterFixtures(page);
+  await installSocket(page, state, lobby);
+  let release: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let finish: (() => void) | undefined;
+  const finished = new Promise<void>(resolve => { finish = resolve; });
+  await page.route("**/src/game/three-table.tsx*", async route => {
+    // Exceeds the ordinary visibility budget, inside the existing renderer-ready budget.
+    await new Promise<void>(resolve => { release = resolve; timer = setTimeout(resolve, 6000); });
+    try { await route.continue(); } catch { /* preserve the primary assertion failure */ }
+    finally { finish?.(); }
+  });
+  try {
+    await page.goto("/room/123456/lobby");
+    await expect(page.locator(".connection-state")).toHaveText("connected");
+    await emitRoomUpdate(page, room, state);
+    await waitForGameplayReady(page);
+    await expect(page.getByTestId("gameplay-shell")).toBeVisible();
+  } finally {
+    clearTimeout(timer);
+    release?.();
+    if (release) await finished;
   }
 });
 

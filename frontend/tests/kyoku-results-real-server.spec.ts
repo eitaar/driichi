@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { performance, monitorEventLoopDelay, type ELDHistogram, type EventLoopUtilization } from "node:perf_hooks";
 import { setTimeout as wait } from "node:timers/promises";
 import { startRealServer, type RealServerHarness } from "./support/real-server";
+import { waitForGameplayReady } from "./support/gameplay-ready";
 
 const evidenceRoot = resolve(process.cwd(), "../.superpowers/sdd/2026-10-02-authoritative-kyoku-results/task-8-native1/completion-native1/browser");
 base.describe.configure({ mode: "serial", timeout: 240_000 });
@@ -653,7 +654,7 @@ for (const [mode, count, ordinaryAfter] of [
       mark("start Match");
       const started = await admin.request.post(`${harness.frontendOrigin}/api/v1/admin/rooms/${code}/start`);
       expect(started.status()).toBe(200);
-      for (const human of humans) await expect(human.page.getByTestId("gameplay-shell")).toBeVisible();
+      await Promise.all(humans.map(human => waitForGameplayReady(human.page)));
       await expect.poll(() => humans.every(h => latest(h).state != null)).toBe(true);
       const bySeat = [...humans].sort((a, b) => latest(a).state!.viewer_seat - latest(b).state!.viewer_seat);
       expect(latest(bySeat[1]).state!.players.find(p => p.seat === 1)!.hand).toEqual([36,40,44,48,53,56,60,64,68,72,73,74,76]);
@@ -681,11 +682,8 @@ for (const [mode, count, ordinaryAfter] of [
         }).observe({ type: "longtask", buffered: true });
       }, browserTaskPrefix);
       reconnectScheduling.browser_tasks.installed_before_result_at_ms = Date.now();
-      // Use the table's actual ready signal before starting finite result clocks.
-      await Promise.all(bySeat.map(async human => {
-        await expect(human.page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
-        await human.page.evaluate(`(async () => { await import('/src/game/store.ts'); })()`);
-      }));
+      // Gameplay readiness was checked before its shell; preload the store before finite clocks.
+      await Promise.all(bySeat.map(human => human.page.evaluate(`(async () => { await import('/src/game/store.ts'); })()`)));
       mark("offered dealer discard77");
       await choose(bySeat[0], action => typeof action === "object" && action != null && "discard" in action && (action as { discard: { tile: number } }).discard.tile === 77);
       await expect.poll(() => latest(bySeat[1]).state?.decision?.actions.some(a => typeof a.action === "object" && a.action != null && "Ron" in a.action)).toBe(true);
