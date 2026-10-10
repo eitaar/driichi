@@ -178,6 +178,7 @@ async function emitRoomUpdate(page: Page, room: Record<string, any>, state: Reco
 }
 
 test("keeps Human startup and updates independent of a held renderer module", async ({ page }) => {
+  test.setTimeout(60_000); // Cold bootstrap plus a separate held-renderer transition; no result clocks here.
   // Public synthetic socket/HTTP boundary, not genuine clock or native OPEN evidence.
   const state = simultaneousDiscardState();
   const room = structuredClone(projectionFixture.room_envelopes["4p-red-east"]);
@@ -186,11 +187,16 @@ test("keeps Human startup and updates independent of a held renderer module", as
   await installSocket(page, state, lobby);
   let held: Route | undefined;
   let released = false;
+  // Cold bootstrap can exceed 2.5s without any dependency on the held renderer.
+  await page.route("**/src/app.tsx*", async route => {
+    await new Promise(resolve => setTimeout(resolve, 3500));
+    await route.continue().catch(() => undefined);
+  });
   await page.route("**/src/game/three-table.tsx*", route => { held = route; });
   try {
     // Commit, not DOMContentLoaded: an eager module can block the latter.
     await page.goto("/room/123456/lobby", { waitUntil: "commit" });
-    await expect.poll(() => page.evaluate(() => (window as unknown as { __constructions: number }).__constructions), { timeout: 2500 }).toBeGreaterThan(0);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __constructions: number }).__constructions), { timeout: 30_000 }).toBeGreaterThan(0);
     await expect(page.locator(".connection-state")).toHaveText("connected");
     expect(held, "lobby bootstrap must not demand the renderer").toBeUndefined();
     await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
