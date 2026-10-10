@@ -120,6 +120,25 @@ describe("authoritative result decoders", () => {
     expect(decodeWinResult({ ...win, winning_tile_index: 99 }, "4p-red-east")).toBeNull();
   });
 
+  it("rejects contradictory basic payment, repeated physical tiles and incomplete hands", () => {
+    expect(decodeWinResult(win, "4p-red-east")).not.toBeNull();
+    for (const bad of [
+      { ...win, win_points: 1 }, { ...win, win_points: 2_600 },
+      { ...win, concealed: [win.concealed[1], ...win.concealed.slice(1)] },
+      { ...win, concealed: win.concealed.slice(1), winning_tile_index: 12 },
+    ]) expect(decodeWinResult(bad, "4p-red-east")).toBeNull();
+  });
+
+  it("accepts high fu adjudicated for multiple closed kans", () => {
+    const highFu = { ...win, target: 0, tsumo: true, concealed: [40, 41], winning_tile: 41, winning_tile_index: 1,
+      melds: [
+        ...[[0, 1, 2, 3], [32, 33, 34, 35], [36, 37, 38, 39]].map(tiles => ({ kind: "Ankan", tiles, opened: false, from_who: null, called_tile: null })),
+        { kind: "Pon", tiles: [84, 85, 86], opened: true, from_who: 1, called_tile: 84 },
+      ],
+      evaluation: { Ordinary: { han: 6, fu: 130, limit: "Haneman" } }, yaku: [20, 21, 22].map(id => ({ id, name: "pinned two-han yaku", han: 2 })), win_points: 12_000 };
+    expect(decodeWinResult(highFu, "4p-red-east")).not.toBeNull();
+  });
+
   it("rejects duplicate ranks instead of deriving an order from array position or score", () => {
     const duplicateRanks = {
       mode: "FourPlayerRedEast",
@@ -149,8 +168,9 @@ describe("authoritative result decoders", () => {
   });
 
   it("bounds nested restored tiles, meld seats, arrays, strings and numbers", () => {
-    const meld = { kind: "Kakan", tiles: [52, 53, 54, 55], opened: true, from_who: 0, called_tile: 52 };
-    expect(decodeWinResult({ ...win, melds: [meld] }, "4p-red-east")).not.toBeNull();
+    const meld = { kind: "Kakan", tiles: [52, 53, 54, 55], opened: true, from_who: 1, called_tile: 52 };
+    const meldWin = { ...win, concealed: win.concealed.filter(tile => ![44, 48, 52].includes(tile)), winning_tile_index: 10, melds: [meld] };
+    expect(decodeWinResult(meldWin, "4p-red-east")).not.toBeNull();
     for (const bad of [
       { ...win, concealed: Array(65).fill(0) }, { ...win, melds: Array(257).fill(meld) },
       { ...win, melds: [{ ...meld, tiles: [255] }] }, { ...win, melds: [{ ...meld, from_who: 4 }] },
@@ -158,7 +178,7 @@ describe("authoritative result decoders", () => {
       { ...win, event_index: Number.MAX_SAFE_INTEGER + 1 }, { ...win, win_points: Infinity },
       { ...win, evaluation: { Unknown: {} } }, { ...win, evaluation: { Ordinary: { han: 1, fu: 30, limit: "Unknown" } } },
     ]) expect(decodeWinResult(bad, "4p-red-east")).toBeNull();
-    const yakuman = { ...win, evaluation: { Yakuman: { multiplier: 2 } }, yaku: [{ id: 42, name: "kokushi", han: null, yakuman_multiplier: 2 }] };
+    const yakuman = { ...win, win_points: 64_000, evaluation: { Yakuman: { multiplier: 2 } }, yaku: [{ id: 42, name: "kokushi", han: null, yakuman_multiplier: 2 }] };
     expect(decodeWinResult(yakuman, "4p-red-east")?.evaluation).toEqual({ Yakuman: { multiplier: 2 } });
     expect(decodeWinResult({ ...yakuman, yaku: [{ id: 42, name: "kokushi", han: 26 }] }, "4p-red-east")).toBeNull();
   });

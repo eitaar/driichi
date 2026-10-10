@@ -35,6 +35,7 @@ impl Serialize for ReplayFrame {
             frame: self,
             result: self.result.as_ref(),
             settlement: self.settlement.as_ref(),
+            score_state: None,
         }
         .serialize(serializer)
     }
@@ -44,6 +45,7 @@ struct ReplayFrameWithResults<'a> {
     frame: &'a ReplayFrame,
     result: Option<&'a WinResult>,
     settlement: Option<&'a KyokuSettlement>,
+    score_state: Option<&'a KyokuSettlement>,
 }
 
 impl Serialize for ReplayFrameWithResults<'_> {
@@ -54,7 +56,13 @@ impl Serialize for ReplayFrameWithResults<'_> {
         let mut object = serializer.serialize_struct("ReplayFrame", 6)?;
         object.serialize_field("event_index", &self.frame.event_index)?;
         object.serialize_field("visible_event", &event_value(&self.frame.visible_event))?;
-        object.serialize_field("visible_state", &self.frame.visible_state)?;
+        if let Some(settlement) = self.score_state {
+            let mut state = self.frame.visible_state.clone();
+            apply_settlement_projection(&mut state, settlement);
+            object.serialize_field("visible_state", &state)?;
+        } else {
+            object.serialize_field("visible_state", &self.frame.visible_state)?;
+        }
         object.serialize_field("auxiliary_events", &self.frame.auxiliary_events)?;
         object.serialize_field("result", &self.result)?;
         object.serialize_field("settlement", &self.settlement)?;
@@ -74,7 +82,14 @@ impl Serialize for JoinedFrames<'_> {
         S: Serializer,
     {
         let mut sequence = serializer.serialize_seq(Some(self.frames.len()))?;
+        let mut score_state = None;
         for (index, frame) in self.frames.iter().enumerate() {
+            if matches!(frame.visible_event, GameEvent::StartKyoku { .. }) {
+                score_state = None;
+            }
+            if let Some(settlement) = self.settlements.get(&index) {
+                score_state = Some(*settlement);
+            }
             sequence.serialize_element(&ReplayFrameWithResults {
                 frame,
                 result: self.results.get(&index).copied().or(frame.result.as_ref()),
@@ -83,6 +98,7 @@ impl Serialize for JoinedFrames<'_> {
                     .get(&index)
                     .copied()
                     .or(frame.settlement.as_ref()),
+                score_state,
             })?;
         }
         sequence.end()
@@ -675,6 +691,14 @@ pub fn attach_result_records(
         record
             .validate(&roster)
             .map_err(ReplayError::InvalidEvent)?;
+        let dealer = frames[start]
+            .visible_state
+            .dealer
+            .ok_or_else(|| ReplayError::InvalidEvent("missing canonical dealer".into()))?;
+        for win in &record.wins {
+            win.validate_payment(record.mode, dealer)
+                .map_err(ReplayError::InvalidEvent)?;
+        }
         let terminal = (start + 1..end)
             .filter(|&index| {
                 matches!(
@@ -724,7 +748,11 @@ pub fn attach_result_records(
             position + 1 == starts.len(),
         )?;
     }
-    for record in records {
+    for (position, record) in records.iter().enumerate() {
+        let next_start = starts.get(position + 1).copied().unwrap_or(frames.len());
+        for frame in &mut frames[record.end_event_index..next_start] {
+            apply_settlement_projection(&mut frame.visible_state, &record.settlement);
+        }
         for win in &record.wins {
             #[cfg(test)]
             observe_attach_clone_boundary();
@@ -735,6 +763,13 @@ pub fn attach_result_records(
         frames[record.end_event_index].settlement = Some(record.settlement.clone());
     }
     Ok(())
+}
+
+fn apply_settlement_projection(state: &mut ReplayAdminProjection, settlement: &KyokuSettlement) {
+    for (player, change) in state.players.iter_mut().zip(&settlement.changes) {
+        player.score = change.after;
+    }
+    state.kyotaku = Some(settlement.pot_after);
 }
 
 fn validate_canonical_settlement(

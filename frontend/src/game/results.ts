@@ -273,8 +273,30 @@ export function decodeWinResult(value: unknown, mode: string): WinResult | null 
     || winningTileIndex === null || !evaluation || winPoints === null
     || concealed[winningTileIndex] !== winningTile
     || object.tsumo !== (seat === target)) return null;
+  if (melds.length > 4 || concealed.length + melds.length * 3 !== 14) return null;
+  const physical = [...concealed, ...melds.flatMap(meld => meld.tiles)];
+  if (new Set(physical).size !== physical.length) return null;
+  for (const meld of melds) {
+    const kan = meld.kind === "Daiminkan" || meld.kind === "Ankan" || meld.kind === "Kakan";
+    if (meld.tiles.length !== (kan ? 4 : 3)) return null;
+    const kinds = meld.tiles.map(tile => Math.floor(tile / 4)).sort((a, b) => a - b);
+    if (meld.kind === "Chi" ? seatCount === 3 || kinds[0] >= 27 || Math.floor(kinds[0] / 9) !== Math.floor(kinds[2] / 9) || kinds[1] !== kinds[0] + 1 || kinds[2] !== kinds[1] + 1 : kinds.some(kind => kind !== kinds[0])) return null;
+    if (meld.kind === "Ankan" ? meld.opened || meld.from_who !== undefined || meld.called_tile !== undefined : !meld.opened || meld.from_who === undefined || meld.from_who === seat || meld.called_tile === undefined || !meld.tiles.includes(meld.called_tile)) return null;
+  }
   const yaku = decodeYaku(object.yaku, evaluation);
   if (!yaku) return null;
+  let base: number;
+  if ("Yakuman" in evaluation) base = 8_000 * evaluation.Yakuman.multiplier;
+  else {
+    const { han, fu } = evaluation.Ordinary;
+    if (fu !== 20 && fu !== 25 && !(fu >= 30 && fu <= 250 && fu % 10 === 0)) return null;
+    base = han >= 13 ? 8_000 : han >= 11 ? 6_000 : han >= 8 ? 4_000 : han >= 6 ? 3_000 : han >= 5 ? 2_000 : Math.min(2_000, fu * 2 ** (han + 2));
+  }
+  const rounded = (points: number) => Math.ceil(points / 100) * 100;
+  const dealerPoints = object.tsumo ? rounded(base * 2) * (seatCount - 1) : rounded(base * 6);
+  const childPoints = object.tsumo ? rounded(base * 2) + rounded(base) * (seatCount - 2) : rounded(base * 4);
+  // The decoder has no dealer context; exact dealer matching is enforced at the canonical server join.
+  if (winPoints !== dealerPoints && winPoints !== childPoints) return null;
   return {
     event_index: eventIndex,
     winner,

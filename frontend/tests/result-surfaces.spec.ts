@@ -9,8 +9,8 @@ const fixtures = JSON.parse(readFileSync(resolve(process.cwd(), "tests/fixtures/
 };
 const win = {
   event_index: 1, winner: "P1", seat: 0, target: 1, tsumo: false,
-  concealed: [0, 1, 32, 33, 36, 40, 44, 48, 52, 53, 56, 60, 64, 65],
-  melds: [{ kind: "Ankan", tiles: [52, 53, 54, 55], opened: false, from_who: null, called_tile: null }], winning_tile: 52, winning_tile_index: 8,
+  concealed: [0, 1, 32, 33, 34, 36, 40, 44, 60, 64, 68],
+  melds: [{ kind: "Ankan", tiles: [52, 53, 54, 55], opened: false, from_who: null, called_tile: null }], winning_tile: 32, winning_tile_index: 2,
   yaku: [{ id: 1, name: "riichi", han: 1, yakuman_multiplier: null }],
   evaluation: { Ordinary: { han: 1, fu: 30, limit: null } }, win_points: 1000,
 };

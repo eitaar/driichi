@@ -219,7 +219,7 @@ describe("Task 12 table invariants", () => {
   it("keeps result facts authoritative instead of deriving a limit from han", () => {
     const room = { game_mode: "4p-red-east", roster: [0, 1, 2, 3].map((seat) => ({ seat, participant_id: `p${seat + 1}`, display_name: seat === 0 ? "Mika" : `Seat ${seat}`, kind: "human", character_id: "player-red", controller: "interactive" })) } as never;
     const win = decodeWinResult({ event_index: 4, winner: "p1", seat: 0, target: 1, tsumo: false,
-      concealed: [16, 17], melds: [], winning_tile: 16, winning_tile_index: 0,
+      concealed: [16, 17, 0, 4, 8, 36, 40, 44, 48, 52, 56, 60, 64, 68], melds: [], winning_tile: 16, winning_tile_index: 0,
       evaluation: { Ordinary: { han: 5, fu: 30, limit: null } },
       yaku: [{ id: 31, name: "dora", han: 5, yakuman_multiplier: null }], win_points: 8000,
     }, "4p-red-east");

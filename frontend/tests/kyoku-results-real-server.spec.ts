@@ -11,6 +11,8 @@ import { startRealServer, type RealServerHarness } from "./support/real-server";
 
 const evidenceRoot = resolve(process.cwd(), "../.superpowers/sdd/2026-10-02-authoritative-kyoku-results/task-8-native1/completion-native1/browser");
 base.describe.configure({ mode: "serial", timeout: 240_000 });
+// Real finite-clock gameplay uses the platform renderer, as the real-server config does.
+base.use({ launchOptions: { args: [] } });
 
 type Snapshot = { type: string; room: { phase: string; roster: Array<{ participant_id: string; seat: number }>; kyoku_end: null | { id: { match_id: string; kyoku_sequence: number; step_index: number }; content: Record<string, unknown>; required: string[]; confirmed: string[]; published_at_ms: number; deadline_at_ms: number; remaining_ms: number }; result: unknown }; state: null | { viewer_seat: number; players: Array<{ seat: number; hand?: number[]; score: number }>; decision: null | { decision_id: string; actions: Array<{ action_id: string; action: unknown }> }; kyoku_results?: { wins: Array<{ event_index: number; seat: number; concealed: number[]; winning_tile: number; winning_tile_index: number; win_points: number; evaluation: unknown }>; settlement: unknown } } };
 type ObservedSnapshot = Snapshot & { socket_generation: number; received_at_ms: number; message_index: number };
@@ -349,15 +351,17 @@ async function confirmStep(humans: Human[], step: ResultStep): Promise<string[]>
     const confirmations = human.sent.slice(sentBefore).map(t => JSON.parse(t) as { type?: string; step_id?: ResultStep["id"] }).filter(m => m.type === "confirm_result");
     expect(confirmations.map(m => m.step_id)).toEqual(outcome === "clicked" ? [step.id] : []);
     if (outcome === "clicked") {
-      // The last confirmer's reply is a fresh current view, already the next step.
+      // Concurrent confirmations can coalesce both replies into the early next publication.
       await expect.poll(() => ownAck(human) || (
-        required.every(sentExpected) && required.filter(h => h !== human).every(ownAck) &&
+        required.every(sentExpected) &&
         human.snapshots.slice(snapshotsBefore).some(s => {
           if (s.received_at_ms < human.sentAt[sentBefore]) return false;
           const next = s.room.kyoku_end;
           return next
-            ? next.id.match_id === step.id.match_id && next.id.kyoku_sequence === step.id.kyoku_sequence && next.id.step_index === step.id.step_index + 1
-            : step.id.step_index === 2 && s.room.phase === "post_match" && s.room.result != null;
+            ? next.id.match_id === step.id.match_id && next.id.kyoku_sequence === step.id.kyoku_sequence && next.id.step_index === step.id.step_index + 1 &&
+              (next.published_at_ms < step.deadline_at_ms || required.filter(h => h !== human).every(ownAck))
+            : step.id.step_index === 2 && s.room.phase === "post_match" && s.room.result != null &&
+              (s.received_at_ms < step.deadline_at_ms || required.filter(h => h !== human).every(ownAck));
         })
       )).toBe(true);
     }
@@ -599,12 +603,10 @@ for (const [mode, count, ordinaryAfter] of [
       mark("offered Ron seat2");
       let finalResponse = choose(bySeat[2], action => typeof action === "object" && action != null && "Ron" in action);
       if (count === 4) {
-        await finalResponse;
-        finalResponse = latest(bySeat[3]).state?.decision ? choose(bySeat[3], action => action === "Pass") : Promise.resolve();
+        finalResponse = finalResponse.then(() => latest(bySeat[3]).state?.decision ? choose(bySeat[3], action => action === "Pass") : undefined);
       }
       // Browser action completion can lag behind its real server publication.
       void finalResponse.catch(() => undefined);
-      if (!finalFixture) await finalResponse;
       await expect.poll(() => latest(bySeat[0]).room.kyoku_end?.id.step_index, { timeout: 30_000 }).toBe(0);
       mark("first winner publication");
       const first = latest(bySeat[0]);

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { Vector3 } from "three";
+import { Box3, Vector3 } from "three";
 import {
   BACK_FACE_SIZE,
   FACE_SIZE,
@@ -73,23 +73,24 @@ describe("three-dimensional table layout", () => {
     expect(sceneSource).not.toContain("setPixelRatio");
   });
 
-  it("keeps concealed backs inset within the unchanged front-face footprint", () => {
-    const backGeometry = createBackFaceGeometry();
-
-    expect(BACK_FACE_SIZE).toEqual([0.54, 0.78]);
-    expect(backGeometry.parameters.width).toBe(BACK_FACE_SIZE[0]);
-    expect(backGeometry.parameters.height).toBe(BACK_FACE_SIZE[1]);
-    expect(BACK_FACE_SIZE[0]).toBeLessThan(0.58);
-    expect(BACK_FACE_SIZE[1]).toBeLessThan(0.82);
-
-    backGeometry.dispose();
-  });
-
-  it("keeps a shared top-rim surface beneath the inset face", () => {
-    const bodyGeometry = createTileSideGeometry();
-    expect(bodyGeometry.getAttribute("normal")).toBeDefined();
-    expect(bodyGeometry.getIndex()?.count).toBe(30);
-    bodyGeometry.dispose();
+  it("joins the rounded ceramic body and ochre back within the approved tile footprint", () => {
+    const body = createTileSideGeometry();
+    const back = createBackFaceGeometry();
+    body.computeBoundingBox();
+    back.computeBoundingBox();
+    expect(BACK_FACE_SIZE).toEqual([TILE_BODY_SIZE.width, TILE_BODY_SIZE.depth]);
+    for (const geometry of [body, back]) {
+      expect(geometry.boundingBox!.max.x - geometry.boundingBox!.min.x).toBeCloseTo(TILE_BODY_SIZE.width);
+      expect(geometry.boundingBox!.max.z - geometry.boundingBox!.min.z).toBeCloseTo(TILE_BODY_SIZE.depth);
+      const normals = geometry.getAttribute("normal").array;
+      expect(Array.from(normals).some((value) => Math.abs(value) > 0.01 && Math.abs(value) < 0.99)).toBe(true);
+    }
+    expect(body.boundingBox!.max.y).toBeCloseTo(TILE_BODY_SIZE.height / 2);
+    expect(body.boundingBox!.min.y).toBeLessThan(back.boundingBox!.max.y);
+    expect(back.boundingBox!.min.y).toBeCloseTo(-TILE_BODY_SIZE.height / 2);
+    expect(back.boundingBox!.max.y).toBeCloseTo(-TILE_BODY_SIZE.height / 4);
+    body.dispose();
+    back.dispose();
   });
 
   it("keeps the face aligned with the authored tile body", () => {
@@ -139,13 +140,12 @@ describe("three-dimensional table layout", () => {
     }
   });
 
-  it("keeps ownerless Dora bottom-readable while preserving its upward normal", () => {
+  it("keeps the public dead-wall indicator face upward", () => {
     const layout = buildMatchSceneLayout(projection({ dora_indicators: [16] }), null, "replay");
     const dora = layout.tiles.find(({ group }) => group === "dora");
     expect(dora).toBeDefined();
     const orientation = tileFaceQuaternion(dora!.rotation);
-    expect(new Vector3(0, 1, 0).applyQuaternion(orientation).toArray().map((component) => Math.round(component * 1e6) / 1e6)).toEqual([0, 0, -1]);
-    expect(new Vector3(0, 0, 1).applyQuaternion(orientation).toArray().map((component) => Math.round(component * 1e6) / 1e6)).toEqual([0, 1, 0]);
+    expect(new Vector3(0, 0, 1).applyQuaternion(orientation).y).toBeCloseTo(1);
   });
 
   it("lays seat faces flat without twisting their UV axes", () => {
@@ -297,12 +297,18 @@ describe("three-dimensional table layout", () => {
     expect(new Set(opponentHands.map(({ scale }) => scale))).toEqual(new Set([REMOTE_TILE_SIZE]));
   });
 
-  it("preserves the authoritative Dora order on the side rail", () => {
-    const layout = buildMatchSceneLayout(projection({ dora_indicators: [4, 8, 12, 16, 20] }), null);
-    const dora = layout.tiles.filter(({ group }) => group === "dora");
-    expect(dora.map(({ tile }) => tile)).toEqual([4, 8, 12, 16, 20]);
-    expect(dora.every(({ scale, position }) => scale === LOCAL_TILE_SIZE && position[0] < -3 && position[1] > 0)).toBe(true);
-    expect(dora.map(({ position }) => position[0])).toEqual([...dora.map(({ position }) => position[0])].sort((a, b) => a - b));
+  it("reveals only public Dora in the seven dead-wall stacks without adding physical tiles", () => {
+    const source = projection({ remaining_wall: 63, dora_indicators: [4, 8, 12, 16, 20] });
+    const layout = buildMatchSceneLayout(source, null);
+    const dora = layout.tiles.filter(({ group }) => group === "dora").sort((a, b) => a.key.localeCompare(b.key));
+    expect(dora.map(({ tile }) => tile)).toEqual(source.dora_indicators);
+    expect(dora[0].position[0]).toBe(-4.25);
+    expect(dora[0].position[1]).toBe(0.45);
+    expect(dora[0].position[2]).toBeCloseTo(2.686);
+    const dead = layout.tiles.filter(({ key, group }) => key.startsWith("dead-wall-") || group === "dora");
+    expect(dead).toHaveLength(14);
+    expect(new Set(dead.map(({ position }) => `${position[0]}:${position[2]}`)).size).toBe(7);
+    expect(layout.tiles.filter(({ key }) => key.startsWith("wall-")).some(({ key }) => key.includes("-bottom-"))).toBe(false);
   });
 
   it.each(["3p-red-east", "4p-red-east"] as const)("shows one partial live stack at most and seven separate dead-wall stacks in %s", (mode) => {
@@ -319,7 +325,7 @@ describe("three-dimensional table layout", () => {
       }
       expect([...stacks.values()].filter((heights) => heights.length === 1)).toHaveLength(remaining % 2);
       for (const heights of stacks.values()) {
-        expect(heights).toEqual(heights.length === 1 ? [0.24] : [0.24, 0.45]);
+        expect([...heights].sort()).toEqual(heights.length === 1 ? [0.24] : [0.24, 0.45]);
       }
       expect(new Set(dead.map(({ position }) => `${position[0]}:${position[2]}`)).size).toBe(7);
       if (mode.startsWith("3p")) expect([...live, ...dead].some(({ key }) => key.includes("-top-"))).toBe(false);
@@ -330,6 +336,13 @@ describe("three-dimensional table layout", () => {
         expect(new Vector3().applyMatrix4(matrix).y).toBeGreaterThan(tile.position[1]);
       }
     }
+  });
+
+  it.each(["ThreePlayerRedEast", "ThreePlayerRedHalf"])("uses the three-seat wall capacity for canonical mode %s", (mode) => {
+    const layout = buildMatchSceneLayout(projection({ mode, remaining_wall: 999 }), null);
+    expect(layout.wallCount).toBe(94);
+    expect(layout.tiles.filter(({ group }) => group === "wall")).toHaveLength(108);
+    expect(layout.tiles.filter(({ group }) => group === "wall").some(({ key }) => key.includes("-top-"))).toBe(false);
   });
 
   it("normalizes malformed remaining wall values and creates matching instances", () => {
@@ -442,7 +455,7 @@ describe("three-dimensional table layout", () => {
             river.forEach((t, index) => {
               expect(t.rotation[1] - baseline[index].rotation[1]).toBeCloseTo(index === declaration ? Math.PI / 2 : 0);
               expect(aabbIntersects(sceneTileAabb(t), CENTER_DEVICE_AABB)).toBe(false);
-              if (Math.floor(index / 6) !== Math.floor(declaration / 6)) expect(t.position).toEqual(baseline[index].position);
+              if (index < declaration || Math.floor(index / 6) !== Math.floor(declaration / 6)) expect(t.position).toEqual(baseline[index].position);
               if (index % 6 !== 0) expect(aabbIntersects(sceneTileAabb(t), sceneTileAabb(river[index - 1]))).toBe(false);
             });
           }
@@ -474,6 +487,40 @@ describe("three-dimensional table layout", () => {
   it("does not project 3D hit targets for the DOM-owned local hand", () => {
     const layout = buildMatchSceneLayout(projection(), null);
     expect(projectLocalHandHitTargets(layout).targets).toHaveLength(0);
+  });
+
+  it("keeps four-pon melds clear of short upright hands on Live and Replay", () => {
+    const body = createTileSideGeometry();
+    const back = createBackFaceGeometry();
+    body.computeBoundingBox();
+    back.computeBoundingBox();
+    const bounds = new Box3().copy(body.boundingBox!).union(back.boundingBox!);
+    for (const mode of ["ThreePlayerRedEast", "FourPlayerRedEast"]) {
+      const seats = mode === "ThreePlayerRedEast" ? 3 : 4;
+      for (let viewer = 0; viewer < seats; viewer++) {
+        for (const concealed of [1, 2]) {
+          const players = Array.from({ length: seats }, (_, seat) => player(seat, `seat-${seat}`, {
+            hand: Array.from({ length: concealed }, (_, i) => 108 + seat * 4 + i),
+            concealed_count: concealed,
+            melds: Array.from({ length: 4 }, (_, meld) => ({
+              tiles: [0, 1, 2].map((i) => 36 + (seat * 4 + meld) * 4 + i), opened: true,
+            })),
+          }));
+          for (const surface of ["live", "replay"] as const) {
+            const layout = buildMatchSceneLayout(projection({ mode, viewer_seat: viewer, players }), null, surface);
+            for (const { seat, position } of layout.players) {
+              const hand = layout.tiles.filter((tile) => tile.group === "hand" && tile.key.includes(`-${position}-seat-${seat}-`));
+              const melds = layout.tiles.filter((tile) => tile.group === "meld" && tile.key.includes(`-${position}-seat-${seat}-`));
+              for (const tile of hand) for (const meld of melds) {
+                expect(bounds.clone().applyMatrix4(instanceMatrix(tile)).intersectsBox(bounds.clone().applyMatrix4(instanceMatrix(meld))), `${mode} ${viewer} ${surface}: ${tile.key} overlaps ${meld.key}`).toBe(false);
+              }
+            }
+          }
+        }
+      }
+    }
+    body.dispose();
+    back.dispose();
   });
 
   it("keeps maximum rivers and called melds disjoint from one another and the center device", () => {

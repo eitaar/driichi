@@ -3719,7 +3719,7 @@ mod tests {
                 .unwrap();
                 assert_eq!(version, Some(1));
             }
-            // Same adversarial meld as the library check; not captured gameplay authority.
+            // An extra meld corrupts this complete hand even with an in-range/absent source.
             let mut payload = case["record"].clone();
             payload["wins"][0]["melds"] = json!([{
                 "kind": "Pon", "tiles": [0, 1, 2], "opened": true,
@@ -3731,19 +3731,14 @@ mod tests {
                 json!(255),
                 json!(record.mode.seat_count()),
             ] {
-                let valid = seat.is_null() || seat == json!(0);
                 payload["wins"][0]["melds"][0]["from_who"] = seat;
                 sqlx::query("UPDATE match_kyoku_results SET payload_json = ? WHERE match_id = ? AND kyoku_sequence = 1")
                     .bind(payload.to_string()).bind(&match_id).execute(storage.pool()).await.unwrap();
                 let outcome = storage.load_replay(&match_id).await;
-                if valid {
-                    assert!(outcome.is_ok(), "legal/absent meld source: {outcome:?}");
-                } else {
-                    assert!(
-                        matches!(outcome, Err(StorageError::ReplayCorrupt)),
-                        "modern meld source must reject, not legacy/saved: {outcome:?}"
-                    );
-                }
+                assert!(
+                    matches!(outcome, Err(StorageError::ReplayCorrupt)),
+                    "extra meld must reject with any source, not legacy/saved: {outcome:?}"
+                );
                 let version: Option<i64> = sqlx::query_scalar(
                     "SELECT authoritative_results_version FROM matches WHERE match_id = ?",
                 )

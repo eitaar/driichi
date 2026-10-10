@@ -26,6 +26,7 @@ export default defineConfig({
       name: "chromium",
       use: {
         browserName: "chromium",
+        channel: "chromium", // Full browser/new headless, rather than the headless-shell renderer.
         ...(hardwareWebgl ? { deviceScaleFactor: 2 } : {}),
         launchOptions: { args: webglArgs },
       },

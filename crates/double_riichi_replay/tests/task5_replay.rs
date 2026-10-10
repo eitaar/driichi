@@ -492,6 +492,18 @@ fn result_allows_paid_reach_and_verified_final_remaining_pot_award() {
     );
     attach_result_records(&mut frames, &[record.clone()]).unwrap();
     assert_eq!(frames[4].settlement, Some(record.settlement));
+    for frame in &frames[4..] {
+        assert_eq!(
+            frame
+                .visible_state
+                .players
+                .iter()
+                .map(|p| p.score)
+                .collect::<Vec<_>>(),
+            vec![24_000, 26_000, 25_000, 25_000]
+        );
+        assert_eq!(frame.visible_state.kyotaku, Some(0));
+    }
 }
 
 #[test]
@@ -566,7 +578,11 @@ fn result_rejects_invalid_restored_meld_seats_without_mutating_existing_join() {
             payload["wins"][0]["melds"][0]["from_who"] = source;
             let control: KyokuResultRecord = serde_json::from_value(payload.clone()).unwrap();
             let mut control_frames = frames.clone();
-            attach_result_records(&mut control_frames, &[control]).unwrap();
+            assert!(matches!(
+                attach_result_records(&mut control_frames, &[control]),
+                Err(ReplayError::InvalidEvent(_))
+            ));
+            assert_eq!(encode_replay_frames(&control_frames).unwrap(), before);
         }
         for seat in [255, record.mode.seat_count() as u8] {
             payload["wins"][0]["melds"][0]["from_who"] = serde_json::json!(seat);
@@ -610,6 +626,23 @@ fn result_pinned_multi_ron_captures_join_ordered_winners_and_combined_settlement
             .map(|frame| frame.visible_event.clone())
             .collect::<Vec<_>>();
         attach_result_records(&mut frames, &[record.clone()]).unwrap();
+        let expected_scores = if record.mode.is_three_player() {
+            vec![91_800, 107_600, 102_600]
+        } else {
+            vec![91_600, 107_800, 102_600, 100_000]
+        };
+        for frame in &frames[record.end_event_index..] {
+            assert_eq!(
+                frame
+                    .visible_state
+                    .players
+                    .iter()
+                    .map(|p| p.score)
+                    .collect::<Vec<_>>(),
+                expected_scores
+            );
+            assert_eq!(frame.visible_state.kyotaku, Some(0));
+        }
         assert_eq!(frames[indices[0]].result, Some(record.wins[0].clone()));
         assert_eq!(frames[indices[1]].result, Some(record.wins[1].clone()));
         assert!(frames[indices[0]].settlement.is_none() && frames[indices[1]].settlement.is_none());
@@ -687,6 +720,60 @@ fn result_oversized_borrowed_identity_preserves_existing_join() {
 }
 
 #[test]
+fn result_rejects_contradictory_saved_win_without_mutating_frames() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
+        let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
+        let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
+        attach_result_records(&mut frames, std::slice::from_ref(&record)).unwrap();
+        let before = encode_replay_frames(&frames).unwrap();
+        for corruption in [
+            "points",
+            "dealer_payment",
+            "duplicate",
+            "incomplete",
+            "extra_meld",
+        ] {
+            let mut bad = record.clone();
+            let win = &mut bad.wins[0];
+            match corruption {
+                "points" => win.win_points = 1,
+                "dealer_payment" => win.win_points = 7_800,
+                "duplicate" => win.concealed[0] = win.concealed[1],
+                "incomplete" => {
+                    win.concealed.remove(0);
+                    win.winning_tile_index -= 1;
+                }
+                "extra_meld" => win.melds.push(double_riichi_core::ResultMeld {
+                    kind: double_riichi_core::ResultMeldKind::Pon,
+                    tiles: vec![
+                        Tile::from_id(0).unwrap(),
+                        Tile::from_id(1).unwrap(),
+                        Tile::from_id(2).unwrap(),
+                    ],
+                    opened: true,
+                    from_who: Some(Seat::new(0).unwrap()),
+                    called_tile: Some(Tile::from_id(0).unwrap()),
+                }),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    attach_result_records(&mut frames, &[bad]),
+                    Err(ReplayError::InvalidEvent(_))
+                ),
+                "{corruption}"
+            );
+            assert_eq!(encode_replay_frames(&frames).unwrap(), before);
+        }
+    }
+}
+
+#[test]
 fn result_allows_ordered_multi_ron_with_one_combined_settlement() {
     let mut events = start_events();
     if let GameEvent::StartKyoku { kyotaku, .. } = &mut events[1] {
@@ -720,10 +807,13 @@ fn result_allows_ordered_multi_ron_with_one_combined_settlement() {
             seat: Seat::new(seat as u8).unwrap(),
             target: Seat::new(0).unwrap(),
             tsumo: false,
-            concealed: vec![Tile::from_id(0).unwrap()],
+            concealed: [36, 40, 44, 48, 52, 56, 60, 64, 68, 108, 109, 0, 1, 2]
+                .into_iter()
+                .map(|id| Tile::from_id(id).unwrap())
+                .collect(),
             melds: vec![],
             winning_tile: Tile::from_id(0).unwrap(),
-            winning_tile_index: 0,
+            winning_tile_index: 11,
             yaku: vec![YakuValue {
                 id: 2,
                 name: "立直".into(),

@@ -34,14 +34,6 @@ export function TableCenter({ projection, wallCount }: { projection: ProjectedSt
       ctx.fillStyle = "#fafbfc";
       ctx.font = '600 82px "Segoe UI", sans-serif';
       ctx.fillText(typeof player.score === "number" ? player.score.toLocaleString() : "—", 0, 385);
-      if (player.riichi) {
-        ctx.fillStyle = "#fafbfc";
-        ctx.fillRect(-94, 453, 188, 12);
-        ctx.fillStyle = "#a72e3f";
-        ctx.beginPath();
-        ctx.arc(0, 459, 6, 0, 2 * Math.PI);
-        ctx.fill();
-      }
       ctx.restore();
     }
     const round = typeof projection.round === "string" ? projection.round : "Round";
@@ -51,16 +43,16 @@ export function TableCenter({ projection, wallCount }: { projection: ProjectedSt
     ctx.fillText(`${round}${kyoku}`, 512, 447);
     ctx.fillStyle = "#dce4ed";
     ctx.font = '500 48px "Segoe UI", sans-serif';
-    ctx.fillText(`${wallCount} left`, 512, 518);
+    ctx.fillText(`${wallCount} left`, 512, 520);
     ctx.font = '500 44px "Segoe UI", sans-serif';
-    ctx.fillText(`Honba ${Number(projection.honba) || 0}`, 384, 576);
-    ctx.fillText(`Sticks ${Number(projection.kyotaku) || 0}`, 640, 576);
+    ctx.fillText(`Honba ${Number(projection.honba) || 0}`, 512, 598);
+    ctx.fillText(`Sticks ${Number(projection.kyotaku) || 0}`, 512, 674);
     const result = new CanvasTexture(canvas);
     result.colorSpace = SRGBColorSpace;
     result.generateMipmaps = false;
     result.minFilter = LinearFilter;
     result.magFilter = LinearFilter;
-    result.anisotropy = 8;
+    result.anisotropy = 16;
     return result;
   }, [projection, wallCount]);
   useEffect(() => {

@@ -103,6 +103,42 @@ pub struct PublishedKyokuResults {
     pub settlement: Option<KyokuSettlement>,
 }
 
+impl WinResult {
+    fn basic_points(&self, mode: GameMode, dealer: bool) -> Result<u32, String> {
+        let (han, fu) = match self.evaluation {
+            WinEvaluation::Ordinary { han, fu, .. }
+                if han > 0
+                    && (fu == 20 || fu == 25 || (30..=250).contains(&fu) && fu % 10 == 0) =>
+            {
+                (han.min(13), fu)
+            }
+            WinEvaluation::Yakuman { multiplier } if multiplier > 0 => (
+                multiplier
+                    .checked_mul(13)
+                    .ok_or("scoring multiplier overflow")?,
+                0,
+            ),
+            _ => return Err("invalid scoring evaluation".into()),
+        };
+        Ok(riichienv_core::score::calculate_score(
+            u8::try_from(han).map_err(|_| "scoring han overflow")?,
+            u8::try_from(fu).map_err(|_| "scoring fu overflow")?,
+            dealer,
+            self.tsumo,
+            0,
+            mode.seat_count() as u8,
+        )
+        .total)
+    }
+
+    pub fn validate_payment(&self, mode: GameMode, dealer: Seat) -> Result<(), String> {
+        if self.basic_points(mode, self.seat == dealer)? != self.win_points {
+            return Err("Win Points contradict canonical dealer and evaluation".into());
+        }
+        Ok(())
+    }
+}
+
 impl KyokuResultRecord {
     pub fn validate(&self, roster: &[Participant]) -> Result<(), String> {
         if self.version != 1
@@ -138,6 +174,9 @@ impl KyokuResultRecord {
         let mut winners = HashSet::new();
         let mut previous = None;
         for win in &self.wins {
+            if win.melds.len() > 4 || win.concealed.len() + win.melds.len() * 3 != 14 {
+                return Err("invalid completed hand size".into());
+            }
             // Restored serde values bypass Tile::from_id; validate every private tile.
             if win
                 .concealed
@@ -173,6 +212,51 @@ impl KyokuResultRecord {
                 return Err("invalid winner identity, position or order".into());
             }
             previous = Some(win.event_index);
+            let mut physical = HashSet::new();
+            if !win
+                .concealed
+                .iter()
+                .chain(win.melds.iter().flat_map(|m| &m.tiles))
+                .all(|t| physical.insert(t.id()))
+            {
+                return Err("duplicate physical tile in completed hand".into());
+            }
+            for meld in &win.melds {
+                let kan = matches!(
+                    meld.kind,
+                    ResultMeldKind::Daiminkan | ResultMeldKind::Ankan | ResultMeldKind::Kakan
+                );
+                if meld.tiles.len() != if kan { 4 } else { 3 } {
+                    return Err("invalid meld size".into());
+                }
+                let mut kinds = meld.tiles.iter().map(|t| t.id() / 4).collect::<Vec<_>>();
+                kinds.sort_unstable();
+                let valid_tiles = if meld.kind == ResultMeldKind::Chi {
+                    !self.mode.is_three_player()
+                        && kinds[0] < 27
+                        && kinds[0] / 9 == kinds[2] / 9
+                        && kinds[1] == kinds[0] + 1
+                        && kinds[2] == kinds[1] + 1
+                } else {
+                    kinds.iter().all(|k| *k == kinds[0])
+                };
+                let valid_source = if meld.kind == ResultMeldKind::Ankan {
+                    !meld.opened && meld.from_who.is_none() && meld.called_tile.is_none()
+                } else {
+                    meld.opened
+                        && meld.from_who.is_some_and(|s| s != win.seat)
+                        && meld.called_tile.is_some_and(|t| meld.tiles.contains(&t))
+                };
+                if !valid_tiles || !valid_source {
+                    return Err("invalid meld structure or source".into());
+                }
+            }
+            let mut hand = riichienv_core::types::Hand::new(Some(
+                win.concealed.iter().map(|t| t.id() / 4).collect(),
+            ));
+            if !riichienv_core::agari::is_agari(&mut hand) {
+                return Err("concealed tiles do not complete a winning hand".into());
+            }
             let total = win
                 .yaku
                 .iter()
@@ -202,6 +286,11 @@ impl KyokuResultRecord {
                 || total == 0
             {
                 return Err("invalid adjudicated yaku values".into());
+            }
+            if win.basic_points(self.mode, false)? != win.win_points
+                && win.basic_points(self.mode, true)? != win.win_points
+            {
+                return Err("Win Points contradict evaluation".into());
             }
         }
         Ok(())
@@ -347,6 +436,115 @@ mod tests {
         record.settlement.changes[0].before = i32::MAX;
         record.settlement.changes[0].delta = 1;
         assert!(record.validate(&participants).is_err());
+    }
+
+    #[test]
+    fn basic_payment_accepts_high_fu_from_multiple_closed_kans() {
+        let captures: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/authoritative-multi-ron-captures.json"
+        ))
+        .unwrap();
+        let record: KyokuResultRecord =
+            serde_json::from_value(captures[0]["record"].clone()).unwrap();
+        use riichienv_core::{
+            types::{Hand, Meld, MeldType},
+            yaku::{YakuContext, calculate_yaku},
+        };
+        let melds = vec![
+            Meld::new(MeldType::Ankan, vec![0, 1, 2, 3], false, -1, None),
+            Meld::new(MeldType::Ankan, vec![32, 33, 34, 35], false, -1, None),
+            Meld::new(MeldType::Ankan, vec![36, 37, 38, 39], false, -1, None),
+            Meld::new(MeldType::Pon, vec![84, 85, 86], true, 0, Some(84)),
+        ];
+        let normalized = melds
+            .iter()
+            .cloned()
+            .map(|mut m| {
+                m.tiles.iter_mut().for_each(|id| *id /= 4);
+                m.called_tile = m.called_tile.map(|id| id / 4);
+                m
+            })
+            .collect::<Vec<_>>();
+        let evaluated = calculate_yaku(
+            &Hand::new(Some(vec![10, 10])),
+            &normalized,
+            &YakuContext {
+                is_menzen: false,
+                is_tsumo: true,
+                seat_wind: 28,
+                ..Default::default()
+            },
+            10,
+        );
+        assert_eq!(
+            (evaluated.han, evaluated.fu, evaluated.yakuman_count),
+            (6, 130, 0)
+        );
+        let mut win = record.wins[0].clone();
+        win.target = win.seat;
+        win.tsumo = true;
+        win.concealed = vec![Tile::from_id(40).unwrap(), Tile::from_id(41).unwrap()];
+        win.winning_tile = win.concealed[1];
+        win.winning_tile_index = 1;
+        win.melds = melds
+            .iter()
+            .map(|m| ResultMeld {
+                kind: if m.meld_type == MeldType::Ankan {
+                    ResultMeldKind::Ankan
+                } else {
+                    ResultMeldKind::Pon
+                },
+                tiles: m
+                    .tiles
+                    .iter()
+                    .map(|&id| Tile::from_id(id).unwrap())
+                    .collect(),
+                opened: m.opened,
+                from_who: if m.from_who < 0 {
+                    None
+                } else {
+                    Seat::new(m.from_who as u8)
+                },
+                called_tile: m.called_tile.and_then(Tile::from_id),
+            })
+            .collect();
+        win.yaku = evaluated
+            .yaku_ids
+            .iter()
+            .map(|&id| YakuValue {
+                id,
+                name: riichienv_core::yaku::get_yaku_by_id(id).unwrap().name,
+                han: Some(2),
+                yakuman_multiplier: None,
+            })
+            .collect();
+        win.evaluation = WinEvaluation::Ordinary {
+            han: 6,
+            fu: 130,
+            limit: Some(ScoreLimit::Haneman),
+        };
+        win.win_points = 12_000;
+        assert!(
+            win.validate_payment(record.mode, Seat::new(0).unwrap())
+                .is_ok()
+        );
+        let roster = record
+            .settlement
+            .changes
+            .iter()
+            .map(|change| {
+                Participant::new(
+                    change.participant_id.clone(),
+                    "seat",
+                    ParticipantKind::Human,
+                )
+            })
+            .collect::<Vec<_>>();
+        let high_fu = KyokuResultRecord {
+            wins: vec![win],
+            ..record
+        };
+        high_fu.validate(&roster).unwrap();
     }
 
     #[test]

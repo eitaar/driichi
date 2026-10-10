@@ -225,7 +225,7 @@ describe("Replay Admin workspace", () => {
       frames: [
         replay.frames[0],
         { ...replay.frames[1], visible_event: { type: "hora", actor: 0, target: 0, han: 5, fu: 30 },
-          result: { event_index: 1, winner: "P0", seat: 0, target: 0, tsumo: true, concealed: [16, 17], melds: [], winning_tile: 16, winning_tile_index: 0, yaku: [{ id: 31, name: "dora", han: 5, yakuman_multiplier: null }], evaluation: { Ordinary: { han: 5, fu: 30, limit: null } }, win_points: 8000 },
+          result: { event_index: 1, winner: "P0", seat: 0, target: 0, tsumo: true, concealed: [16, 17, 0, 4, 8, 36, 40, 44, 48, 52, 56, 60, 64, 68], melds: [], winning_tile: 16, winning_tile_index: 0, yaku: [{ id: 31, name: "dora", han: 5, yakuman_multiplier: null }], evaluation: { Ordinary: { han: 5, fu: 30, limit: null } }, win_points: 8000 },
         },
       ],
     };
@@ -248,7 +248,7 @@ describe("Replay Admin workspace", () => {
     mockDecodeCharacterAsset.mockRejectedValue(new Error("asset_unavailable"));
     const savedWin = {
       event_index: 1, winner: "P0", seat: 0, target: 1, tsumo: false,
-      concealed: [0, 1, 16, 17], melds: [], winning_tile: 16, winning_tile_index: 2,
+      concealed: [0, 1, 16, 17, 18, 36, 40, 44, 48, 52, 56, 60, 64, 68], melds: [], winning_tile: 16, winning_tile_index: 2,
       yaku: [{ id: 1, name: "riichi", han: 1, yakuman_multiplier: null }],
       evaluation: { Ordinary: { han: 1, fu: 30, limit: null } }, win_points: 1000,
     };
@@ -303,7 +303,7 @@ describe("Replay Admin workspace", () => {
     mockDecodeCharacterAsset.mockRejectedValue(new Error("asset_unavailable"));
     const closedMeld = { kind: "Ankan", tiles: [52, 53, 54, 55], opened: false, from_who: null, called_tile: null };
     const win = { event_index: 0, winner: "P0", seat: 0, target: 1, tsumo: false,
-      concealed: [0, 1, 16, 17], melds: [closedMeld], winning_tile: 16, winning_tile_index: 2,
+      concealed: [0, 1, 16, 17, 18, 36, 40, 44, 60, 64, 68], melds: [closedMeld], winning_tile: 16, winning_tile_index: 2,
       yaku: [{ id: 31, name: "dora", han: 1, yakuman_multiplier: null }], evaluation: { Ordinary: { han: 1, fu: 30, limit: null } }, win_points: 1000 };
     const saved = { ...replay, frames: [
       { ...frame(0, "hora"), result: win },

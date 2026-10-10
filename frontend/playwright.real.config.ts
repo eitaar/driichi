@@ -10,6 +10,7 @@ export default defineConfig({
   reporter: [["list"], ["html", { outputFolder: "playwright-real-report", open: "never" }]],
   outputDir: "test-results/task-16-playwright",
   use: {
+    channel: "chromium", // Match the full browser used for actual WebGL gameplay.
     trace: "off",
     screenshot: "only-on-failure",
   },

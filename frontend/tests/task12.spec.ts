@@ -128,6 +128,7 @@ async function expectRenderedTable(page: Page) {
     timeout: 20000,
   });
   await expect(table).toHaveAttribute("data-player-frame-count", /^[34]$/);
+  await expect(table).toHaveAttribute("data-dead-wall-tile-count", "14");
   await expect(table).toHaveAttribute("data-wall-tile-count", /^\d+$/);
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
   await expect(table).toHaveAttribute(
@@ -480,7 +481,10 @@ test("keeps a long participant name and missing icon actionable", async ({ page 
   await expect(table.locator('.table-player-frame[data-position="bottom"]')).toContainText(
     "A very long participant display name",
   );
-  await expect(table.locator('.table-player-frame[data-position="bottom"] .asset-fallback')).toBeVisible();
+  const fallback = table.locator('.table-player-frame[data-position="bottom"] .asset-fallback');
+  await expect(fallback).toBeVisible();
+  await expect(fallback).toHaveCSS("background-color", "rgb(53, 74, 102)");
+  await expect(fallback).toHaveCSS("color", "rgb(238, 240, 242)");
   await expect(page.getByTestId("action-deck")).toBeVisible();
   await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
   await page.screenshot({

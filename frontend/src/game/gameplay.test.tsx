@@ -23,7 +23,7 @@ function player(seat: number, display_name: string) {
 
 const resultWin = {
   event_index: 4, winner: "p0", seat: 0, target: 1, tsumo: false,
-  concealed: [0, 1, 16, 17], melds: [], winning_tile: 16, winning_tile_index: 2,
+  concealed: [0, 1, 16, 17, 18, 36, 40, 44, 48, 52, 56, 60, 64, 68], melds: [], winning_tile: 16, winning_tile_index: 2,
   yaku: [{ id: 1, name: "riichi", han: 1, yakuman_multiplier: null }],
   evaluation: { Ordinary: { han: 1, fu: 30, limit: null } }, win_points: 1000,
 };
@@ -207,14 +207,15 @@ describe("result surfaces", () => {
 
   it("distinguishes authoritative closed and open kans without inferring from their tiles", () => {
     const meld = { kind: "Ankan", tiles: [52, 53, 54, 55], opened: false, from_who: null, called_tile: null };
-    const view = render(<GameplaySurface {...liveProps} room={liveRoom({ Win: { ...resultWin, melds: [meld] } })} reducedMotion />);
+    const meldWin = { ...resultWin, concealed: resultWin.concealed.filter(tile => ![48, 52, 56].includes(tile)) };
+    const view = render(<GameplaySurface {...liveProps} room={liveRoom({ Win: { ...meldWin, melds: [meld] } })} reducedMotion />);
     const closed = screen.getByRole("group", { name: "Closed Ankan" });
     const closedTiles = within(closed).getAllByRole("img");
     expect(closedTiles).toHaveLength(4);
     expect(closedTiles[0]).toHaveAttribute("src", expect.stringMatching(/\/Back\.svg$/));
     expect(closedTiles[3]).toHaveAttribute("src", expect.stringMatching(/\/Back\.svg$/));
     expect(closedTiles[1]).not.toHaveAttribute("src", expect.stringMatching(/\/Back\.svg$/));
-    view.rerender(<GameplaySurface {...liveProps} room={liveRoom({ Win: { ...resultWin, melds: [{ ...meld, kind: "Daiminkan", opened: true, from_who: 1, called_tile: 52 }] } }, 5000, 1)} reducedMotion />);
+    view.rerender(<GameplaySurface {...liveProps} room={liveRoom({ Win: { ...meldWin, melds: [{ ...meld, kind: "Daiminkan", opened: true, from_who: 1, called_tile: 52 }] } }, 5000, 1)} reducedMotion />);
     expect(screen.queryByRole("group", { name: "Closed Ankan" })).not.toBeInTheDocument();
     const openTiles = within(screen.getByRole("group", { name: "Open Daiminkan" })).getAllByRole("img");
     expect(openTiles).toHaveLength(4);
@@ -459,7 +460,7 @@ describe("GameplayPlayerStatus", () => {
           winning_tile_index: 13,
           yaku: [{ id: 1, name: "riichi", han: 1, yakuman_multiplier: null }],
           evaluation: { Ordinary: { han: 1, fu: 30, limit: null } },
-          win_points: 8_000,
+          win_points: 1_000,
         } },
         published_at_ms: 100,
         deadline_at_ms: 5_100,

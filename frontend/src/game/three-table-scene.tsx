@@ -3,8 +3,6 @@ import { useFrame, useThree } from "@react-three/fiber";
 import {
   Box3,
   BoxGeometry,
-  BufferGeometry,
-  Float32BufferAttribute,
   Color,
   Euler,
   ExtrudeGeometry,
@@ -17,7 +15,6 @@ import {
   MeshBasicMaterial,
   MeshPhongMaterial,
   PerspectiveCamera,
-  PlaneGeometry,
   Quaternion,
   Scene,
   Vector3,
@@ -33,6 +30,7 @@ import { isDora } from "./dora";
 import type { DoraSheenClock } from "./dora-sheen";
 import { createTableImageTexture, type LocalTableImage, type TableAppearance } from "./table-appearance";
 import { TableCenter } from "./table-center";
+import { tableSeatGeometry } from "./table-geometry";
 import { dockLocalCalls } from "./three-table-dock";
 import type { ProjectedState } from "./types";
 import {
@@ -76,59 +74,22 @@ interface MatchTableSceneProps {
 // This is a framing translation only. Geometry remains in the authored world
 // dimensions; in particular, no axis is scaled at runtime.
 const BODY_SIZE = [TILE_BODY_SIZE.width, TILE_BODY_SIZE.height, TILE_BODY_SIZE.depth] as const;
-// The vendored 300:400 source face is preserved on a smaller plane so the
-// shared white body reads as an intentional ceramic rim instead of a hairline.
+// Keep the approved tile footprint while rounding its ceramic and ochre layers.
 export const FACE_SIZE = [TILE_BODY_SIZE.width, TILE_BODY_SIZE.depth] as const;
-export const BACK_FACE_SIZE = [0.54, 0.78] as const;
+export const BACK_FACE_SIZE = FACE_SIZE;
 const MAX_TILE_INSTANCES = 256;
 
-export function createBackFaceGeometry(): PlaneGeometry {
-  return new PlaneGeometry(...BACK_FACE_SIZE);
+export function createBackFaceGeometry(): RoundedBoxGeometry {
+  const [width, height, depth] = BODY_SIZE;
+  const geometry = new RoundedBoxGeometry(width, height * 0.25, depth, 3, Math.min(width, height, depth) * 0.06);
+  geometry.translate(0, -height * 0.375, 0);
+  return geometry;
 }
 
-/**
- * Keep one shared top-rim and four vertical sidewalls for every tile. The
- * face plane is intentionally inset, so the top rim is part of the visible
- * white material; the occluded bottom surface remains omitted.
- */
-export function createTileSideGeometry(): BufferGeometry {
-  const halfWidth = BODY_SIZE[0] / 2;
-  const halfHeight = BODY_SIZE[1] / 2;
-  const halfDepth = BODY_SIZE[2] / 2;
-  const positions = [
-    -halfWidth, -halfHeight, halfDepth,
-    halfWidth, -halfHeight, halfDepth,
-    halfWidth, halfHeight, halfDepth,
-    -halfWidth, halfHeight, halfDepth,
-    halfWidth, -halfHeight, halfDepth,
-    halfWidth, -halfHeight, -halfDepth,
-    halfWidth, halfHeight, -halfDepth,
-    halfWidth, halfHeight, halfDepth,
-    halfWidth, -halfHeight, -halfDepth,
-    -halfWidth, -halfHeight, -halfDepth,
-    -halfWidth, halfHeight, -halfDepth,
-    halfWidth, halfHeight, -halfDepth,
-    -halfWidth, -halfHeight, -halfDepth,
-    -halfWidth, -halfHeight, halfDepth,
-    -halfWidth, halfHeight, halfDepth,
-    -halfWidth, halfHeight, -halfDepth,
-    // The shared top closes the rim beneath the inset face. No bottom is
-    // needed because the table-facing surface is never visible.
-    -halfWidth, halfHeight, halfDepth,
-    halfWidth, halfHeight, halfDepth,
-    halfWidth, halfHeight, -halfDepth,
-    -halfWidth, halfHeight, -halfDepth,
-  ];
-  const geometry = new BufferGeometry();
-  geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
-  geometry.setIndex([
-    0, 1, 2, 0, 2, 3,
-    4, 5, 6, 4, 6, 7,
-    8, 9, 10, 8, 10, 11,
-    12, 13, 14, 12, 14, 15,
-    16, 17, 18, 16, 18, 19,
-  ]);
-  geometry.computeVertexNormals();
+export function createTileSideGeometry(): RoundedBoxGeometry {
+  const [width, height, depth] = BODY_SIZE;
+  const geometry = new RoundedBoxGeometry(width, height * 0.79, depth, 3, Math.min(width, height, depth) * 0.1);
+  geometry.translate(0, height * 0.105, 0);
   return geometry;
 }
 
@@ -155,12 +116,15 @@ export function instanceMatrix(tile: SceneTile, face = false): Matrix4 {
     ? TILE_BODY_HEIGHTS.local
     : TILE_BODY_HEIGHTS.remote;
   const backFace = tile.face === "back";
+  const bodyOrientation = new Quaternion().setFromEuler(new Euler(...tile.rotation));
+  // Face-down walls expose the ochre rear by rotating the whole rounded body.
+  if (tile.group === "wall" && backFace) bodyOrientation.multiply(new Quaternion().setFromEuler(new Euler(Math.PI, 0, 0)));
   const orientation = face
-    ? tileFaceQuaternion(tile.rotation)
-    : new Quaternion().setFromEuler(new Euler(...tile.rotation));
+    ? bodyOrientation.clone().multiply(new Quaternion().setFromEuler(new Euler(-Math.PI / 2, 0, 0)))
+    : bodyOrientation;
   if (face && backFace) orientation.multiply(new Quaternion().setFromEuler(new Euler(Math.PI, 0, 0)));
   const offset = new Vector3(0, face ? (bodyHeight / 2 + 0.003) * (backFace ? -1 : 1) : 0, 0)
-    .applyEuler(new Euler(...tile.rotation));
+    .applyQuaternion(bodyOrientation);
   return new Matrix4().compose(
     new Vector3(...tile.position).add(offset),
     orientation,
@@ -202,34 +166,35 @@ function atlasMaterial(atlas: TileAtlas, sheen: DoraSheenClock): MeshPhongMateri
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
-        "#include <common>\nattribute vec2 atlasCell;\nattribute float doraFace;\nvarying vec2 vAtlasCell;\nvarying float vDoraFace;\nvarying vec2 vTileFaceUv;",
+        "#include <common>\nattribute vec2 atlasCell;\nattribute float faceVisible;\nattribute float doraFace;\nvarying vec2 vAtlasCell;\nvarying float vFaceVisible;\nvarying float vDoraFace;\nvarying vec3 vTilePosition;\nvarying vec3 vTileNormal;",
       )
-      .replace("#include <begin_vertex>", "vAtlasCell = atlasCell; vDoraFace = doraFace; vTileFaceUv = uv;\n#include <begin_vertex>");
+      .replace("#include <begin_vertex>", "vAtlasCell = atlasCell; vFaceVisible = faceVisible; vDoraFace = doraFace; vTilePosition = position; vTileNormal = normal;\n#include <begin_vertex>");
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying vec2 vAtlasCell;\nvarying float vDoraFace;\nvarying vec2 vTileFaceUv;\nuniform float doraSweep;\nuniform float doraStrength;")
+      .replace("#include <common>", "#include <common>\nvarying vec2 vAtlasCell;\nvarying float vFaceVisible;\nvarying float vDoraFace;\nvarying vec3 vTilePosition;\nvarying vec3 vTileNormal;\nuniform float doraSweep;\nuniform float doraStrength;")
       .replace(
         "#include <map_fragment>",
         `#ifdef USE_MAP
-          vec2 localAtlasUv = vec2(vMapUv.x, 1.0 - vMapUv.y);
-          vec2 atlasUv = (vAtlasCell + ${inset} + localAtlasUv * (vec2(1.0) - 2.0 * ${inset})) / vec2(${atlas.columns.toFixed(1)}, ${atlas.rows.toFixed(1)});
-          vec4 sampledDiffuseColor = texture2D(map, atlasUv);
-          diffuseColor *= sampledDiffuseColor;
+          vec2 faceUv = vec2(vTilePosition.x / ${BODY_SIZE[0]} + 0.5, vTilePosition.z / ${BODY_SIZE[2]} + 0.5);
+          vec2 atlasUv = (vAtlasCell + ${inset} + clamp(faceUv, 0.0, 1.0) * (vec2(1.0) - 2.0 * ${inset})) / vec2(${atlas.columns.toFixed(1)}, ${atlas.rows.toFixed(1)});
+          vec4 ink = texture2D(map, atlasUv);
+          float face = smoothstep(0.98, 0.999, vTileNormal.y) * vFaceVisible;
+          diffuseColor.rgb *= mix(vec3(1.0), ink.rgb, ink.a * face);
         #endif`,
       )
       .replace("#include <opaque_fragment>", `
-        float diagonal = vTileFaceUv.x - vTileFaceUv.y;
+        float diagonal = vTilePosition.x / ${BODY_SIZE[0]} + vTilePosition.z / ${BODY_SIZE[2]};
         float band = exp(-pow((diagonal - mix(-1.15, 1.15, doraSweep)) / 0.085, 2.0));
-        float gleam = band * vDoraFace * doraStrength;
+        float gleam = band * smoothstep(0.35, 0.85, vTileNormal.y) * vDoraFace * doraStrength;
         outgoingLight = mix(outgoingLight, max(outgoingLight, vec3(2.4)), gleam);
         #include <opaque_fragment>
       `);
   };
-  material.customProgramCacheKey = () => `tile-atlas-soft-sheen-${atlas.columns}x${atlas.rows}`;
+  material.customProgramCacheKey = () => `tile-atlas-rounded-soft-sheen-${atlas.columns}x${atlas.rows}`;
   return material;
 }
 
 function updateAtlasCells(
-  geometry: PlaneGeometry,
+  geometry: RoundedBoxGeometry,
   tiles: readonly SceneTile[],
   atlas: TileAtlas,
 ): void {
@@ -249,39 +214,18 @@ function InstancedTiles({
   sheen,
 }: Pick<MatchTableSceneProps, "layout" | "atlas" | "projection" | "sheen">) {
   const invalidate = useThree((state) => state.invalidate);
-  const frontTiles = useMemo(
-    () => layout.tiles.filter((tile) => tile.face === "front" && tile.tile !== null),
-    [layout.tiles],
-  );
-  const backTiles = useMemo(
-    () => layout.tiles.filter((tile) => tile.face === "back" || tile.tile === null),
-    [layout.tiles],
-  );
-  const bodyTiles = useMemo(() => layout.tiles, [layout.tiles]);
   const body = useRef<InstancedMesh>(null);
-  const frontFaces = useRef<InstancedMesh>(null);
-  const backFaces = useRef<InstancedMesh>(null);
+  const back = useRef<InstancedMesh>(null);
 
   const resources = useMemo(() => {
-    // One shared sidewall population restores a readable ceramic body without
-    // multiplying geometry, meshes, or draw calls per tile.
-    const bodyGeometry = new BoxGeometry(...BODY_SIZE);
-    const faceGeometry = new PlaneGeometry(...FACE_SIZE);
-    const faceCells = new Float32Array(MAX_TILE_INSTANCES * 2);
-    faceGeometry.setAttribute("atlasCell", new InstancedBufferAttribute(faceCells, 2));
-    faceGeometry.setAttribute("doraFace", new InstancedBufferAttribute(new Float32Array(MAX_TILE_INSTANCES), 1));
+    const bodyGeometry = createTileSideGeometry();
+    bodyGeometry.setAttribute("atlasCell", new InstancedBufferAttribute(new Float32Array(MAX_TILE_INSTANCES * 2), 2));
+    bodyGeometry.setAttribute("faceVisible", new InstancedBufferAttribute(new Float32Array(MAX_TILE_INSTANCES), 1));
+    bodyGeometry.setAttribute("doraFace", new InstancedBufferAttribute(new Float32Array(MAX_TILE_INSTANCES), 1));
     return {
       bodyGeometry,
-      faceGeometry,
       backGeometry: createBackFaceGeometry(),
-      // Front and concealed tiles share one persistent, lit ceramic body.
-      // A single material keeps ownership and draw cost clear.
-      bodyMaterial: new MeshPhongMaterial({
-        color: new Color("#ffffff"),
-        specular: new Color("#9da7ae"),
-        shininess: 24,
-      }),
-      faceMaterial: atlasMaterial(atlas, sheen),
+      bodyMaterial: atlasMaterial(atlas, sheen),
       backMaterial: new MeshPhongMaterial({
         color: new Color("#dca542"),
         specular: new Color("#957b55"),
@@ -293,26 +237,27 @@ function InstancedTiles({
   useEffect(
     () => () => {
       resources.bodyGeometry.dispose();
-      resources.faceGeometry.dispose();
       resources.backGeometry.dispose();
       resources.bodyMaterial.dispose();
-      resources.faceMaterial.dispose();
       resources.backMaterial.dispose();
     },
     [resources],
   );
 
   useLayoutEffect(() => {
-    updateAtlasCells(resources.faceGeometry, frontTiles, atlas);
-    const doraFaces = resources.faceGeometry.getAttribute("doraFace") as InstancedBufferAttribute;
-    frontTiles.forEach((tile, index) => doraFaces.setX(index,
-      tile.group !== "dora" && tile.group !== "wall" && isDora(tile.tile, projection.dora_indicators ?? []) ? 1 : 0));
-    doraFaces.needsUpdate = true;
-    applyMatrices(body.current, bodyTiles, false);
-    applyMatrices(frontFaces.current, frontTiles, true);
-    applyMatrices(backFaces.current, backTiles, true);
+    updateAtlasCells(resources.bodyGeometry, layout.tiles, atlas);
+    const visible = resources.bodyGeometry.getAttribute("faceVisible") as InstancedBufferAttribute;
+    const doraFaces = resources.bodyGeometry.getAttribute("doraFace") as InstancedBufferAttribute;
+    layout.tiles.forEach((tile, index) => {
+      const publicFace = tile.face === "front" && tile.tile !== null;
+      visible.setX(index, publicFace ? 1 : 0);
+      doraFaces.setX(index, publicFace && tile.group !== "dora" && tile.group !== "wall" && isDora(tile.tile, projection.dora_indicators ?? []) ? 1 : 0);
+    });
+    visible.needsUpdate = doraFaces.needsUpdate = true;
+    applyMatrices(body.current, layout.tiles, false);
+    applyMatrices(back.current, layout.tiles, false);
     invalidate();
-  }, [atlas, backTiles, bodyTiles, frontTiles, projection.dora_indicators, invalidate, resources.faceGeometry]);
+  }, [atlas, layout.tiles, projection.dora_indicators, invalidate, resources.bodyGeometry]);
 
   useEffect(() => {
     sheen.listeners.add(invalidate);
@@ -327,31 +272,16 @@ function InstancedTiles({
         castShadow
         receiveShadow
         name="tile-front-bodies"
-        // One shared sidewall population replaces the former front/back body
-        // pair while retaining their stable names for scene diagnostics.
-        // The legacy diagnostic alias name="tile-back-bodies" stays discoverable
-        // for tools that inspect the source-level resource contract.
-        userData={{
-          localTileBodies: true,
-          stableNames: ["tile-front-bodies", "tile-back-bodies"],
-        }}
+        userData={{ localTileBodies: true, tilePopulation: true }}
         args={[resources.bodyGeometry, resources.bodyMaterial, MAX_TILE_INSTANCES]}
         frustumCulled={false}
         dispose={null}
       />
       <instancedMesh
-        ref={frontFaces}
-        name="tile-front-faces"
-        userData={{ tilePopulation: true }}
-        args={[resources.faceGeometry, resources.faceMaterial, MAX_TILE_INSTANCES]}
-        frustumCulled={false}
-        dispose={null}
-      />
-
-      <instancedMesh
-        ref={backFaces}
-        name="tile-back-faces"
-        userData={{ tilePopulation: true }}
+        ref={back}
+        castShadow
+        receiveShadow
+        name="tile-back-bodies"
         args={[resources.backGeometry, resources.backMaterial, MAX_TILE_INSTANCES]}
         frustumCulled={false}
         dispose={null}
@@ -685,11 +615,20 @@ export function MatchTableScene({
   return (
     <>
       {surroundTexture ? <primitive attach="background" object={surroundTexture} /> : <color attach="background" args={["#eef0f2"]} />}
-      <hemisphereLight args={["#fafbfc", "#354a66", 0.75]} />
-      <directionalLight position={[-4, 9, 5]} color="#fafbfc" intensity={1.6} castShadow shadow-mapSize={[2048, 2048]} shadow-camera-left={-9} shadow-camera-right={9} shadow-camera-top={9} shadow-camera-bottom={-9} shadow-normalBias={0.02} />
+      <hemisphereLight args={["#fafbfc", "#354a66", 0.9]} />
+      <directionalLight position={[-4, 9, 5]} color="#fafbfc" intensity={2.7} castShadow shadow-mapSize={[2048, 2048]} shadow-camera-left={-9} shadow-camera-right={9} shadow-camera-top={9} shadow-camera-bottom={-9} shadow-normalBias={0.02} />
       <FixedCamera />
       <group position={TABLE_RENDER_OFFSET}>
         <ProceduralTable projection={projection} wallCount={layout.wallCount} surface={appearance?.surface} />
+        {tableSeatGeometry(projection.mode, projection.viewer_seat).filter(({ seat }) => projection.players?.some((player) => player.seat === seat && player.riichi)).map(({ seat, position }) => {
+          const yaw = { bottom: 0, right: Math.PI / 2, top: Math.PI, left: -Math.PI / 2 }[position];
+          const x = position === "right" ? 1.55 : position === "left" ? -1.55 : 0;
+          const z = position === "bottom" ? 1.25 : position === "top" ? -1.25 : 0;
+          return <group key={seat} name={`riichi-stick-${seat}`} position={[x, 0.507, z]} rotation={[0, yaw, 0]}>
+            <mesh castShadow><boxGeometry args={[0.65, 0.035, 0.04]} /><meshPhongMaterial color="#fafbfc" /></mesh>
+            <mesh position={[0, 0.019, 0]}><cylinderGeometry args={[0.014, 0.014, 0.003, 12]} /><meshBasicMaterial color="#b83243" /></mesh>
+          </group>;
+        })}
         <DockedTiles layout={layout} atlas={atlas} projection={projection} sheen={sheen} motion={motion} onMotionComplete={onMotionComplete} onMotionFrame={onMotionFrame} />
       </group>
       <SceneReadiness

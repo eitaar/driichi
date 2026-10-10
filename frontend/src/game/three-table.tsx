@@ -11,7 +11,7 @@ import {
 } from "react";
 import { Canvas } from "@react-three/fiber";
 import "./live-table.css";
-import { SRGBColorSpace } from "three";
+import { NoToneMapping, SRGBColorSpace } from "three";
 
 import type { AnimationItem } from "./animation";
 import { MatchTableScene, type SceneRenderStats } from "./three-table-scene";
@@ -466,7 +466,7 @@ export function ThreeTable({
       data-rendered-scene-triangles={renderedTriangleCount}
       data-wall-tile-count={layout?.wallCount ?? 0}
       data-wall-layout="count-only-diagram"
-      data-dead-wall-tile-count={layout?.tiles.filter(({ key }) => key.startsWith("dead-wall-")).length ?? 0}
+      data-dead-wall-tile-count={layout?.tiles.filter(({ key, group }) => key.startsWith("dead-wall-") || group === "dora").length ?? 0}
       data-webgl-fallback={String(isFallback)}
       data-animation-state={animationState}
       data-animation-item-id={motion?.itemId ?? ""}
@@ -539,6 +539,8 @@ export function ThreeTable({
             }
             onCreated={({ gl }) => {
               gl.outputColorSpace = SRGBColorSpace;
+              gl.toneMapping = NoToneMapping;
+              gl.toneMappingExposure = 1;
               gl.shadowMap.enabled = true;
               contextCleanupRef.current?.();
               const onContextLost = (event: Event) => {
