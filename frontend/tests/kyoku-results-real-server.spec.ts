@@ -15,7 +15,7 @@ base.describe.configure({ mode: "serial", timeout: 240_000 });
 base.use({ launchOptions: { args: [] } });
 
 type Snapshot = { type: string; room: { phase: string; roster: Array<{ participant_id: string; seat: number }>; kyoku_end: null | { id: { match_id: string; kyoku_sequence: number; step_index: number }; content: Record<string, unknown>; required: string[]; confirmed: string[]; published_at_ms: number; deadline_at_ms: number; remaining_ms: number }; result: unknown }; state: null | { viewer_seat: number; players: Array<{ seat: number; hand?: number[]; score: number }>; decision: null | { decision_id: string; actions: Array<{ action_id: string; action: unknown }> }; kyoku_results?: { wins: Array<{ event_index: number; seat: number; concealed: number[]; winning_tile: number; winning_tile_index: number; win_points: number; evaluation: unknown }>; settlement: unknown } } };
-type ObservedSnapshot = Snapshot & { socket_generation: number; received_at_ms: number; message_index: number };
+type ObservedSnapshot = Snapshot & { socket_generation: number; socket_created_host_at_ms: number; received_at_ms: number; message_index: number };
 type Human = { context: BrowserContext; page: Page; id: string; name: string; socketKey: string; messages: string[]; sent: string[]; sentAt: number[]; snapshots: ObservedSnapshot[] };
 type ResultStep = NonNullable<Snapshot["room"]["kyoku_end"]>;
 type ReconnectUiSample = { epoch_ms: number; status: string; phase: string | null; surface: "win" | "settlement" | "standings" | "table" | null; standings_count: number; step: ResultStep | null; labels: string[] };
@@ -261,6 +261,7 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   let socketGeneration = 0;
   page.on("websocket", socket => {
     const generation = ++socketGeneration;
+    const socketCreatedHostAt = Date.now();
     socket.on("framesent", ({ payload }) => { sent.push(payload.toString()); sentAt.push(Date.now()); });
     socket.on("framereceived", ({ payload }) => {
     const receivedAt = Date.now();
@@ -270,7 +271,7 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
     // HumanSocket client consumes room_update/game_update as well as snapshot.
     // Keep the raw bytes and join only fields actually supplied by the server.
     const room = value.room ?? snapshots.at(-1)?.room;
-    if (room && value.state !== undefined) snapshots.push({ type: value.type ?? "", room, state: value.state, socket_generation: generation, received_at_ms: receivedAt, message_index: messages.length - 1 });
+    if (room && value.state !== undefined) snapshots.push({ type: value.type ?? "", room, state: value.state, socket_generation: generation, socket_created_host_at_ms: socketCreatedHostAt, received_at_ms: receivedAt, message_index: messages.length - 1 });
     });
   });
   await page.goto(`${harness.frontendOrigin}/room/${code}`);
@@ -622,6 +623,7 @@ for (const [mode, count, ordinaryAfter] of [
       schedulingHistogram = monitorEventLoopDelay({ resolution: 20 });
       schedulingHistogram.enable(); schedulingHistogramEnabled = true; reconnectScheduling.enabled_at_ms = Date.now();
       schedulingSnapshot("beforeReload");
+      const reconnectIssuedHostAt = Date.now();
       if (finalFixture) {
         await bySeat[0].page.evaluate(key => {
           const socket = (window as unknown as Record<string, WebSocket>)[key];
@@ -633,9 +635,41 @@ for (const [mode, count, ordinaryAfter] of [
         await bySeat[0].page.reload({ waitUntil: "domcontentloaded" });
         mark("reload DOM content loaded");
       }
+      const reconnectCompletedHostAt = Date.now();
       const reconnectSnapshot = () => bySeat[0].snapshots.find(s => s.socket_generation > generation && s.type === "snapshot");
       await expect.poll(() => Boolean(reconnectSnapshot())).toBe(true);
       const reconnected = reconnectSnapshot()!;
+      const publication = (index: number) => bySeat[0].snapshots.find(s => {
+        const id = s.room.kyoku_end?.id;
+        return id?.match_id === first.room.kyoku_end!.id.match_id && id.kyoku_sequence === first.room.kyoku_end!.id.kyoku_sequence && id.step_index === index;
+      });
+      const earliestFirst = publication(0);
+      // Allowlisted scalars only; socket-created/received times are Node observations, not browser OPEN/receipt.
+      mark(`reconnect clock observation ${JSON.stringify({
+        kind: finalFixture ? "transport" : "reload",
+        issued_host_at_ms: reconnectIssuedHostAt, completed_host_at_ms: reconnectCompletedHostAt,
+        original_win0: {
+          step_index: first.room.kyoku_end!.id.step_index,
+          published_at_ms: first.room.kyoku_end!.published_at_ms, deadline_at_ms: first.room.kyoku_end!.deadline_at_ms,
+          selected_host_observed_at_ms: first.received_at_ms, selected_wire_remaining_ms: first.room.kyoku_end!.remaining_ms,
+          selected_generation: first.socket_generation, selected_message_index: first.message_index,
+          earliest_host_observed_at_ms: earliestFirst?.received_at_ms ?? null,
+          earliest_published_at_ms: earliestFirst?.room.kyoku_end?.published_at_ms ?? null,
+          earliest_deadline_at_ms: earliestFirst?.room.kyoku_end?.deadline_at_ms ?? null,
+          earliest_wire_remaining_ms: earliestFirst?.room.kyoku_end?.remaining_ms ?? null,
+          required_count: first.room.kyoku_end!.required.length, confirmed_count: first.room.kyoku_end!.confirmed.length,
+          own_required: first.room.kyoku_end!.required.includes(bySeat[0].id),
+        },
+        first_reconnect: {
+          step_index: reconnected.room.kyoku_end?.id.step_index ?? null,
+          published_at_ms: reconnected.room.kyoku_end?.published_at_ms ?? null, deadline_at_ms: reconnected.room.kyoku_end?.deadline_at_ms ?? null,
+          wire_remaining_ms: reconnected.room.kyoku_end?.remaining_ms ?? null,
+          socket_created_host_at_ms: reconnected.socket_created_host_at_ms, host_observed_at_ms: reconnected.received_at_ms,
+          generation: reconnected.socket_generation, message_index: reconnected.message_index,
+          required_count: reconnected.room.kyoku_end?.required.length ?? null, confirmed_count: reconnected.room.kyoku_end?.confirmed.length ?? null,
+          own_required: reconnected.room.kyoku_end?.required.includes(bySeat[0].id) ?? null,
+        },
+      }, null, 2)}`);
       // Assert the first actual reconnect frame, not a later UI wait/latest frame.
       expect(reconnected.room.kyoku_end!.id).toEqual(first.room.kyoku_end!.id);
       expect(reconnected.room.kyoku_end!.published_at_ms).toBe(first.room.kyoku_end!.published_at_ms);
@@ -653,10 +687,6 @@ for (const [mode, count, ordinaryAfter] of [
       }
       await finalResponse;
       // Server publications continue while the reloaded page initializes its renderer.
-      const publication = (index: number) => bySeat[0].snapshots.find(s => {
-        const id = s.room.kyoku_end?.id;
-        return id?.match_id === first.room.kyoku_end!.id.match_id && id.kyoku_sequence === first.room.kyoku_end!.id.kyoku_sequence && id.step_index === index;
-      });
       const firstConfirmations = await confirmStep(bySeat, reconnected.room.kyoku_end!);
       mark(`first winner confirmations ${JSON.stringify(firstConfirmations)}`);
       await expect.poll(() => Boolean(publication(1))).toBe(true);
