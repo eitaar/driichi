@@ -15,8 +15,11 @@ base.describe.configure({ mode: "serial", timeout: 240_000 });
 base.use({ launchOptions: { args: [] } });
 
 type Snapshot = { type: string; room: { phase: string; roster: Array<{ participant_id: string; seat: number }>; kyoku_end: null | { id: { match_id: string; kyoku_sequence: number; step_index: number }; content: Record<string, unknown>; required: string[]; confirmed: string[]; published_at_ms: number; deadline_at_ms: number; remaining_ms: number }; result: unknown }; state: null | { viewer_seat: number; players: Array<{ seat: number; hand?: number[]; score: number }>; decision: null | { decision_id: string; actions: Array<{ action_id: string; action: unknown }> }; kyoku_results?: { wins: Array<{ event_index: number; seat: number; concealed: number[]; winning_tile: number; winning_tile_index: number; win_points: number; evaluation: unknown }>; settlement: unknown } } };
-type ObservedSnapshot = Snapshot & { socket_generation: number; socket_created_host_at_ms: number; received_at_ms: number; message_index: number };
-type Human = { context: BrowserContext; page: Page; id: string; name: string; socketKey: string; messages: string[]; sent: string[]; sentAt: number[]; snapshots: ObservedSnapshot[] };
+type ObservedSnapshot = Snapshot & { socket_generation: number; socket_created_host_at_ms: number; received_at_ms: number; message_index: number; socket_snapshot_ordinal: number };
+type NativeMessageObservation = { document_token: string; socket_ordinal: number; snapshot_ordinal: number; time_origin_ms: number; entry_epoch_ms: number; entry_monotonic_ms: number; emitted_epoch_ms: number };
+type NativeConsoleObservation = NativeMessageObservation & { console_received_host_at_ms: number };
+type NativeObserver = { samples: NativeConsoleObservation[]; errors: number; overflow: number };
+type Human = { context: BrowserContext; page: Page; id: string; name: string; socketKey: string; messages: string[]; sent: string[]; sentAt: number[]; snapshots: ObservedSnapshot[]; nativeObserver?: NativeObserver };
 type ResultStep = NonNullable<Snapshot["room"]["kyoku_end"]>;
 type ReconnectUiSample = { epoch_ms: number; status: string; phase: string | null; surface: "win" | "settlement" | "standings" | "table" | null; standings_count: number; step: ResultStep | null; labels: string[] };
 
@@ -98,6 +101,40 @@ base("expired result confirmation needs no UI readiness", async ({ page, context
   const human: Human = { context, page, id: "own", name: "Own", socketKey: "", messages: [], sent: [], sentAt: [], snapshots: [] };
   const expired: ResultStep = { id: { match_id: "oracle-match", kyoku_sequence: 7, step_index: 0 }, content: {}, required: ["own"], confirmed: [], published_at_ms: 0, deadline_at_ms: 0, remaining_ms: 0 };
   expect(await confirmStep([human], expired)).toEqual(["own:expired"]);
+});
+
+base("native message diagnostic keeps duplicate sockets ambiguous and raw frames private", async ({ page }) => {
+  // Synthetic public WebSocket boundary; this verifies the recorder, not native delivery timing.
+  const raw = JSON.stringify({ type: "snapshot", room: {}, state: null, private_fixture: "not-for-stdout" });
+  await page.routeWebSocket("**/diagnostic", route => route.onMessage(() => route.send(raw)));
+  await page.goto("/");
+  const key = "task8-diagnostic-control";
+  const delivered: NativeConsoleObservation[] = [];
+  page.on("console", message => {
+    if (message.text().startsWith(`${key}:message:`)) delivered.push({ ...JSON.parse(message.text().slice(`${key}:message:`.length)), console_received_host_at_ms: Date.now() });
+  });
+  await page.evaluate(installHumanSocketObserver, key);
+  const connect = () => page.evaluate(() => {
+    const socket = new WebSocket(`${location.origin.replace(/^http/, "ws")}/diagnostic`);
+    socket.addEventListener("open", () => socket.send("fixture"));
+  });
+  await connect();
+  await expect.poll(() => delivered.length).toBe(1);
+  expect(await nativePayloadCorrelation(page, key, raw, delivered)).toMatchObject({ correlation: "unique-document-payload", exact_frame_verdict: "UNSUPPORTED", match_count: 1 });
+  await connect();
+  await expect.poll(() => delivered.length).toBe(2);
+  const sample = await nativePayloadCorrelation(page, key, raw, delivered);
+  expect(sample).toMatchObject({ exact_frame_verdict: "UNSUPPORTED", correlation: "ambiguous", match_count: 2, overflow_count: 0, pending_count: 0 });
+  expect(sample.matches.map(match => match.socket_ordinal)).toEqual([1, 2]);
+  expect(sample.matches.every(match => match.snapshot_ordinal === 1 && match.console_received_host_at_ms !== null)).toBe(true);
+  expect(JSON.stringify(sample)).not.toContain("not-for-stdout");
+  expect(await nativePayloadCorrelation(page, key, "absent", delivered)).toMatchObject({ correlation: "absent", match_count: 0 });
+  await page.evaluate(() => {
+    const socket = new WebSocket(`${location.origin.replace(/^http/, "ws")}/diagnostic`);
+    socket.addEventListener("open", () => { for (let i = 0; i < 65; i++) socket.send("fixture"); });
+  });
+  await expect.poll(() => delivered.length).toBe(64);
+  expect(await nativePayloadCorrelation(page, key, raw, delivered)).toMatchObject({ correlation: "incomplete", match_count: 64, overflow_count: 3 });
 });
 
 base("verified build refuses omitted producer inputs", async () => {
@@ -234,26 +271,75 @@ function checkBrowserTaskSample() {
   for (const invalid of [null, { ...valid, url: "private" }, { ...valid, kind: "secret" }, { ...valid, duration_ms: -1 }, { ...valid, duration_ms: null }, { ...valid, time_origin_ms: NaN }, { ...valid, supported: false }, { ...valid, kind: "init" }]) expect(() => browserTaskSample(invalid)).toThrow("invalid browser task metadata");
 }
 
+function installHumanSocketObserver(key: string) {
+  const NativeWebSocket = window.WebSocket;
+  const observation = { records: [] as Array<NativeMessageObservation & { payload: string }>, overflow: 0 };
+  (window as unknown as Record<string, unknown>)[`${key}:observations`] = observation;
+  const documentToken = crypto.randomUUID();
+  let socketOrdinal = 0;
+  window.WebSocket = class extends NativeWebSocket {
+    constructor(...args: ConstructorParameters<typeof WebSocket>) {
+      super(...args);
+      const ordinal = ++socketOrdinal;
+      let snapshotOrdinal = 0;
+      this.addEventListener("message", event => {
+        // Listener entry clocks are actual browser observations, not network arrival or server time.
+        const entryEpoch = Date.now(), entryMonotonic = performance.now();
+        if (typeof event.data !== "string") return;
+        try {
+          const frame = JSON.parse(event.data);
+          if (frame?.type === "snapshot" && frame.room && frame.state !== undefined) {
+            (window as unknown as Record<string, WebSocket>)[key] = this;
+            ++snapshotOrdinal;
+            if (observation.records.length >= 64) { ++observation.overflow; return; }
+            const sample: NativeMessageObservation = { document_token: documentToken, socket_ordinal: ordinal, snapshot_ordinal: snapshotOrdinal,
+              time_origin_ms: performance.timeOrigin, entry_epoch_ms: entryEpoch, entry_monotonic_ms: entryMonotonic, emitted_epoch_ms: Date.now() };
+            // Raw strings stay in bounded page memory; only scalar metadata crosses the console.
+            observation.records.push({ ...sample, payload: event.data });
+            console.debug(`${key}:message:${JSON.stringify(sample)}`);
+          }
+        } catch { /* Non-Human/HMR frames are not owned by this probe. */ }
+      });
+    }
+  };
+}
+
+async function nativePayloadCorrelation(page: Page, key: string, payload: string, delivered: NativeConsoleObservation[]) {
+  const captured = await page.evaluate(({ key, payload }) => {
+    const observation = (window as unknown as Record<string, { records: Array<NativeMessageObservation & { payload: string }>; overflow: number }>)[`${key}:observations`];
+    if (!observation) return null;
+    return { overflow: observation.overflow, matches: observation.records.filter(record => record.payload === payload).map(({ payload: _payload, ...sample }) => sample) };
+  }, { key, payload });
+  return {
+    exact_frame_verdict: "UNSUPPORTED", // Channel-local ordinals do not bind native sockets to Playwright sockets.
+    correlation: !captured ? "unavailable" : captured.overflow ? "incomplete" : captured.matches.length === 1 ? "unique-document-payload" : captured.matches.length ? "ambiguous" : "absent",
+    match_count: captured?.matches.length ?? 0, overflow_count: captured?.overflow ?? null, pending_count: 0, // Synchronous capture; no pending hashes.
+    matches: (captured?.matches ?? []).map(sample => ({ socket_ordinal: sample.socket_ordinal, snapshot_ordinal: sample.snapshot_ordinal,
+      time_origin_ms: sample.time_origin_ms, entry_epoch_ms: sample.entry_epoch_ms, entry_monotonic_ms: sample.entry_monotonic_ms, emitted_epoch_ms: sample.emitted_epoch_ms,
+      console_received_host_at_ms: delivered.find(value => value.document_token === sample.document_token && value.socket_ordinal === sample.socket_ordinal && value.snapshot_ordinal === sample.snapshot_ordinal)?.console_received_host_at_ms ?? null,
+    })),
+  };
+}
+
 async function join(context: BrowserContext, harness: RealServerHarness, code: string, name: string): Promise<Human> {
   const page = await context.newPage();
   const socketKey = `task8-owned-human-socket:${randomUUID()}`;
-  await page.addInitScript(key => {
-    const NativeWebSocket = window.WebSocket;
-    window.WebSocket = class extends NativeWebSocket {
-      constructor(...args: ConstructorParameters<typeof WebSocket>) {
-        super(...args);
-        this.addEventListener("message", event => {
-          if (typeof event.data !== "string") return;
-          try {
-            const frame = JSON.parse(event.data);
-            if (frame?.type === "snapshot" && frame.room && frame.state !== undefined) {
-              (window as unknown as Record<string, WebSocket>)[key] = this;
-            }
-          } catch { /* Non-Human/HMR frames are not owned by this probe. */ }
-        });
-      }
-    };
-  }, socketKey);
+  await page.addInitScript(installHumanSocketObserver, socketKey);
+  const nativeObserver: NativeObserver = { samples: [], errors: 0, overflow: 0 };
+  page.on("console", message => {
+    const receivedHost = Date.now();
+    const prefix = `${socketKey}:message:`;
+    if (!message.text().startsWith(prefix)) return;
+    try {
+      const sample = JSON.parse(message.text().slice(prefix.length)) as NativeMessageObservation;
+      if (Object.keys(sample).sort().join() !== "document_token,emitted_epoch_ms,entry_epoch_ms,entry_monotonic_ms,snapshot_ordinal,socket_ordinal,time_origin_ms"
+        || typeof sample.document_token !== "string" || sample.document_token.length > 100
+        || ![sample.emitted_epoch_ms, sample.entry_epoch_ms, sample.entry_monotonic_ms, sample.time_origin_ms].every(n => typeof n === "number" && Number.isFinite(n) && n >= 0)
+        || ![sample.socket_ordinal, sample.snapshot_ordinal].every(n => Number.isInteger(n) && n > 0)) throw new Error("invalid native message metadata");
+      if (nativeObserver.samples.length >= 256) { ++nativeObserver.overflow; return; }
+      nativeObserver.samples.push({ ...sample, console_received_host_at_ms: receivedHost });
+    } catch { ++nativeObserver.errors; }
+  });
   const messages: string[] = [];
   const sent: string[] = [];
   const sentAt: number[] = [];
@@ -262,16 +348,18 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   page.on("websocket", socket => {
     const generation = ++socketGeneration;
     const socketCreatedHostAt = Date.now();
+    let snapshotOrdinal = 0;
     socket.on("framesent", ({ payload }) => { sent.push(payload.toString()); sentAt.push(Date.now()); });
     socket.on("framereceived", ({ payload }) => {
     const receivedAt = Date.now();
     const text = payload.toString();
     messages.push(text);
     const value = JSON.parse(text) as Partial<Snapshot>;
+    if (value.type === "snapshot") ++snapshotOrdinal;
     // HumanSocket client consumes room_update/game_update as well as snapshot.
     // Keep the raw bytes and join only fields actually supplied by the server.
     const room = value.room ?? snapshots.at(-1)?.room;
-    if (room && value.state !== undefined) snapshots.push({ type: value.type ?? "", room, state: value.state, socket_generation: generation, socket_created_host_at_ms: socketCreatedHostAt, received_at_ms: receivedAt, message_index: messages.length - 1 });
+    if (room && value.state !== undefined) snapshots.push({ type: value.type ?? "", room, state: value.state, socket_generation: generation, socket_created_host_at_ms: socketCreatedHostAt, received_at_ms: receivedAt, message_index: messages.length - 1, socket_snapshot_ordinal: snapshotOrdinal });
     });
   });
   await page.goto(`${harness.frontendOrigin}/room/${code}`);
@@ -282,7 +370,7 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   await expect(page.locator(".connection-state")).toHaveText("connected");
   const id = await page.evaluate(code => sessionStorage.getItem(`driichi:participant:${code}`), code);
   expect(id).toBeTruthy();
-  return { context, page, id: id!, name, socketKey, messages, sent, sentAt, snapshots };
+  return { context, page, id: id!, name, socketKey, messages, sent, sentAt, snapshots, nativeObserver };
 }
 
 function latest(human: Human): ObservedSnapshot {
@@ -472,6 +560,8 @@ for (const [mode, count, ordinaryAfter] of [
     if (finalFixture) after[0] = count === 3 ? -4600 : -4800;
     const admin = await browser.newContext({ viewport, deviceScaleFactor: viewport.dpr, extraHTTPHeaders: { Origin: harness.frontendOrigin } });
     const humans: Human[] = [];
+    let nativeTarget: { human: Human; payload: string; generation: number; snapshot_ordinal: number; message_index: number; host_observed_at_ms: number } | null = null;
+    let nativeDiagnostic: unknown = { status: "not-selected", exact_frame_verdict: "UNSUPPORTED" };
     const geometry: unknown[] = [];
     const geometryObservations: unknown[] = [];
     checkRetainResultGeometryBounds();
@@ -639,6 +729,8 @@ for (const [mode, count, ordinaryAfter] of [
       const reconnectSnapshot = () => bySeat[0].snapshots.find(s => s.socket_generation > generation && s.type === "snapshot");
       await expect.poll(() => Boolean(reconnectSnapshot())).toBe(true);
       const reconnected = reconnectSnapshot()!;
+      nativeTarget = { human: bySeat[0], payload: bySeat[0].messages[reconnected.message_index], generation: reconnected.socket_generation,
+        snapshot_ordinal: reconnected.socket_snapshot_ordinal, message_index: reconnected.message_index, host_observed_at_ms: reconnected.received_at_ms };
       const publication = (index: number) => bySeat[0].snapshots.find(s => {
         const id = s.room.kyoku_end?.id;
         return id?.match_id === first.room.kyoku_end!.id.match_id && id.kyoku_sequence === first.room.kyoku_end!.id.kyoku_sequence && id.step_index === index;
@@ -892,6 +984,20 @@ for (const [mode, count, ordinaryAfter] of [
       throw error;
     } finally {
       disableSchedulingHistogram();
+      // Reconcile only after the timed branch; no added wait before the original deadline assertion/actions.
+      if (nativeTarget) {
+        const target = nativeTarget;
+        try {
+          const correlated = await Promise.race([
+            nativePayloadCorrelation(target.human.page, target.human.socketKey, target.payload, target.human.nativeObserver?.samples ?? []),
+            wait(2000).then(() => ({ correlation: "collection-timeout", exact_frame_verdict: "UNSUPPORTED" })),
+          ]);
+          nativeDiagnostic = { ...correlated, captured_after_timed_branch: true, collection_host_at_ms: Date.now(),
+            pwt_generation: target.generation, pwt_snapshot_ordinal: target.snapshot_ordinal, pwt_message_index: target.message_index, pwt_host_observed_at_ms: target.host_observed_at_ms,
+            console_errors: target.human.nativeObserver?.errors ?? null, console_overflow: target.human.nativeObserver?.overflow ?? null };
+        } catch { nativeDiagnostic = { correlation: "collection-error", exact_frame_verdict: "UNSUPPORTED" }; }
+        mark(`native message payload correlation ${JSON.stringify(nativeDiagnostic, null, 2)}`);
+      }
       for (const context of [...humans.map(h => h.context), admin]) {
         try { await context.close(); }
         catch (error) { if (!failed) throw error; console.error("Task8 secondary context cleanup error", error); }
@@ -900,7 +1006,7 @@ for (const [mode, count, ordinaryAfter] of [
       if (!failed) previousCompletedCase = performance.now();
       const supplemental = openSync(resolve(evidenceRoot, `reconnect-phases-${mode}-${randomUUID()}.json`), "wx");
       try {
-        writeFileSync(supplemental, JSON.stringify({ mode, viewport, captured_at_ms: Date.now(), faultCutoff, supplemental_only_after_fault: failed, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, in_flight_at_capture: [...reconnectInFlight], reconnectUiSamples,
+        writeFileSync(supplemental, JSON.stringify({ mode, viewport, captured_at_ms: Date.now(), faultCutoff, supplemental_only_after_fault: failed, nativeDiagnostic, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, in_flight_at_capture: [...reconnectInFlight], reconnectUiSamples,
           raw_scope: "all handler-observed Human frames through natural context cleanup; no outbound FIFO/network-drain claim",
           humans: humans.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, sentAt: h.sentAt, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) }), "utf8");
         fsyncSync(supplemental);
