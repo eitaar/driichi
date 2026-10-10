@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { stripVTControlCharacters } from "node:util";
 
 const frontendRoot = process.cwd();
 const repositoryRoot = resolve(frontendRoot, "..");
@@ -88,30 +90,74 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
-async function runCommand(
+export async function runCommand(
   command: string,
   args: string[],
   cwd: string,
   input?: string,
   timeoutMilliseconds = 180_000,
-  task8?: Task8Build,
+  task8?: Task8Build & { stage: "frontend_build" | "cargo_feature_release" },
 ): Promise<{ stdout: string; stderr: string }> {
   const started = Date.now();
-  const child = spawn(command, args, {
-    cwd,
-    env: task8 ? { ...process.env, CARGO_TARGET_DIR: task8.target } : process.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
+  const startedMonotonic = performance.now();
   let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-  child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-  child.stdin.end(input);
   let timedOut = false;
   let observedCloseCode: number | null | undefined;
+  let lastOutput: number | null = null;
+  let line = "";
+  let discardingLine = false;
+  let lineOverflow = 0;
+  let counterSaturated = false;
+  const notices = { compiling_dependency: 0, compiling_core: 0, compiling_replay: 0, compiling_server: 0, compiling_other_workspace: 0, lock_wait: 0, finished: 0, warning: 0, error: 0, other: 0 };
+  let lastNotice: "unknown" | keyof typeof notices = "unknown";
+  const increment = (value: number) => { if (value < 65535) return value + 1; counterSaturated = true; return value; };
+  const classify = () => {
+    const text = stripVTControlCharacters(line).trim();
+    if (!text) return;
+    const compiling = /^Compiling ([a-zA-Z0-9_-]+) v\S+(?:\s|$)/.exec(text)?.[1];
+    const notice = compiling === "double_riichi_core" ? "compiling_core" : compiling === "double_riichi_replay" ? "compiling_replay"
+      : compiling === "double_riichi_server" ? "compiling_server" : ["double_riichi_mjai", "double_riichi_mcp"].includes(compiling ?? "") ? "compiling_other_workspace"
+      : compiling ? "compiling_dependency" : /^Blocking waiting for file lock(?:\s|$)/.test(text) ? "lock_wait"
+      : /^Finished\s/.test(text) ? "finished" : /^warning(?:\[|:)/.test(text) ? "warning" : /^error(?:\[|:)/.test(text) ? "error" : "other";
+    notices[notice] = increment(notices[notice]);
+    if (notice !== "other") lastNotice = notice;
+  };
+  const observeStderr = (chunk: string) => {
+    for (const character of chunk) {
+      if (character === "\n") { if (!discardingLine) classify(); line = ""; discardingLine = false; }
+      else if (!discardingLine) {
+        if (line.length + character.length <= 4096) line += character;
+        else { line = ""; discardingLine = true; lineOverflow = increment(lineOverflow); }
+      }
+    }
+  };
+  const report = (state: "started" | "closed_success" | "closed_failure" | "process_error" | "timeout") => {
+    if (!task8) return;
+    const now = performance.now();
+    // Notices describe observed text, never a compiler phase, completion or CPU progress.
+    console.log(`Task8 producer observation ${JSON.stringify({ build: task8.stage, state, timeout_ms: timeoutMilliseconds,
+      elapsed_ms: now - startedMonotonic, last_output_age_ms: lastOutput === null ? null : now - lastOutput,
+      observed_close: observedCloseCode !== undefined, exit: observedCloseCode ?? null,
+      stdout_utf8_bytes: Buffer.byteLength(stdout), stderr_utf8_bytes: Buffer.byteLength(stderr),
+      notices, last_notice: lastNotice, stderr_line_overflow_count: lineOverflow,
+      stderr_incomplete_line_count: line || discardingLine ? 1 : 0, counter_saturated: counterSaturated })}`);
+  };
+  report("started");
+  let child;
+  try {
+    child = spawn(command, args, {
+      cwd,
+      env: task8 ? { ...process.env, CARGO_TARGET_DIR: task8.target } : process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
+  } catch (error) { report("process_error"); throw error; }
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => { stdout += chunk; if (task8) lastOutput = performance.now(); });
+  child.stderr.on("data", (chunk: string) => { stderr += chunk; if (task8) { lastOutput = performance.now(); observeStderr(chunk); } });
+  child.stdin.end(input);
   let exit: number;
   try {
     exit = await new Promise<number>((resolvePromise, reject) => {
@@ -138,6 +184,7 @@ async function runCommand(
     });
     });
   } catch (error) {
+    report(timedOut ? "timeout" : "process_error");
     if (task8) {
       const name = `${started}-${randomBytes(4).toString("hex")}`;
       preserveUtf8(join(task8.root, `${name}.stdout.log`), stdout);
@@ -146,6 +193,7 @@ async function runCommand(
     }
     throw error;
   }
+  report(observedCloseCode === 0 ? "closed_success" : "closed_failure");
   if (task8) {
     const name = `${started}-${randomBytes(4).toString("hex")}`;
     preserveUtf8(join(task8.root, `${name}.command.json`), JSON.stringify({ command, args, cwd, target: task8.target, pid: child.pid, started, ended: Date.now(), exit: observedCloseCode, observed_close: true, incomplete: false, timed_out: false, timeout_ms: timeoutMilliseconds }));
@@ -187,14 +235,14 @@ async function ensureServerBinary(task8?: Task8Build): Promise<string> {
     return binary;
   }
   // Never embed an older dist left by a previous run or restored by the release gate.
-  await runCommand(npmCommand(), npmArgs(["run", "build"]), frontendRoot, undefined, 180_000, task8);
+  await runCommand(npmCommand(), npmArgs(["run", "build"]), frontendRoot, undefined, 180_000, task8 && { ...task8, stage: "frontend_build" });
   await runCommand(
     cargoCommand(),
     ["build", "--release", "--locked", "-p", "double_riichi_server", ...(task8 ? ["--features", "task8-test-support", "-j", "1"] : [])],
     repositoryRoot,
     undefined,
     600_000, // Cold release builds exceed the ordinary command timeout.
-    task8,
+    task8 && { ...task8, stage: "cargo_feature_release" },
   );
   const binary = serverBinary(task8?.target);
   if (!existsSync(binary)) throw new Error(`server binary was not produced: ${binary}`);
