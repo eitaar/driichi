@@ -1,6 +1,6 @@
 /// <reference types="../node_modules/@types/node" />
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -99,6 +99,8 @@ async function installSocket(
   await page.addInitScript(
     ({ room: initialRoom, state: initialState }) => {
       const browser = window as unknown as {
+        __constructions: number;
+        __closes: number;
         __room: Record<string, any>;
         __state: Record<string, any>;
         __socket: {
@@ -106,8 +108,11 @@ async function installSocket(
           emit: (value: unknown) => void;
         };
       };
+      browser.__constructions = 0;
+      browser.__closes = 0;
       browser.__room = initialRoom;
       browser.__state = initialState;
+      const NativeWebSocket = window.WebSocket;
       class RegressionSocket {
         static OPEN = 1;
         readyState = 1;
@@ -116,7 +121,9 @@ async function installSocket(
         onmessage: ((event: { data: string }) => void) | null = null;
         onclose: (() => void) | null = null;
         onerror: (() => void) | null = null;
-        constructor() {
+        constructor(...args: ConstructorParameters<typeof WebSocket>) {
+          if (!String(args[0]).endsWith("/ws/v1/rooms/123456/human")) return new NativeWebSocket(...args) as unknown as RegressionSocket;
+          ++browser.__constructions;
           browser.__socket = this;
           setTimeout(() => {
             this.onopen?.();
@@ -139,6 +146,7 @@ async function installSocket(
           this.onmessage?.({ data: JSON.stringify(value) });
         }
         close() {
+          ++browser.__closes;
           this.onclose?.();
         }
       }
@@ -167,6 +175,87 @@ async function emitRoomUpdate(page: Page, room: Record<string, any>, state: Reco
     { room, state },
   );
 }
+
+test("keeps Human startup and updates independent of a held renderer module", async ({ page }) => {
+  // Public synthetic socket/HTTP boundary, not genuine clock or native OPEN evidence.
+  const state = simultaneousDiscardState();
+  const room = structuredClone(projectionFixture.room_envelopes["4p-red-east"]);
+  const lobby = { ...room, phase: "lobby", participants: room.participants.map((participant: Record<string, any>) => ({ ...participant, ready: participant.participant_id !== "P1" })) };
+  await installCharacterFixtures(page);
+  await installSocket(page, state, lobby);
+  let held: Route | undefined;
+  let released = false;
+  await page.route("**/src/game/three-table.tsx*", route => { held = route; });
+  try {
+    // Commit, not DOMContentLoaded: an eager module can block the latter.
+    await page.goto("/room/123456/lobby", { waitUntil: "commit" });
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __constructions: number }).__constructions), { timeout: 2500 }).toBeGreaterThan(0);
+    await expect(page.locator(".connection-state")).toHaveText("connected");
+    expect(held, "lobby bootstrap must not demand the renderer").toBeUndefined();
+    await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
+    await page.getByRole("button", { name: /^set ready/i }).click();
+    expect(await page.evaluate(() => JSON.parse((window as unknown as { __socket: { sent: string[] } }).__socket.sent.at(-1)!))).toMatchObject({ type: "set_ready" });
+    await page.getByText("Room status", { exact: true }).click();
+    await expect(page.locator(".lifecycle-status")).toBeVisible();
+    const baseline = await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; });
+    await emitRoomUpdate(page, room, state);
+    await expect.poll(() => Boolean(held)).toBe(true);
+    await expect(page.getByRole("status")).toHaveText("Loading Match");
+    const updated = structuredClone(state);
+    updated.players[0].display_name = "Updated while loading";
+    await emitRoomUpdate(page, room, updated);
+    expect(await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; })).toEqual(baseline);
+    released = true;
+    await held!.continue();
+    await expect(page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+    await expect(page.locator(".table-player-copy").getByText("Updated while loading", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; })).toEqual(baseline);
+  } finally {
+    if (held && !released) await held.continue().catch(() => undefined);
+  }
+});
+
+test("keeps Human ownership on chunk failure and reloads only by explicit link", async ({ page }) => {
+  const state = simultaneousDiscardState();
+  const room = structuredClone(projectionFixture.room_envelopes["4p-red-east"]);
+  const lobby = { ...room, phase: "lobby", participants: room.participants.map((participant: Record<string, any>) => ({ ...participant, ready: participant.participant_id !== "P1" })) };
+  await installCharacterFixtures(page);
+  await installSocket(page, state, lobby);
+  let allowRenderer = false;
+  let moduleRequests = 0;
+  let navigations = 0;
+  page.on("framenavigated", frame => { if (frame === page.mainFrame()) ++navigations; });
+  await page.route("**/src/game/three-table.tsx*", async route => {
+    ++moduleRequests;
+    if (allowRenderer) await route.continue(); else await route.abort("failed");
+  });
+  await page.goto("/room/123456/lobby");
+  await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
+  const baseline = await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; });
+  const initialNavigations = navigations;
+  await emitRoomUpdate(page, room, state);
+  await expect(page.getByRole("alert")).toHaveText("Match could not be loaded.Reload page");
+  await expect(page.getByRole("link", { name: "Reload page" })).toHaveAttribute("href", page.url());
+  expect(navigations).toBe(initialNavigations);
+  expect(moduleRequests).toBe(1);
+  const updatedLobby = structuredClone(lobby);
+  updatedLobby.participants[0].display_name = "Updated after module failure";
+  await emitRoomUpdate(page, updatedLobby, state);
+  await expect(page.getByText("Updated after module failure / you", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
+  expect(await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; })).toEqual(baseline);
+  expect(navigations).toBe(initialNavigations);
+  expect(moduleRequests).toBe(1);
+  // Re-enter the failed surface; only the user's plain link should restart navigation/transport.
+  await emitRoomUpdate(page, room, state);
+  await expect(page.getByRole("link", { name: "Reload page" })).toBeVisible();
+  allowRenderer = true;
+  await page.getByRole("link", { name: "Reload page" }).click();
+  await expect.poll(() => navigations).toBe(initialNavigations + 1);
+  await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
+  await emitRoomUpdate(page, room, state);
+  await expect(page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+});
 
 test("keeps ordinary tenpai discards clickable beside a separate Riichi action", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -272,7 +361,7 @@ test("leaves result presentation, reaches Ready, and can present the next result
     { timeout: 20_000 },
   );
 
-  const postMatchRoom = {
+  const postMatchRoom: Record<string, any> = {
     ...room,
     phase: "post_match",
     revision: room.revision + 1,
