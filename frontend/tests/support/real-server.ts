@@ -354,6 +354,43 @@ function startProcess(
   return { child, log, closed };
 }
 
+async function serverPasswordHash(binary: string): Promise<string> {
+  const hashOutput = await runCommand(binary, ["hash-password"], repositoryRoot, `${password}\n${password}\n`);
+  const hash = hashOutput.stdout.trim().split(/\r?\n/).at(-1);
+  if (!hash?.startsWith("$argon2")) throw new Error("server password hash was not generated");
+  return hash;
+}
+
+function currentSourceInputs(): string {
+  const names = [...new Set(execFileSync("git", ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: repositoryRoot, encoding: "utf8" }).split("\0"))]
+    .filter(name => name && !["node_modules/", ".vitest/", "scripts/release/__pycache__/", "frontend/playwright-real-report/", "frontend/playwright-report/"].some(prefix => name.startsWith(prefix))
+      && existsSync(resolve(repositoryRoot, name)) && statSync(resolve(repositoryRoot, name)).isFile()).sort();
+  return JSON.stringify(Object.fromEntries(names.map(name => [name, createHash("sha256").update(readFileSync(resolve(repositoryRoot, name))).digest("hex")])));
+}
+
+export async function prepareTask8Server(options: NonNullable<RealServerOptions["task8"]>): Promise<() => Promise<RealServerHarness>> {
+  const { fixture, evidenceRoot } = options;
+  if (!["double-ron", "double-ron-final"].includes(fixture)) throw new Error("unknown Task8 fixture");
+  mkdirSync(evidenceRoot, { recursive: true });
+  const root = await mkdtemp(join(evidenceRoot, "task8-"));
+  const task8 = { root, target: resolve(repositoryRoot, "target", "task8-be72f5cf") };
+  const inputs = currentSourceInputs();
+  preserveUtf8(join(root, "source-before.json"), inputs);
+  const binary = await ensureServerBinary(task8);
+  const sha256 = createHash("sha256").update(readFileSync(binary)).digest("hex");
+  const hash = await serverPasswordHash(binary);
+  const after = currentSourceInputs();
+  preserveUtf8(join(root, "source-after.json"), after);
+  if (after !== inputs) throw new Error("prepared Task8 source changed during build");
+  return async () => {
+    if (currentSourceInputs() !== inputs) throw new Error("prepared Task8 source changed before launch");
+    if (createHash("sha256").update(readFileSync(binary)).digest("hex") !== sha256) throw new Error("prepared Task8 binary changed before launch");
+    const caseRoot = await mkdtemp(join(root, "case-"));
+    preserveUtf8(join(caseRoot, "build-custody.json"), JSON.stringify({ producerRoot: root, binary, sha256, fixture, sourceSha256: createHash("sha256").update(inputs).digest("hex") }));
+    return launchRealServer({ task8: { fixture, evidenceRoot } }, binary, caseRoot, hash);
+  };
+}
+
 export async function startRealServer(options: RealServerOptions = {}): Promise<RealServerHarness> {
   if (options.task8 && !["double-ron", "double-ron-final"].includes(options.task8.fixture)) throw new Error("unknown Task8 fixture");
   if (options.task8) mkdirSync(options.task8.evidenceRoot, { recursive: true });
@@ -361,6 +398,11 @@ export async function startRealServer(options: RealServerOptions = {}): Promise<
   const task8 = options.task8 && task8Root ? { root: task8Root, target: resolve(repositoryRoot, "target", "task8-be72f5cf") } : undefined;
   const binary = await ensureServerBinary(task8);
   const root = task8Root ?? await mkdtemp(join(tmpdir(), "driichi-task16-e2e-"));
+  return launchRealServer(options, binary, root);
+}
+
+async function launchRealServer(options: RealServerOptions, binary: string, root: string, preparedPasswordHash?: string): Promise<RealServerHarness> {
+  const task8 = options.task8;
   let server: RunningProcess | undefined;
   let vite: RunningProcess | undefined;
   try {
@@ -403,14 +445,7 @@ export async function startRealServer(options: RealServerOptions = {}): Promise<
         "",
       ].join("\n"),
     );
-    const hashOutput = await runCommand(
-      binary,
-      ["hash-password"],
-      repositoryRoot,
-      `${password}\n${password}\n`,
-    );
-    const passwordHash = hashOutput.stdout.trim().split(/\r?\n/).at(-1);
-    if (!passwordHash?.startsWith("$argon2")) throw new Error("server password hash was not generated");
+    const passwordHash = preparedPasswordHash ?? await serverPasswordHash(binary);
     writeFileSync(envPath, `ADMIN_USERNAME=admin\nADMIN_PASSWORD_HASH=${passwordHash}\n`);
 
     const serverLog = join(root, "server.log");

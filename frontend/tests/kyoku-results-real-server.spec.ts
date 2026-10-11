@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { performance, monitorEventLoopDelay, type ELDHistogram, type EventLoopUtilization } from "node:perf_hooks";
 import { setTimeout as wait } from "node:timers/promises";
-import { startRealServer, type RealServerHarness } from "./support/real-server";
+import { prepareTask8Server, startRealServer, type RealServerHarness } from "./support/real-server";
 import { waitForGameplayReady } from "./support/gameplay-ready";
 
 const evidenceRoot = resolve(process.cwd(), "../.superpowers/sdd/2026-10-02-authoritative-kyoku-results/task-8-native1/completion-native1/browser");
@@ -149,6 +149,7 @@ base("verified build refuses omitted producer inputs", async () => {
   process.env.DRIICHI_TASK8_VERIFIED_BUILD = proofPath;
   try {
     await expect(startRealServer({ task8: { fixture: "double-ron", evidenceRoot: root } })).rejects.toThrow("source coverage/custody mismatch");
+    await expect(prepareTask8Server({ fixture: "double-ron", evidenceRoot: root })).rejects.toThrow("source coverage/custody mismatch");
   } finally {
     if (previous === undefined) delete process.env.DRIICHI_TASK8_VERIFIED_BUILD;
     else process.env.DRIICHI_TASK8_VERIFIED_BUILD = previous;
@@ -518,31 +519,38 @@ async function resultGeometry(page: Page, surface: "win" | "standings", viewport
   return measured;
 }
 
-function remainingPreCaseRateWindow(previousCompletion: number | null, now: number): number {
-  if (!Number.isFinite(now) || now < 0 || (previousCompletion !== null && (!Number.isFinite(previousCompletion) || previousCompletion < 0 || now < previousCompletion))) throw new Error("invalid pre-case monotonic observation");
-  return previousCompletion === null ? 0 : Math.max(0, 61_000 - (now - previousCompletion));
-}
-
-function checkRemainingPreCaseRateWindow() {
-  expect(remainingPreCaseRateWindow(null, 10)).toBe(0);
-  expect(remainingPreCaseRateWindow(1000, 2000)).toBe(60_000);
-  expect(remainingPreCaseRateWindow(1000, 62_000)).toBe(0);
-  expect(remainingPreCaseRateWindow(1000, 63_000)).toBe(0);
-  expect(remainingPreCaseRateWindow(1000, 61_999.5)).toBe(0.5);
-  expect(Math.ceil(remainingPreCaseRateWindow(1000, 61_999.5))).toBe(1);
-  expect(remainingPreCaseRateWindow(1000, 62_000)).toBe(0);
-  expect(() => remainingPreCaseRateWindow(2000, 1000)).toThrow();
-}
-
 for (const fixture of ["double-ron", "double-ron-final"] as const) {
-  let previousCompletedCase: number | null = null;
-  const test = base.extend<{}, { harness: RealServerHarness }>({
-    harness: [async ({}, use) => {
-      const harness = await startRealServer({ task8: { fixture, evidenceRoot } });
+  const test = base.extend<{ harness: RealServerHarness }, { createHarness: () => Promise<RealServerHarness> }>({
+    harness: async ({ createHarness }, use) => {
+      const harness = await createHarness();
       try { await use(harness); } finally { await harness.stop(); }
+    },
+    createHarness: [async ({}, use) => {
+      await use(await prepareTask8Server({ fixture, evidenceRoot }));
     }, { scope: "worker", timeout: 720_000 }],
   });
   test.describe(fixture, () => {
+    if (fixture === "double-ron") test("isolates real service cases while retaining default lookup limits", async ({ createHarness, request }) => {
+      test.setTimeout(30_000);
+      let harness = await createHarness();
+      try {
+        const headers = { Origin: harness.frontendOrigin };
+        const login = await request.post(`${harness.frontendOrigin}/api/v1/admin/login`, { headers, data: { username: harness.adminUsername, password: harness.adminPassword } });
+        expect(login.status()).toBe(200);
+        const created = await request.post(`${harness.frontendOrigin}/api/v1/admin/rooms`, { headers, data: { room_name: "State isolation control", game_mode: "3p-red-east", time_control: "unlimited", replay_save: true } });
+        expect(created.status()).toBe(201);
+        const code = (await created.json() as { join_code: string }).join_code;
+        for (let count = 0; count < 20; count++) {
+          expect((await request.get(`${harness.frontendOrigin}/api/v1/rooms/${code}`, { headers })).status()).toBe(200);
+        }
+        expect((await request.get(`${harness.frontendOrigin}/api/v1/rooms/${code}`, { headers })).status()).toBe(429);
+        await harness.stop();
+        harness = await createHarness();
+        expect((await request.get(`${harness.frontendOrigin}/api/v1/rooms/${code}`, { headers: { Origin: harness.frontendOrigin } })).status()).toBe(404);
+      } finally {
+        await harness.stop();
+      }
+    });
 for (const [mode, count, ordinaryAfter] of [
   ["3p-red-east", 3, [94400, 105000, 102600]],
   ["4p-red-east", 4, [94200, 105200, 102600, 100000]],
@@ -596,8 +604,6 @@ for (const [mode, count, ordinaryAfter] of [
     let faultCutoff: { epoch_ms: number; phases_count: number; samples_count: number; in_flight: number[] } | null = null;
     checkReconnectUiMatchesCurrentPublication();
     checkFindFreshMatchStarted();
-    checkRemainingPreCaseRateWindow();
-    const preCasePacing: { previous_completion_ms: number | null; before_monotonic_ms?: number; after_monotonic_ms?: number; before_epoch_ms?: number; after_epoch_ms?: number; requested_wait_ms?: number; waits: Array<{ before_monotonic_ms: number; before_epoch_ms: number; remaining_ms: number; requested_wait_ms: number; after_monotonic_ms?: number; after_epoch_ms?: number }> } = { previous_completion_ms: previousCompletedCase, waits: [] };
     const rematchObservation: { requested_at_ms?: number; before_message_index?: number; response_at_ms?: number; response_status?: number; response_body?: string; authoritative_frame?: { message_index: number; match_id: string; received_at_ms: number; socket_generation: number; raw: string } } = {};
     const progress: Array<{ step: string; epoch_ms: number }> = [];
     const mark = (step: string) => { progress.push({ step, epoch_ms: Date.now() }); console.log(`Task8 ${mode}: ${step}`); };
@@ -606,21 +612,6 @@ for (const [mode, count, ordinaryAfter] of [
       checkReconnectSchedulingProjection();
       await checkObserveReconnectEvaluation();
       mark("recorder-path selfcheck PASS issue/start/completion/error/mismatch retained; synthetic recorder only");
-      preCasePacing.before_monotonic_ms = performance.now();
-      preCasePacing.before_epoch_ms = Date.now();
-      preCasePacing.requested_wait_ms = remainingPreCaseRateWindow(previousCompletedCase, preCasePacing.before_monotonic_ms);
-      while (true) {
-        const before = performance.now();
-        const remaining = remainingPreCaseRateWindow(previousCompletedCase, before);
-        if (remaining === 0) break;
-        const observation = { before_monotonic_ms: before, before_epoch_ms: Date.now(), remaining_ms: remaining, requested_wait_ms: Math.ceil(remaining) } as (typeof preCasePacing.waits)[number];
-        preCasePacing.waits.push(observation);
-        await wait(observation.requested_wait_ms);
-        observation.after_monotonic_ms = performance.now(); observation.after_epoch_ms = Date.now();
-      }
-      preCasePacing.after_monotonic_ms = performance.now();
-      preCasePacing.after_epoch_ms = Date.now();
-      if (previousCompletedCase !== null) expect(preCasePacing.after_monotonic_ms - previousCompletedCase, "default sliding IP rate window naturally expired before any case HTTP").toBeGreaterThanOrEqual(61_000);
       mark("admin login");
       const login = await admin.request.post(`${harness.frontendOrigin}/api/v1/admin/login`, { data: { username: harness.adminUsername, password: harness.adminPassword } });
       expect(login.status()).toBe(200);
@@ -859,7 +850,7 @@ for (const [mode, count, ordinaryAfter] of [
       }
       const ui = reconnectUiSamples.at(-1)!;
       mark(`reconnect UI observed ${ui.phase}/${ui.step?.id.step_index ?? "no-publication"} latency${ui.epoch_ms - first.room.kyoku_end!.published_at_ms}ms`);
-      await testInfo.attach("actual-human-websocket-transcript", { body: Buffer.from(JSON.stringify({ progress, preCasePacing, reconnect_ui: ui, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, rematchObservation, humans: bySeat.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) })), contentType: "application/json" });
+      await testInfo.attach("actual-human-websocket-transcript", { body: Buffer.from(JSON.stringify({ progress, reconnect_ui: ui, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, rematchObservation, humans: bySeat.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) })), contentType: "application/json" });
       if (finalFixture) {
         const held = settled;
         const finalStep = held.room.kyoku_end!;
@@ -967,7 +958,7 @@ for (const [mode, count, ordinaryAfter] of [
         expect(latest(bySeat[0]).room.kyoku_end).toBeNull();
         expect(latest(bySeat[0]).state!.decision).not.toBeNull();
         expect(latest(bySeat[0]).room.result).toBeNull();
-        await testInfo.attach("saved-authority-replay", { body: Buffer.from(JSON.stringify({ match_id: matchId, canonical, replay, wins, settlement, final, progress, preCasePacing, rematchObservation, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling })), contentType: "application/json" });
+        await testInfo.attach("saved-authority-replay", { body: Buffer.from(JSON.stringify({ match_id: matchId, canonical, replay, wins, settlement, final, progress, rematchObservation, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling })), contentType: "application/json" });
         mark("final lifecycle save Replay verified");
       }
     } catch (error) {
@@ -976,7 +967,7 @@ for (const [mode, count, ordinaryAfter] of [
       const path = resolve(evidenceRoot, `failure-${mode}-${randomUUID()}.json`);
       const descriptor = openSync(path, "wx");
       try {
-        writeFileSync(descriptor, JSON.stringify({ geometry, geometryObservations, viewport, progress, preCasePacing, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, faultCutoff, rematchObservation, primary_error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error), humans: humans.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) }), "utf8");
+        writeFileSync(descriptor, JSON.stringify({ geometry, geometryObservations, viewport, progress, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, faultCutoff, rematchObservation, primary_error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error), humans: humans.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) }), "utf8");
         fsyncSync(descriptor);
       } finally { closeSync(descriptor); }
       throw error;
@@ -1001,7 +992,6 @@ for (const [mode, count, ordinaryAfter] of [
         catch (error) { if (!failed) throw error; console.error("Task8 secondary context cleanup error", error); }
       }
       schedulingLoggerOwned = false;
-      if (!failed) previousCompletedCase = performance.now();
       const supplemental = openSync(resolve(evidenceRoot, `reconnect-phases-${mode}-${randomUUID()}.json`), "wx");
       try {
         writeFileSync(supplemental, JSON.stringify({ mode, viewport, captured_at_ms: Date.now(), faultCutoff, supplemental_only_after_fault: failed, nativeDiagnostic, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, in_flight_at_capture: [...reconnectInFlight], reconnectUiSamples,

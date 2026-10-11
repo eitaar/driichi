@@ -1,9 +1,16 @@
 import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient, QueryClient, QueryClientProvider, QueryCache, MutationCache } from "@tanstack/react-query";
-import {
-  ArrowLeft, ArrowRight, ArrowUpRight, Check, Copy, LockKey, Plus, SignOut,
-  SpeakerHigh, WarningCircle, X,
-} from "@phosphor-icons/react";
+import { ArrowLeft } from "@phosphor-icons/react/dist/csr/ArrowLeft";
+import { ArrowRight } from "@phosphor-icons/react/dist/csr/ArrowRight";
+import { ArrowUpRight } from "@phosphor-icons/react/dist/csr/ArrowUpRight";
+import { Check } from "@phosphor-icons/react/dist/csr/Check";
+import { Copy } from "@phosphor-icons/react/dist/csr/Copy";
+import { LockKey } from "@phosphor-icons/react/dist/csr/LockKey";
+import { Plus } from "@phosphor-icons/react/dist/csr/Plus";
+import { SignOut } from "@phosphor-icons/react/dist/csr/SignOut";
+import { SpeakerHigh } from "@phosphor-icons/react/dist/csr/SpeakerHigh";
+import { WarningCircle } from "@phosphor-icons/react/dist/csr/WarningCircle";
+import { X } from "@phosphor-icons/react/dist/csr/X";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { api, ApiProblem, type AdminRoomDetail, type BotTokenRecord, type CreatedBotToken, type GameMode, type HumanCharacter, type ProblemDetails, type RoomParticipant, type TimeControl } from "./api";
