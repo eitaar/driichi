@@ -810,23 +810,7 @@ impl EngineAdapter {
                         if fu == 0 {
                             return Err(invalid("ordinary win has no fu"));
                         }
-                        let limit = match han {
-                            0..=4 => {
-                                if (if fu == 25 { 25 } else { fu.div_ceil(10) * 10 })
-                                    .checked_shl(han + 2)
-                                    .is_some_and(|v| v > 2000)
-                                {
-                                    Some(ScoreLimit::Mangan)
-                                } else {
-                                    None
-                                }
-                            }
-                            5 => Some(ScoreLimit::Mangan),
-                            6..=7 => Some(ScoreLimit::Haneman),
-                            8..=10 => Some(ScoreLimit::Baiman),
-                            11..=12 => Some(ScoreLimit::Sanbaiman),
-                            _ => Some(ScoreLimit::CountedYakuman),
-                        };
+                        let limit = ScoreLimit::ordinary(han, fu);
                         WinEvaluation::Ordinary { han, fu, limit }
                     };
                     let scoring_han = if !adjudicated.yakuman && total >= 13 {

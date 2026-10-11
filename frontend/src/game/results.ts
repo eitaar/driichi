@@ -288,8 +288,10 @@ export function decodeWinResult(value: unknown, mode: string): WinResult | null 
   let base: number;
   if ("Yakuman" in evaluation) base = 8_000 * evaluation.Yakuman.multiplier;
   else {
-    const { han, fu } = evaluation.Ordinary;
+    const { han, fu, limit } = evaluation.Ordinary;
     if (fu !== 20 && fu !== 25 && !(fu >= 30 && fu <= 250 && fu % 10 === 0)) return null;
+    const expectedLimit: ScoreLimit | undefined = han >= 13 ? "CountedYakuman" : han >= 11 ? "Sanbaiman" : han >= 8 ? "Baiman" : han >= 6 ? "Haneman" : han === 5 || fu * 2 ** (han + 2) > 2_000 ? "Mangan" : undefined;
+    if (limit !== undefined && limit !== expectedLimit) return null;
     base = han >= 13 ? 8_000 : han >= 11 ? 6_000 : han >= 8 ? 4_000 : han >= 6 ? 3_000 : han >= 5 ? 2_000 : Math.min(2_000, fu * 2 ** (han + 2));
   }
   const rounded = (points: number) => Math.ceil(points / 100) * 100;

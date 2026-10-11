@@ -16,7 +16,7 @@ const win = {
 };
 const step = {
   id: { match_id: "MATCH", kyoku_sequence: 1, step_index: 0 }, content: { Win: win },
-  published_at_ms: 100, deadline_at_ms: 5100, remaining_ms: 5000, required: ["P1"], confirmed: [],
+  published_at_ms: 100, deadline_at_ms: 5100, remaining_ms: 5000, required: ["P1"], confirmed: [] as string[],
 };
 const standings = {
   mode: "FourPlayerRedEast", final_scores: [45000, 30000, 15000, 10000],
@@ -169,7 +169,7 @@ test.describe("authoritative result surfaces", () => {
       await installAssets(page, true);
       const count = mode.startsWith("3p") ? 3 : 4;
       const projection = { ...fixtures.projections[mode], audience: "replay_admin", decision: null };
-      const players = (fixtures.room_envelopes[mode].roster as Array<Record<string, unknown>>).map((player) => ({ ...player, participant_kind: player.kind, final_points: null }));
+      const players: Array<Record<string, unknown>> = (fixtures.room_envelopes[mode].roster as Array<Record<string, unknown>>).map((player) => ({ ...player, participant_kind: player.kind, final_points: null }));
       const saved = { match_id: "MATCH", source: "room", room_name: "Night Market", game_mode: mode,
         started_at: "2026-09-16T00:00:00Z", completed_at: "2026-09-16T00:10:00Z", file_size: 512,
         availability: "available", replay_available: true, players,

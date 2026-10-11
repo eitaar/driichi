@@ -21,6 +21,28 @@ pub enum ScoreLimit {
     CountedYakuman,
 }
 
+impl ScoreLimit {
+    pub(crate) fn ordinary(han: u32, fu: u32) -> Option<Self> {
+        match han {
+            0..=4 => {
+                if (if fu == 25 { 25 } else { fu.div_ceil(10) * 10 })
+                    .checked_shl(han + 2)
+                    .is_some_and(|v| v > 2000)
+                {
+                    Some(Self::Mangan)
+                } else {
+                    None
+                }
+            }
+            5 => Some(Self::Mangan),
+            6..=7 => Some(Self::Haneman),
+            8..=10 => Some(Self::Baiman),
+            11..=12 => Some(Self::Sanbaiman),
+            _ => Some(Self::CountedYakuman),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WinEvaluation {
     Ordinary {
@@ -106,9 +128,10 @@ pub struct PublishedKyokuResults {
 impl WinResult {
     fn basic_points(&self, mode: GameMode, dealer: bool) -> Result<u32, String> {
         let (han, fu) = match self.evaluation {
-            WinEvaluation::Ordinary { han, fu, .. }
+            WinEvaluation::Ordinary { han, fu, limit }
                 if han > 0
-                    && (fu == 20 || fu == 25 || (30..=250).contains(&fu) && fu % 10 == 0) =>
+                    && (fu == 20 || fu == 25 || (30..=250).contains(&fu) && fu % 10 == 0)
+                    && (limit.is_none() || limit == ScoreLimit::ordinary(han, fu)) =>
             {
                 (han.min(13), fu)
             }
@@ -436,6 +459,114 @@ mod tests {
         record.settlement.changes[0].before = i32::MAX;
         record.settlement.changes[0].delta = 1;
         assert!(record.validate(&participants).is_err());
+    }
+
+    #[test]
+    fn restored_result_rejects_contradictory_limit_metadata() {
+        let captures: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/authoritative-multi-ron-captures.json"
+        ))
+        .unwrap();
+        for capture in captures.as_array().unwrap() {
+            let record: KyokuResultRecord =
+                serde_json::from_value(capture["record"].clone()).unwrap();
+            let roster = record
+                .settlement
+                .changes
+                .iter()
+                .map(|change| {
+                    Participant::new(
+                        change.participant_id.clone(),
+                        "seat",
+                        ParticipantKind::Human,
+                    )
+                })
+                .collect::<Vec<_>>();
+            record.validate(&roster).unwrap();
+            assert_eq!(
+                record.wins[1].evaluation,
+                WinEvaluation::Ordinary {
+                    han: 2,
+                    fu: 40,
+                    limit: None
+                }
+            );
+            assert_eq!(record.wins[1].win_points, 2_600);
+            let mut payload = capture["record"].clone();
+            payload["wins"][1]["evaluation"]["Ordinary"]["limit"] =
+                serde_json::json!("CountedYakuman");
+            let corrupt: KyokuResultRecord = serde_json::from_value(payload).unwrap();
+            assert!(corrupt.validate(&roster).is_err());
+            assert!(
+                corrupt.wins[1]
+                    .validate_payment(record.mode, Seat::new(0).unwrap())
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn basic_payment_checks_limits_at_pinned_scoring_boundaries() {
+        let captures: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/authoritative-multi-ron-captures.json"
+        ))
+        .unwrap();
+        let record: KyokuResultRecord =
+            serde_json::from_value(captures[0]["record"].clone()).unwrap();
+        let mut win = record.wins[1].clone();
+        let dealer = Seat::new(0).unwrap();
+        for (han, fu, limit, points) in [
+            (1, 250, None, 8_000),
+            (2, 130, Some(ScoreLimit::Mangan), 8_000),
+            (3, 60, None, 7_700),
+            (3, 70, Some(ScoreLimit::Mangan), 8_000),
+            (4, 25, None, 6_400),
+            (4, 30, None, 7_700),
+            (4, 40, Some(ScoreLimit::Mangan), 8_000),
+            (5, 20, Some(ScoreLimit::Mangan), 8_000),
+            (6, 130, Some(ScoreLimit::Haneman), 12_000),
+            (7, 30, Some(ScoreLimit::Haneman), 12_000),
+            (8, 30, Some(ScoreLimit::Baiman), 16_000),
+            (10, 30, Some(ScoreLimit::Baiman), 16_000),
+            (11, 30, Some(ScoreLimit::Sanbaiman), 24_000),
+            (12, 30, Some(ScoreLimit::Sanbaiman), 24_000),
+            (13, 30, Some(ScoreLimit::CountedYakuman), 32_000),
+            (26, 30, Some(ScoreLimit::CountedYakuman), 32_000),
+        ] {
+            win.win_points = points;
+            win.evaluation = WinEvaluation::Ordinary { han, fu, limit };
+            win.validate_payment(record.mode, dealer).unwrap();
+            win.evaluation = WinEvaluation::Ordinary {
+                han,
+                fu,
+                limit: None,
+            };
+            win.validate_payment(record.mode, dealer).unwrap();
+            assert_eq!(
+                win.evaluation,
+                WinEvaluation::Ordinary {
+                    han,
+                    fu,
+                    limit: None
+                }
+            );
+            for wrong in [
+                Some(ScoreLimit::Mangan),
+                Some(ScoreLimit::Haneman),
+                Some(ScoreLimit::Baiman),
+                Some(ScoreLimit::Sanbaiman),
+                Some(ScoreLimit::CountedYakuman),
+            ] {
+                if wrong != limit {
+                    win.evaluation = WinEvaluation::Ordinary {
+                        han,
+                        fu,
+                        limit: wrong,
+                    };
+                    assert!(win.validate_payment(record.mode, dealer).is_err());
+                }
+            }
+        }
     }
 
     #[test]

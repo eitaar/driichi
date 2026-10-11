@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
 
@@ -79,6 +79,31 @@ async function expectNoAxeViolations(page: import("@playwright/test").Page, incl
   ).toEqual([]);
 }
 
+async function installReplayFixtures(page: Page) {
+  await page.route("**/assets/characters/ordinary-pack/**", async (route) => {
+    const fileName = new URL(route.request().url()).pathname.endsWith("/icon.webp")
+      ? "icon.webp"
+      : "portrait.webp";
+    await route.fulfill({
+      status: 200,
+      contentType: "image/webp",
+      body: readFileSync(resolve(characterFixtureRoot, fileName)),
+    });
+  });
+  await page.route("**/api/v1/admin/replays**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/MATCH15")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(replay) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ replays: [summary], offset: 0, limit: 50, total: 1, has_more: false }) });
+  });
+}
+
 for (const viewport of [
   { width: 1024, height: 600, label: "1024x600" },
   { width: 1280, height: 720, label: "1280x720" },
@@ -87,28 +112,7 @@ for (const viewport of [
 ]) {
   test(`captures Replay library and viewer at ${viewport.label}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
-    await page.route("**/assets/characters/ordinary-pack/**", async (route) => {
-      const fileName = new URL(route.request().url()).pathname.endsWith("/icon.webp")
-        ? "icon.webp"
-        : "portrait.webp";
-      await route.fulfill({
-        status: 200,
-        contentType: "image/webp",
-        body: readFileSync(resolve(characterFixtureRoot, fileName)),
-      });
-    });
-    await page.route("**/api/v1/admin/replays**", async (route) => {
-      if (route.request().method() === "DELETE") {
-        await route.fulfill({ status: 204, body: "" });
-        return;
-      }
-      const url = new URL(route.request().url());
-      if (url.pathname.endsWith("/MATCH15")) {
-        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(replay) });
-        return;
-      }
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ replays: [summary], offset: 0, limit: 50, total: 1, has_more: false }) });
-    });
+    await installReplayFixtures(page);
     await page.goto("/admin/replays");
     await expect(page.getByRole("heading", { name: /replay library/i })).toBeVisible();
     await expect(page.getByText("Night Market")).toBeVisible();
@@ -263,6 +267,18 @@ for (const viewport of [
     await expect(page.getByText(/room assets/i)).toBeVisible();
     await expect(page.getByRole("status")).toContainText(/disconnected/i);
     await expectNoAxeViolations(page, ".replay-viewer");
+  });
+
+  test(`operates Replay transport and deletes after returning at ${viewport.label}`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installReplayFixtures(page);
+    await page.goto("/admin/replays");
+    await expect(page.getByRole("heading", { name: /replay library/i })).toBeVisible();
+    await page.getByRole("link", { name: /view replay match15/i }).click();
+    await expect(page.getByRole("heading", { name: /night market replay/i })).toBeVisible();
+    await expect(page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+    const replayControls = page.locator(".replay-playback");
+    await expect(replayControls).toBeVisible();
     await page.getByRole("button", { name: /next event/i }).click();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
     await replayControls.getByRole("button", { name: /previous event/i }).focus();

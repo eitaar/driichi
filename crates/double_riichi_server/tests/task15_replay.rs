@@ -479,6 +479,165 @@ async fn corrupt_result_metadata_is_not_legacy_missing() {
 }
 
 #[tokio::test]
+async fn contradictory_saved_limit_is_unavailable_not_legacy_or_repaired() {
+    let captures: Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
+    ))
+    .unwrap();
+    for capture in captures.as_array().unwrap() {
+        let record: KyokuResultRecord = serde_json::from_value(capture["record"].clone()).unwrap();
+        let root = temp_root(&format!("contradictory-limit-{}", record.mode.seat_count()));
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let id = double_riichi_core::MatchId::new("LIMIT15").unwrap();
+        let roster = record
+            .settlement
+            .changes
+            .iter()
+            .map(|change| MatchPlayerSnapshot {
+                participant_id: change.participant_id.clone(),
+                display_name: "Recorded seat".into(),
+                kind: ParticipantKind::BuiltInBot,
+                seat: change.seat,
+                character_id: Some("tsumogiri-bot".into()),
+                controller: RoomController::PermanentAuto(
+                    double_riichi_core::PermanentAutoReason::BuiltInBot,
+                ),
+            })
+            .collect::<Vec<_>>();
+        // Storage fixture finalized from measured scores, not a MatchMachine capture.
+        let ranks = if record.mode.is_three_player() {
+            vec![3, 1, 2]
+        } else {
+            vec![4, 1, 2, 3]
+        };
+        let result = MatchResult {
+            mode: record.mode,
+            players: roster
+                .iter()
+                .enumerate()
+                .map(|(seat, player)| double_riichi_core::MatchPlayerResult {
+                    participant_id: player.participant_id.clone(),
+                    display_name: player.display_name.clone(),
+                    kind: player.kind,
+                    seat: player.seat,
+                    final_score: record.settlement.changes[seat].after,
+                    rank: ranks[seat],
+                })
+                .collect(),
+            final_scores: record
+                .settlement
+                .changes
+                .iter()
+                .map(|change| change.after)
+                .collect(),
+        };
+        let (effects, receiver) =
+            tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+        let worker = spawn_room_effect_worker(storage.clone(), receiver);
+        let events: Vec<GameEvent> = serde_json::from_value(capture["events"].clone()).unwrap();
+        let (completion, opened) = tokio::sync::oneshot::channel();
+        effects
+            .send(RoomEffect::OpenMatch {
+                match_id: id.clone(),
+                mode: record.mode,
+                room_name: "Captured result".into(),
+                roster,
+                initial_events: events,
+                started_at: 1,
+                completion,
+            })
+            .await
+            .unwrap();
+        opened.await.unwrap().unwrap();
+        let (completion, flushed) = tokio::sync::oneshot::channel();
+        effects
+            .send(RoomEffect::FlushKyoku {
+                match_id: id.clone(),
+                record: record.clone(),
+                completion,
+            })
+            .await
+            .unwrap();
+        flushed.await.unwrap().unwrap();
+        let (failure_sender, _failures) = tokio::sync::mpsc::channel(1);
+        effects
+            .send(RoomEffect::AppendEvents {
+                match_id: id.clone(),
+                events: vec![GameEvent::EndGame],
+                failure_sender,
+            })
+            .await
+            .unwrap();
+        let (completion, saved) = tokio::sync::oneshot::channel();
+        effects
+            .send(RoomEffect::FinalizeMatch {
+                match_id: id,
+                result,
+                benchmark: None,
+                completed_at: 2,
+                completion,
+            })
+            .await
+            .unwrap();
+        saved.await.unwrap().unwrap();
+        drop(effects);
+        worker.await.unwrap();
+        let app = app_for_storage(storage.clone()).await;
+        let cookie = admin_cookie(&app).await;
+        let view_request = || {
+            Request::builder()
+                .uri("/api/v1/admin/replays/LIMIT15")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let valid = app.clone().oneshot(view_request()).await.unwrap();
+        assert_eq!(valid.status(), 200);
+        let valid = json_body(valid).await;
+        assert!(
+            valid["frames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|frame| frame["result"]["evaluation"]["Ordinary"]
+                    == json!({"han": 2, "fu": 40, "limit": null}))
+        );
+        let mut payload = capture["record"].clone();
+        payload["wins"][1]["evaluation"]["Ordinary"]["limit"] = json!("CountedYakuman");
+        sqlx::query("UPDATE match_kyoku_results SET payload_json = ? WHERE match_id = 'LIMIT15' AND kyoku_sequence = 1")
+            .bind(payload.to_string()).execute(storage.pool()).await.unwrap();
+        let rejected = app.clone().oneshot(view_request()).await.unwrap();
+        assert_eq!(rejected.status(), 422);
+        assert_eq!(json_body(rejected).await["code"], "replay_unavailable");
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/admin/replays")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), 200);
+        assert_eq!(
+            json_body(list).await["replays"][0]["availability"],
+            "unavailable"
+        );
+        let stored: String = sqlx::query_scalar(
+            "SELECT payload_json FROM match_kyoku_results WHERE match_id = 'LIMIT15'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&stored).unwrap(), payload);
+        storage.close().await;
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[tokio::test]
 async fn kyoku_flush_ack_waits_for_record_commit() {
     let root = temp_root("flush-record-ack");
     let storage = Arc::new(Storage::connect(&root).await.unwrap());

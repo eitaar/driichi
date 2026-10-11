@@ -129,6 +129,38 @@ describe("authoritative result decoders", () => {
     ]) expect(decodeWinResult(bad, "4p-red-east")).toBeNull();
   });
 
+  it("rejects contradictory known limits without rewriting supplied evaluations", () => {
+    const ordinary = { ...win, evaluation: { Ordinary: { han: 2, fu: 40, limit: null } },
+      yaku: [{ ...win.yaku[0], han: 2 }], win_points: 2_600 };
+    expect(decodeWinResult(ordinary, "4p-red-east")?.evaluation).toEqual({ Ordinary: { han: 2, fu: 40 } });
+    for (const limit of ["Mangan", "Haneman", "Baiman", "Sanbaiman", "CountedYakuman"]) {
+      expect(decodeWinResult({ ...ordinary, evaluation: { Ordinary: { ...ordinary.evaluation.Ordinary, limit } } }, "4p-red-east")).toBeNull();
+    }
+  });
+
+  it("checks limit labels at pinned scoring boundaries and preserves missing non-limit labels", () => {
+    for (const [han, fu, limit, points] of [
+      [1, 250, undefined, 8_000], [2, 130, "Mangan", 8_000],
+      [3, 60, undefined, 7_700], [3, 70, "Mangan", 8_000],
+      [4, 25, undefined, 6_400], [4, 30, undefined, 7_700], [4, 40, "Mangan", 8_000],
+      [5, 20, "Mangan", 8_000], [6, 130, "Haneman", 12_000], [7, 30, "Haneman", 12_000],
+      [8, 30, "Baiman", 16_000], [10, 30, "Baiman", 16_000],
+      [11, 30, "Sanbaiman", 24_000], [12, 30, "Sanbaiman", 24_000],
+      [13, 30, "CountedYakuman", 32_000], [26, 30, "CountedYakuman", 32_000],
+    ] as const) {
+      const ordinary = { ...win, evaluation: { Ordinary: { han, fu, ...(limit === undefined ? {} : { limit }) } },
+        yaku: [{ ...win.yaku[0], han }], win_points: points };
+      expect(decodeWinResult(ordinary, "4p-red-east")?.evaluation).toEqual(ordinary.evaluation);
+      for (const missing of [null, undefined]) {
+        const decoded = decodeWinResult({ ...ordinary, evaluation: { Ordinary: { han, fu, limit: missing } } }, "4p-red-east");
+        expect(decoded?.evaluation).toEqual({ Ordinary: { han, fu } });
+      }
+      for (const wrong of ["Mangan", "Haneman", "Baiman", "Sanbaiman", "CountedYakuman"]) {
+        if (wrong !== limit) expect(decodeWinResult({ ...ordinary, evaluation: { Ordinary: { han, fu, limit: wrong } } }, "4p-red-east")).toBeNull();
+      }
+    }
+  });
+
   it("accepts high fu adjudicated for multiple closed kans", () => {
     const highFu = { ...win, target: 0, tsumo: true, concealed: [40, 41], winning_tile: 41, winning_tile_index: 1,
       melds: [
