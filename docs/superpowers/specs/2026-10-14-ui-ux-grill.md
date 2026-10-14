@@ -1,7 +1,7 @@
-# driichi UI/UX — Grill with Docs (Rounds UI-1–UI-3)
+# driichi UI/UX — Grill with Docs (Rounds UI-1–UI-4)
 
 Date: 2026-10-14
-Status: **Rounds UI-1 (Q237–Q246) and UI-2 (Q247–Q258) decided; Round UI-3 (Q259–Q274) awaiting owner. Documentation only, no implementation approved.**
+Status: **UI-1 Q237–Q246, UI-2 Q247–Q258, and revised UI-3 Q259–Q274 decided; UI-4 Q275–Q292 awaiting owner. Documentation only.**
 Scope: shadcn/ui (Base UI) + Tailwind-based English-only redesign for **all** public/admin pages, starting with Run-first Benchmark Dashboard. One public all-pages cutover; no planned old-UI rollback. Dedicated existing Three.js/Pixi Mahjong renderer remains.
 
 ## Dependencies and explicit cancellations
@@ -71,6 +71,7 @@ Across Home, Room, Lobby, Live, Admin, Benchmark and Replay, use one shared shad
 - Run details put status, stats, history and an expandable live `<details>` region on one vertical page. Live observer fetches `getBenchmarkLive` every **1 second** while expanded and renders `ThreeTable`.
 - Run stats are already average rank, first-place rate and cumulative net scores; per-Match history links to Replays. No need for a research dashboard.
 - UI/UX should respect real permission and connection states, not introduce a false `Live` indicator when a stream/poll is stale. The prior normal Room seat-to-score visual mismatch remains unverified.
+- **Revised owner questionnaire note:** the earlier UI-3 original option set was rejected as biased/nonviable and has no decision authority. User answered the replacement questionnaire with realistic A/B/C alternatives. Only the **revised Q259–Q274 answers** below count.
 
 ## Owner decisions — Round UI-2 (2026-10-14)
 
@@ -163,124 +164,241 @@ Q264 determines close/return semantics.
 
 All positions are **logical UX composition**, not a functioning preview, frontend code, tested breakpoint, or assertion that a particular backend SSE endpoint exists. All matches/rosters/graph values shown elsewhere are illustrative unless backed by real storage.
 
-## Decision tree — Round UI-3 complete newly unlocked frontier
+## Owner decisions — Round UI-3, REVISED questionnaire (2026-10-14)
+
+**Authoritative owner answers:** `Q259 C; Q260 C; Q261 C; Q262 B; Q263 A; Q264 B; Q265 B; Q266 B; Q267 B; Q268 B; Q269 A; Q270 B; Q271 B; Q272 B; Q273 B; Q274 C`.
+
+The previous, **biased original UI-3 option set is explicitly DISCARDED**. For example its old Q259 C meant "only one graph", while the **revised Q259 C** means four balanced plots. Do not infer design decisions from the rejected original A/B/C definitions. These owner-provided revised descriptions are canonical.
+
+### UI-D23. Balance trend and volatility in four default charts — DECIDED (revised Q259 C)
+
+Display four normal-Run analytics views **by default**: **cumulative table-relative net score**, **moving-average rank**, **rank/placement distribution**, and **per-Match score variation**. Use valid persisted `benchmark_results` Rank, Score, Seat, Participant ID and the existing Run/Match records. Do not invent model inference, Experiment confidence intervals or research fixture data. Q275–Q277 resolve time range, distribution and score-variation presentation without changing the agreed four plot families.
+
+### UI-D24. Hierarchical full-width primary chart + paired secondary plots — DECIDED (revised Q260 C)
+
+Desktop Run detail retains the real one 3D table at ~2/3 and Leaderboard ~1/3 at the top. **Below it**, a primary analytics plot uses the **full available width**; secondary plots use a two-column grid when room permits and stack at narrow widths. This is a main/sub hierarchy, not one oversized graph replacing the table. Consistent with Q274 C.
+
+### UI-D25. Distinguish provisional from established views — DECIDED (revised Q261 C)
+
+Render honestly computable chart values even for a few recorded Matches, but **label small-history analyses as provisional** and indicate observed sample size. Do not imply statistical significance, invent missing Match rows or synthesize unknown data. After sufficient data, display normally; exact provisional treatment remains Q279. No Bootstrap CI.
+
+### UI-D26. Mobile categories default-expanded; collapsible when desired — DECIDED (revised Q262 B)
+
+On narrow screens, the default Run detail remains **chart-first** with multiple visible graphs grouped into explicitly labeled default-expanded sections such as **Performance** and **Consistency**, with optional collapse. Run progress and valid controls remain easy to reach; history follows. No inline or background-rendered 3D table. The manually opened live viewer remains separately allowed under Q256 B.
+
+### UI-D27. On-demand mobile fullscreen overlay with restored context — DECIDED (revised Q263 A)
+
+An explicit `Open Live Table` opens the **same single authorized real 3D table** above the Run-detail screen, fullscreen (or accessible in-page equivalent if native fullscreen fails). It can persist across automatically starting Matches. Closing returns to the **same Run-detail scroll position and keyboard focus**, and unmounts/stops rendering confidential hand projections from the viewer. No navigation to a new tab per Match.
+
+### UI-D28. Home two-column function + character art — DECIDED (revised Q264 B)
+
+Home uses a usable **Join Room form** in one column and existing character/game visuals in the other, balancing practical entry and personality. Do not gate Join behind an intro animation. On phones content flows responsively; mobile ordering still a legitimate question Q282.
+
+### UI-D29. Join Room as two clear steps — DECIDED (revised Q265 B)
+
+After Room lookup, **Step 1** presents Room information and name entry; **Step 2** chooses a Character; then Join/confirmation as currently permitted. Keep inline errors and accessible previous/next behavior, without introducing account requirements. Whether steps share one URL or route-specific navigation is Q283.
+
+### UI-D30. Lobby is Participant list first — DECIDED (revised Q266 B)
+
+Present **Seat, Participant name, connection/readiness state** in a clear list rather than a centerpiece Seat diagram. Show current Room code and the next allowed action; never synthesize Ready from mere connection or automatically fill a missing Seat. How rows/cards communicate list state is Q284.
+
+### UI-D31. Responsive normal Match action panel — DECIDED (revised Q267 B)
+
+Keep the real live 3D Mahjong table primary. **Desktop:** legal action panel adjacent to the table. **Mobile:** action buttons in a reachable bottom Dock. Display current legal actions, timing, winds and correct Participant/Seat/score semantics without leaking Admin all-hands view to guests. Panel behavior in complex decision windows is Q285.
+
+### UI-D32. Replay is navigated by Kyoku — DECIDED (revised Q268 B)
+
+Use **Kyoku (局)** as the principal navigation unit (e.g., East 1 → East 2 → …), with event-step/playback controls **within** a selected Kyoku. Preserve real existing Replay frames and renderer, support longer Match browsing. The specific Kyoku navigation component is Q286; do not create a second replay engine.
+
+### UI-D33. Admin Rooms uses Master–Detail layout — DECIDED (revised Q269 A)
+
+The common Admin shell shows a **Room index/rail at left and selected Room's controls and status at right**, allowing quick Room switching while displaying Participants, Bot Tokens where authorized, readiness and configuration. On mobile a safe single-pane transition is expected; exact presentation is Q287. Protect role/private-hand boundaries.
+
+### UI-D34. Shell + peripheral HUD components respond to theme — DECIDED (revised Q270 B)
+
+Light/Dark applies to the app shell **and surrounding game HUD frame/action controls**, not to tiles, tabletop or the real Three.js/Pixi graphics themselves. Use accessible contrast, text labels and restrained semantic accents; no global recoloring of Mahjong assets. Theme integration and readable surrounding overlays are Q288.
+
+### UI-D35. Per-Match results open a Detail Drawer — DECIDED (revised Q271 B)
+
+Selecting a persisted Match in Run history reveals its **Participant placements, scores and Replay link** in a non-destructive side/bottom **Detail Drawer**, preserving the Run list and context. No Experiment comparison page. Mobile Drawer behavior and accessibility is Q289.
+
+### UI-D36. Real-time Ready Panel for Room setup — DECIDED (revised Q272 B)
+
+After Room creation, show the live selected/required eligible Bot count, actual connection state and concrete blockers, and enable `Start Run` only when current/server-validated conditions are satisfied. Reuse the existing Room/Run flow, no wizard/additional Bots. Its position relative to roster/Start is Q290.
+
+### UI-D37. Toast for transient actions, inline for blocking states — DECIDED (revised Q273 B)
+
+Use nonblocking **Toast** for short success confirmation; persistent errors, empty state, unauthorized/stale observations and blocking setup conditions appear **inline at the affected surface**, with Retry or next action. Never use a Toast as the only record of an important failure. Use the same shared shadcn/Base UI components throughout; nuanced feedback is Q291.
+
+### UI-D38. Primary + secondary analytics under table — DECIDED (revised Q274 C)
+
+Desktop priority: **large real 3D table and compact Leaderboard first**. Analytics begins below with one main **full-width** chart, then subordinate charts as a two-column layout; stack responsively. This reinforces UI-D24 and **Q252 B's multiple default-visible advanced graphs**. Primary chart ordering is still a choice Q292.
+
+### Invariant summary after revised UI-3
+
+- Main desktop: one real table + Leaderboard, below it **4 default-visible** genuine-result charts in a primary+secondary hierarchy and Drawer-based results/Replay history.
+- Mobile: default **chart-focused**, grouped expanded Performance/Consistency sections; **no inline live table**. Explicit tap `Open Live Table` opens one real fullscreen overlay; close restores context. Keep User/Q244 C and Q256 B both operative.
+- Public Home: two-column functional Join + existing game/character visuals; join is a **two-step** name then Character flow; Lobby uses a **Participant list**; normal 3D gameplay has **side control rail on desktop, bottom Dock on mobile**.
+- Replay: **Kyoku-first**; Admin Rooms **Master–Detail**. App-shell & peripheral HUD respond to System/Light/Dark, assets are not recolored. **Toast + inline errors** by persistence.
+- Breaking Benchmark Bot Protocol v2 and all A/B Experiment features remain **canceled**. Real unchanged MJAI/MCP/Built-in contracts, SQLite and existing Run semantics prevail.
+- No implementation or UI source changes have been approved; Q275–Q292 below are pending user decisions, not assumptions.
+
+## Decision tree — Round UI-4 independent frontier
 
 ```text
-UI-2 decisions → next material owner-level questions
-├── Q252 B: multiple advanced charts by default
-│   ├── Q259 Which chart families?
-│   ├── Q260 Where do multiple default-visible plots live?
-│   └── Q261 What data can charts genuinely claim?
-├── Q244 C + Q256 B: mobile chart-first, opt-in live table
-│   ├── Q262 Mobile multi-chart grouping
-│   └── Q263 Mobile viewer close/return & Match transitions
-├── Q247 A + Q258 A: neutral shared shell / role-aware navigation
-│   ├── Q264 Home entry and Admin discovery
-│   ├── Q265 Room join / character flow
-│   ├── Q266 Lobby readiness UX
-│   ├── Q267 Normal active Room game/HUD
-│   ├── Q268 Replay viewer navigation/timeline
-│   ├── Q269 Admin Rooms management density
-│   └── Q270 Theme and semantic contrast in real table pages
-├── Q251 A / Q253 A: leaderboard + paginated history
-│   └── Q271 Per-Match result drilldown
-├── Q250 A / Q254 A: setup + guarded actions
-│   └── Q272 Setup/progress feedback after create and failed start
-├── Q257 A: Stale/reconnection truthfulness
-│   └── Q273 Error state placement across app
-└── Q238 A / Q248 A: adaptive desktop+table and chart density
-    └── Q274 Wide-screen hierarchy while multi-charts default visible
+Q259 C four persisted-game charts
+├─ Q275  Time window/readable moving-average rank
+├─ Q276  Rank distribution visualization
+└─ Q277  Per-Match score variation visualization
+Q260 C + Q274 C primary/subordinate layout
+└─ Q292  Which one of four plots is the hero?
+Q261 C provisional/established distinction
+└─ Q278  Where/how to mark provisional data?
+Q262 B mobile grouped categories
+└─ Q279  Mobile category interaction
+Q263 A manually opened fullscreen overlay
+└─ Q280  Portrait/landscape interaction
+Q264 B functional+visual Home
+└─ Q281  Mobile Home hierarchy
+Q265 B two-step Join
+└─ Q282  Two-step navigation/state persistence
+Q266 B lobby list
+└─ Q283  Lobby Participant row density
+Q267 B desktop side panel, mobile bottom Dock
+└─ Q284  Legal-action panel dynamics
+Q268 B Kyoku-first Replay
+└─ Q285  Kyoku jump/navigation form
+Q269 A Room Master–Detail
+└─ Q286  Mobile Admin Room detail navigation
+Q270 B shell + game HUD theme
+└─ Q287  Desktop/phone HUD surface emphasis
+Q271 B Detail Drawer
+└─ Q288  Drawer interaction/detail layout
+Q272 B real-time Ready Panel
+└─ Q289  Ready Panel position next to roster
+Q273 B Toast + blocking inline
+└─ Q290  Action feedback when leaving a page
+Q259 C + Q260 C dashboard analytics
+└─ Q291  Interaction across multiple charts
 ```
 
-Every question below is independently decidable from the answered rounds; **there are no new underlying Bot wire protocol or Experiment questions**. Later layout microdetails and actual color token names are implementer-owned, not new Grill questions.
+**All 18 questions Q275–Q292 are independent once revised Q259–Q274 have been decided.** Each A/B/C is a plausible UX alternative. Recommendations are diverse and explicitly argued; none requires canceled Experiments, a breaking Bot protocol, unsafe permissions, fictitious data or rewriting the engine. The previous rejected UI-3 draft is **not** a source of selected options. Cosmetic pixels and technical schemas are implementer-level concerns.
 
-## Round UI-3 questions — awaiting owner (Q259–Q274)
+## Round UI-4 — awaiting owner (practical alternatives)
 
-**Q259 — Which advanced Benchmark plots are default-visible?** Owner selected multiple advanced charts in Q252 B, but canceled all A/B Experiments.
-- **A (recommended):** use evidence already persisted per Match to show **cumulative table-relative net score**, **moving average rank / average-rank trend**, **rank-position distribution**, and **first-place rate by elapsed Matches**; include honest small-sample/early-Match labels.
-- B: include model inference-time distribution, model-specific compute efficiency and Bootstrap CI even if no verified instrumentation or research feature exists.
-- C: display only one net-score chart, contradicting Q252 B.
+**Q275 — Time-range controls for rank trend and other time series**
+- A: show the **entire Run** by default, with optional zoom/range selector for long Runs (best for context; more visual detail at 1,000 Matches).
+- **B (recommended):** default to **recent 50 Matches**, with an obvious `All Matches` switch (best for short-term changes; hides earlier history until selected).
+- C: default to full Run plus an optional 10/25/50-match rolling view toggle (offers flexible insight but has one extra control).
+- Why B: current bot form over recent matches is often easier to interpret than a dense 1,000-point timeline; `All` is still one click away.
 
-**Q260 — How to organize several plots while keeping the 3D table first?**
-- **A (recommended):** Run detail starts with 3D table/Leaderboard on desktop; below is a titled Analytics section with **multiple plots visible by default** in a responsive grid, and optional collapse controls for compact browsing.
-- B: replace most of the 3D table area with a plot dashboard.
-- C: place plots behind a tab that allows only one default-visible chart despite Q252 B.
+**Q276 — Placement distribution visual**
+- **A (recommended):** **per-Bot horizontal 100%-stacked bar**, segments for 1st/2nd/3rd/(4th) rank (space-efficient, relative proportions easy).
+- B: grouped side-by-side vertical bars for rank counts per Bot (absolute counts clearer, comparison harder with 4 Bots).
+- C: a **rank × Bot heatmap** with written counts or percentages (information-dense, relies on legend/accessible text).
+- Why A: 3p/4p differences read clearly without many axes.
 
-**Q261 — Source-of-truth and unavailable metrics for advanced plots?**
-- **A (recommended):** derive only from **durably recorded per-Match ranks/scores/participant IDs**, label complete-sample denominators and unavailable/insufficient history; no fabricated inference latency or A/B confidence intervals.
-- B: estimate network/compute timings from Replay scores and label them actual inference timing.
-- C: synthesize plausible per-Match datapoints to fill gaps.
+**Q277 — Per-Match score variation chart**
+- A: per-Match **scatter plot** of final score per Bot (shows outliers and chronological points, can crowd on 1,000 Matches).
+- **B (recommended):** vertical **per-Match net-score-change bars** for selected Bot, with legend to switch participant (clear score gains/losses but only one Bot at a time).
+- C: per-Bot **box/violin-like distribution** of per-Match relative score (compact stability view, hides sequence).
+- Why B: highlights which individual Matches caused major increases or decreases to the existing relative-net progression.
 
-**Q262 — Mobile layout of multiple default-visible advanced charts?**
-- **A (recommended):** compact Run header/progress, then **stacked responsive advanced plots and leaderboard** in natural scrolling order; keep history lower and no inline 3D renderer.
-- B: squeeze a four-chart desktop grid into phone width, requiring tiny labels.
-- C: load and display the live 3D table automatically above plots, overriding Q244 C.
+**Q278 — Provisional analytics indicators**
+- **A (recommended):** small **`Early data · N completed Matches` badge + explanation beside each chart**, continuing to render valid data (clear and local, repeated labels).
+- B: one shared **Analytics-wide early-data banner** plus exact sample count on chart hover (cleaner, weaker outside full viewport).
+- C: subtly tinted or dotted **provisional chart background/series** with a legend (visual but needs noncolor accessible meaning).
+- Why A: a chart viewed alone still states its sample limitation.
 
-**Q263 — What happens on closing manually opened mobile Live Table?**
-- **A (recommended):** `Open Live Table` opens one authorized fullscreen/in-page fallback only on tap, stays open between Matches, and `Close` returns to the **same Run detail scroll/chart context**, restoring keyboard focus; unmount private-hand viewer when closed.
-- B: open a new tab for each Match and forget the Run page position.
-- C: force the Live Table to reopen itself automatically after exit.
+**Q279 — Mobile default-expanded category controls**
+- A: **accordion sections**, Performance and Consistency both open initially; each can be collapsed independently (compact when revisiting).
+- **B (recommended):** **anchored vertical sections** with a small sticky jump menu, both visible in normal scroll; optional collapse in each header (easy to jump among several plots).
+- C: **two persistent category cards**, each displaying a summary figure plus its already-open charts; collapse card details manually (more summary context, more visual weight).
+- Why B: several charts remain visible by default while navigation through them is fast.
 
-**Q264 — Home entry page hierarchy?**
-- **A (recommended):** short, understandable English entry page featuring six-digit Room code **Join** as primary action, with guest/public links appropriate to session and a discreet Admin sign-in, preserving character visual identity without cinematic overhead.
-- B: showcase a long decorative story/animation before the Join action.
-- C: show an Admin-only dashboard to everyone on the Home page.
+**Q280 — Manually opened phone live viewer in portrait and landscape**
+- **A (recommended):** responsive **portrait/landscape supported equally**, with controls reflowed and optional browser fullscreen; never force rotation (most predictable).
+- B: portrait allowed but offer an optional **`Rotate for larger table`** hint on narrow screens; no forced orientation (more guidance, slight chrome).
+- C: open with **landscape-optimized viewing area** and allow pinch/pan in portrait, with a visible close action (big table focus, more gesture learning).
+- Why A: browser orientation constraints vary; keep one safe, accessible viewer.
 
-**Q265 — Room join + character selection journey?**
-- **A (recommended):** preserve existing Room lookup → eligible join → name + character selection → clear success/next step, with direct inline errors and keyboard-friendly, non-blocking character previews.
-- B: require an unrelated new account or complicated onboarding wizard.
-- C: remove character selection entirely from Room gameplay.
+**Q281 — Mobile Home ordering after two-column desktop Hero**
+- **A (recommended):** **Join form first**, followed by a compact character/game visual strip; users can enter Room code immediately.
+- B: compact hero image/title first with **Join form directly below** (more branding at first glance).
+- C: character art and Join in an **alternating swipeable two-panel carousel** with a permanently accessible Join shortcut (expressive, more interaction).
+- Why A: the Home entry task is joining a Room, especially from phones.
 
-**Q266 — Lobby UX for seated guests/Bots?**
-- **A (recommended):** show who is in each Seat, Participant names and ready/waiting statuses, valid next action and Room code clearly, with change announcements accessible and no false start when seats are missing.
-- B: focus on decorative animations and hide who is ready or present.
-- C: automatically fill seats and start the game without legitimate readiness.
+**Q282 — Navigation/state for two-step Room Join**
+- **A (recommended):** **two steps in one route**, retaining entered name and current character in component state, with explicit Back; no additional URL surface.
+- B: **separate URLs for name and character** under the Room join path, with safe state handoff/restore (better deep links and browser Back).
+- C: first step as normal page, second **Character chooser sheet/modal** retaining underlying form and Back (few route changes, sheet space constraints).
+- Why A: simple with current route layout and fewer edge cases.
 
-**Q267 — Normal active Room Match HUD and controls?**
-- **A (recommended):** keep **actual Mahjong table as the primary surface**, show only legal hand/action controls and clear timing/wind/score cues, preserve spectator/public visibility boundary, with responsive controls and no extra dashboard chrome obscuring play.
-- B: show the Benchmark Admin's all-hands privileged view to every guest.
-- C: replace the table with an admin metrics grid.
+**Q283 — Lobby Participant-list row treatment**
+- **A (recommended):** compact **Seat + Avatar + Display Name + Ready/Connected** rows with a separate short Room summary; ideal for 4 slots.
+- B: full **Participant cards** in one column with larger character art and detailed status; more personality, longer mobile scroll.
+- C: **grouped `Ready` and `Waiting` lists** retaining Seat labels, visually emphasizing progress but reorders rows as state changes.
+- Why A: stable Seat identity and quick readiness check.
 
-**Q268 — Replay viewer information architecture?**
-- **A (recommended):** preserve real renderer and timeline with obvious Play/Pause, previous/next significant event, speed and current hand/Match context, plus accessible chronological event list, without new Replay data model.
-- B: hide playback behind raw JSON, no timeline or shortcut hints.
-- C: develop a second independent Replay renderer with a duplicate rule engine.
+**Q284 — Desktop side Action Panel when no decision is pending**
+- **A (recommended):** **persistent compact right panel** showing status/timer, expanding legal actions when available; mobile bottom Dock only appears when useful (stable context).
+- B: **contextual panel only while an action is pending**, otherwise use small table-level status chip (maximizes game table).
+- C: **collapsible side panel** on desktop with status always visible elsewhere and mobile Dock remaining fixed (customizable attention).
+- Why A: reduces position jumps when a new call/ron/discard Decision becomes available.
 
-**Q269 — Desktop Admin Rooms workspace hierarchy?**
-- **A (recommended):** same compact Admin sidebar, Rooms list/search rail and selected Room detail with concise Participant/connection, Bot Token, rule configuration and authorized actions; don't hide critical Room state in multiple modal layers.
-- B: full-screen multi-tab animations before showing connected Bots.
-- C: make destructive global actions the largest default controls.
+**Q285 — Kyoku-first Replay jump UI**
+- A: **horizontal segmented `East 1 / East 2 / ...` tabs**, with event-level scrub controls below (fast for short Match; overflows long Half games).
+- **B (recommended):** **vertical Kyoku chapter list** beside Replay on desktop, collapsible dropdown on mobile (scalable to longer Matches).
+- C: single **timeline with Kyoku section markers**, where clicking markers jumps to hand start (video-editor feel; more dense navigation).
+- Why B: Kyoku is the main unit; chapters preserve long-match readability.
 
-**Q270 — Light/Dark surface and game renderer contrast?**
-- **A (recommended):** neutral light/dark app shells, semantically colored state badges, accessible text contrast and non-color indicators; keep 3D Mahjong table colors and assets stable rather than recoloring gameplay art with CSS themes.
-- B: recolor all Mahjong tiles and discard surfaces automatically when switching theme.
-- C: use accent color as the only status indicator without text.
+**Q286 — Admin Rooms Master–Detail on narrow screens**
+- **A (recommended):** **list screen → selected Room detail screen** with clear Back to list; keep split view on large desktop (easy for mobile).
+- B: keep Room detail open with a **collapsible Room picker drawer** on mobile; fewer hard route transitions, possible hidden navigation.
+- C: **stacked list and selected Room detail on same mobile scroll page**, with an anchored selection header (simple URL, more scrolling).
+- Why A: selected Room actions deserve full mobile width.
 
-**Q271 — Per-Match historical drilldown within a Run?**
-- **A (recommended):** select a Match entry to show compact **persisted placements/points per Bot** and `Watch Replay` navigation; keep the Run context on return; no extra comparison/report module.
-- B: open a separate research Experiment builder whenever clicking a Match.
-- C: only present an opaque Match ID without result or Replay navigation.
+**Q287 — HUD surrounding surface under Light/Dark themes**
+- A: **opaque token-colored control surfaces** matching shell theme while 3D table stays unchanged (maximum text contrast, visible containers).
+- **B (recommended):** compact **semi-translucent HUD/control frame** adjusting to Light/Dark with solid focus/status affordances (subtle game visual cohesion, requires contrast checks).
+- C: **separate always-dark gameplay HUD palette** even if shell is Light, with token-colored outer controls (stable table look, theme discontinuity).
+- Why B: blends the management shell with a game without recoloring core table artwork; accessibility remains mandatory.
 
-**Q272 — Room created but roster/Run cannot start yet?**
-- **A (recommended):** explicit `Room created → Connect and select eligible Bots → Start Run` setup progress; show count, compatibility constraint and actionable next step, with inline server errors, no fabricated auto-fill.
-- B: hide the created Room and let the user guess where it went.
-- C: silently start with insufficient connected Bot participants.
+**Q288 — Match-history Detail Drawer interaction**
+- **A (recommended):** **right-side Drawer on desktop, bottom sheet on mobile**, with compact placement/score table and Replay action; restore focus/scroll on close.
+- B: **side Drawer on all breakpoints**, narrow on phone but keeps consistent slide direction.
+- C: **anchored panel within Match history section** that pushes nearby content, not an overlay (good keyboard document flow, taller page).
+- Why A: familiar adaptive behavior that preserves the current history context.
 
-**Q273 — Error/empty/connection feedback consistency across pages?**
-- **A (recommended):** common nonintrusive inline status patterns for loading/empty/stale/error, with an explicit Retry or next action when safe, while auth errors immediately protect private views; no misleading "Live".
-- B: one silent indefinite spinner for every failure.
-- C: show internal Bot credentials/hidden hands inside support errors.
+**Q289 — Room setup Ready Panel placement**
+- A: **sticky sidebar panel** beside eligible roster with selected/required Bot count, blockers and Start (always in view on desktop).
+- **B (recommended):** **inline Ready Panel immediately above roster and Start**, updated with current server status; stacks naturally on mobile.
+- C: **compact ready summary at top of Room detail**, with a jump to roster and a second Start button near participants (good cross-section overview, duplicate action).
+- Why B: no sticky/sidebar state to maintain and setup steps appear together.
 
-**Q274 — Preserve desktop hierarchy when charts multiply?**
-- **A (recommended):** keep a **large single live table** and a compact fixed-content leaderboard in the first viewport when reasonable, with multiple advanced charts directly below; avoid a huge sticky plot sidebar that shrinks the live table.
-- B: make every chart always pinned above the table even when the table becomes a thumbnail.
-- C: hide all analytics behind a separate site/app.
+**Q290 — Toast+Inline feedback across route changes**
+- A: **route-local toasts** vanish when leaving the page; persistent blocking inline errors remain at source (simple semantics).
+- **B (recommended):** **app-shell-level temporary toasts** survive a normal route change for successful actions; blocking errors remain tied to the relevant panel (useful after create→Room redirect).
+- C: **small action-activity list** in Admin navigation holds recent operation successes and inline errors (more traceability, greater complexity).
+- Why B: a successful Room creation can remain confirmed when immediately navigating to the new Room.
 
-## Deferred until UI-3 selections
+**Q291 — Cross-chart Bot selection**
+- A: **shared Participant filter/legend** highlights the chosen Bot consistently in all four plots while still allowing comparison overlays (one control to learn).
+- **B (recommended):** **independent legend and interaction per chart**, with consistent Bot colors/names but no synchronized selection (simple, different chart questions stay separate).
+- C: **single `Compare bots` toggle** to switch all graphs between one-Bot focus and all-Bot overview modes (clear global mode, extra control).
+- Why B: each graph may have a different best interaction; consistency comes from participant labels/colors.
 
-Only genuinely dependent issues remain: what individual plots show and how to visualize advanced-but-observable stats; how mobile on-demand viewer opens/closes; per-route precise desktop/mobile page mockups under the selected roles/navigation, including the known ordinary-live score-to-Seat regression acceptance. No sprawling new infrastructure/protocol/Experiment design or microconstant questionnaire. No code/CI/merge authorized.
+**Q292 — Which plot is primary full-width under desktop table?**
+- **A (recommended):** **cumulative table-relative net score** is the hero plot; average rank, rank distribution, and Match variation occupy secondary cards.
+- B: **moving-average rank** is hero; score and placement-distribution plots are secondary (placement emphasizes competitive results).
+- C: **per-Match score variation** is hero; cumulative results and placement metrics are secondary (highlights run volatility).
+- Why A: relative score accumulates across entire Run and benefits from a full-width time axis.
 
-## Historical decision tree — Round UI-2 (now answered)
+## Deferred UI-5 branches (only if choices genuinely unlock them)
+
+Match/Replay accessible focus flows within selected page interactions; responsive chart labels and linked legend semantics, final copy and practical route transition validation; a concise visual acceptance checklist with actual renderer captures for normal Room + Replay + Benchmark. **No further owner questions for trivial Tailwind constants, library props, internal API names or canceled Bot Protocol/Experiment designs.**
+
+## Historical decision tree — Round UI-2 (answered; pre-revised-UI-3 draft only)
 
 ```text
 Round UI-1 fixed prerequisites
@@ -372,7 +490,7 @@ Round UI-1 fixed prerequisites
 - B: permanent desktop-width sidebar on tiny phones.
 - C: no consistent route navigation; browser Back is the only way to navigate.
 
-## Historical deferments recorded before UI-2 answers (superseded by current UI-3 frontier)
+## Historical deferments recorded before UI-2 answers (superseded by current UI-4 frontier)
 
 - Exact state/interaction for mobile chart/no-table choice (Q256); no invented mobile live view until decided.
 - Typography/spacing tokens and light/dark treatment guided by selected palette; concrete state mockups not fake backend screenshots.

@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **New owner decision: abandon breaking Benchmark Bot protocol v2; UI/UX interview reopened (Round UI-1 unanswered). Documentation only; no implementation approval.**
+Status: **Breaking Bot v2 protocol and A/B Experiment canceled; UI/UX Rounds UI-1–UI-3 decided; UI-4 Q275–Q292 unanswered. Documentation only; no implementation approval.**
 Owner: eitaar
 Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI/UX redesign. **A/B Experiment canceled (Q234 C); breaking Benchmark Bot protocol v2 canceled by later explicit owner instruction.** Current MJAI/MCP/Built-in Bot contracts and authentication remain in place. Documentation only.
 
@@ -20,7 +20,7 @@ Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI
 - Admin configures one 3p **or** 4p game mode/ruleset and a fixed number of selected supported software participants; 1–1,000 sequential completed Matches per ordinary Run. Preserve the shipped 3p MJAI restriction unless separately changed. No humans, auto-filled vacant slots, dual-mode Runs, permanent Runner infrastructure, Experiment or A/B pairing.
 - Reuse existing Rust RoomActor/MatchMachine/SQLite and unchanged existing Bot communication; a new Match starts only after mandatory results/Replay have persisted. Authoritative Participant IDs and Seat rotation yield per-Match scores, ranks, average rank, first-place rate and accumulated table-relative net score. Never double count failed/unpersisted results.
 - Distinguish natural **Completed**, Admin-requested **Stopped** (e.g., 40/100), unexpected **Interrupted** and actual **Failed**. Admin Stop prevents new Matches and finishes the current one when possible. After crash reconcile durable Run state and permit explicit Admin Resume **only if the same participant roster can be safely reconnected/re-validated using existing authentication and current game rules**. **No automatic resumption, no synthetic clean-reset acknowledgement, no silently retried uncertain Match**. If an external Bot may retain unsafe state, fail/hold the Run for explicit intervention instead of inventing a new mandatory Bot protocol.
-- Run-first Admin UX (UI-1 + UI-2 owner choices): modern restrained **neutral/slate + teal/green** English shell, searchable/paginated Status/Mode Run index and short New Run → actual Room roster setup. **Desktop:** one real read-only Three.js table ~2/3 + Leaderboard ~1/3, stacking on narrower desktop widths; ranked by ascending average placement, with first-place rate and relative net scores. **Q252 B overrides the old single-chart limit: multiple advanced ordinary Run graphs are visible by default below the table**, but no canceled Experiment/research inference metrics may be invented (specific chart families await Q259). **Mobile Q244 C + Q256 B:** Run detail is **chart-first and does NOT render live 3D inline by default**; a clearly labeled **Open Live Table** action may open the one authorized table only on user request, fullscreen/in-page fallback. Stop confirmation/pending feedback, safe Interrupted Resume only, Bot/Seat-labeled accessible view focus, honest Stale/last-update indicators, compact Admin sidebar and minimal public topbar/mobile menu. Existing live UI currently uses **GET HTTP polling ~1s**; any SSE changes are optional server-observation improvements, not Bot protocol changes.
+- Run-first Admin UX (UI-1–UI-3 owner decisions): modern restrained **neutral/slate + teal/green** English shell, searchable/paginated Run index, short New Run → real-time Room Ready Panel to connect/select eligible Bots. **Desktop:** one real read-only Three.js table ~2/3 + Leaderboard ~1/3; below, **Q252 B with revised Q259 C/Q260 C/Q274 C fixes FOUR default-visible ordinary Run charts: cumulative table-relative net score, moving-average rank, rank distribution and per-Match score variation, with the primary chart full-width and remaining charts in a responsive two-column hierarchy**. Small samples are **provisional**, not statistically proven. **Mobile Q244 C + Q256 B:** charts-first in default-expanded Performance/Consistency categories, **no default inline 3D**; explicit Open Live Table overlays a single fullscreen authorized viewer, returning to prior scroll/focus on close. **Other pages:** Home Join+art two columns, two-step Room name→character Join, Lobby Participant list, normal 3D game with desktop side action rail/mobile bottom Dock, Kyoku-first Replay, Admin Rooms Master–Detail, shell/peripheral HUD theme switching without changing real tile/table assets, Match-history Detail Drawer, Toast successes and blocking inline errors. Guarded Stop/Interrupted Resume and honest Stale states remain. Current mainline live observer polls via **GET HTTP ~1s**; optional SSE is a server-observation optimization only, not a new Bot protocol.
 - English-only, clear, functional UI copy, shared Tailwind + shadcn/ui **Base UI** tokens and components; preserve existing 3D/Pixi rendering. Internally staged changes, **one public all-pages UI cutover with no prepared old-UI rollback**. Require reviewable E2E/a11y/performance and *real output* Seat/score visual checks before release. Any incident uses scoped server-enforced maintenance and a forward fix, preserving private data.
 - Prior independent ordinary Run stats and scoped optional timing remain only if practically useful; do not reinstate withdrawn research telemetry/storage products. Avoid overengineering.
 
@@ -36,7 +36,7 @@ Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI
 - **Q234 C** still cancels Experiment-only decisions and derived infra. Both cancellations are independent.
 - **Q233 A/Q235 A:** `Stopped` distinct from `Completed` and single-server SQLite with sequential Match progression remain active.
 - English-only UI Q170 B, shadcn/Base UI Q172 A, one whole-app public UI release Q114 B, and **no old-UI rollback** Q144 C remain active.
-- **UI/UX interview** lives in `docs/superpowers/specs/2026-10-14-ui-ux-grill.md`. **UI-1 Q237–Q246 and UI-2 Q247–Q258 are decided**; Q252 **B** explicitly demands **multiple advanced ordinary Run plots visible by default**, not old draft's stacked-area suggestion, while Q256 **B** permits a manually requested **mobile fullscreen single-table viewer** without reversing Q244 C's chart-first/no-inline-table default. The next 16 independent questions Q259–Q274 are unapproved proposals, not code authorization. The former "grilling closed" decision Q236 A applied to the previous architectural scope. This is a newly requested, bounded *UI/UX* interview, not an open-ended return to Experiment/protocol requirements.
+- **UI/UX interview** lives in `docs/superpowers/specs/2026-10-14-ui-ux-grill.md`. UI-1, UI-2, and **revised UI-3 Q259–Q274 are now decided** (original biased UI-3 choices rejected). Binding distinctive decisions: Q252 B multiple advanced charts; revised Q259 C four balanced chart families; revised Q260 C/Q274 C full-width hero with secondary 2-column plots; revised Q261 C provisional small-sample labels; Q244 C graph-first mobile + Q256 B explicit on-demand fullscreen, refined by revised Q262 B category sections/Q263 A overlay return; and all-page UX decisions Q264–Q273. **Q275–Q292** are newly unlocked unanswered UI-4 proposals, not code authorization. The former "grilling closed" decision Q236 A applied to the previous architectural scope. This is a newly requested, bounded *UI/UX* interview, not an open-ended return to Experiment/protocol requirements.
 
 ### Known risks and scope checks before implementation
 
@@ -1167,22 +1167,22 @@ driichi product: existing MJAI/MCP/Built-in integrations unchanged
 │   ├── create/select roster → start; durable scores/Replay
 │   ├── Stopped vs Completed vs Interrupted/Failed
 │   └── explicit safe Admin Resume, no synthetic retry/reset
-├── Dashboard & UI/UX DESIGN — UI-1/UI-2 done; UI-3 open
+├── Dashboard & UI/UX DESIGN — UI-1/UI-2/revised UI-3 decided; UI-4 open
 │   ├── visual direction / information hierarchy
 │   ├── desktop layout and one-table live observation
 │   ├── Run creation, list, trends and actions
-│   ├── Q252 B: multiple default-visible advanced Run charts below 3D table
+│   ├── Q252 B + Q259 C: four default-visible persisted Match analysis charts
 │   ├── Q244 C: mobile Run detail charts first, no inline 3D
-│   ├── Q256 B: mobile may Open Live Table on demand, one fullscreen table
+│   ├── Q256 B + Q263 A: mobile opt-in one fullscreen overlay and restore scroll
 │   ├── Stop confirmation, focus control, stale-data/connection labels
-│   └── Q259–Q274: UI-3 whole-app and analytics choices awaiting owner
+│   └── Q275–Q292: UI-4 chart details & page interaction trade-offs open
 │   English-only shadcn/Base UI, actual Three.js retained
 ├── Whole-app UI release: one public cutover, no old-UI rollback
 ├── CANCELED: breaking Benchmark Bot protocol v2
 └── CANCELED: A/B Experiment and paired research services
 ```
 
-The user expressly reopened grilling to settle **UI/UX**, not Bot/Experiment backend machinery. UI-1 and UI-2 are **decided**. UI-2 included **Q252 B: multiple advanced graphs** and **Q256 B: opt-in mobile live table**, with all other UI-2 answers A. The newly unlocked UI-3 frontier Q259–Q274 is in [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md) and remains awaiting owner choices; no product edits permitted.
+The user expressly reopened grilling to settle **UI/UX**, not Bot/Experiment backend machinery. UI-1, UI-2 and the **revised UI-3 Q259–Q274** are **decided**. The owner's realistic-questionnaire choices supersede all rejected original UI-3 option text; specifically Q259 C means four balanced advanced plots and Q264 B means Join+character visual Home. The current independent UI-4 frontier Q275–Q292 is in [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md) and awaits owner choices; no product edits permitted.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 
