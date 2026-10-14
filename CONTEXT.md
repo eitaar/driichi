@@ -77,7 +77,11 @@ A bot-only Room mode for controlled evaluation of software Participants across M
 _Avoid_: Ranked mode, bot replacement
 
 **Experiment**:
-A research comparison that groups existing Benchmark Runs and may arrange new Benchmark Runs under declared evaluation conditions. Each Run retains its own participant identities, results, and history.
+A research comparison of eligible verified Benchmark Runs, which may include previously completed Runs or newly arranged Runs. Each Run retains its own participant identities, results, and history.
+
+**Verified Benchmark Run**:
+A Benchmark Run whose conditions relevant to a proposed Experiment can be independently checked against recorded evidence, rather than inferred from names or incomplete history.
+_Avoid_: All historical Runs, manually asserted compatibility
 _Avoid_: Benchmark Run, Match
 
 **Benchmark Run**:
@@ -92,8 +96,16 @@ _Avoid_: Spectator, Replay View
 A comparison of software Participants under recorded common random-seed conditions and balanced seat assignments. Matched seeds do not imply identical game trajectories when Participants make different decisions.
 _Avoid_: Identical replay, same match outcome
 
+**Benchmark Match Attempt**:
+A single attempt to execute a scheduled Benchmark Match. An incomplete attempt may be recorded as failed; retrying the same scheduled Match is a distinct Attempt and does not turn earlier failures into completed results.
+_Avoid_: Completed Match, Rematch
+
+**Server-observed Latency**:
+Elapsed response time observed at the game server, as distinct from a Bot's optionally reported internal inference time.
+_Avoid_: Inference time, guaranteed model compute time
+
 **Observation Focus**:
-The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Switching focus does not change any Participant's identity, Seat, Controller, or game state.
+The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Focus follows that Participant when Seats rotate between Matches; it never changes the Participant's identity, Seat, Controller, or game state.
 _Avoid_: Controller, Player View
 
 **Kyoku**:
