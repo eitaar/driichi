@@ -1,11 +1,21 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Breaking Bot v2 protocol and A/B Experiment canceled. Original UI choices retained; UI-6 Q301–Q309 now decided (UI-D68–D76) with LEFT large Character, RIGHT Hand+Score+Yaku, dark table scrim. UI-7 Q310–Q314 pending. Docs-only, no implementation/CI/deployment/merge.**
+Status: **Draft PR #23 is the Benchmark/core architecture + shared domain-glossary PR. UI design was moved to separate [Draft PR #24](https://github.com/eitaar/driichi/pull/24) with all Q237–Q314 resolved (UI-D1–D81); owner final DESIGN signoff is still pending. Breaking Bot protocol v2 and A/B Experiment remain CANCELED. Docs only; no source, CI, deployment or merge authorized. PR #23 title intentionally unchanged per owner.**
 Owner: eitaar
 Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI/UX redesign. **A/B Experiment canceled (Q234 C); breaking Benchmark Bot protocol v2 canceled by later explicit owner instruction.** Current MJAI/MCP/Built-in Bot contracts and authentication remain in place. Documentation only.
 
 **Owner simplification constraint (Round 19, reinforced Q234 C/Q235 A): DO NOT OVERENGINEER.** Prefer existing Room/Run/SQLite/React components, one self-hosted server, finite serial Matches within each Run and direct UI. **Withdrawn A/B Experiment AND withdrawn breaking Bot protocol decisions are NOT binding**. Only independently reaffirmed ordinary-Run reliability/privacy requirements remain mandatory. Only ask the owner about truly material remaining product trade-offs. Minor constants, file naming, wire-format examples, exact library plumbing, and test harness choices can be specified by implementers within documented invariants without further owner grilling. No autonomous implementation approval follows from agreeing with this principle.
+
+## Separate review scope — owner request 2026-10-15
+
+**Owner requested independent GitHub Draft PRs for UI and Benchmark.**
+
+- **This existing [Draft PR #23](https://github.com/eitaar/driichi/pull/23)** owns the **Benchmark architecture, Run lifecycle, durability, historical design decisions D1–D239 and `CONTEXT.md` domain vocabulary**, and targets `main`. Its title remains **`docs: driichi Benchmark and UI/UX design`** solely because the owner explicitly prohibited renaming it; **do not interpret that title as owning the UI spec file**.
+- **Separate [Draft PR #24](https://github.com/eitaar/driichi/pull/24)** owns **`docs/superpowers/specs/2026-10-14-ui-ux-grill.md`** and all site-wide UI/UX decisions **UI-D1–D81**. It contains both Dashboard UI and ordinary Room/Lobby/Replay/Gameplay/Win/Draw/Final Standings visual decisions. It also independently targets `main`.
+- **No duplicate changed files:** UI spec is **REMOVED from this PR's branch**; `CONTEXT.md` and this Benchmark spec remain here. Summaries of UI constraints in this Benchmark spec are **cross-integration references**, not independent/superseding UI authority.
+- **Newest in-game result UI choices resolved:** UI-7 Q310 A (server-governed stage switch), Q311 A (typographic Draw reason), Q312 A (collapsed mobile Character/points/Continue), Q313 A (winner portrait LEFT, final standings RIGHT), Q314 B (secondary accessible Review Detail Sheet with authoritative timer continuing), recorded as UI-D77–D81 in PR #24. Earlier UI-6 Q301–Q309 and extra owner left-Character/right-hand-Yaku-score/dark-scrim requirement remain binding. **NO additional open UX preference questions; final owner DESIGN signoff pending**, distinct from implementation/CI/deployment/merge approval.
+- Both PRs remain Draft/docs-only and use `[skip ci]`. **Review/merge these two independent PRs separately only on explicit future authorization**. Cross-feature implementations must honor both product scopes.
 
 ## Authoritative current scope — owner update after Round 20 (2026-10-14)
 
@@ -26,11 +36,11 @@ Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI
 
 ### Authoritative in-game result UI-6 decision snapshot (Q301–Q309 settled)
 
-All nine owner selections: **Q301 C, Q302 B, Q303 B, Q304 A, Q305 B, Q306 A, Q307 A, Q308 A, Q309 B**. **Explicit owner clarification overrides generic options:** large winner Character **LEFT**, real winning hand/points/Yaku **RIGHT**, dark semi-transparent scrim between overlay and the existing live 3D tabletop. Reuse current winner hand/Yaku/points and real portrait/tile assets; do not invent other players' concealed hand. Draw uses same shell; per-Participant Before→signed delta→After scoreboard; compact Continue/Waiting/Skip/Review; Final Standings winner hero + true ranks and one Return to Room action; restrained/reduced-motion-safe transitions; phone expandable Bottom Sheet. **Only dependent UI-7 Q310–Q314** is currently open, detailed in [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md). Server `KyokuEndStep` and `Post-Match` authoritative state remain unchanged. No code authorization.
+All nine owner selections: **Q301 C, Q302 B, Q303 B, Q304 A, Q305 B, Q306 A, Q307 A, Q308 A, Q309 B**. **Explicit owner clarification overrides generic options:** large winner Character **LEFT**, real winning hand/points/Yaku **RIGHT**, dark semi-transparent scrim between overlay and the existing live 3D tabletop. Reuse current winner hand/Yaku/points and real portrait/tile assets; do not invent other players' concealed hand. Draw uses same shell; per-Participant Before→signed delta→After scoreboard; compact Continue/Waiting/Skip/Review; Final Standings winner hero + true ranks and one Return to Room action; restrained/reduced-motion-safe transitions; phone expandable Bottom Sheet. **Dependent UI-7 Q310–Q314** is now resolved (A/A/A/A/B), authoritative in the [UI/UX Draft PR #24](https://github.com/eitaar/driichi/pull/24). Server `KyokuEndStep` and `Post-Match` authoritative state remain unchanged. No code authorization.
 
 ### Newly opened in-game Result UI design (UI-D67; 2026-10-15)
 
-Owner explicitly asked to redesign **Kyoku Win/Draw (including authorized winner hand reveal), Score Transfer, and post-Match Final Standings**, not just maintain current result overlay appearance. Existing `RoundWinSurface`, `SettlementPresentation`, `ScoreTransfer`, `ResultsPanel` and real Three.js/tiles/portrait assets form the implementation baseline. **Visual choices Q301–Q309 in the companion [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md) are currently unanswered**. Preserve true Yaku/score, required Kyoku-end timer/Continue, authorized hand disclosure, identity/Seat mapping, 3p/4p outcomes, accessible/reduced-motion behavior and post-Match result. Mobile layout is a design goal, not shipped support. No new Bot messages, A/B Experiment, new game engine or code/CI/merge permission.
+Owner explicitly asked to redesign **Kyoku Win/Draw (including authorized winner hand reveal), Score Transfer, and post-Match Final Standings**, not just maintain current result overlay appearance. Existing `RoundWinSurface`, `SettlementPresentation`, `ScoreTransfer`, `ResultsPanel` and real Three.js/tiles/portrait assets form the implementation baseline. **Visual choices Q301–Q309 and their dependents Q310–Q314 are ALL owner-decided in the separate [UI/UX Draft PR #24](https://github.com/eitaar/driichi/pull/24) (UI-D68–D81); no results UX question remains open**. Preserve true Yaku/score, required Kyoku-end timer/Continue, authorized hand disclosure, identity/Seat mapping, 3p/4p outcomes, accessible/reduced-motion behavior and post-Match result. Mobile layout is a design goal, not shipped support. No new Bot messages, A/B Experiment, new game engine or code/CI/merge permission.
 
 ### Explicitly out of scope
 
@@ -62,7 +72,7 @@ Owner explicitly asked to redesign **Kyoku Win/Draw (including authorized winner
 
 ### Final UI/UX dependency audit and signoff boundary (after UI-5 and later UI-D65 override)
 
-**Current specification** is the 64 owner-selected UI questionnaire decisions (Q237–Q300, UI-D1–UI-D64) **as amended by later, binding UI-D65 and UI-D66**, in `docs/superpowers/specs/2026-10-14-ui-ux-grill.md`, plus this document's authoritative product and cancellation sections. **All dependent owner-level UI branches were answered. No new UX preference questions are pending.** The historical original biased UI-3 options and historical canceled v2 Bot/Experiment decisions cannot be resurrected by implementers.
+**UI authority resides exclusively in [Draft PR #24](https://github.com/eitaar/driichi/pull/24), containing UI-D1–UI-D81 (including final UI-6/7).** This PR documents only the Benchmark domain/Run architecture and necessary cross-feature integration invariants. All UX owner questions are answered, but **final DESIGN signoff remains pending**. The historical original biased UI-3 options and historical canceled v2 Bot/Experiment decisions cannot be resurrected by implementers.
 
 - **Run analytics:** four default-visible persisted-data charts, absolute cumulative net-score HERO recent 50 with separately labeled recent gain, All Matches switch, rank-average trend, rank distribution and selected leaderboard-leading Bot's per-Match relative changes; click a particular persisted Match data point to open the existing per-Match Drawer/Replay. Sample sizes and provisional notices are honest. Four analytics choices do not imply research-grade A/B Experiment analyses.
 - **Observation and Mobile:** desktop one privileged real 3D live Mahjong table, participant focus follows rotating Seats; mobile **charts first, zero automatic inline/background table**, optional **user-opened one-table fullscreen overlay** only during an active authorized Match. Otherwise disabled with accurate reason and a Replay link only when recorded evidence exists. Keep privacy, data revocation and Match boundary behavior intact.
@@ -1188,7 +1198,7 @@ driichi product: existing MJAI/MCP/Built-in integrations unchanged
 │   ├── create/select roster → start; durable scores/Replay
 │   ├── Stopped vs Completed vs Interrupted/Failed
 │   └── explicit safe Admin Resume, no synthetic retry/reset
-├── Dashboard & UI/UX DESIGN — past UI-D1–D66 decided; new in-game outcome UI-6 open
+├── Site-wide UI/UX DESIGN — moved to separate Draft PR #24; UI-D1–D81 decided
 │   ├── visual direction / information hierarchy
 │   ├── desktop layout and one-table live observation
 │   ├── Run creation, list, trends and actions
@@ -1200,15 +1210,15 @@ driichi product: existing MJAI/MCP/Built-in integrations unchanged
 │   ├── normal prestart Lobby: stable Participant list; Seat assigned randomly only at Start Match
 │   ├── Kyoku chapters, responsive Room/Drawer navigation
 │   ├── UI-5 window / Drawer / Seat order / Replay / Join / no-live semantics documented
-│   ├── UI-D67–D76: results UI-6 decided; split left hero/right hand+Yaku+points with scrim
-│   └── UI-7 Q310–Q314: results staging, Draw left, mobile summary, ranking hero, Review
+│   ├── UI-D67–D76: Win/Draw/Score/Final-Standings results presentation selected
+│   └── UI-D77–D81: stage switch, Draw hero, phone summary, ranking hero, Review selected
 │   English-only shadcn/Base UI, actual Three.js retained
 ├── Whole-app UI release: one public cutover, no old-UI rollback
 ├── CANCELED: breaking Benchmark Bot protocol v2
 └── CANCELED: A/B Experiment and paired research services
 ```
 
-The user expressly reopened grilling to settle **UI/UX**, not Bot/Experiment backend machinery. **All 64 UI questionnaire choices Q237–Q300 plus latest owner UI-D65 action-placement override are recorded and consistency-reviewed.** The revised UI-3 replaces the rejected biased original choices; UI-5 Q293–Q300 is fully recorded **with verified Q296 A prestart Seat correction**. **No further UI/UX grilling round is pending.** The final acceptance matrix, operational release risks and remaining *verification* blockers are in [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md). Await explicit owner design signoff (not code authorization); no product edits permitted.
+The user expressly reopened grilling to settle **UI/UX**, not Bot/Experiment backend machinery. **All 64 UI questionnaire choices Q237–Q300 plus latest owner UI-D65 action-placement override are recorded and consistency-reviewed.** The revised UI-3 replaces the rejected biased original choices; UI-5 Q293–Q300 is fully recorded **with verified Q296 A prestart Seat correction**. **No further UI/UX grilling round is pending (UI-D1–D81 resolved in Draft PR #24).** The final acceptance matrix, operational release risks and remaining *verification* blockers are in [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md). Await explicit owner design signoff (not code authorization); no product edits permitted.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 
