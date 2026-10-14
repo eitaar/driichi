@@ -100,6 +100,10 @@ _Avoid_: A/B-only Experiment report, game controller
 A versioned identity and reset-capability declaration required from each software Participant in a Benchmark v2 Run, including standalone Runs, without requiring an Experiment. It is a trusted claim rather than independent binary execution evidence.
 _Avoid_: Bot Token, A/B candidate, runtime attestation
 
+**Benchmark Protocol Mismatch**:
+The refusal of a Bot Participant to enter a Benchmark because its advertised capability/protocol version is incompatible with the required Benchmark version. It is an admission failure, not evidence that the Bot played or failed a Match.
+_Avoid_: Disconnect during Match, invalid Game Action
+
 **Paired Evaluation**:
 A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched planned seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
 _Avoid_: Identical replay, same match outcome
