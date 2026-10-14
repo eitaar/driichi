@@ -77,7 +77,7 @@ A bot-only Room mode for controlled evaluation of software Participants across M
 _Avoid_: Ranked mode, bot replacement
 
 **Experiment**:
-A research comparison of eligible verified Benchmark Runs, which may include previously completed Runs or newly arranged Runs. Each Run retains its own participant identities, results, and history.
+A research comparison of eligible verified Benchmark Runs, which may include previously completed Runs or newly arranged sequential Runs. An Experiment selects one exact game mode, never automatically both 3p and 4p. Each Run retains its own participant identities, results, and history.
 _Avoid_: Benchmark Run, Match
 
 **Verified Benchmark Run**:
@@ -120,6 +120,14 @@ _Avoid_: Runtime attestation, measured binary
 A complete A/B comparison under one chosen game mode and matched seed conditions: in 3p, three Matches for A and three for B (six total); in 4p, four for A and four for B (eight total). Each Candidate Model occupies every Seat once against the fixed reference roster. Only fully recorded A/B blocks contribute to paired effect statistics.
 _Avoid_: Kyoku, single Match
 
+**Analysis Seed**:
+A recorded seed for statistical resampling and uncertainty estimation, kept independent of the random seeds that govern actual Mahjong Matches.
+_Avoid_: Root Seed, per-Match seed
+
+**Experiment Run Queue**:
+The persisted ordered collection of Benchmark Runs scheduled under one Experiment. Long evaluations can span multiple sequential Runs without increasing any Run's Match limit.
+_Avoid_: Current Match, concurrent Runs
+
 **Descriptive-only Run**:
 A verified Benchmark Run attached to an Experiment whose results do not meet the Experiment's paired fixture conditions. It appears separately from paired statistics and is excluded from paired effect and paired uncertainty calculations.
 _Avoid_: Unverified Run, Paired Block
@@ -133,7 +141,7 @@ An Experiment terminated by exhausted Match retries or an unrecoverable integrit
 _Avoid_: Blocked Experiment, Cancelled Experiment
 
 **Paired Effect**:
-The measured difference between two Candidate Models across complete matched Paired Blocks of one game mode. Mean placement is the primary playing-strength measure, with relative score and first-place rate as additional measures; uncertainty uses block-level bootstrap intervals.
+The measured difference between two Candidate Models across complete matched Paired Blocks of one exact game mode. For mean placement, Candidate A advantage is mean placement(B) minus mean placement(A); a positive value favors A. Relative score and first-place rate are secondary, and uncertainty is assessed by block-level bootstrap intervals.
 _Avoid_: Single-Match ranking, guaranteed model superiority
 
 **Reference Bot**:
