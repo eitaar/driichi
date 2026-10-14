@@ -128,6 +128,7 @@ async function expectRenderedTable(page: Page) {
     timeout: 20000,
   });
   await expect(table).toHaveAttribute("data-player-frame-count", /^[34]$/);
+  await expect(table).toHaveAttribute("data-dead-wall-tile-count", "14");
   await expect(table).toHaveAttribute("data-wall-tile-count", /^\d+$/);
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
   await expect(table).toHaveAttribute(
@@ -148,13 +149,13 @@ async function expectRenderedTable(page: Page) {
     const canvas = node.querySelector("canvas");
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+    const quality = JSON.parse(node.querySelector<HTMLElement>(".three-table-renderer")!.dataset.rendererQuality!);
     return {
       clientWidth: rect.width,
       clientHeight: rect.height,
-      pixelWidth: canvas.width,
-      pixelHeight: canvas.height,
-      antialias: context?.getContextAttributes()?.antialias ?? false,
+      pixelWidth: quality.width,
+      pixelHeight: quality.height,
+      antialias: quality.antialias,
       viewportWidth: document.documentElement.clientWidth,
       viewportHeight: window.innerHeight,
     };
@@ -480,7 +481,10 @@ test("keeps a long participant name and missing icon actionable", async ({ page 
   await expect(table.locator('.table-player-frame[data-position="bottom"]')).toContainText(
     "A very long participant display name",
   );
-  await expect(table.locator('.table-player-frame[data-position="bottom"] .asset-fallback')).toBeVisible();
+  const fallback = table.locator('.table-player-frame[data-position="bottom"] .asset-fallback');
+  await expect(fallback).toBeVisible();
+  await expect(fallback).toHaveCSS("background-color", "rgb(53, 74, 102)");
+  await expect(fallback).toHaveCSS("color", "rgb(238, 240, 242)");
   await expect(page.getByTestId("action-deck")).toBeVisible();
   await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
   await page.screenshot({
@@ -491,16 +495,15 @@ test("keeps a long participant name and missing icon actionable", async ({ page 
 
 test("keeps legal actions usable when WebGL creation fails", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
-  await page.addInitScript(() => {
-    const original = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function getContext(
-      this: HTMLCanvasElement,
-      contextId: string,
-      ...args: unknown[]
-    ) {
-      if (contextId === "webgl" || contextId === "webgl2") return null;
-      return Reflect.apply(original, this, [contextId, ...args]);
-    } as typeof original;
+  await page.route(url => url.pathname.includes("three-table-worker"), async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `
+      const original = OffscreenCanvas.prototype.getContext;
+      OffscreenCanvas.prototype.getContext = function (kind, ...args) {
+        if (kind === 'webgl' || kind === 'webgl2') return null;
+        return Reflect.apply(original, this, [kind, ...args]);
+      };
+      ${await response.text()}` });
   });
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
@@ -521,23 +524,9 @@ test("keeps legal actions usable when WebGL creation fails", async ({ page }) =>
   await expectNoAxeViolations(page, ".gameplay-main");
 });
 
-test("falls back when renderer creation fails after WebGL preflight", async ({ page }) => {
+test("falls back when the native renderer module cannot load", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
-  await page.addInitScript(() => {
-    const original = HTMLCanvasElement.prototype.getContext;
-    let webglRequests = 0;
-    HTMLCanvasElement.prototype.getContext = function getContext(
-      this: HTMLCanvasElement,
-      contextId: string,
-      ...args: unknown[]
-    ) {
-      if (contextId === "webgl" || contextId === "webgl2" || contextId === "experimental-webgl") {
-        webglRequests += 1;
-        if (webglRequests > 1) return null;
-      }
-      return Reflect.apply(original, this, [contextId, ...args]);
-    } as typeof original;
-  });
+  await page.route(url => url.pathname.includes("three-table-worker"), route => route.fulfill({ status: 404, body: "Renderer module unavailable" }));
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
@@ -550,14 +539,47 @@ test("falls back when renderer creation fails after WebGL preflight", async ({ p
   await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
 });
 
+async function installNativeContextLossControl(page: Page) {
+  await page.addInitScript(() => {
+    const original = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (...args: unknown[]) {
+      const message = args[0] as { type?: string; canvas?: unknown };
+      if (message?.type === "init" && message.canvas instanceof OffscreenCanvas) (window as unknown as { __renderer: Worker }).__renderer = this;
+      return Reflect.apply(original, this, args);
+    };
+  });
+  await page.route(url => url.pathname.includes("three-table-worker"), async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `
+      self.addEventListener('message', event => {
+        if (event.data?.canvas instanceof OffscreenCanvas) self.__ownedCanvas = event.data.canvas;
+        if (event.data?.type === 'test-native-context-loss') {
+          event.stopImmediatePropagation();
+          const extension = self.__ownedCanvas.getContext('webgl2').getExtension('WEBGL_lose_context');
+          if (!extension) throw new Error('Native context-loss control unavailable');
+          extension.loseContext();
+        }
+      });
+      ${await response.text()}` });
+  });
+}
+
 test("falls back accessibly after WebGL context loss", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
+  await installNativeContextLossControl(page);
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
   const table = await expectRenderedTable(page);
 
-  await table.locator("canvas").dispatchEvent("webglcontextlost");
+  const renderer = page.workers().find(worker => worker.url().includes("three-table-worker"))!;
+  await renderer.evaluate(() => {
+    const canvas = (self as unknown as { __ownedCanvas: OffscreenCanvas }).__ownedCanvas;
+    const context = canvas.getContext("webgl2")!;
+    const extension = context.getExtension("WEBGL_lose_context");
+    if (!extension) throw new Error("Native context-loss control unavailable");
+    extension.loseContext();
+  });
 
   await expect(table).toHaveAttribute("data-webgl-fallback", "true");
   await expect(table).toHaveAttribute("data-render-ready", "false");
@@ -595,6 +617,7 @@ for (const interruption of ["authoritative queue clearing", "transient reconnect
   test(`cancels interrupted motion on ${interruption}`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    if (interruption === "WebGL context loss") await installNativeContextLossControl(page);
     await installCharacterFixtures(page);
     await installSocket(page, "4p-red-east");
     await page.goto("/room/123456/lobby");
@@ -618,7 +641,7 @@ for (const interruption of ["authoritative queue clearing", "transient reconnect
         observer.disconnect();
         browser.__interrupted = true;
         if (interruption === "WebGL context loss") {
-          host.querySelector("canvas")!.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+          (window as unknown as { __renderer: Worker }).__renderer.postMessage({ type: "test-native-context-loss" });
         } else if (interruption === "transient reconnect") {
           browser.__socket.onclose?.({ code: 1006, reason: "" });
         } else {
@@ -731,7 +754,22 @@ test("captures the complete 4p scene during active motion at 1024x600", async ({
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
   const table = await expectRenderedTable(page);
-  await page.evaluate(() => {
+  // Observe the transient complete phase before emission; never extend/freeze motion for capture.
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const table = document.querySelector<HTMLElement>('[data-testid="three-table"]')!;
+    const observer = new MutationObserver(() => {
+      if (table.dataset.animationState === "active" && table.dataset.renderReady === "true"
+        && Number(table.dataset.renderedTileCount) > 0 && Number(table.dataset.renderedScenePrimitives) > 0) {
+        observer.disconnect();
+        window.clearTimeout(timeout);
+        resolve();
+      }
+    });
+    const timeout = window.setTimeout(() => {
+      observer.disconnect();
+      reject(new Error("No complete active scene within 5000ms"));
+    }, 5_000);
+    observer.observe(table, { attributes: true });
     const browser = window as unknown as {
       __socket: { emit: (value: unknown) => void };
       __state: Record<string, unknown>;
@@ -745,8 +783,8 @@ test("captures the complete 4p scene during active motion at 1024x600", async ({
       event: { type: "pon", actor: 0 },
       state,
     });
-  });
-  await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
+  }));
+  expect(await table.getAttribute("data-animation-state")).toBe("active");
   await expect(table).toHaveAttribute("data-player-frame-count", "4");
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
   await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
@@ -762,8 +800,10 @@ test("captures the complete 4p scene during active motion at 1024x600", async ({
 });
 
 test("completes motion at fixed quality and reports renderer performance", async ({ page }) => {
-  // Two WebGL setups and 26 motions share this deadline; each motion still has 5s checks.
+  // Both WebGL setups share this deadline; each motion still has 5s checks.
   test.setTimeout(60_000);
+  // Software timing is diagnostic; preserve the full 12-sample hardware calibration.
+  const motionCount = process.env.DRIICHI_HARDWARE_WEBGL === "1" ? 12 : 1;
   async function measureAt(viewport: { width: number; height: number }) {
     await page.setViewportSize(viewport);
     await installCharacterFixtures(page);
@@ -772,7 +812,22 @@ test("completes motion at fixed quality and reports renderer performance", async
     const table = await expectRenderedTable(page);
     await page.waitForTimeout(300);
     const emitMotion = async () => {
-      await page.evaluate(() => {
+      // Arm before emission: polling can miss a complete short-lived native motion.
+      await page.evaluate(() => new Promise<void>((resolve, reject) => {
+        const table = document.querySelector<HTMLElement>('[data-testid="three-table"]')!;
+        const observer = new MutationObserver(() => {
+          if (table.dataset.animationState === "active" && table.dataset.renderReady === "true"
+            && Number(table.dataset.renderedTileCount) > 0 && Number(table.dataset.renderedScenePrimitives) > 0) {
+            observer.disconnect();
+            window.clearTimeout(timeout);
+            resolve();
+          }
+        });
+        const timeout = window.setTimeout(() => {
+          observer.disconnect();
+          reject(new Error("No complete active scene within 5000ms"));
+        }, 5_000);
+        observer.observe(table, { attributes: true });
         const browser = window as unknown as {
           __socket: { emit: (value: unknown) => void };
           __state: Record<string, unknown>;
@@ -786,8 +841,8 @@ test("completes motion at fixed quality and reports renderer performance", async
           event: { type: "dahai", actor: 0, tile: 1 },
           state,
         });
-      });
-      await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
+      }));
+      expect(await table.getAttribute("data-animation-state")).toBe("active");
       const activeDpr = Number(await table.getAttribute("data-renderer-pixel-ratio"));
       expect(activeDpr).toBeGreaterThanOrEqual(1);
       expect(activeDpr).toBeLessThanOrEqual(2);
@@ -808,7 +863,7 @@ test("completes motion at fixed quality and reports renderer performance", async
       performance.clearMeasures("three-table-motion-frame");
     });
     await page.waitForTimeout(100);
-    for (let index = 0; index < 12; index += 1) await emitMotion();
+    for (let index = 0; index < motionCount; index += 1) await emitMotion();
     const metrics = await page.evaluate(() => {
       const frameEntries = performance
         .getEntriesByName("three-table-motion-frame", "measure")
@@ -847,8 +902,8 @@ test("completes motion at fixed quality and reports renderer performance", async
   console.info("[renderer-performance]", JSON.stringify({ at1600, at1920 }));
   expect(at1600.setupEventMs).toBeGreaterThan(0);
   expect(at1920.setupEventMs).toBeGreaterThan(0);
-  expect(at1600.eventCount).toBe(12);
-  expect(at1920.eventCount).toBe(12);
+  expect(at1600.eventCount).toBe(motionCount);
+  expect(at1920.eventCount).toBe(motionCount);
 
   if (process.env.DRIICHI_HARDWARE_WEBGL === "1") {
     expect(at1600.setupEventMs).toBeLessThanOrEqual(750);
@@ -885,11 +940,12 @@ for (const { deviceScaleFactor, expectedPixelRatio } of [
       const drawingBuffer = await table.locator("canvas").evaluate((element) => {
         const canvas = element as HTMLCanvasElement;
         const rect = canvas.getBoundingClientRect();
+        const quality = JSON.parse(canvas.parentElement!.dataset.rendererQuality!);
         return {
           clientWidth: rect.width,
           clientHeight: rect.height,
-          pixelWidth: canvas.width,
-          pixelHeight: canvas.height,
+          pixelWidth: quality.width,
+          pixelHeight: quality.height,
         };
       });
       expect(Math.abs(
@@ -1180,29 +1236,38 @@ test("shows the authoritative Mangan post-match results surface", async ({
         ...browser.__room,
         phase: "post_match",
         result: {
-          mode: "4p-red-east",
+          mode: "FourPlayerRedEast",
+          final_scores: [45000, 30000, 15000, 10000],
           players: [
             {
               participant_id: "P1",
               display_name: "Mika",
+              kind: "Human",
+              seat: 0,
               rank: 1,
               final_score: 45000,
             },
             {
               participant_id: "P2",
               display_name: "Nori",
+              kind: "BuiltInBot",
+              seat: 1,
               rank: 2,
               final_score: 30000,
             },
             {
               participant_id: "P3",
               display_name: "Ren",
+              kind: "BuiltInBot",
+              seat: 2,
               rank: 3,
               final_score: 15000,
             },
             {
               participant_id: "P4",
               display_name: "Aya",
+              kind: "BuiltInBot",
+              seat: 3,
               rank: 4,
               final_score: 10000,
             },

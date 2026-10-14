@@ -6,7 +6,6 @@ import { preloadRosterAssets } from "./gameplay";
 import { seatPositions } from "./orientation";
 import { useGameStore } from "./store";
 import { tileAssetUrl, tileFileName, tileLabel } from "./tiles";
-import { portraitFromEvents } from "./gameplay";
 import { wallTileCount } from "./table-geometry";
 
 beforeEach(() => {
@@ -213,13 +212,6 @@ describe("Task 12 table invariants", () => {
     expect(wallTileCount([1, 2, 3])).toBe(3);
     expect(wallTileCount(Number.POSITIVE_INFINITY)).toBe(0);
     expect(wallTileCount(Number.NaN)).toBe(0);
-  });
-
-  it("keeps result facts authoritative instead of deriving a limit from han", () => {
-    const room = { roster: [{ seat: 0, participant_id: "p1", display_name: "Mika", kind: "human", character_id: "player-red", controller: "interactive" }] } as never;
-    const result = portraitFromEvents([{ hora: { actor: 0, target: 1, han: 5, fu: 30, delta: [8000, -8000], yaku: [["riichi", 1]] } }], room);
-    expect(result).toMatchObject({ displayName: "Mika", result: "Ron", han: 5, fu: 30, points: 8000, yaku: [{ name: "riichi", han: 1 }] });
-    expect(result).not.toHaveProperty("limit");
   });
 
   it("advances the voice queue when playback throws synchronously", () => {

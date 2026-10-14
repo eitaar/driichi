@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   actionCandidates,
   actionGroupLabel,
@@ -9,8 +9,9 @@ import {
 } from "./actions";
 import { AudioManager, type AudioSettings, type VoiceKind } from "./audio";
 import { decodeCharacterAsset } from "./assets";
-import { ThreeTable, type PortraitEffect } from "./three-table";
+import "./live-table.css";
 import { isDora } from "./dora";
+import { TableAppearanceSettings, useTableAppearance } from "./table-appearance";
 import { seatPositionFor, seatPositions } from "./orientation";
 import { useGameStore, type Transport } from "./store";
 import type {
@@ -21,9 +22,28 @@ import type {
   RoomSnapshot,
   VisibleAction,
 } from "./types";
-import { tileAssetUrl, tileIdsFromValue, tileLabel } from "./tiles";
+import { tileAssetUrl, tileLabel } from "./tiles";
 import { useGameplayViewportSupport } from "./viewport";
+import {
+  decodeFinalStandings,
+  decodeKyokuEndStep,
+  resultStepKey,
+  type KyokuEndStep,
+  type KyokuSettlement,
+  type WinResult,
+} from "./results";
 import "./result.css";
+
+const ThreeTable = lazy(() => import("./three-table").then(module => ({ default: module.ThreeTable })));
+
+class TableLoader extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (this.state.failed) return <div className="three-table" role="status">3D table unavailable.</div>;
+    return <Suspense fallback={<div className="three-table" role="status" aria-label="3D table loading">Preparing 3D table</div>}>{this.props.children}</Suspense>;
+  }
+}
 
 export interface GameplayProps {
   room: RoomSnapshot | null;
@@ -62,6 +82,17 @@ function roster(room: RoomSnapshot | null): RoomPlayerSnapshot[] {
   return room.roster?.length ? room.roster : (room.match_players ?? []);
 }
 
+function resultRoster(room: RoomSnapshot | null): RoomPlayerSnapshot[] | null {
+  if (!room) return null;
+  const players = roster(room);
+  const count = seatPositions(room.game_mode).length;
+  if (players.length !== count || new Set(players.map((player) => player.participant_id)).size !== count
+    || players.some((player) => typeof player.participant_id !== "string" || !player.participant_id.trim() || player.participant_id.length > 128
+      || typeof player.display_name !== "string" || !player.display_name.trim() || player.display_name.length > 256)
+    || Array.from({ length: count }, (_, seat) => seat).some((seat) => players.filter((player) => player.seat === seat).length !== 1)) return null;
+  return players;
+}
+
 function characterForSeat(
   room: RoomSnapshot | null,
   seat: number,
@@ -98,13 +129,6 @@ export function preloadRosterAssets(ids: string[]): Promise<AssetState> {
   ).then((entries) => Object.fromEntries(entries));
 }
 
-function isManganOrHigher(event: Record<string, unknown>): boolean {
-  const han = typeof event.han === "number" ? event.han : 0;
-  const limit =
-    typeof event.limit === "string" && event.limit.trim().length > 0;
-  return han >= 5 || limit;
-}
-
 function eventPayload(event: unknown): Record<string, unknown> {
   if (!event || typeof event !== "object") return {};
   const object = event as Record<string, unknown>;
@@ -127,132 +151,6 @@ function eventKind(event: unknown): string | undefined {
   const object = event as Record<string, unknown>;
   if (typeof object.type === "string") return object.type.toLowerCase();
   return Object.keys(object)[0]?.toLowerCase();
-}
-
-export interface RoundWinYaku {
-  name: string;
-  han?: number;
-}
-
-export interface RoundWinEffect extends PortraitEffect {
-  /** The physical winning tile from the authoritative Hora event, when exposed. */
-  winningTile?: number;
-  /** The winner's visible concealed hand, plus the winning tile when it is exposed. */
-  hand?: number[];
-  /** Visible meld tiles kept separate from the concealed hand. */
-  melds?: number[][];
-  /** Yaku pairs are copied from the authoritative Hora event without translation. */
-  yaku?: RoundWinYaku[];
-  scores?: number[];
-  delta?: number[];
-}
-
-function numericArray(value: unknown): number[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const numbers = value.filter(
-    (entry): entry is number => typeof entry === "number" && Number.isFinite(entry),
-  );
-  return numbers.length === value.length ? numbers : undefined;
-}
-
-function roundWinYaku(value: unknown): RoundWinYaku[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const entries = value.flatMap((entry): RoundWinYaku[] => {
-    if (Array.isArray(entry)) {
-      const [name, han] = entry;
-      if (typeof name !== "string" || !name.trim()) return [];
-      return [{
-        name: name.trim(),
-        ...(typeof han === "number" && Number.isFinite(han) ? { han } : {}),
-      }];
-    }
-    if (entry && typeof entry === "object") {
-      const object = entry as Record<string, unknown>;
-      const name = typeof object.name === "string"
-        ? object.name
-        : typeof object.yaku === "string"
-          ? object.yaku
-          : "";
-      if (!name.trim()) return [];
-      const han = typeof object.han === "number" && Number.isFinite(object.han)
-        ? object.han
-        : undefined;
-      return [{ name: name.trim(), ...(han === undefined ? {} : { han }) }];
-    }
-    return [];
-  });
-  return entries.length > 0 ? entries : undefined;
-}
-
-function visibleWinnerHand(
-  projection: ProjectedState | null | undefined,
-  actor: number,
-  winningTile: number | undefined,
-): { hand?: number[]; melds?: number[][] } {
-  const player = projection?.players?.find((candidate) => candidate.seat === actor);
-  const hand = tileIdsFromValue(player?.hand).filter((tile) => tile >= 0 && tile < 136);
-  const melds = Array.isArray(player?.melds)
-    ? player.melds
-        .map((meld) => tileIdsFromValue(meld?.tiles).filter((tile) => tile >= 0 && tile < 136))
-        .filter((tiles) => tiles.length > 0)
-    : [];
-  if (hand.length === 0) {
-    return melds.length > 0 ? { melds } : {};
-  }
-  const visibleHand = hand.slice();
-  // A private projection can expose the concealed tiles while the Hora event carries
-  // the final tile. Add that tile only when the server has not already included it.
-  if (winningTile !== undefined && visibleHand.length < 14 && !visibleHand.includes(winningTile)) {
-    visibleHand.push(winningTile);
-  }
-  return { hand: visibleHand, ...(melds.length > 0 ? { melds } : {}) };
-}
-
-function portraitFromEvents(
-  events: unknown[],
-  room: RoomSnapshot | null,
-  projection?: ProjectedState | null,
-): RoundWinEffect | null {
-  // The server's event array is already audience-filtered. The first Hora is the
-  // only centered result moment; event order is the multi-Ron resolution order.
-  for (const event of events) {
-    if (eventKind(event) !== "hora") continue;
-    const payload = eventPayload(event);
-    const actor = typeof payload.actor === "number" ? payload.actor : undefined;
-    const target = typeof payload.target === "number" ? payload.target : undefined;
-    if (actor === undefined || target === undefined) continue;
-    const winningTile = typeof payload.pai === "number"
-      ? payload.pai
-      : typeof payload.tile === "number"
-        ? payload.tile
-        : undefined;
-    const winner = roster(room).find((player) => player.seat === actor);
-    const delta = numericArray(payload.delta ?? payload.deltas);
-    const details = visibleWinnerHand(projection, actor, winningTile);
-    return {
-      // Keep the result visible even when the Character Pack asset is missing.
-      characterId: winner?.character_id ?? "",
-      displayName: winner?.display_name ?? `Player ${actor + 1}`,
-      result: target === actor ? "Tsumo" : "Ron",
-      han: typeof payload.han === "number" ? payload.han : undefined,
-      fu: typeof payload.fu === "number" ? payload.fu : undefined,
-      ...(typeof payload.limit === "string" && payload.limit.trim().length > 0
-        ? { limit: payload.limit.trim() }
-        : {}),
-      points:
-        typeof payload.points === "number"
-          ? payload.points
-          : delta && typeof delta[actor] === "number"
-            ? delta[actor]
-            : undefined,
-      winningTile,
-      ...details,
-      yaku: roundWinYaku(payload.yaku),
-      scores: numericArray(payload.scores),
-      delta,
-    };
-  }
-  return null;
 }
 
 function voiceEvents(
@@ -394,7 +292,7 @@ function useVoiceManager(
   return managerRef.current;
 }
 
-function AudioSettingsPanel({ manager }: { manager: AudioManager }) {
+function AudioSettingsPanel({ manager, appearance }: { manager: AudioManager; appearance: ReturnType<typeof useTableAppearance> }) {
   const [settings, setSettings] = useState<AudioSettings>(
     () => manager.settings,
   );
@@ -445,6 +343,7 @@ function AudioSettingsPanel({ manager }: { manager: AudioManager }) {
           />
           Voice enabled
         </label>
+        <TableAppearanceSettings settings={appearance} />
       </div>
     </details>
   );
@@ -453,9 +352,11 @@ function AudioSettingsPanel({ manager }: { manager: AudioManager }) {
 function GameplayControls({
   status,
   manager,
+  appearance,
 }: {
   status: GameplayProps["status"];
   manager: AudioManager;
+  appearance: ReturnType<typeof useTableAppearance>;
 }) {
   return (
     <div className="gameplay-controls">
@@ -463,7 +364,7 @@ function GameplayControls({
         <span className="state-dot" aria-hidden="true" />
         <span>{status}</span>
       </div>
-      <AudioSettingsPanel manager={manager} />
+      <AudioSettingsPanel manager={manager} appearance={appearance} />
     </div>
   );
 }
@@ -541,7 +442,7 @@ function TileHitLayer({
             type="button"
             className={`table-tile-hit${action ? " is-legal" : ""}${isDora(tile, indicators) ? " is-dora" : ""}`}
             data-action-id={candidates.length === 1 ? action?.action_id : ""}
-            aria-label={action ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(tile)}` : `Your ${tileLabel(tile)}`}
+            aria-label={`${action ? `${actionGroupLabel(actionKind(action.action))} ${tileLabel(tile)}` : `Your ${tileLabel(tile)}`}${isDora(tile, indicators) ? ", Dora" : ""}`}
             disabled={disabled || !action}
             onClick={() => onAction(candidates)}
           >
@@ -830,135 +731,97 @@ function yakuLabel(name: string): string {
     .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 }
 
-function roundPoints(value: number | undefined): string {
-  return value === undefined ? "—" : value.toLocaleString();
-}
-
-function RoundWinTiles({
-  hand,
-  melds,
-  winningTile,
-}: {
-  hand?: number[];
-  melds?: number[][];
-  winningTile?: number;
-}) {
-  if (!hand?.length && !melds?.length && winningTile === undefined) return null;
+function RoundWinTiles({ result }: { result: WinResult }) {
   return (
     <div className="round-win-hand" role="group" aria-label="Winning hand">
-      {!hand?.length && <span className="round-win-hand-note">Some tiles remain private.</span>}
-      {hand && hand.length > 0 && (
-        <div
-          className="round-win-tile-row"
-          role="group"
-          aria-label={`${hand.length} visible winning hand tiles`}
-        >
-          {hand.map((tile, index) => (
-            <span
-              className={`round-win-tile${tile === winningTile ? " is-winning" : ""}`}
-              key={`${tile}-${index}`}
-            >
-              <img src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
-            </span>
-          ))}
-        </div>
-      )}
-      {melds && melds.length > 0 && (
+      <div className="round-win-tile-row" role="group" aria-label={`${result.concealed.length} visible winning hand tiles`}>
+        {result.concealed.map((tile, index) => (
+          <span className={`round-win-tile${result.winning_tile_index === index ? " is-winning" : ""}`}
+            data-testid={result.winning_tile_index === index ? "winning-tile" : undefined} key={`${tile}-${index}`}>
+            <img src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+          </span>
+        ))}
+      </div>
+      {result.melds.length > 0 && (
         <div className="round-win-melds" role="group" aria-label="Visible melds">
-          {melds.map((meld, meldIndex) => (
-            <span className="round-win-meld" key={`meld-${meldIndex}`}>
-              {meld.map((tile, tileIndex) => (
-                <img key={`${tile}-${tileIndex}`} src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+          {result.melds.map((meld, meldIndex) => (
+            <span className="round-win-meld" key={`meld-${meldIndex}`} role="group" aria-label={`${meld.opened ? "Open" : "Closed"} ${meld.kind}`}>
+              {meld.tiles.map((tile, tileIndex) => (
+                <img key={`${tile}-${tileIndex}`} src={!meld.opened && meld.kind === "Ankan" && (tileIndex === 0 || tileIndex === meld.tiles.length - 1)
+                  ? new URL("../assets/tiles/Regular/Back.svg", import.meta.url).href
+                  : tileAssetUrl(tile)} alt={tileLabel(tile)} />
               ))}
             </span>
           ))}
         </div>
       )}
-      {!hand?.length && winningTile !== undefined && (
-        <span className="round-win-hand-note">Winning tile: {tileLabel(winningTile)}</span>
-      )}
     </div>
   );
 }
 
-export function RoundWinSurface({
-  effect,
-  assets,
-  reducedMotion = false,
-}: {
-  effect: RoundWinEffect;
+export function RoundWinSurface({ result, room, assets, reducedMotion = false }: {
+  result: WinResult;
+  room: RoomSnapshot | null;
   assets: AssetState;
   reducedMotion?: boolean;
 }) {
-  const yaku = effect.yaku ?? [];
+  const winner = resultRoster(room)?.find((player) => player.participant_id === result.winner && player.seat === result.seat);
+  if (!winner) return null;
+  const ordinary = "Ordinary" in result.evaluation ? result.evaluation.Ordinary : null;
   return (
-    <section
-      className="round-win-surface"
-      data-testid="round-win-surface"
-      data-motion={reducedMotion ? "static" : "cinematic"}
-      aria-labelledby="round-win-heading"
-      role="status"
-      aria-live="polite"
-    >
+    <section className="round-win-surface" data-testid="round-win-surface" data-motion={reducedMotion ? "static" : "cinematic"}
+      aria-labelledby="round-win-heading" role="status" aria-live="polite">
       <div className="round-win-identity">
-        <ResultPortrait
-          characterId={effect.characterId}
-          name={effect.displayName}
-          available={effect.characterId ? assets[effect.characterId] !== false : false}
-          className="round-win-portrait"
-        />
-        <h2 id="round-win-heading">{effect.displayName}</h2>
+        <ResultPortrait characterId={winner.character_id ?? ""} name={winner.display_name}
+          available={winner.character_id ? assets[winner.character_id] !== false : false} className="round-win-portrait" />
+        <h2 id="round-win-heading">{winner.display_name}</h2>
       </div>
-      <div className="round-win-details" aria-label={`${effect.result} win details`}>
-        <RoundWinTiles hand={effect.hand} melds={effect.melds} winningTile={effect.winningTile} />
-        {yaku.length > 0 && (
+      <div className="round-win-details" aria-label={`${result.tsumo ? "Tsumo" : "Ron"} win details`}>
+        <RoundWinTiles result={result} />
+        {result.yaku.length > 0 && (
           <dl className="round-win-yaku" aria-label="Authoritative yaku">
-            {yaku.map((entry, index) => (
-              <div key={`${entry.name}-${index}`}><dt>{yakuLabel(entry.name)}</dt><dd>{entry.han === undefined ? "" : `${entry.han} han`}</dd></div>
+            {result.yaku.map((entry, index) => (
+              <div key={`${entry.name}-${index}`}><dt>{yakuLabel(entry.name)}</dt><dd>{entry.han !== undefined ? `${entry.han} han` : entry.yakuman_multiplier !== undefined ? `${entry.yakuman_multiplier}× yakuman` : ""}</dd></div>
             ))}
           </dl>
         )}
-        {(effect.han !== undefined || effect.fu !== undefined || effect.limit || effect.points !== undefined) && (
-          <div className="round-win-total">
-            <p>{effect.han !== undefined && `${effect.han} han`}{effect.fu !== undefined && ` · ${effect.fu} fu`}{effect.limit && ` · ${effect.limit}`}</p>
-            {effect.points !== undefined && <strong>{roundPoints(effect.points)} <small>points</small></strong>}
-          </div>
-        )}
+        <div className="round-win-total">
+          <p>{ordinary ? <>{ordinary.han} han · {ordinary.fu} fu{ordinary.limit && ` · ${ordinary.limit}`}</>
+            : "Yakuman" in result.evaluation && `${result.evaluation.Yakuman.multiplier}× yakuman`}</p>
+          <strong>{result.win_points.toLocaleString()} <small>points</small></strong>
+        </div>
       </div>
     </section>
   );
 }
 
-function ScoreTransfer({
-  effect,
+export function ScoreTransfer({
+  settlement,
   room,
-  reducedMotion,
+  progress = 1,
 }: {
-  effect: RoundWinEffect;
+  settlement: KyokuSettlement;
   room: RoomSnapshot | null;
-  reducedMotion: boolean;
+  progress?: number;
 }) {
-  const [progress, setProgress] = useState(reducedMotion ? 1 : 0);
-  useEffect(() => {
-    if (reducedMotion) return;
-    const start = performance.now();
-    const timer = window.setInterval(() => setProgress(Math.min(1, (performance.now() - start) / 3000)), 50);
-    return () => window.clearInterval(timer);
-  }, [reducedMotion]);
+  const players = resultRoster(room);
+  if (!players || settlement.changes.length !== players.length || settlement.changes.some((change) =>
+    !players.some((player) => player.seat === change.seat && player.participant_id === change.participant_id),
+  )) return null;
   return (
     <section className="score-transfer" aria-label="Score transfer" role="status">
-      <h2>Score transfer</h2>
+      <h2>{settlement.draw_reason ?? "Score transfer"}</h2>
       <ol>
-        {roster(room).slice().sort((a, b) => a.seat - b.seat).map((player) => {
-          const seat = player.seat;
-          const final = effect.scores![seat];
-          const delta = effect.delta![seat];
-          const change = Math.round(delta * (reducedMotion ? 1 : progress));
+        {settlement.changes.map((entry) => {
+          const player = players.find((player) => player.seat === entry.seat && player.participant_id === entry.participant_id);
+          if (!player) return null;
+          const delta = entry.delta;
+          const change = Math.round(delta * progress);
           return (
             <li key={player.participant_id}>
               <span>{player.display_name}</span>
               <span>{delta >= 0 ? "+" : "−"}{Math.abs(change).toLocaleString()}</span>
-              <strong>{(final - delta + change).toLocaleString()}</strong>
+              <strong>{(entry.before + change).toLocaleString()}</strong>
             </li>
           );
         })}
@@ -967,33 +830,38 @@ function ScoreTransfer({
   );
 }
 
-function resultNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function useResultRemaining(step: KyokuEndStep | null, receivedDeadline: number | null): number {
+  const key = step ? resultStepKey(step.id) : "";
+  const clock = useRef({ key: "", deadline: 0 });
+  const [remaining, setRemaining] = useState(step?.remaining_ms ?? 0);
+  useEffect(() => {
+    const now = performance.now();
+    const deadline = receivedDeadline ?? now + (step?.remaining_ms ?? 0);
+    clock.current = {
+      key,
+      deadline: clock.current.key === key ? Math.min(clock.current.deadline, deadline) : deadline,
+    };
+    const update = () => setRemaining(Math.max(0, Math.ceil(clock.current.deadline - performance.now())));
+    update();
+    const timer = window.setInterval(update, 50);
+    return () => window.clearInterval(timer);
+  }, [key, step?.remaining_ms, receivedDeadline]);
+  return remaining;
 }
 
-function resultSeat(
-  player: Record<string, unknown>,
-  fallbackSeat: number | undefined,
-  index: number,
-): number {
-  const seat = resultNumber(player.seat);
-  return typeof seat === "number" && Number.isInteger(seat) && seat >= 0
-    ? seat
-    : fallbackSeat ?? index;
-}
-
-function resultScore(
-  player: Record<string, unknown>,
-  index: number,
-  result: Record<string, unknown> | null,
-  fallbackSeat?: number,
-): number | undefined {
-  const direct = resultNumber(player.final_score);
-  if (direct !== undefined) return direct;
-  const scores = result?.final_scores;
-  if (!Array.isArray(scores)) return undefined;
-  const seat = resultSeat(player, fallbackSeat, index);
-  return resultNumber(scores[seat]) ?? resultNumber(scores[index]);
+function SettlementPresentation({ settlement, room, remaining, reducedMotion }: {
+  settlement: KyokuSettlement; room: RoomSnapshot | null; remaining: number; reducedMotion: boolean;
+}) {
+  const [paused, setPaused] = useState<number | null>(null);
+  const [skipped, setSkipped] = useState(false);
+  const progress = reducedMotion || skipped ? 1 : Math.min(1, (5000 - remaining) / 3000);
+  return <>
+    <ScoreTransfer settlement={settlement} room={room} progress={reducedMotion || skipped ? 1 : paused ?? progress} />
+    <div className="round-win-actions">
+      <button type="button" className="button" aria-pressed={paused !== null} onClick={() => setPaused(paused === null ? progress : null)}>{paused === null ? "Pause for review" : "Resume"}</button>
+      <button type="button" className="button" onClick={() => setSkipped(true)}>Skip animation</button>
+    </div>
+  </>;
 }
 
 export function ResultsPanel({
@@ -1003,37 +871,16 @@ export function ResultsPanel({
   room: RoomSnapshot | null;
   assets: AssetState;
 }) {
-  const result =
-    room?.result && typeof room.result === "object"
-      ? (room.result as Record<string, unknown>)
-      : null;
-  const players = Array.isArray(result?.players)
-    ? result.players.filter(
-        (value): value is Record<string, unknown> =>
-          Boolean(value) && typeof value === "object",
-      )
-    : [];
-  if (!players.length)
-    return (
-      <section className="results-panel" data-testid="results-panel" aria-labelledby="results-heading">
-        <p className="eyebrow">POST-MATCH</p>
-        <h2 id="results-heading">Match complete</h2>
-        <p className="field-hint">
-          Final standings are not available in this projection yet.
-        </p>
-      </section>
-    );
-  const ordered = players
-    .slice()
-    .sort((left, right) => Number(left.rank ?? 99) - Number(right.rank ?? 99));
-  const first = ordered[0];
-  const firstId =
-    typeof first.participant_id === "string" ? first.participant_id : "";
-  const roomRoster = roster(room);
-  const firstRoster = roomRoster.find((entry) => entry.participant_id === firstId);
-  const firstName =
-    typeof first.display_name === "string" ? first.display_name : "First place";
-  const firstAsset = firstRoster?.character_id;
+  const result = decodeFinalStandings(room?.result, room?.game_mode ?? "");
+  if (!result) return null;
+  const ordered = result.players.slice().sort((left, right) => left.rank - right.rank);
+  const first = ordered.find((player) => player.rank === 1)!;
+  const roomRoster = resultRoster(room);
+  if (!roomRoster || roomRoster.length !== result.players.length || result.players.some((player) =>
+    roomRoster.filter((entry) => entry.seat === player.seat && entry.participant_id === player.participant_id).length !== 1,
+  )) return null;
+  const firstName = first.display_name;
+  const firstAsset = roomRoster.find((entry) => entry.participant_id === first.participant_id)?.character_id;
 
   return (
     <section className="results-panel" data-testid="results-panel" aria-labelledby="results-heading">
@@ -1048,27 +895,18 @@ export function ResultsPanel({
       <div className="results-standings">
         <h2 id="results-heading">Final standings</h2>
         <ol className="results-list" aria-label="Final standings">
-        {ordered.map((player, index) => {
-          const id =
-            typeof player.participant_id === "string"
-              ? player.participant_id
-              : `${index}`;
-          const name =
-            typeof player.display_name === "string"
-              ? player.display_name
-              : "Unknown player";
-          const rosterEntry = roomRoster.find(
-            (entry) => entry.participant_id === id,
-          );
-          const score = resultScore(player, index, result, rosterEntry?.seat);
-          const rank = Number(player.rank ?? index + 1);
+        {ordered.map((player) => {
+          const id = player.participant_id;
+          const name = player.display_name;
+          const score = player.final_score;
+          const rank = player.rank;
           return (
             <li key={id} className={rank === 1 ? "is-first" : undefined}>
               <span className="result-rank" aria-label={`Rank ${rank}`}>
                 {rank}
               </span>
               <span className="result-name">{name}</span>
-              <span className="result-score">{score === undefined ? "—" : score.toLocaleString()}</span>
+              <span className="result-score">{score.toLocaleString()}</span>
             </li>
           );
         })}
@@ -1153,42 +991,28 @@ export function GameplaySurface({
   const legalDiscardActions = grouped.discard.length > 0
     ? grouped.discard
     : grouped.riichiDiscard;
+  const appearance = useTableAppearance();
+  const tableSheenRef = useRef<HTMLDivElement>(null);
   const resultDismissRef = useRef<HTMLButtonElement>(null);
-  const [portraitEffect, setPortraitEffect] = useState<RoundWinEffect | null>(
-    null,
-  );
-  const portraitEventRef = useRef<number | null>(null);
-  const remainingWins = useRef<RoundWinEffect[]>([]);
+  const step = decodeKyokuEndStep(room?.kyoku_end, room?.game_mode ?? projection?.mode ?? "");
+  const receivedDeadline = useGameStore((state) => state.room === room ? state.resultDeadline : null);
+  const resultRemaining = useResultRemaining(step, receivedDeadline);
+  const stepKey = step ? resultStepKey(step.id) : "";
+  const [dismissedStep, setDismissedStep] = useState("");
+  const confirmedStep = useGameStore((state) => state.confirmedResultStep);
+  const ownId = participantId ?? (projection?.audience === "player" ? ownPlayer?.participant_id : null);
+  const canConfirm = Boolean(step && ownId && projection?.audience === "player" && step.required.includes(ownId));
+  const confirmed = Boolean(step && (step.confirmed.includes(ownId ?? "") || (confirmedStep && resultStepKey(confirmedStep) === stepKey)));
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const supported = useGameplayViewportSupport();
+  const confirmationReady = canConfirm && !confirmed && status === "connected" && resultRemaining > 0;
   useEffect(() => {
-    if (portraitEventRef.current === eventToken) return;
-    portraitEventRef.current = eventToken;
-    const winners = storeEvents.flatMap((event) =>
-      eventKind(event) === "hora" ? [portraitFromEvents([event], room, projection)].filter((value): value is RoundWinEffect => value !== null) : [],
-    );
-    if (winners.length) {
-      remainingWins.current = winners.slice(1);
-      setResultStage("win");
-      setResultPaused(false);
-      setPortraitEffect(winners[0]);
-    }
-  }, [eventToken, projection, room, storeEvents]);
-  const [resultStage, setResultStage] = useState<"win" | "transfer">("win");
-  const [resultPaused, setResultPaused] = useState(false);
-  useEffect(() => {
-    if (!portraitEffect || room?.phase === "post_match" || resultPaused) return;
-    const hasTransfer = portraitEffect.scores?.length === roster(room).length &&
-      portraitEffect.delta?.length === portraitEffect.scores.length &&
-      roster(room).every((player) => typeof player.seat === "number" &&
-        player.seat >= 0 && player.seat < portraitEffect.scores!.length);
-    const timeout = window.setTimeout(() => {
-      if (resultStage === "win" && hasTransfer) setResultStage("transfer");
-      else if (remainingWins.current.length) {
-        setResultStage("win");
-        setPortraitEffect(remainingWins.current.shift()!);
-      } else setPortraitEffect(null);
-    }, 5000);
-    return () => window.clearTimeout(timeout);
-  }, [portraitEffect, resultStage, resultPaused]);
+    if (supported && (!canConfirm || confirmationReady)) confirmRef.current?.focus();
+  }, [stepKey, confirmationReady, canConfirm, supported]);
+  const win = step && "Win" in step.content ? step.content.Win : null;
+  const settlement = step && !("Win" in step.content)
+    ? ("Settlement" in step.content ? step.content.Settlement : step.content.Draw)
+    : null;
   useEffect(() => {
     if (pending && decision && pending.decisionId !== decision.decision_id)
       useGameStore.getState().clearPendingAction();
@@ -1220,15 +1044,15 @@ export function GameplaySurface({
               : reason === "session_expired"
                 ? "This Guest Session has expired."
                 : "";
-  const supported = useGameplayViewportSupport();
   const mode = projection?.mode ?? room?.game_mode ?? "4p-red-east";
   const ownController = room?.participants.find((participant) => participant.participant_id === participantId)?.controller
     ?? roster(room).find((player) => player.seat === viewer)?.controller
     ?? "";
-  const inputDisabled = Boolean(pending) || status !== "connected" || !decision
+  const inputDisabled = room?.kyoku_end != null || Boolean(pending) || status !== "connected" || !decision
     || actionResultHistory.some((result) => result.decision_id === decision.decision_id && result.status === "accepted");
   return (
     <div
+      ref={tableSheenRef}
       className="app-shell gameplay-shell"
       data-testid="gameplay-shell"
       data-gameplay-mode={mode}
@@ -1243,7 +1067,7 @@ export function GameplaySurface({
       data-animation-enqueued-count={animationEnqueuedCount}
       data-animation-consumed-count={animationConsumedCount}
     >
-      <GameplayControls status={status} manager={manager} />
+      <GameplayControls status={status} manager={manager} appearance={appearance} />
       <GameplayToast
         status={status}
         commandError={commandError}
@@ -1282,12 +1106,11 @@ export function GameplaySurface({
                 <span>The table will synchronize when the host sends the next snapshot.</span>
               </div>
             )}
-            <ThreeTable
+            <TableLoader><ThreeTable
               projection={projection}
               room={room}
               animations={animations}
               reducedMotion={reducedMotion}
-              portraitEffect={portraitEffect}
               onAnimationConsumed={(id: number) =>
                 useGameStore.getState().consumeAnimations([id])
               }
@@ -1295,7 +1118,9 @@ export function GameplaySurface({
                 useGameStore.getState().cancelAnimations([id])
               }
               surface="live"
-            />
+              sheenHost={tableSheenRef}
+              appearance={appearance.appearance}
+            /></TableLoader>
             <TileHitLayer
               hand={ownPlayer?.hand ?? []}
               actions={legalDiscardActions}
@@ -1316,24 +1141,19 @@ export function GameplaySurface({
                 onClose={() => setTileCandidates(null)}
               />
             )}
-            {portraitEffect && room?.phase !== "post_match" && (
+            {step && dismissedStep !== stepKey && room?.phase !== "post_match" && (
               <div className="round-win-overlay">
-                {resultStage === "transfer" && portraitEffect.scores && portraitEffect.delta ? (
-                  <ScoreTransfer effect={portraitEffect} room={room} reducedMotion={reducedMotion} />
-                ) : (
-                  <RoundWinSurface effect={portraitEffect} assets={assets} reducedMotion={reducedMotion} />
-                )}
+                {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
+                {settlement && <SettlementPresentation key={resultStepKey(step.id)} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} />}
+                <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining">{formatSeconds(resultRemaining)}s</span>
                 <div className="round-win-actions">
-                  <button type="button" className="button" aria-pressed={resultPaused} onClick={() => setResultPaused(!resultPaused)}>
-                    {resultPaused ? "Resume" : "Pause for review"}
-                  </button>
-                  <button type="button" className="button round-win-continue" onClick={() => { remainingWins.current = []; setPortraitEffect(null); }}>
-                    Continue
-                  </button>
+                  {canConfirm ? <button ref={confirmRef} type="button" className="button round-win-continue" disabled={confirmed || status !== "connected" || resultRemaining === 0} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : "Continue"}</button>
+                    : <button ref={confirmRef} type="button" className="button" onClick={() => setDismissedStep(stepKey)}>Dismiss</button>}
                 </div>
               </div>
             )}
-            {room?.phase !== "post_match" && (
+            {step && dismissedStep === stepKey && <p role="status">Waiting for players to confirm</p>}
+            {room?.kyoku_end == null && room?.phase !== "post_match" && (
               <ActionDeck
                 decision={decision}
                 pending={Boolean(pending)}
@@ -1369,8 +1189,6 @@ export function GameplaySurface({
 
 export {
   actionCandidates,
-  portraitFromEvents,
   voiceEvents,
-  isManganOrHigher,
   formatSeconds,
 };

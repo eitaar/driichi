@@ -11,10 +11,13 @@ const webglArgs = hardwareWebgl
 
 export default defineConfig({
   testDir: "./tests",
+  // Built/native worker fixture owns its server and runs with playwright.worker.config.ts.
+  testIgnore: ["**/renderer-worker.spec.ts"],
   fullyParallel: true,
   workers: 1, // Isolate SwiftShader scenes, particularly the renderer-budget probe.
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  retries: 0,
+  maxFailures: process.env.CI ? 1 : undefined, // Retain the first failure before the job bound expires.
   reporter: [["list"], ["html", { outputFolder: "playwright-report", open: "never" }]],
   use: {
     baseURL: "http://127.0.0.1:4173",
@@ -26,6 +29,7 @@ export default defineConfig({
       name: "chromium",
       use: {
         browserName: "chromium",
+        channel: "chromium", // Full browser/new headless, rather than the headless-shell renderer.
         ...(hardwareWebgl ? { deviceScaleFactor: 2 } : {}),
         launchOptions: { args: webglArgs },
       },

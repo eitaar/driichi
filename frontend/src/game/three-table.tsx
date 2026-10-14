@@ -1,72 +1,41 @@
 import {
-  Component,
-  type ErrorInfo,
-  type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { Canvas } from "@react-three/fiber";
 import "./live-table.css";
-import { SRGBColorSpace } from "three";
+import { ThreeTableRenderer } from "./three-table-renderer";
 
 import type { AnimationItem } from "./animation";
-import { MatchTableScene, type SceneRenderStats } from "./three-table-scene";
+import type { SceneRenderStats } from "./three-table-scene";
 import { nextSceneMotion, type SceneMotion } from "./three-table-motion";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
-import { buildMatchSceneLayout, CAMERA, type TableSurface } from "./three-table-layout";
+import { buildMatchSceneLayout, type TableSurface } from "./three-table-layout";
 import { tileAssetUrl, tileLabel } from "./tiles";
+import { isDora } from "./dora";
+import { startDoraSheen, type DoraSheenClock } from "./dora-sheen";
+import type { TableAppearance } from "./table-appearance";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
-
-export interface PortraitEffect {
-  characterId: string;
-  displayName: string;
-  result: "Ron" | "Tsumo";
-  han?: number;
-  fu?: number;
-  limit?: string;
-  points?: number;
-}
 
 export interface ThreeTableProps {
   projection: ProjectedState | null;
   room: RoomSnapshot | null;
   animations?: AnimationItem[];
   reducedMotion?: boolean;
-  portraitEffect?: PortraitEffect | null;
   onAnimationConsumed?: (id: number) => void;
   onAnimationCancelled?: (id: number) => void;
   surface?: TableSurface;
+  sheenHost?: RefObject<HTMLElement | null>;
+  appearance?: TableAppearance;
 }
 
 export interface TablePlayerOverlayProps {
   projection: ProjectedState;
   room: RoomSnapshot | null;
   surface: TableSurface;
-}
-
-interface BoundaryProps {
-  children: ReactNode;
-  fallback: ReactNode;
-  onError(): void;
-}
-
-class TableErrorBoundary extends Component<BoundaryProps, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError(): { failed: boolean } {
-    return { failed: true };
-  }
-
-  componentDidCatch(_error: Error, _info: ErrorInfo): void {
-    this.props.onError();
-  }
-
-  render(): ReactNode {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
 }
 
 function roundFact(projection: ProjectedState): string {
@@ -128,19 +97,6 @@ function TableFallback({
       <span>{doraFact(projection)}.</span>
     </div>
   );
-}
-
-function canCreateWebGL(): boolean {
-  if (typeof document === "undefined") return true;
-  if (typeof WebGLRenderingContext === "undefined") return false;
-  try {
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
-    context?.getExtension("WEBGL_lose_context")?.loseContext();
-    return context !== null;
-  } catch {
-    return false;
-  }
 }
 
 function characterIdFor(room: RoomSnapshot | null, participantId: string): string | null {
@@ -220,22 +176,23 @@ export function ThreeTable({
   room,
   animations = [],
   reducedMotion = false,
-  portraitEffect: _portraitEffect = null,
   onAnimationConsumed: _onAnimationConsumed,
   onAnimationCancelled: _onAnimationCancelled,
   surface = "live",
+  sheenHost,
+  appearance,
 }: ThreeTableProps) {
   const [atlas, setAtlas] = useState<TileAtlas | null>(null);
   const [atlasFailed, setAtlasFailed] = useState(false);
-  const [webglFallback, setWebglFallback] = useState(() => !canCreateWebGL());
+  const [webglFallback, setWebglFallback] = useState(false);
   const [rendererCreated, setRendererCreated] = useState(false);
   const [renderStats, setRenderStats] = useState<
-    (SceneRenderStats & { layout: object; atlas: TileAtlas }) | null
+    (SceneRenderStats & { layout: object; atlas: TileAtlas; appearance: TableAppearance | undefined }) | null
   >(null);
   const [motion, setMotion] = useState<SceneMotion | null>(null);
   const [lastConsumedAnimationId, setLastConsumedAnimationId] = useState<number | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
-  const contextCleanupRef = useRef<(() => void) | null>(null);
+  const sheen = useMemo<DoraSheenClock>(() => ({ sweep: { value: -10 }, strength: { value: 0 }, listeners: new Set() }), []);
   const motionFrameTimesRef = useRef<number[]>([]);
   const motionPixelRatioRef = useRef<number | null>(null);
   const activeMotionRef = useRef<{
@@ -251,10 +208,23 @@ export function ThreeTable({
   onAnimationConsumedRef.current = _onAnimationConsumed;
   onAnimationCancelledRef.current = _onAnimationCancelled;
   const hasProjection = projection !== null;
+  // Decisions/clocks belong to Window; they neither change geometry nor enter the Worker.
+  const renderProjection = projection ? { ...projection, decision: undefined } : null;
+  const projectionKey = JSON.stringify(renderProjection);
+  const sceneProjection = useMemo(() => renderProjection, [projectionKey]);
   const layout = useMemo(
-    () => (projection ? buildMatchSceneLayout(projection, room, surface) : null),
-    [projection, surface],
+    () => (sceneProjection ? buildMatchSceneLayout(sceneProjection, room, surface) : null),
+    [sceneProjection, surface],
   );
+
+  const localHand = projection?.players?.find((player) => player.seat === layout?.players.find((seat) => seat.isLocal)?.seat)?.hand ?? [];
+  const indicators = projection?.dora_indicators ?? [];
+  const hasSheenTargets = Boolean(layout?.tiles.some((tile) => tile.face === "front" && tile.group !== "dora" && tile.group !== "wall" && isDora(tile.tile, indicators)))
+    || ((surface === "replay" || projection?.audience === "player") && localHand.some((tile) => isDora(tile, indicators)));
+  useEffect(() => {
+    const host = sheenHost?.current ?? hostRef.current;
+    if (host) return startDoraSheen(host, sheen, hasSheenTargets, reducedMotion);
+  }, [sheenHost, sheen, hasSheenTargets, reducedMotion]);
 
   useEffect(() => {
     if (!hasProjection) return;
@@ -286,18 +256,12 @@ export function ThreeTable({
   }, [hasProjection]);
 
   const markFallback = useCallback(() => {
-    contextCleanupRef.current?.();
-    contextCleanupRef.current = null;
     setRendererCreated(false);
     setRenderStats(null);
     setWebglFallback(true);
   }, []);
-  useEffect(() => () => contextCleanupRef.current?.(), []);
-  useEffect(() => {
-    if (!layout || !atlas || rendererCreated || webglFallback) return;
-    const timeout = window.setTimeout(markFallback, 3_000);
-    return () => window.clearTimeout(timeout);
-  }, [atlas, layout, markFallback, rendererCreated, webglFallback]);
+  const invalidateRender = useCallback(() => setRenderStats(null), []);
+  const recordCreated = useCallback(() => setRendererCreated(true), []);
   const isFallback = atlasFailed || webglFallback;
   const ready = Boolean(
     layout
@@ -305,6 +269,8 @@ export function ThreeTable({
     && rendererCreated
     && renderStats?.layout === layout
     && renderStats.atlas === atlas
+    && renderStats.appearance?.surface === appearance?.surface
+    && renderStats.appearance?.surround === appearance?.surround
     && !isFallback,
   );
   const renderedTileCount = ready ? renderStats?.tileCount ?? 0 : 0;
@@ -323,8 +289,8 @@ export function ThreeTable({
     : 0;
   const recordRenderReady = useCallback((stats: SceneRenderStats) => {
     if (!layout || !atlas) return;
-    setRenderStats({ ...stats, layout, atlas });
-  }, [atlas, layout]);
+    setRenderStats({ ...stats, layout, atlas, appearance });
+  }, [atlas, layout, appearance]);
   const reportConsumed = useCallback((id: number) => {
     setLastConsumedAnimationId(id);
     onAnimationConsumedRef.current?.(id);
@@ -447,6 +413,8 @@ export function ThreeTable({
       data-renderer-pixel-ratio={rendererPixelRatio || ""}
       data-rendered-scene-triangles={renderedTriangleCount}
       data-wall-tile-count={layout?.wallCount ?? 0}
+      data-wall-layout="count-only-diagram"
+      data-dead-wall-tile-count={layout?.tiles.filter(({ key, group }) => key.startsWith("dead-wall-") || group === "dora").length ?? 0}
       data-webgl-fallback={String(isFallback)}
       data-animation-state={animationState}
       data-animation-item-id={motion?.itemId ?? ""}
@@ -468,9 +436,11 @@ export function ThreeTable({
         </div>
       )}
       {surface === "replay" && projection?.players?.find((player) => player.seat === layout?.players.find((seat) => seat.position === "bottom")?.seat)?.hand && (
-        <div className="table-replay-hand" aria-label="Your concealed hand">
-          {projection.players.find((player) => player.seat === layout?.players.find((seat) => seat.position === "bottom")?.seat)!.hand!.map((tile, index) => (
-            <img key={`${tile}-${index}`} src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+        <div className="table-replay-hand" role="group" aria-label="Your concealed hand">
+          {localHand.map((tile, index) => (
+            <span key={`${tile}-${index}`} className={`table-replay-tile${isDora(tile, indicators) ? " is-dora" : ""}`}>
+              <img src={tileAssetUrl(tile)} alt={`${tileLabel(tile)}${isDora(tile, indicators) ? ", Dora" : ""}`} />
+            </span>
           ))}
         </div>
       )}
@@ -480,66 +450,21 @@ export function ThreeTable({
           wallCount={layout?.wallCount ?? 0}
         />
       ) : atlas && layout ? (
-        <TableErrorBoundary
-          onError={markFallback}
-          fallback={
-            <TableFallback
-              projection={projection}
-              wallCount={layout.wallCount}
-            />
-          }
-        >
-          <Canvas
-            aria-hidden="true"
-            // Demand when idle; a bounded always loop only while an exact-target
-            // motion is active, then it returns to demand in the completion commit.
-            frameloop={motion ? "always" : "demand"}
-            dpr={[1, 2]}
-            camera={{
-              fov: CAMERA.fov,
-              position: [...CAMERA.position],
-              near: CAMERA.near,
-              far: CAMERA.far,
-            }}
-            gl={{
-              antialias: true,
-              alpha: false,
-              depth: true,
-              stencil: false,
-              precision: "highp",
-              powerPreference: "high-performance",
-            }}
-            fallback={
-              <TableFallback
-                projection={projection}
-                wallCount={layout.wallCount}
-              />
-            }
-            onCreated={({ gl }) => {
-              gl.outputColorSpace = SRGBColorSpace;
-              gl.shadowMap.enabled = true;
-              contextCleanupRef.current?.();
-              const onContextLost = (event: Event) => {
-                event.preventDefault();
-                markFallback();
-              };
-              gl.domElement.addEventListener("webglcontextlost", onContextLost);
-              contextCleanupRef.current = () =>
-                gl.domElement.removeEventListener("webglcontextlost", onContextLost);
-              setRendererCreated(true);
-            }}
-          >
-            <MatchTableScene
-              layout={layout}
-              projection={projection}
-              atlas={atlas}
-              motion={motion}
-              onMotionComplete={completeMotion}
-              onMotionFrame={recordMotionFrame}
-              onRenderReady={recordRenderReady}
-            />
-          </Canvas>
-        </TableErrorBoundary>
+        <ThreeTableRenderer
+          layout={layout}
+          projection={sceneProjection!}
+          atlas={atlas}
+          appearance={appearance}
+          motion={motion}
+          sheenEnabled={hasSheenTargets}
+          reducedMotion={reducedMotion}
+          onCreated={recordCreated}
+          onFailure={markFallback}
+          onInvalidate={invalidateRender}
+          onMotionComplete={completeMotion}
+          onMotionFrame={recordMotionFrame}
+          onRenderReady={recordRenderReady}
+        />
       ) : (
         <div role="status" aria-label="3D table loading">
           Preparing 3D table

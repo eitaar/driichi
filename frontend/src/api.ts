@@ -165,6 +165,8 @@ export interface ReplayFrame {
   visible_event: unknown;
   visible_state: import("./game/types").ProjectedState;
   auxiliary_events: ReplayAuxiliaryEvent[];
+  result?: unknown;
+  settlement?: unknown;
 }
 
 export interface ReplayPlayer {
@@ -179,6 +181,7 @@ export interface ReplayPlayer {
 export interface ReplayView extends ReplaySummary {
   players: ReplayPlayer[];
   frames: ReplayFrame[];
+  result?: unknown;
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {

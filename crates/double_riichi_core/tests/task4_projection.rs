@@ -49,6 +49,110 @@ fn state(mode: GameMode) -> TableState {
 }
 
 #[test]
+fn declaration_index_is_public_optional_and_never_reveals_concealed_hands() {
+    for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+        let mut players = (0..mode.seat_count())
+            .map(|index| {
+                TablePlayerState::new(
+                    Seat::new(index as u8).unwrap(),
+                    participant(index as u8),
+                    25_000,
+                    vec![Tile::from_id(120).unwrap()],
+                )
+            })
+            .collect::<Vec<_>>();
+        players[0].discards = vec![Tile::from_id(0).unwrap(), Tile::from_id(36).unwrap()];
+        players[0].riichi = true;
+        players[0].riichi_discard_index = Some(0);
+        // An out-of-range field is unknown, not permission to rotate the latest discard.
+        players[1].riichi_discard_index = Some(0);
+        let state = TableState::new(mode, players, vec![]).unwrap();
+        for audience in [
+            Audience::Public,
+            Audience::Player(Seat::new(1).unwrap()),
+            Audience::ReplayAdmin,
+            Audience::BenchmarkAdmin,
+        ] {
+            let json: serde_json::Value = serde_json::from_str(
+                &serialize_projection(&project_table_state(&state, audience)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(json["players"].as_array().unwrap().len(), mode.seat_count());
+            assert_eq!(json["players"][0]["riichi_discard_index"], 0);
+            assert!(json["players"][1].get("riichi_discard_index").is_none());
+            for (seat, player) in json["players"].as_array().unwrap().iter().enumerate() {
+                let hand_visible = audience == Audience::ReplayAdmin
+                    || audience == Audience::BenchmarkAdmin
+                    || audience == Audience::Player(Seat::new(seat as u8).unwrap());
+                assert_eq!(player.get("hand").is_some(), hand_visible);
+            }
+        }
+    }
+}
+
+#[test]
+fn held_kyoku_projection_serializes_only_published_results_without_next_decision() {
+    let mode = GameMode::FourPlayerRedEast;
+    let mut machine =
+        MatchMachine::with_seed(mode, (0..4).map(participant).collect(), 0xD0).unwrap();
+    for _ in 0..2000 {
+        if machine.held_kyoku().is_some() {
+            break;
+        }
+        let (seat, action) = Seat::all(mode)
+            .into_iter()
+            .find_map(|seat| {
+                let actions = machine.legal_actions(seat).unwrap();
+                let chosen = actions
+                    .iter()
+                    .find(|action| matches!(action, GameAction::Discard { .. } | GameAction::Pass))
+                    .or_else(|| actions.first())?;
+                Some((seat, chosen.clone()))
+            })
+            .unwrap();
+        machine.apply(seat, action).unwrap();
+    }
+    let wins = machine.held_kyoku().expect("ended Kyoku").wins.len();
+    let before = machine.serialize(Audience::Public).unwrap();
+    assert!(!before.contains("kyoku_results"));
+    assert!(!before.contains("\"hand\""));
+    assert!(machine.current_decision().unwrap().is_none());
+    machine.publish_kyoku_step(0).unwrap();
+    for audience in [
+        Audience::Public,
+        Audience::Player(Seat::new(0).unwrap()),
+        Audience::ReplayAdmin,
+        Audience::BenchmarkAdmin,
+    ] {
+        let json: serde_json::Value =
+            serde_json::from_str(&machine.serialize(audience).unwrap()).unwrap();
+        assert!(json["decision"].is_null());
+        assert_eq!(
+            json["kyoku_results"]["wins"].as_array().unwrap().len(),
+            usize::from(wins > 0)
+        );
+        assert_eq!(json["kyoku_results"]["settlement"].is_object(), wins == 0);
+        if matches!(audience, Audience::Public) {
+            assert!(
+                json["players"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|p| p.get("hand").is_none())
+            );
+        }
+    }
+    assert_eq!(
+        machine
+            .events()
+            .iter()
+            .filter(|event| matches!(event, double_riichi_core::GameEvent::StartKyoku { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn player_public_and_replay_admin_json_have_distinct_visibility_for_four_players() {
     let state = state(GameMode::FourPlayerRedEast);
     let player = serialize_projection(&project_table_state(

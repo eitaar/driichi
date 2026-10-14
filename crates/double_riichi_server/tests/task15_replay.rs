@@ -2,9 +2,9 @@ use std::{fs, io::Read, path::PathBuf, sync::Arc};
 
 use axum::{body::Body, http::Request};
 use double_riichi_core::{
-    GameEvent, GameMode, MatchPlayerSnapshot, Participant, ParticipantKind, RoomActor, RoomCommand,
-    RoomConfig, RoomController, RoomEffect, RoomPhase, RoomRegistry, RoomResponse, Seat,
-    ShutdownMode, Tile, TimeControl, Wind,
+    CharacterCatalog, CharacterUsage, GameEvent, GameMode, KyokuResultRecord, MatchPlayerSnapshot,
+    MatchResult, Participant, ParticipantKind, RoomActor, RoomCommand, RoomConfig, RoomController,
+    RoomEffect, RoomPhase, RoomRegistry, RoomResponse, Seat, ShutdownMode, Tile, TimeControl, Wind,
 };
 use double_riichi_replay::{MAX_DECOMPRESSED_REPLAY_BYTES, ReplayWriter};
 use double_riichi_server::{
@@ -194,6 +194,549 @@ async fn completed_room_match_is_visible_through_admin_replay_api() {
     registry.shutdown(ShutdownMode::Forced).await;
     storage.close().await;
     let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saved_results_equal_live_authority() {
+    enum Captured {
+        Roster(Vec<MatchPlayerSnapshot>),
+        Kyoku(KyokuResultRecord),
+        Final(MatchResult),
+    }
+    for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+        let root = temp_root(if mode.seat_count() == 3 {
+            "live-saved-3p"
+        } else {
+            "live-saved-4p"
+        });
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let (effects, mut receiver) =
+            tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+        let (worker_sender, worker_receiver) =
+            tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+        let worker = spawn_room_effect_worker(storage.clone(), worker_receiver);
+        let (captured_sender, mut captured_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let forwarding = tokio::spawn(async move {
+            while let Some(effect) = receiver.recv().await {
+                let capture = match &effect {
+                    RoomEffect::OpenMatch { roster, .. } => Some(Captured::Roster(roster.clone())),
+                    RoomEffect::FlushKyoku { record, .. } => Some(Captured::Kyoku(record.clone())),
+                    RoomEffect::FinalizeMatch { result, .. } => {
+                        Some(Captured::Final(result.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some(capture) = capture {
+                    captured_sender.send(capture).unwrap();
+                }
+                worker_sender.send(effect).await.unwrap();
+            }
+        });
+        let mut catalog = CharacterCatalog::starter();
+        catalog.insert("alternate-bot", CharacterUsage::BuiltInBot);
+        let room = RoomActor::spawn_with_effect_sender(
+            RoomConfig::new("Live Saved", mode, catalog).with_time_control(TimeControl::Unlimited),
+            effects,
+        );
+        room.send(RoomCommand::fill_with_bots()).await.unwrap();
+        let match_id = match room.send(RoomCommand::start()).await.unwrap() {
+            RoomResponse::Started(id) => id.to_string(),
+            other => panic!("expected started match: {other:?}"),
+        };
+        let snapshot = room.snapshot().await.unwrap();
+        assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+        assert!(snapshot.replay_available);
+        let mut roster = None;
+        let mut records = Vec::new();
+        let mut final_result = None;
+        while let Ok(captured) = captured_receiver.try_recv() {
+            match captured {
+                Captured::Roster(value) => {
+                    assert!(roster.replace(value).is_none());
+                }
+                Captured::Kyoku(value) => records.push(value),
+                Captured::Final(value) => {
+                    assert!(final_result.replace(value).is_none());
+                }
+            }
+        }
+        let roster = roster.expect("genuine OpenMatch roster forwarded");
+        let final_result = final_result.expect("genuine FinalizeMatch result forwarded");
+        assert!(
+            !records.is_empty(),
+            "real Match must publish a Kyoku result"
+        );
+        assert_eq!(snapshot.result, Some(final_result.clone()));
+        assert_eq!(roster.len(), mode.seat_count());
+        let stored_result: String = sqlx::query_scalar("SELECT authoritative_result_json FROM matches WHERE match_id = ? AND status = 'completed'")
+            .bind(&match_id).fetch_one(storage.pool()).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<MatchResult>(&stored_result).unwrap(),
+            final_result
+        );
+        let stored_records = sqlx::query("SELECT kyoku_sequence, end_event_index, payload_json FROM match_kyoku_results WHERE match_id = ? ORDER BY kyoku_sequence")
+            .bind(&match_id).fetch_all(storage.pool()).await.unwrap();
+        assert_eq!(stored_records.len(), records.len());
+        for (row, expected) in stored_records.iter().zip(&records) {
+            assert_eq!(
+                row.try_get::<i64, _>("kyoku_sequence").unwrap(),
+                expected.kyoku_sequence as i64
+            );
+            assert_eq!(
+                row.try_get::<i64, _>("end_event_index").unwrap(),
+                expected.end_event_index as i64
+            );
+            let json: String = row.try_get("payload_json").unwrap();
+            assert_eq!(
+                &serde_json::from_str::<KyokuResultRecord>(&json).unwrap(),
+                expected
+            );
+        }
+        let app = app_for_storage(storage.clone()).await;
+        let cookie = admin_cookie(&app).await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/admin/replays/{match_id}"))
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let view = json_body(response).await;
+        assert_eq!(view["result"], json!(final_result));
+        assert_eq!(view["room_name"], "Live Saved");
+        assert_eq!(view["game_mode"], mode.as_str());
+        assert_eq!(view["players"].as_array().unwrap().len(), roster.len());
+        for (seat, expected) in roster.iter().enumerate() {
+            let actual = &view["players"][seat];
+            assert_eq!(actual["participant_id"], expected.participant_id.as_str());
+            assert_eq!(actual["display_name"], expected.display_name);
+            assert_eq!(expected.kind, ParticipantKind::BuiltInBot);
+            assert_eq!(actual["participant_kind"], "builtin_bot");
+            assert_eq!(actual["seat"], seat);
+            assert_eq!(actual["character_id"], json!(expected.character_id));
+            assert_eq!(
+                actual["final_points"],
+                final_result.players[seat].final_score
+            );
+        }
+        let frames = view["frames"].as_array().unwrap();
+        for (index, frame) in frames.iter().enumerate() {
+            let win = records
+                .iter()
+                .flat_map(|record| &record.wins)
+                .find(|win| win.event_index == index);
+            let settlement = records
+                .iter()
+                .find(|record| record.end_event_index == index);
+            assert_eq!(frame["result"], json!(win), "win at {index}");
+            assert_eq!(
+                frame["settlement"],
+                json!(settlement.map(|record| &record.settlement)),
+                "settlement at {index}"
+            );
+        }
+        room.send(RoomCommand::back_to_lobby()).await.unwrap();
+        room.send(RoomCommand::set_room_name("Changed Current Room"))
+            .await
+            .unwrap();
+        room.send(RoomCommand::select_with_character(
+            roster[0].participant_id.clone(),
+            "alternate-bot",
+        ))
+        .await
+        .unwrap();
+        let changed = room.snapshot().await.unwrap();
+        assert_eq!(changed.room_name, "Changed Current Room");
+        assert_eq!(
+            changed
+                .participants
+                .iter()
+                .find(|participant| participant.id == roster[0].participant_id)
+                .unwrap()
+                .character_id,
+            "alternate-bot"
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/admin/replays/{match_id}"))
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let saved = json_body(response).await;
+        assert_eq!(saved["room_name"], "Live Saved");
+        assert_eq!(
+            saved["players"][0]["character_id"],
+            json!(roster[0].character_id)
+        );
+        assert_eq!(saved["result"], json!(final_result));
+        room.send(RoomCommand::shutdown(ShutdownMode::Graceful))
+            .await
+            .unwrap();
+        drop(room);
+        forwarding.await.unwrap();
+        worker.await.unwrap();
+        storage.close().await;
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[tokio::test]
+async fn legacy_replay_omits_unknown_details() {
+    let (app, storage, root) = app_fixture("historical-no-results").await;
+    let cookie = admin_cookie(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/replays/MATCH15")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let view = json_body(response).await;
+    assert!(view["result"].is_null());
+    assert!(
+        view["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|frame| frame["result"].is_null() && frame["settlement"].is_null())
+    );
+    let version: Option<i64> = sqlx::query_scalar(
+        "SELECT authoritative_results_version FROM matches WHERE match_id = 'MATCH15'",
+    )
+    .fetch_one(storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        version, None,
+        "only genuinely historical NULL metadata is legacy"
+    );
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn corrupt_result_metadata_is_not_legacy_missing() {
+    let (app, storage, root) = app_fixture("modern-missing-result").await;
+    let cookie = admin_cookie(&app).await;
+    for version in [1_i64, 2_i64] {
+        sqlx::query(
+            "UPDATE matches SET authoritative_results_version = ? WHERE match_id = 'MATCH15'",
+        )
+        .bind(version)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/admin/replays/MATCH15")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            422,
+            "modern absent row / unknown version cannot downgrade"
+        );
+        assert_eq!(json_body(response).await["code"], "replay_unavailable");
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/admin/replays")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), 200);
+        assert_eq!(
+            json_body(list).await["replays"][0]["availability"],
+            "unavailable"
+        );
+    }
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn kyoku_flush_ack_waits_for_record_commit() {
+    let root = temp_root("flush-record-ack");
+    let storage = Arc::new(Storage::connect(&root).await.unwrap());
+    let captures: Value = serde_json::from_str(include_str!(
+        "../../double_riichi_core/tests/fixtures/authoritative-draw-captures.json"
+    ))
+    .unwrap();
+    let capture = captures
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capture| capture["scenario"] == "final" && capture["mode"] == "FourPlayerRedEast")
+        .unwrap();
+    let record: KyokuResultRecord = serde_json::from_value(capture["record"].clone()).unwrap();
+    let events: Vec<GameEvent> = serde_json::from_value(capture["events"].clone()).unwrap();
+    let id = double_riichi_core::MatchId::new("FLUSHACK15").unwrap();
+    let roster = (0..4)
+        .map(|seat| MatchPlayerSnapshot {
+            participant_id: double_riichi_core::ParticipantId::new(format!("seat{seat}")),
+            display_name: format!("Recorded {seat}"),
+            kind: ParticipantKind::BuiltInBot,
+            seat: Seat::new(seat).unwrap(),
+            character_id: Some("tsumogiri-bot".to_owned()),
+            controller: RoomController::PermanentAuto(
+                double_riichi_core::PermanentAutoReason::BuiltInBot,
+            ),
+        })
+        .collect();
+    let (effects, receiver) = tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+    let worker = spawn_room_effect_worker(storage.clone(), receiver);
+    let (completion, opened) = tokio::sync::oneshot::channel();
+    effects
+        .send(RoomEffect::OpenMatch {
+            match_id: id.clone(),
+            mode: GameMode::FourPlayerRedEast,
+            room_name: "Flush failure".to_owned(),
+            roster,
+            initial_events: events[..=record.end_event_index].to_vec(),
+            started_at: 1,
+            completion,
+        })
+        .await
+        .unwrap();
+    opened.await.unwrap().unwrap();
+    sqlx::query("CREATE TRIGGER reject_owned_result BEFORE INSERT ON match_kyoku_results BEGIN SELECT RAISE(ABORT, 'owned result failure'); END")
+        .execute(storage.pool()).await.unwrap();
+    let (completion, flushed) = tokio::sync::oneshot::channel();
+    effects
+        .send(RoomEffect::FlushKyoku {
+            match_id: id.clone(),
+            record,
+            completion,
+        })
+        .await
+        .unwrap();
+    assert!(
+        flushed.await.unwrap().is_err(),
+        "failed SQLite insert cannot be acknowledged as durable"
+    );
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM match_kyoku_results WHERE match_id = ?")
+            .bind(id.as_str())
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+    let status: String = sqlx::query_scalar("SELECT status FROM matches WHERE match_id = ?")
+        .bind(id.as_str())
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    assert_ne!(status, "completed");
+    let app = app_for_storage(storage.clone()).await;
+    let cookie = admin_cookie(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/replays")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let list = json_body(response).await;
+    assert!(list["replays"].as_array().unwrap().is_empty());
+    drop(effects);
+    worker.await.unwrap();
+    storage.close().await;
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalization_failure_never_advertises_saved_replay() {
+    for (name, saving, obstruct_rename) in [
+        ("completion-sql-failure", true, false),
+        ("saving-disabled", false, false),
+        ("rename-obstruction", true, true),
+    ] {
+        let root = temp_root(name);
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        if saving && !obstruct_rename {
+            sqlx::query("CREATE TRIGGER reject_completed_match BEFORE UPDATE OF status ON matches WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'owned completion failure'); END")
+                .execute(storage.pool()).await.unwrap();
+        }
+        let (effects, mut receiver) =
+            tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+        let (worker_sender, worker_receiver) =
+            tokio::sync::mpsc::channel(double_riichi_core::ROOM_EFFECT_CAPACITY);
+        let worker = spawn_room_effect_worker(storage.clone(), worker_receiver);
+        let (ack_sender, mut ack_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let bridge_storage = storage.clone();
+        let bridge = tokio::spawn(async move {
+            while let Some(effect) = receiver.recv().await {
+                match effect {
+                    RoomEffect::FinalizeMatch {
+                        match_id,
+                        result,
+                        benchmark,
+                        completed_at,
+                        completion,
+                    } => {
+                        let obstruction = if obstruct_rename {
+                            let relative_path: String = sqlx::query_scalar(
+                                "SELECT replay_path FROM matches WHERE match_id = ? AND status = 'writing'",
+                            )
+                            .bind(match_id.as_str())
+                            .fetch_one(bridge_storage.pool())
+                            .await
+                            .unwrap();
+                            let path = bridge_storage.replay_root().join(relative_path);
+                            assert!(!path.exists(), "only the owned destination is obstructed");
+                            fs::create_dir_all(path.parent().unwrap()).unwrap();
+                            fs::create_dir(&path).unwrap();
+                            Some(path)
+                        } else {
+                            None
+                        };
+                        let (forwarded_completion, returned) = tokio::sync::oneshot::channel();
+                        worker_sender
+                            .send(RoomEffect::FinalizeMatch {
+                                match_id,
+                                result,
+                                benchmark,
+                                completed_at,
+                                completion: forwarded_completion,
+                            })
+                            .await
+                            .unwrap();
+                        let outcome = returned.await.unwrap();
+                        let rename_failed = outcome.as_ref().is_err_and(|error| {
+                            error.to_string().contains("atomic replay rename failed")
+                        });
+                        ack_sender
+                            .send((outcome.is_ok(), rename_failed, obstruction))
+                            .unwrap();
+                        let _ = completion.send(outcome);
+                    }
+                    other => worker_sender.send(other).await.unwrap(),
+                }
+            }
+        });
+        let mut config = RoomConfig::new(
+            "Failure boundary",
+            GameMode::ThreePlayerRedEast,
+            CharacterCatalog::starter(),
+        );
+        config.time_control = TimeControl::Unlimited;
+        config.replay_save = saving;
+        let room = RoomActor::spawn_with_effect_sender(config, effects);
+        room.send(RoomCommand::fill_with_bots()).await.unwrap();
+        let started = room.send(RoomCommand::start()).await.unwrap();
+        let match_id = match started {
+            RoomResponse::Started(id) => id,
+            other => panic!("unexpected start: {other:?}"),
+        };
+        let snapshot = room.snapshot().await.unwrap();
+        assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+        assert!(
+            !snapshot.replay_available,
+            "failed/disabled saving cannot advertise a Replay"
+        );
+        if saving {
+            let (acknowledged, rename_failed, obstruction) = ack_receiver.recv().await.unwrap();
+            assert!(
+                !acknowledged,
+                "failed worker completion cannot be acknowledged"
+            );
+            assert_eq!(
+                rename_failed, obstruct_rename,
+                "must identify actual rename stage"
+            );
+            if let Some(destination) = obstruction {
+                assert!(
+                    destination.is_dir(),
+                    "owned obstruction remains a directory, not an artifact"
+                );
+                assert!(
+                    !storage
+                        .replay_root()
+                        .join(".incomplete")
+                        .join(format!("{match_id}.mjson.part"))
+                        .exists(),
+                    "failed writer removes the owned partial artifact"
+                );
+            }
+        } else {
+            assert!(
+                ack_receiver.try_recv().is_err(),
+                "disabled saving emits no finalization"
+            );
+        }
+        let completed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM matches WHERE match_id = ? AND status = 'completed'",
+        )
+        .bind(match_id.as_str())
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(completed, 0);
+        let rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM match_kyoku_results WHERE match_id = ?")
+                .bind(match_id.as_str())
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        if !saving {
+            assert_eq!(rows, 0, "disabled saving does not create result rows");
+        }
+        let app = app_for_storage(storage.clone()).await;
+        let cookie = admin_cookie(&app).await;
+        let list = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/admin/replays")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), 200);
+        assert!(
+            json_body(list).await["replays"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        room.send(RoomCommand::shutdown(ShutdownMode::Graceful))
+            .await
+            .unwrap();
+        drop(room);
+        bridge.await.unwrap();
+        worker.await.unwrap();
+        storage.close().await;
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[tokio::test]

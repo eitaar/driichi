@@ -177,6 +177,14 @@ async fn admin_lifecycle_requires_explicit_selection_and_retains_history_after_r
     })
     .await
     .unwrap();
+    eprintln!(
+        "benchmark observation: status={} reason={} failed_match_id={} run_id={} root={}",
+        run["status"],
+        run["reason"],
+        run["failed_match_id"],
+        id,
+        root.display()
+    );
     assert_eq!(run["status"], "completed");
     assert_eq!(run["completed"], 2);
     assert_eq!(run["statistics"].as_array().unwrap().len(), 4);

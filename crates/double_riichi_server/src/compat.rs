@@ -16,10 +16,10 @@ use axum::{
     response::Response,
 };
 use double_riichi_core::{
-    AudienceProjection, Decision, DecisionId, GameEvent, GameMode, MatchId, MatchMachine,
-    Participant, ParticipantId, ParticipantKind, PlayerDecisionProjection, ROOM_COMMAND_CAPACITY,
-    RoomCommand, RoomError, RoomEvent, RoomHandle, RoomRegistry, RoomResponse, Seat, TimeControl,
-    TimingConfig,
+    AudienceProjection, Decision, DecisionId, GameEvent, GameMode, KyokuResultRecord, MatchId,
+    MatchMachine, Participant, ParticipantId, ParticipantKind, PlayerDecisionProjection,
+    ROOM_COMMAND_CAPACITY, RoomCommand, RoomError, RoomEvent, RoomHandle, RoomRegistry,
+    RoomResponse, Seat, TimeControl, TimingConfig,
 };
 use double_riichi_mjai::{
     AckStatus, ActionAck, MAX_FRAME_BYTES, MjaiAdapter, PossibleAction, ReplyDisposition,
@@ -43,6 +43,84 @@ use crate::http::{
     room_error_response, room_not_found, server_busy,
 };
 use crate::{BotTokenRecord, BotTokenService, Storage, TokenRevoked};
+
+#[cfg(not(feature = "task8-test-support"))]
+type RoomOutput = Message;
+#[cfg(feature = "task8-test-support")]
+enum RoomOutput {
+    Message(Message),
+    Marker {
+        payload: Value,
+        receipt: mpsc::Sender<Value>,
+    },
+}
+
+#[cfg(feature = "task8-test-support")]
+struct Task8RoomProbe {
+    receipt: mpsc::Sender<Value>,
+    health: mpsc::Sender<oneshot::Sender<Value>>,
+    health_rx: Option<mpsc::Receiver<oneshot::Sender<Value>>>,
+    generation: Option<u64>,
+}
+
+#[cfg(feature = "task8-test-support")]
+impl ServerState {
+    pub fn task8_attach_room_mjai_probe(
+        &self,
+        participant_id: ParticipantId,
+    ) -> mpsc::Receiver<Value> {
+        assert!(matches!(
+            std::env::var("DRIICHI_TASK8_FIXTURE").as_deref(),
+            Ok("double-ron") | Ok("double-ron-final")
+        ));
+        let (receipt, receiver) = mpsc::channel(16);
+        let (health, health_rx) = mpsc::channel(16);
+        let old = self.compat.task8_room_probes.lock().unwrap().insert(
+            participant_id,
+            Task8RoomProbe {
+                receipt,
+                health,
+                health_rx: Some(health_rx),
+                generation: None,
+            },
+        );
+        assert!(old.is_none(), "duplicate private attachment");
+        receiver
+    }
+
+    pub async fn task8_room_mjai_health(&self, participant_id: &ParticipantId) -> Value {
+        let health = self
+            .compat
+            .task8_room_probes
+            .lock()
+            .unwrap()
+            .get(participant_id)
+            .expect("attached probe")
+            .health
+            .clone();
+        let (send, receive) = oneshot::channel();
+        health.try_send(send).expect("bounded health query");
+        receive.await.expect("live health sampler")
+    }
+}
+
+fn queue_room_output(output: &mpsc::Sender<RoomOutput>, message: Message) -> bool {
+    #[cfg(not(feature = "task8-test-support"))]
+    {
+        queue_output(output, message)
+    }
+    #[cfg(feature = "task8-test-support")]
+    {
+        if !matches!(message, Message::Close(_)) && output.capacity() <= 1 {
+            let _ = output.try_send(RoomOutput::Message(close_message(
+                CLOSE_SLOW_CONSUMER,
+                "slow_consumer",
+            )));
+            return false;
+        }
+        output.try_send(RoomOutput::Message(message)).is_ok()
+    }
+}
 
 const RANKED_FILL_DELAY: Duration = Duration::from_secs(5);
 const OUTBOUND_CAPACITY: usize = 64;
@@ -73,6 +151,7 @@ struct CompatReplay {
     metadata_open: bool,
     failed: bool,
     match_id: String,
+    records: Vec<KyokuResultRecord>,
 }
 
 struct QueuedBot {
@@ -137,6 +216,8 @@ pub(crate) struct CompatState {
     revocation_task: Mutex<Option<JoinHandle<()>>>,
     inner: AsyncMutex<CompatInner>,
     pub(crate) room_connections: Arc<AgentConnections>,
+    #[cfg(feature = "task8-test-support")]
+    task8_room_probes: Mutex<HashMap<ParticipantId, Task8RoomProbe>>,
 }
 
 impl CompatState {
@@ -161,6 +242,8 @@ impl CompatState {
                 shutting_down: false,
             }),
             room_connections: Arc::new(AgentConnections::default()),
+            #[cfg(feature = "task8-test-support")]
+            task8_room_probes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1202,6 +1285,7 @@ impl CompatReplay {
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs() as i64,
+                    &self.records,
                 )
                 .await
             {
@@ -1324,7 +1408,26 @@ fn prepare_match(
         ));
     }
     let mut machine = None;
-    if kind == CompatKind::Validate {
+    #[cfg(feature = "task8-test-support")]
+    {
+        let fixture = match std::env::var("DRIICHI_TASK8_FIXTURE") {
+            Ok(fixture) => Some(fixture),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(_) => return Err(((), bots)),
+        };
+        if let Some(fixture) = fixture {
+            machine = match MatchMachine::with_task8_fixture(
+                mode,
+                participants.clone(),
+                TimeControl::RiichiDev,
+                &fixture,
+            ) {
+                Ok(machine) => Some(machine),
+                Err(_) => return Err(((), bots)),
+            };
+        }
+    }
+    if machine.is_none() && kind == CompatKind::Validate {
         let external = participants[0].id.clone();
         for seed in 0..512 {
             if let Ok(candidate) = MatchMachine::with_seed(mode, participants.clone(), seed)
@@ -1403,6 +1506,7 @@ fn prepare_match(
                     metadata_open: false,
                     failed: false,
                     match_id: replay_id.clone(),
+                    records: Vec::new(),
                 }),
                 Err(error) => {
                     replay_health.store(true, Ordering::Release);
@@ -1487,6 +1591,48 @@ impl CompatMatch {
         for _ in 0..100_000 {
             if self.machine.is_complete() {
                 break;
+            }
+            if let Some(hold) = self.machine.held_kyoku() {
+                // Standalone compatibility matches have no seated Humans: every
+                // result step has an empty confirmation cohort and releases now.
+                let steps = hold.wins.len();
+                if let Some(replay) = self.replay.as_mut() {
+                    if hold.validate(self.machine.players()).is_err()
+                        || hold.kyoku_sequence != replay.records.len() as u64 + 1
+                    {
+                        replay.failed = true;
+                        replay.mark_degraded();
+                    } else {
+                        replay.records.push(hold.clone());
+                    }
+                }
+                let mut released = Vec::new();
+                for step in 0..=steps {
+                    match self.machine.publish_kyoku_step(step) {
+                        Ok(events) => released.extend(events),
+                        Err(_) => {
+                            self.close(CLOSE_PROTOCOL, "protocol_error");
+                            self.abort_replay().await;
+                            return;
+                        }
+                    }
+                }
+                match self.machine.release_kyoku() {
+                    Ok(events) => released.extend(events),
+                    Err(_) => {
+                        self.close(CLOSE_PROTOCOL, "protocol_error");
+                        self.abort_replay().await;
+                        return;
+                    }
+                }
+                if !self.broadcast(&released).await {
+                    self.close(CLOSE_PROTOCOL, "protocol_error");
+                    self.abort_replay().await;
+                    return;
+                }
+                recent = released;
+                event_cursor = self.machine.events().len();
+                continue;
             }
             match self.machine.resolve_expired() {
                 Ok(Some(result)) => {
@@ -2013,9 +2159,59 @@ async fn run_room_socket(
         }
     };
     let (mut sender, mut receiver) = socket.split();
-    let (output, mut output_rx) = mpsc::channel(OUTBOUND_CAPACITY + 1);
+    #[cfg(feature = "task8-test-support")]
+    let (probe_receipt, mut health_rx) = {
+        let mut probes = state.compat.task8_room_probes.lock().unwrap();
+        match probes.get_mut(&participant_id) {
+            Some(probe) => {
+                assert!(probe.generation.is_none(), "probe generation replacement");
+                probe.generation = Some(generation);
+                (Some(probe.receipt.clone()), probe.health_rx.take())
+            }
+            None => (None, None),
+        }
+    };
+    #[cfg(feature = "task8-test-support")]
+    let capture = probe_receipt.is_some();
+    let (output, mut output_rx) = mpsc::channel::<RoomOutput>(OUTBOUND_CAPACITY + 1);
     let mut writer = tokio::spawn(async move {
-        while let Some(message) = output_rx.recv().await {
+        #[cfg(feature = "task8-test-support")]
+        let (mut texts, mut text_bytes) = (Vec::<String>::new(), 0usize);
+        while let Some(envelope) = output_rx.recv().await {
+            #[cfg(not(feature = "task8-test-support"))]
+            let message = envelope;
+            #[cfg(feature = "task8-test-support")]
+            let message = match envelope {
+                RoomOutput::Message(message) => message,
+                RoomOutput::Marker {
+                    mut payload,
+                    receipt,
+                } => {
+                    payload["texts"] = json!(texts);
+                    payload["text_count"] = json!(texts.len());
+                    payload["text_bytes"] = json!(text_bytes);
+                    if receipt.try_send(payload).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            #[cfg(feature = "task8-test-support")]
+            let text = if capture {
+                if let Message::Text(text) = &message {
+                    if texts.len() >= 4096
+                        || text.len() > MAX_FRAME_BYTES
+                        || text_bytes.saturating_add(text.len()) > MAX_FRAME_BYTES * 16
+                    {
+                        break;
+                    }
+                    Some(text.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let close = matches!(message, Message::Close(_));
             if !matches!(
                 time::timeout(Duration::from_secs(1), sender.send(message)).await,
@@ -2023,6 +2219,11 @@ async fn run_room_socket(
             ) || close
             {
                 break;
+            }
+            #[cfg(feature = "task8-test-support")]
+            if let Some(text) = text {
+                text_bytes += text.len();
+                texts.push(text);
             }
         }
     });
@@ -2049,6 +2250,10 @@ async fn run_room_socket(
         deadline_ms: 0,
     };
     let mut request_opened = Instant::now();
+    #[cfg(feature = "task8-test-support")]
+    let mut same_read = None;
+    #[cfg(feature = "task8-test-support")]
+    let mut last_probe_revision = None;
     if !sync_room(
         &room,
         &participant_id,
@@ -2062,6 +2267,8 @@ async fn run_room_socket(
         &mut request_time,
         &mut request_opened,
         &output,
+        #[cfg(feature = "task8-test-support")]
+        &mut same_read,
     )
     .await
     {
@@ -2071,9 +2278,21 @@ async fn run_room_socket(
         drop(permit);
         return;
     }
+    #[cfg(not(feature = "task8-test-support"))]
+    macro_rules! room_socket_select { ($($branches:tt)*) => { tokio::select! { $($branches)* } }; }
+    #[cfg(feature = "task8-test-support")]
+    macro_rules! room_socket_select { ($($branches:tt)*) => { tokio::select! {
+        query = async { match health_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+            match query {
+                Some(reply) => { let _ = reply.send(json!({"closed":connection.task8_receiver_is_closed(),"subscriber_id":connection.id(),"generation":generation,"generation_current":state.compat.room_connections.is_current(&participant_id, generation)})); }
+                None => { health_rx = None; }
+            }
+        }
+        $($branches)*
+    } }; }
     loop {
-        tokio::select! {
-            command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = queue_output(&output, close_message(code, reason)); close_queued = true; } break; }
+        room_socket_select! {
+            command = control.recv() => { if let Some(CompatControl::Close { code, reason }) = command { let _ = queue_room_output(&output, close_message(code, reason)); close_queued = true; } break; }
             message = receiver.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let transition = state
@@ -2085,13 +2304,13 @@ async fn run_room_socket(
                         .await
                         .expect("agent transition semaphore closed");
                     if !state.compat.room_connections.is_current(&participant_id, generation) {
-                        let _ = queue_output(&output, close_message(CLOSE_REPLACED, "connected_elsewhere"));
+                        let _ = queue_room_output(&output, close_message(CLOSE_REPLACED, "connected_elsewhere"));
                         close_queued = true;
                         drop(transition);
                         break;
                     }
                     if text.len() > MAX_FRAME_BYTES {
-                        let _ = queue_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large"));
+                        let _ = queue_room_output(&output, close_message(CLOSE_TOO_LARGE, "message_too_large"));
                         close_queued = true;
                         drop(transition);
                         break;
@@ -2099,13 +2318,41 @@ async fn run_room_socket(
                     room_reply(&room, &participant_id, mode, &mut adapter, &mut timing, request_time, request_opened, &mut last_decision, &mut last_request_id, &output, text.as_bytes()).await;
                     drop(transition);
                 }
-                Some(Ok(Message::Ping(payload))) => { let _ = queue_output(&output, Message::Pong(payload)); }
+                Some(Ok(Message::Ping(payload))) => { let _ = queue_room_output(&output, Message::Pong(payload)); }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => {}
             },
-            event = connection.recv() => { let Some(event) = event else { break; }; if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; } if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_match_id, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output).await { close_queued = true; break; } }
+            event = connection.recv() => {
+                let Some(event) = event else { break; };
+                if matches!(event, RoomEvent::ServerShutdown | RoomEvent::RoomDeleted) { let _ = queue_room_output(&output, close_message(CLOSE_SESSION_EXPIRED, "server_shutdown")); close_queued = true; break; }
+                #[cfg(feature = "task8-test-support")]
+                let (closed_before, cursor_before) = (connection.task8_receiver_is_closed(), cursor);
+                if !sync_room(&room, &participant_id, mode, &mut adapter, &mut timing, &mut cursor, &mut last_match_id, &mut last_decision, &mut last_request_id, &mut request_time, &mut request_opened, &output,
+                    #[cfg(feature = "task8-test-support")]
+                    &mut same_read,
+                ).await { close_queued = true; break; }
+                #[cfg(feature = "task8-test-support")]
+                if let (Some(receipt), RoomEvent::Snapshot(snapshot)) = (&probe_receipt, &event) {
+                    if snapshot.kyoku_end.as_ref().is_some_and(|step| step.confirmed.is_empty()) && last_probe_revision != Some(snapshot.revision) {
+                        last_probe_revision = Some(snapshot.revision);
+                        let read = same_read.as_ref().expect("same actor read");
+                        let step = snapshot.kyoku_end.as_ref().unwrap();
+                        let actual = read.kyoku_end.as_ref();
+                        let exact = read.revision == snapshot.revision && actual.is_some_and(|current| current.id == step.id && current.published_at_ms == step.published_at_ms && current.deadline_at_ms == step.deadline_at_ms && current.required == step.required && current.confirmed == step.confirmed);
+                        let payload = json!({"subscriber_id":connection.id(),"generation":generation,"generation_current":state.compat.room_connections.is_current(&participant_id,generation),"snapshot_revision":snapshot.revision,"snapshot_step":step,"read_revision":read.revision,"read_step":actual,"exact_same_read":exact,"closed_before":closed_before,"closed_after_read":connection.task8_receiver_is_closed(),"cursor_before":cursor_before,"cursor_after":cursor,"last_request_id":last_request_id,"last_decision":last_decision});
+                        if output.try_send(RoomOutput::Marker { payload, receipt:receipt.clone() }).is_err() { break; }
+                    }
+                }
+            }
         }
     }
+    #[cfg(feature = "task8-test-support")]
+    state
+        .compat
+        .task8_room_probes
+        .lock()
+        .unwrap()
+        .remove(&participant_id);
     teardown_room_connection(&state, &room, &participant_id, generation).await;
     drop(output);
     if close_queued {
@@ -2128,10 +2375,11 @@ async fn sync_room(
     last_request_id: &mut Option<u64>,
     request_time: &mut RequestTime,
     request_opened: &mut Instant,
-    output: &mpsc::Sender<Message>,
+    output: &mpsc::Sender<RoomOutput>,
+    #[cfg(feature = "task8-test-support")] same_read: &mut Option<double_riichi_core::RoomSnapshot>,
 ) -> bool {
     // Identity, events and private projection must belong to the same actor read.
-    let (match_id, events, projection) = match room
+    let (match_id, events, projection, snapshot) = match room
         .send(RoomCommand::GetMatchView {
             participant_id: participant_id.clone(),
         })
@@ -2141,9 +2389,17 @@ async fn sync_room(
             match_id,
             events,
             projection,
-        }) => (match_id, events, projection),
+            snapshot,
+            ..
+        }) => (match_id, events, projection, snapshot),
         _ => return false,
     };
+    #[cfg(feature = "task8-test-support")]
+    {
+        *same_read = Some(snapshot);
+    }
+    #[cfg(not(feature = "task8-test-support"))]
+    let _ = snapshot;
     if *last_match_id != match_id {
         if let Some(request_id) = last_request_id.take() {
             let _ = adapter.retire_request(request_id);
@@ -2173,7 +2429,7 @@ async fn sync_room(
         let Ok(text) = encode_compat_event(event, seat, mode, &scores) else {
             return false;
         };
-        if !queue_output(output, Message::text(text)) {
+        if !queue_room_output(output, Message::text(text)) {
             return false;
         }
         if matches!(event, GameEvent::EndKyoku) {
@@ -2215,7 +2471,7 @@ async fn sync_room(
     let Ok(text) = serde_json::to_string(&request) else {
         return false;
     };
-    if !queue_output(output, Message::text(text)) {
+    if !queue_room_output(output, Message::text(text)) {
         return false;
     }
     *last_decision = Some(decision.decision_id.clone());
@@ -2247,7 +2503,7 @@ async fn room_reply(
     request_opened: Instant,
     last_decision: &mut Option<DecisionId>,
     last_request_id: &mut Option<u64>,
-    output: &mpsc::Sender<Message>,
+    output: &mpsc::Sender<RoomOutput>,
     bytes: &[u8],
 ) {
     let request_id = match request_id_from_frame(bytes) {
@@ -2463,9 +2719,9 @@ async fn room_reply(
         }
     }
 }
-fn send_ack(output: &mpsc::Sender<Message>, ack: Option<ActionAck>) -> bool {
+fn send_ack(output: &mpsc::Sender<RoomOutput>, ack: Option<ActionAck>) -> bool {
     ack.and_then(|ack| serde_json::to_string(&ack).ok())
-        .is_some_and(|text| queue_output(output, Message::text(text)))
+        .is_some_and(|text| queue_room_output(output, Message::text(text)))
 }
 fn room_error_reason(error: &RoomError) -> &'static str {
     match error {
@@ -2689,6 +2945,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ranked_saved_results_equal_live_authority() {
+        use double_riichi_core::GameAction;
+        let mode = GameMode::FourPlayerRedEast;
+        let seed = 0xD0_u64;
+        let root =
+            std::env::temp_dir().join(format!("double-riichi-compat-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let storage = Arc::new(Storage::connect(&root).await.unwrap());
+        let players = (0..mode.seat_count())
+            .map(|seat| {
+                Participant::new(
+                    format!("actual-{seat}"),
+                    format!("Actual {seat}"),
+                    ParticipantKind::BuiltInBot,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut machine = MatchMachine::with_seed(mode, players, seed).unwrap();
+        let match_id = "compat-real-seed";
+        let writer = ReplayWriter::new(storage.replay_root(), match_id, mode).unwrap();
+        let mut replay = CompatReplay {
+            writer: Some(writer),
+            storage: Some(storage.clone()),
+            replay_health: Arc::new(AtomicBool::new(false)),
+            cleanup_tasks: Arc::new(Mutex::new(Vec::new())),
+            metadata_open: false,
+            failed: false,
+            match_id: match_id.to_owned(),
+            records: Vec::new(),
+        };
+        replay.open(mode, machine.players()).await;
+        assert!(replay.metadata_open);
+        for _ in 0..20_000 {
+            if let Some(held) = machine.held_kyoku() {
+                let steps = held.wins.len();
+                replay.records.push(held.clone());
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
+            if machine.is_complete() {
+                break;
+            }
+            let (seat, action) = Seat::all(mode)
+                .into_iter()
+                .find_map(|seat| {
+                    let actions = machine.legal_actions(seat).unwrap();
+                    let action = actions
+                        .iter()
+                        .find(|action| matches!(action, GameAction::Discard { .. }))
+                        .or_else(|| {
+                            actions
+                                .iter()
+                                .find(|action| matches!(action, GameAction::Pass))
+                        })
+                        .or_else(|| {
+                            actions
+                                .iter()
+                                .find(|action| matches!(action, GameAction::Nuki { .. }))
+                        })
+                        .or_else(|| actions.first())?;
+                    Some((seat, action.clone()))
+                })
+                .expect("actual machine exposes a legal choice");
+            machine.apply(seat, action).unwrap();
+        }
+        let actual_result = machine
+            .result()
+            .expect("seeded actual Match completes")
+            .clone();
+        let actual_records = replay.records.clone();
+        assert!(!actual_records.is_empty());
+        replay.record(machine.events());
+        assert!(!replay.failed);
+        replay.finish(Some(&actual_result)).await;
+        let view = storage.load_replay(match_id).await.unwrap();
+        assert_eq!(view.result, Some(actual_result.clone()));
+        let saved: Vec<String> = sqlx::query_scalar("SELECT payload_json FROM match_kyoku_results WHERE match_id = ? ORDER BY kyoku_sequence")
+            .bind(match_id).fetch_all(storage.pool()).await.unwrap();
+        assert_eq!(saved.len(), actual_records.len());
+        for (saved, expected) in saved.iter().zip(&actual_records) {
+            assert_eq!(
+                &serde_json::from_str::<KyokuResultRecord>(saved).unwrap(),
+                expected
+            );
+            for win in &expected.wins {
+                assert_eq!(view.frames[win.event_index].result.as_ref(), Some(win));
+            }
+            assert_eq!(
+                view.frames[expected.end_event_index].settlement.as_ref(),
+                Some(&expected.settlement)
+            );
+        }
+        let saved_result: String =
+            sqlx::query_scalar("SELECT authoritative_result_json FROM matches WHERE match_id = ?")
+                .bind(match_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<double_riichi_core::MatchResult>(&saved_result).unwrap(),
+            actual_result
+        );
+        storage.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn aborted_compat_replay_cleans_partial_file_and_metadata() {
         let root =
             std::env::temp_dir().join(format!("double-riichi-compat-abort-{}", std::process::id()));
@@ -2724,6 +3089,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "abortmatch".to_owned(),
+            records: Vec::new(),
         }
         .abort()
         .await;
@@ -2779,6 +3145,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "failurematch".to_owned(),
+            records: Vec::new(),
         };
         replay.record(&[GameEvent::StartGame {
             names: Some(vec![
@@ -2828,6 +3195,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "cleanup-failure".to_owned(),
+            records: Vec::new(),
         };
         replay.cleanup_finalized_replay(relative_path).await;
         assert!(!replay.metadata_open);
@@ -2839,6 +3207,16 @@ mod tests {
             .await
             .unwrap(),
             1
+        );
+        let registered: String = sqlx::query_scalar(
+            "SELECT replay_path FROM matches WHERE match_id = 'cleanup-failure'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            registered, relative_path,
+            "cleanup retry keeps the registered path"
         );
         storage.close().await;
         let _ = std::fs::remove_dir_all(&root);
@@ -2882,6 +3260,7 @@ mod tests {
             metadata_open: true,
             failed: false,
             match_id: "shutdownmatch".to_owned(),
+            records: Vec::new(),
         });
         state.shutdown().await;
         let count: i64 =

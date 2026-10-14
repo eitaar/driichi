@@ -5,6 +5,7 @@ mod domain;
 pub mod engine;
 mod match_machine;
 mod projection;
+mod results;
 pub mod room;
 
 pub use decision::{
@@ -24,13 +25,17 @@ pub use projection::{
     ReplayDecisionEntry, ReplayDecisionProjection, TablePlayerState, TableState, VisibleAction,
     VisibleMeld, VisiblePlayer, project_table_state, serialize_projection,
 };
+pub use results::{
+    KyokuResultRecord, KyokuSettlement, PublishedKyokuResults, ResultMeld, ResultMeldKind,
+    ScoreChange, ScoreLimit, WinEvaluation, WinResult, YakuValue,
+};
 pub use room::{
-    CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, MatchId, MatchPlayerSnapshot,
-    MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY, ROOM_EFFECT_CAPACITY, RoomActor,
-    RoomAuxiliaryEvent, RoomAuxiliaryPhase, RoomCommand, RoomConfig, RoomConnection,
-    RoomController, RoomEffect, RoomEffectError, RoomError, RoomEvent, RoomHandle,
-    RoomHistoryEvent, RoomHistoryProjection, RoomId, RoomJoinCode, RoomKyokuProjection,
-    RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot, RoomPersistenceFailure, RoomPhase,
-    RoomRegistry, RoomRegistryError, RoomRemoval, RoomResponse, RoomSnapshot, RoomState,
-    ShutdownMode,
+    CONNECTION_OUTBOUND_CAPACITY, CharacterCatalog, CharacterUsage, KyokuEndContent, KyokuEndStep,
+    MatchId, MatchPlayerSnapshot, MatchRole, PermanentAutoReason, ROOM_COMMAND_CAPACITY,
+    ROOM_EFFECT_CAPACITY, ResultStepId, RoomActor, RoomAuxiliaryEvent, RoomAuxiliaryPhase,
+    RoomCommand, RoomConfig, RoomConnection, RoomController, RoomEffect, RoomEffectError,
+    RoomError, RoomEvent, RoomHandle, RoomHistoryEvent, RoomHistoryProjection, RoomId,
+    RoomJoinCode, RoomKyokuProjection, RoomKyokuResult, RoomKyokuSummary, RoomParticipantSnapshot,
+    RoomPersistenceFailure, RoomPhase, RoomRegistry, RoomRegistryError, RoomRemoval, RoomResponse,
+    RoomSnapshot, RoomState, ShutdownMode,
 };

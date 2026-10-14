@@ -34,6 +34,87 @@ async fn selected_room(built_in: bool) -> (RoomHandle, tokio::sync::mpsc::Receiv
 }
 
 #[tokio::test]
+async fn result_hold_instrumented_benchmark_reaches_finalization() {
+    let (handle, mut effects) = selected_room(true).await;
+    let worker = tokio::spawn(async move {
+        let mut appends = 0;
+        let mut flushes = 0;
+        let mut end_kyoku = 0;
+        let mut initial = 0;
+        let mut journal = Vec::new();
+        while let Some(effect) = effects.recv().await {
+            if let RoomEffect::OpenMatch { initial_events, .. } = &effect {
+                initial += initial_events.len();
+                journal.extend(initial_events.iter().cloned());
+            }
+            if let RoomEffect::AppendEvents { events, .. } = &effect {
+                appends += events.len();
+                journal.extend(events.iter().cloned());
+                end_kyoku += events
+                    .iter()
+                    .filter(|event| matches!(event, double_riichi_core::GameEvent::EndKyoku))
+                    .count();
+            }
+            if let RoomEffect::FlushKyoku { record, .. } = &effect {
+                assert_eq!(
+                    journal.len(),
+                    record.end_event_index + 1,
+                    "flush precedes future events"
+                );
+                assert!(matches!(
+                    journal.last(),
+                    Some(double_riichi_core::GameEvent::EndKyoku)
+                ));
+                for win in &record.wins {
+                    assert!(
+                        matches!(&journal[win.event_index], double_riichi_core::GameEvent::Hora { actor, target, .. } if *actor == win.seat && *target == win.target)
+                    );
+                }
+                flushes += 1;
+            }
+            let done = matches!(effect, RoomEffect::FinalizeMatch { .. });
+            effect.acknowledge(Ok(()));
+            if done {
+                return (initial, appends, end_kyoku, flushes);
+            }
+        }
+        panic!("effect channel closed before finalization")
+    });
+    let start = handle.send(RoomCommand::StartBenchmark {
+        run_id: "instrumented".into(),
+        target: 1,
+    });
+    tokio::time::timeout(Duration::from_secs(15), start)
+        .await
+        .unwrap()
+        .unwrap();
+    let (initial, appends, end_kyoku, flushes) =
+        tokio::time::timeout(Duration::from_secs(15), worker)
+            .await
+            .unwrap()
+            .unwrap();
+    eprintln!(
+        "instrumented benchmark finalized: initial={initial} appends={appends} end_kyoku={end_kyoku} flushes={flushes}"
+    );
+    assert!(initial > 0 && appends > 0 && end_kyoku > 0);
+    assert_eq!(end_kyoku, flushes);
+    assert_eq!(
+        handle
+            .snapshot()
+            .await
+            .unwrap()
+            .benchmark
+            .unwrap()
+            .completed,
+        1
+    );
+    handle
+        .send(RoomCommand::shutdown(ShutdownMode::Forced))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn series_waits_for_header_and_completion_ack_before_opening_matches() {
     let (handle, mut effects) = selected_room(true).await;
     let start = tokio::spawn({

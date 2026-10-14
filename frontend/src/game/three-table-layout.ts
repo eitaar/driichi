@@ -101,12 +101,6 @@ const SEAT_ROTATIONS: Record<SceneSeat, Vec3> = {
 };
 
 const WALL_EDGE_ORDER: readonly SceneSeat[] = ["bottom", "right", "top", "left"];
-const WALL_ANCHORS: Record<SceneSeat, Vec3> = {
-  bottom: [-3.44, 0.18, 3.17],
-  right: [4.25, 0.18, 2.69],
-  top: [3.44, 0.18, -3.17],
-  left: [-4.25, 0.18, -2.69],
-};
 
 function nonNegativeInteger(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
@@ -173,7 +167,7 @@ function addHandTiles(
 ): void {
   if (position === "bottom") return; // Both Live and Replay show the local hand in DOM.
   const { values, face } = handValues(player, position, surface);
-  const spacing = 0.51;
+  const spacing = TILE_BODY_SIZE.width * REMOTE_TILE_SIZE + 0.006;
   const center = (values.length - 1) / 2;
   const anchor = HAND_ANCHORS[position];
   for (let index = 0; index < values.length; index += 1) {
@@ -192,13 +186,17 @@ function addHandTiles(
   }
 }
 
-function discardPosition(position: SceneSeat, index: number): Vec3 {
+function discardPosition(position: SceneSeat, index: number, declaration: number | null): Vec3 {
   const column = index % 6;
   const row = Math.floor(index / 6);
-  const offset = (column - 2.5) * 0.55;
+  let offset = (column - 2.5) * 0.55;
+  if (declaration !== null && Math.floor(declaration / 6) === row) {
+    const extra = (TILE_BODY_SIZE.depth - TILE_BODY_SIZE.width) * REMOTE_TILE_SIZE;
+    offset += index === declaration ? extra / 2 : index > declaration ? extra : 0;
+  }
   if (position === "bottom") return [offset, 0.2, 1.73 + row * 0.66];
-  if (position === "top") return [offset, 0.2, -1.73 - row * 0.66];
-  if (position === "right") return [2.55 + row * 0.55, 0.2, offset];
+  if (position === "top") return [-offset, 0.2, -1.73 - row * 0.66];
+  if (position === "right") return [2.55 + row * 0.55, 0.2, -offset];
   return [-2.55 - row * 0.55, 0.2, offset];
 }
 
@@ -208,13 +206,17 @@ function addDiscardTiles(
   seat: number,
   position: SceneSeat,
 ): void {
-  for (const [index, tile] of (player.discards ?? []).entries()) {
+  const discards = player.discards ?? [];
+  const known = player.riichi_discard_index;
+  const declaration = typeof known === "number" && Number.isInteger(known) && known >= 0 && known < discards.length ? known : null;
+  for (const [index, tile] of discards.entries()) {
+    const rotation: Vec3 = [0, SEAT_ROTATIONS[position][1] + (index === declaration ? Math.PI / 2 : 0), 0];
     tiles.push(
       sceneTile(
         `discard-${position}-seat-${seat}-${index}`,
         tile,
-        discardPosition(position, index),
-        SEAT_ROTATIONS[position],
+        discardPosition(position, index, declaration),
+        rotation,
         REMOTE_TILE_SIZE,
         "front",
         "discard",
@@ -229,7 +231,7 @@ function meldPosition(position: SceneSeat, index: number, scale: number): Vec3 {
   if (position === "bottom") return [edge - offset, 0.3, 4.5];
   if (position === "top") return [-edge + offset, 0.3, -5.3];
   if (position === "right") return [6 * TABLE_WIDTH_STRETCH, 0.3, -edge + offset];
-  return [-5.35 * TABLE_WIDTH_STRETCH, 0.3, edge - offset];
+  return [-5.35 * TABLE_WIDTH_STRETCH - 0.1, 0.3, edge - offset];
 }
 
 function addMeldTiles(
@@ -258,51 +260,32 @@ function addMeldTiles(
   }
 }
 
-function addDoraTiles(tiles: SceneTile[], indicators: unknown): void {
-  if (!Array.isArray(indicators)) return;
-  const center = (indicators.length - 1) / 2;
-  for (const [index, tile] of indicators.entries()) {
-    if (typeof tile !== "number") continue;
-    tiles.push(
-      sceneTile(
-        `dora-${index}`,
-        tile,
-        [-4.4 + (index - center) * 0.55, 0.34, -3.75],
-        [0, 0, 0],
-        LOCAL_TILE_SIZE,
-        "front",
-        "dora",
-      ),
-    );
-  }
-}
-
-function wallPosition(index: number): { edge: SceneSeat; position: Vec3 } {
-  const edge = WALL_EDGE_ORDER[index % WALL_EDGE_ORDER.length];
-  const stack = Math.floor(index / (WALL_EDGE_ORDER.length * 2));
-  const height = 0.24 + Math.floor(index / WALL_EDGE_ORDER.length) % 2 * 0.21;
-  const anchor = WALL_ANCHORS[edge];
-  if (edge === "bottom") return { edge, position: [anchor[0] + stack * 0.43, height, anchor[2]] };
-  if (edge === "right") return { edge, position: [anchor[0], height, 3.44 - stack * 0.43] };
-  if (edge === "top") return { edge, position: [anchor[0] - stack * 0.43, height, anchor[2]] };
-  return { edge, position: [anchor[0], height, -3.44 + stack * 0.43] };
-}
-
-function addWallTiles(tiles: SceneTile[], count: number): void {
-  for (let index = 0; index < count; index += 1) {
-    const { edge, position } = wallPosition(index);
-    const slot = Math.floor(index / WALL_EDGE_ORDER.length);
-    tiles.push(
-      sceneTile(
-        `wall-${edge}-${slot}-${index}`,
-        null,
-        position,
-        SEAT_ROTATIONS[edge],
-        0.65,
-        "back",
-        "wall",
-      ),
-    );
+function addWallTiles(tiles: SceneTile[], count: number, threePlayer: boolean, indicators: unknown): void {
+  const edges = threePlayer ? ["bottom", "right", "left"] as const : WALL_EDGE_ORDER;
+  const stacksPerEdge = threePlayer ? 18 : 17;
+  const total = edges.length * stacksPerEdge * 2;
+  const liveCapacity = total - 14;
+  const markers = Array.isArray(indicators) ? indicators.filter((tile) => Number.isInteger(tile) && tile >= 0 && tile < 136).slice(0, 5) : [];
+  // shortcut: illustrative fixed cut, upgrade when authoritative cut/rinshan positions exist.
+  for (let index = liveCapacity - count; index < total; index += 1) {
+    const edge = edges[Math.floor(index / (stacksPerEdge * 2))];
+    const slot = index % (stacksPerEdge * 2);
+    const stack = Math.floor(slot / 2);
+    const upper = slot % 2 === 0;
+    const dead = index >= liveCapacity;
+    const offset = (stack - (stacksPerEdge - 1) / 2) * (TILE_BODY_SIZE.width * 0.65 + 0.008) + (dead ? 0.22 : 0);
+    const height = upper ? 0.45 : 0.24;
+    const position: Vec3 = edge === "bottom" ? [offset, height, 3.17]
+      : edge === "right" ? [4.25, height, -offset]
+      : edge === "top" ? [-offset, height, -3.17]
+      : [-4.25, height, offset];
+    const markerIndex = stacksPerEdge - 3 - stack;
+    const marker = dead && upper && markerIndex >= 0 && markerIndex < markers.length ? markers[markerIndex] : null;
+    tiles.push(sceneTile(
+      marker !== null ? `dora-${markerIndex}` : `${dead ? "dead-wall" : "wall"}-${edge}-${stack}-${upper ? "upper" : "lower"}`,
+      marker, position, SEAT_ROTATIONS[edge], 0.65,
+      marker !== null ? "front" : "back", marker !== null ? "dora" : "wall",
+    ));
   }
 }
 
@@ -331,9 +314,8 @@ export function buildMatchSceneLayout(
     addMeldTiles(tiles, player, seat, position);
   }
 
-  addDoraTiles(tiles, projection.dora_indicators);
-  const wallCount = wallTileCount(projection.remaining_wall);
-  addWallTiles(tiles, wallCount);
+  const wallCount = wallTileCount(projection.remaining_wall, geometry.length === 3 ? 94 : 122);
+  addWallTiles(tiles, wallCount, geometry.length === 3, projection.dora_indicators);
 
   return { players, tiles, wallCount };
 }

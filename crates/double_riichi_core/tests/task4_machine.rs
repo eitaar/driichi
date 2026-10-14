@@ -157,6 +157,13 @@ async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout
         );
 
         for _ in 0..5_000 {
+            if let Some(hold) = machine.held_kyoku() {
+                let steps = hold.wins.len();
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
             let decision = machine.current_decision().unwrap().expect("decision");
             if decision.kind() == DecisionKind::Response && !decision.actions_for(seat).is_empty() {
                 assert_eq!(decision.duration_for(seat), Some(Duration::ZERO));
@@ -174,7 +181,13 @@ async fn temporary_auto_response_is_immediate_after_casual_or_riichi_dev_timeout
                     )
                     .unwrap();
             }
-            let current = machine.current_decision().unwrap().expect("decision");
+            let Some(current) = machine.current_decision().unwrap() else {
+                assert!(
+                    machine.held_kyoku().is_some(),
+                    "missing Decision without a held Kyoku"
+                );
+                continue;
+            };
             if !current.actions_for(seat).is_empty() {
                 if let Some(duration) = current.duration_for(seat) {
                     time::advance(duration).await;

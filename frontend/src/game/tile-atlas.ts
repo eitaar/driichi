@@ -47,7 +47,7 @@ const CELL_BY_FILE = new Map<string, readonly [number, number]>(
 const FALLBACK_CELL = CELL_BY_FILE.get(tileFileName(FALLBACK_TILE))!;
 
 export interface TileAtlas {
-  readonly texture: CanvasTexture;
+  readonly texture: CanvasTexture<HTMLCanvasElement | ImageBitmap>;
   readonly columns: number;
   readonly rows: number;
   cellFor(tile: number): readonly [number, number];
@@ -150,7 +150,7 @@ export async function createTileAtlas(signal?: AbortSignal): Promise<TileAtlas> 
     if (signal?.aborted) throw abortError();
     const x = (index % ATLAS_COLUMNS) * CELL_WIDTH;
     const y = Math.floor(index / ATLAS_COLUMNS) * CELL_HEIGHT;
-    context.fillStyle = "#eee5d2";
+    context.fillStyle = "#ffffff";
     context.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
     context.drawImage(image, x, y, CELL_WIDTH, CELL_HEIGHT);
   }

@@ -1,10 +1,25 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { resolve } from "node:path";
 
 const e2eServerOrigin = process.env.DRIICHI_E2E_SERVER_ORIGIN;
 
 export default defineConfig({
-  plugins: [react()],
+  // Scan the Worker too so cold optimization cannot reload an active Human session.
+  optimizeDeps: { entries: ["index.html", "src/game/three-table-worker.tsx"] },
+  // The native Worker shares these modules; Fast Refresh's runtime requires Window.
+  plugins: [react({ exclude: [
+    /\/node_modules\//,
+    /\/src\/game\/(?:three-table-worker|three-table-scene|table-center|table-appearance)\.tsx$/,
+  ] })],
+  build: {
+    manifest: true,
+    rolldownOptions: {
+      // Preserve the real store module for production-browser state checks.
+      input: { app: resolve(import.meta.dirname, "index.html"), store: resolve(import.meta.dirname, "src/game/store.ts") },
+      preserveEntrySignatures: "strict",
+    },
+  },
   server: {
     port: 4173,
     proxy: e2eServerOrigin

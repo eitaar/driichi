@@ -14,10 +14,12 @@ use crate::{
         GameAction, GameEvent, GameMode, MatchAbort, MatchPlayerResult, MatchResult, MatchStatus,
         Participant, ParticipantId, ParticipantKind, Seat,
     },
-    engine::{EngineAdapter, EngineError},
+    engine::{EngineAdapter, EngineApplyOutcome, EngineError},
     projection::{
-        Audience, AudienceProjection, ProjectionError, project_table_state, serialize_projection,
+        Audience, AudienceProjection, ProjectionError, TableState, project_table_state,
+        serialize_projection,
     },
+    results::{KyokuResultRecord, PublishedKyokuResults},
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -30,6 +32,8 @@ pub enum MatchError {
     IllegalAction { seat: Seat },
     #[error("no open decision")]
     NoDecision,
+    #[error("kyoku results are pending publication")]
+    ResultsPending,
     #[error("decision error: {0}")]
     Decision(DecisionError),
     #[error("timing error: {0}")]
@@ -85,12 +89,25 @@ impl DecisionResult {
     }
 }
 
+struct HeldKyoku {
+    table: TableState,
+    record: KyokuResultRecord,
+    next_step: usize,
+    terminal_events: Vec<GameEvent>,
+    future_events: Vec<GameEvent>,
+    final_result: Option<MatchResult>,
+}
+
 pub struct MatchMachine {
     mode: GameMode,
     players: Vec<Participant>,
     engine: EngineAdapter,
     status: MatchStatus,
     events: Vec<GameEvent>,
+    last_settlement_scores: Option<Vec<i32>>,
+    held: Option<HeldKyoku>,
+    journal_event_count: usize,
+    persistence_events: Vec<GameEvent>,
     time_control: TimeControl,
     timing: TimingConfig,
     presence: Vec<Presence>,
@@ -135,6 +152,29 @@ impl MatchMachine {
         Ok(machine)
     }
 
+    #[cfg(feature = "task8-test-support")]
+    pub fn with_task8_fixture(
+        mode: GameMode,
+        participants: Vec<Participant>,
+        time_control: TimeControl,
+        fixture: &str,
+    ) -> Result<Self, MatchError> {
+        let (engine, events) = match fixture {
+            "double-ron" => EngineAdapter::task8_double_ron(mode),
+            "double-ron-final" => EngineAdapter::task8_double_ron_final(mode),
+            "dealer-tenhou" => EngineAdapter::task8_dealer_tenhou(mode),
+            "final-draw" => EngineAdapter::task8_final_draw(mode),
+            _ => return Err(MatchError::Aborted("unknown Task8 fixture".into())),
+        }
+        .map_err(|error| MatchError::Aborted(error.to_string()))?;
+        let mut machine = Self::new_internal(mode, participants, 230, false)?;
+        machine.engine = engine;
+        machine.journal_event_count = events.len();
+        machine.events = events;
+        machine.time_control = time_control;
+        Ok(machine)
+    }
+
     pub fn mode(&self) -> GameMode {
         self.mode
     }
@@ -171,6 +211,70 @@ impl MatchMachine {
 
     pub fn events(&self) -> &[GameEvent] {
         &self.events
+    }
+
+    pub(crate) fn next_kyoku_step_index(&self) -> Option<usize> {
+        self.held.as_ref().map(|hold| hold.next_step)
+    }
+
+    pub fn held_kyoku(&self) -> Option<&KyokuResultRecord> {
+        self.held.as_ref().map(|hold| &hold.record)
+    }
+
+    pub(crate) fn published_kyoku_results(&self) -> Option<PublishedKyokuResults> {
+        let hold = self.held.as_ref()?;
+        (hold.next_step > 0).then(|| PublishedKyokuResults {
+            kyoku_sequence: hold.record.kyoku_sequence,
+            wins: hold.record.wins[..hold.next_step.min(hold.record.wins.len())].to_vec(),
+            settlement: (hold.next_step > hold.record.wins.len())
+                .then(|| hold.record.settlement.clone()),
+        })
+    }
+
+    pub(crate) fn take_persistence_events(&mut self) -> Vec<GameEvent> {
+        std::mem::take(&mut self.persistence_events)
+    }
+
+    pub fn publish_kyoku_step(&mut self, step_index: usize) -> Result<Vec<GameEvent>, MatchError> {
+        let hold = self.held.as_mut().ok_or(MatchError::NoDecision)?;
+        if step_index != hold.next_step || step_index > hold.record.wins.len() {
+            return Err(MatchError::ResultsPending);
+        }
+        hold.next_step += 1;
+        if step_index == hold.record.wins.len() {
+            let after = hold
+                .record
+                .settlement
+                .changes
+                .iter()
+                .map(|change| change.after)
+                .collect::<Vec<_>>();
+            hold.table = hold
+                .table
+                .clone()
+                .with_settlement_state(&after, hold.record.settlement.pot_after);
+            let events = std::mem::take(&mut hold.terminal_events);
+            self.events.extend(events.iter().cloned());
+            Ok(events)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub fn release_kyoku(&mut self) -> Result<Vec<GameEvent>, MatchError> {
+        if !self
+            .held
+            .as_ref()
+            .is_some_and(|hold| hold.next_step > hold.record.wins.len())
+        {
+            return Err(MatchError::ResultsPending);
+        }
+        let hold = self.held.take().expect("checked hold");
+        self.events.extend(hold.future_events.iter().cloned());
+        if let Some(result) = hold.final_result {
+            self.status = MatchStatus::Completed(result);
+        }
+        Ok(hold.future_events)
     }
 
     pub fn time_control(&self) -> TimeControl {
@@ -258,8 +362,11 @@ impl MatchMachine {
     }
 
     pub fn legal_actions(&mut self, seat: Seat) -> Result<Vec<GameAction>, MatchError> {
-        self.ensure_running()?;
         self.validate_seat(seat)?;
+        if self.held.is_some() {
+            return Ok(Vec::new());
+        }
+        self.ensure_running()?;
         self.engine
             .legal_actions(seat)
             .map_err(|error| self.abort_for_engine(error))
@@ -279,17 +386,19 @@ impl MatchMachine {
             return Err(MatchError::IllegalAction { seat });
         }
         self.decision = None;
-        let new_events = match self.engine.apply(seat, &action) {
-            Ok(events) => events,
-            Err(error @ EngineError::Rejected(_)) => return Err(self.abort_for_engine(error)),
-            Err(error) => return Err(self.abort_for_engine(error)),
-        };
-        self.record_events(new_events)
+        let outcome = self
+            .engine
+            .apply(seat, &action)
+            .map_err(|error| self.abort_for_engine(error))?;
+        self.record_outcome(outcome)
     }
 
     /// Open the one canonical Decision for the current engine state. A
     /// response Decision remains open until every eligible seat has submitted.
     pub fn current_decision(&mut self) -> Result<Option<Decision>, MatchError> {
+        if self.held.is_some() {
+            return Ok(None);
+        }
         self.ensure_running()?;
         if let Some(decision) = &self.decision {
             return Ok(Some(decision.clone()));
@@ -430,15 +539,22 @@ impl MatchMachine {
         } else {
             None
         };
-        let state = self
-            .engine
-            .table_state(self.mode, &self.players)
-            .map_err(|error| self.abort_for_engine(error))?;
+        let state = if let Some(hold) = &self.held {
+            hold.table.clone()
+        } else {
+            self.engine
+                .table_state(self.mode, &self.players)
+                .map_err(|error| self.abort_for_engine(error))?
+        };
         let state = match decision {
             Some(decision) => state.with_decision(decision),
             None => state,
         };
-        Ok(project_table_state(&state, audience))
+        let projection = project_table_state(&state, audience);
+        Ok(match self.published_kyoku_results() {
+            Some(results) => projection.with_kyoku_results(results),
+            None => projection,
+        })
     }
 
     pub fn serialize(&mut self, audience: Audience) -> Result<String, MatchError> {
@@ -457,7 +573,7 @@ impl MatchMachine {
             .map(|action| (action.seat, action.action.clone()))
             .collect();
         self.decision = None;
-        let new_events = if actions.len() == 1 {
+        let outcome = if actions.len() == 1 {
             self.engine
                 .apply(actions[0].0, &actions[0].1)
                 .map_err(|error| self.abort_for_engine(error))?
@@ -466,7 +582,7 @@ impl MatchMachine {
                 .apply_simultaneous(&actions)
                 .map_err(|error| self.abort_for_engine(error))?
         };
-        self.record_events(new_events.clone())?;
+        let new_events = self.record_outcome(outcome)?;
         Ok(DecisionResult::Resolved {
             decision_id,
             actions: resolution.actions,
@@ -474,10 +590,137 @@ impl MatchMachine {
         })
     }
 
+    fn record_outcome(
+        &mut self,
+        outcome: EngineApplyOutcome,
+    ) -> Result<Vec<GameEvent>, MatchError> {
+        if let Some(ended) = &outcome.ended {
+            let sequence = self
+                .events
+                .iter()
+                .filter(|event| matches!(event, GameEvent::StartKyoku { .. }))
+                .count() as u64
+                + outcome
+                    .events
+                    .iter()
+                    .take_while(|event| !matches!(event, GameEvent::EndKyoku))
+                    .filter(|event| matches!(event, GameEvent::StartKyoku { .. }))
+                    .count() as u64;
+            let record = self
+                .engine
+                .result_record(
+                    ended,
+                    &self.players,
+                    sequence,
+                    self.journal_event_count,
+                    &outcome.events,
+                )
+                .map_err(|error| self.abort_for_engine(error))?;
+            let before_scores = record
+                .settlement
+                .changes
+                .iter()
+                .map(|change| change.before)
+                .collect::<Vec<_>>();
+            let table = self
+                .engine
+                .ended_table_state(
+                    ended,
+                    &self.players,
+                    &before_scores,
+                    record.settlement.pot_before,
+                )
+                .map_err(|error| self.abort_for_engine(error))?;
+            let final_result = if self.engine.is_done() {
+                let result = self.build_result();
+                result
+                    .validate()
+                    .map_err(|error| self.abort_for_engine(EngineError::Divergence(error)))?;
+                if record
+                    .settlement
+                    .changes
+                    .iter()
+                    .map(|change| change.after)
+                    .collect::<Vec<_>>()
+                    != result.final_scores
+                {
+                    return Err(self.abort_for_engine(EngineError::Divergence(
+                        "final scores differ from settlement".into(),
+                    )));
+                }
+                Some(result)
+            } else {
+                None
+            };
+            let terminal_start = outcome
+                .events
+                .iter()
+                .position(|event| {
+                    matches!(event, GameEvent::Hora { .. } | GameEvent::Ryukyoku { .. })
+                })
+                .ok_or_else(|| {
+                    self.abort_for_engine(EngineError::Divergence(
+                        "ended kyoku without terminal event".into(),
+                    ))
+                })?;
+            let end = outcome
+                .events
+                .iter()
+                .position(|event| matches!(event, GameEvent::EndKyoku))
+                .ok_or_else(|| {
+                    self.abort_for_engine(EngineError::Divergence(
+                        "ended kyoku without EndKyoku".into(),
+                    ))
+                })?;
+            if terminal_start >= end {
+                return Err(self.abort_for_engine(EngineError::Divergence(
+                    "terminal follows EndKyoku".into(),
+                )));
+            }
+            self.last_settlement_scores = Some(
+                record
+                    .settlement
+                    .changes
+                    .iter()
+                    .map(|change| change.after)
+                    .collect(),
+            );
+            let public = outcome.events[..terminal_start].to_vec();
+            self.journal_event_count += outcome.events.len();
+            self.persistence_events
+                .extend(outcome.events.iter().cloned());
+            self.events.extend(public.iter().cloned());
+            self.decision = None;
+            self.held = Some(HeldKyoku {
+                table,
+                record,
+                next_step: 0,
+                terminal_events: outcome.events[terminal_start..end].to_vec(),
+                future_events: outcome.events[end..].to_vec(),
+                final_result,
+            });
+            return Ok(public);
+        }
+        self.record_events(outcome.events)
+    }
+
     fn record_events(&mut self, new_events: Vec<GameEvent>) -> Result<Vec<GameEvent>, MatchError> {
+        self.journal_event_count += new_events.len();
+        self.persistence_events.extend(new_events.iter().cloned());
         self.events.extend(new_events.iter().cloned());
         if self.engine.is_done() {
-            self.status = MatchStatus::Completed(self.build_result());
+            let result = self.build_result();
+            result
+                .validate()
+                .map_err(|error| self.abort_for_engine(EngineError::Divergence(error)))?;
+            if let Some(last) = &self.last_settlement_scores
+                && *last != result.final_scores
+            {
+                return Err(self.abort_for_engine(EngineError::Divergence(
+                    "final scores differ from settlement".into(),
+                )));
+            }
+            self.status = MatchStatus::Completed(result);
         }
         Ok(new_events)
     }
@@ -546,7 +789,11 @@ impl MatchMachine {
             players,
             engine,
             status: MatchStatus::Running,
+            journal_event_count: events.len(),
             events,
+            last_settlement_scores: None,
+            held: None,
+            persistence_events: Vec::new(),
             time_control: TimeControl::Casual,
             timing: TimingConfig::casual(),
             controllers,
@@ -566,6 +813,9 @@ impl MatchMachine {
     }
 
     fn ensure_running(&self) -> Result<(), MatchError> {
+        if self.held.is_some() {
+            return Err(MatchError::ResultsPending);
+        }
         if matches!(self.status, MatchStatus::Running) {
             Ok(())
         } else {
@@ -587,6 +837,7 @@ impl MatchMachine {
 
     fn abort_for_engine(&mut self, error: EngineError) -> MatchError {
         let reason = error.to_string();
+        self.held = None;
         self.status = MatchStatus::Aborted(MatchAbort::new(reason.clone()));
         MatchError::Aborted(reason)
     }
@@ -696,6 +947,13 @@ mod tests {
     fn complete(mode: GameMode) -> MatchMachine {
         let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0_u64).unwrap();
         for _ in 0..20_000 {
+            if let Some(hold) = machine.held_kyoku() {
+                let steps = hold.wins.len();
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
             if machine.is_complete() {
                 return machine;
             }
@@ -713,6 +971,654 @@ mod tests {
             assert!(progressed, "a running match must expose a decision");
         }
         panic!("mode {mode} did not complete")
+    }
+
+    fn first_held(mode: GameMode) -> MatchMachine {
+        let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0).unwrap();
+        for _ in 0..2000 {
+            if machine.held_kyoku().is_some() {
+                return machine;
+            }
+            let (seat, action) = Seat::all(mode)
+                .into_iter()
+                .find_map(|seat| {
+                    let actions = machine.legal_actions(seat).unwrap();
+                    (!actions.is_empty()).then(|| (seat, default_action(&actions)))
+                })
+                .expect("running match action");
+            machine.apply(seat, action).unwrap();
+        }
+        panic!("no ended kyoku");
+    }
+
+    #[test]
+    fn next_kyoku_step_index_tracks_publication_and_release() {
+        for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+            let mut machine = first_held(mode);
+            let steps = machine.held_kyoku().unwrap().wins.len();
+            assert_eq!(machine.next_kyoku_step_index(), Some(0));
+            for index in 0..=steps {
+                assert!(matches!(
+                    machine.release_kyoku(),
+                    Err(MatchError::ResultsPending)
+                ));
+                machine.publish_kyoku_step(index).unwrap();
+                assert_eq!(machine.next_kyoku_step_index(), Some(index + 1));
+            }
+            machine.release_kyoku().unwrap();
+            assert_eq!(machine.next_kyoku_step_index(), None);
+            assert!(matches!(
+                machine.release_kyoku(),
+                Err(MatchError::ResultsPending)
+            ));
+        }
+    }
+
+    #[test]
+    fn final_score_mismatch_still_aborts() {
+        let mut machine = complete(GameMode::ThreePlayerRedEast);
+        machine.last_settlement_scores.as_mut().unwrap()[0] += 1;
+        assert!(matches!(
+            machine.record_events(Vec::new()),
+            Err(MatchError::Aborted(_))
+        ));
+        assert!(machine.result().is_none());
+    }
+
+    #[cfg(feature = "task8-test-support")]
+    #[test]
+    fn task8_final_draw_holds_pot_and_tied_ranks_until_one_release_in_four_modes() {
+        for mode in [
+            GameMode::FourPlayerRedEast,
+            GameMode::FourPlayerRedHalf,
+            GameMode::ThreePlayerRedEast,
+            GameMode::ThreePlayerRedHalf,
+        ] {
+            let count = mode.seat_count();
+            let humans = (0..count)
+                .map(|i| Participant::new(format!("tie-{i}"), "same", ParticipantKind::Human))
+                .collect();
+            let mut machine = MatchMachine::with_task8_fixture(
+                mode,
+                humans,
+                TimeControl::Unlimited,
+                "final-draw",
+            )
+            .unwrap();
+            let mut submitted = 0;
+            for _ in 0..280 {
+                if machine.held_kyoku().is_some() {
+                    break;
+                }
+                let decision = machine
+                    .current_decision()
+                    .unwrap()
+                    .expect("actual final draw decision");
+                for entry in decision.entries() {
+                    let action = entry
+                        .actions
+                        .iter()
+                        .find(|a| {
+                            matches!(
+                                a.action,
+                                GameAction::Pass
+                                    | GameAction::Discard {
+                                        tsumogiri: true,
+                                        ..
+                                    }
+                            )
+                        })
+                        .unwrap();
+                    machine
+                        .submit_action(entry.seat, decision.id(), &action.id)
+                        .unwrap();
+                    submitted += 1;
+                    assert!(submitted <= 280);
+                }
+            }
+            let held = machine.held_kyoku().unwrap();
+            assert!(held.wins.is_empty());
+            assert_eq!(
+                held.settlement.draw_reason.as_deref(),
+                Some("exhaustive_draw")
+            );
+            assert_eq!(
+                (held.settlement.pot_before, held.settlement.pot_after),
+                (2, 0)
+            );
+            assert!(machine.result().is_none());
+            assert!(machine.current_decision().unwrap().is_none());
+            assert!(
+                !machine
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::EndKyoku | GameEvent::EndGame))
+            );
+            machine.publish_kyoku_step(0).unwrap();
+            assert!(machine.result().is_none());
+            assert!(machine.current_decision().unwrap().is_none());
+            let suffix = machine.release_kyoku().unwrap();
+            assert_eq!(suffix, vec![GameEvent::EndKyoku, GameEvent::EndGame]);
+            let result = machine.result().unwrap();
+            let mut scores = vec![100000; count];
+            scores[0] = 102000;
+            assert_eq!(result.final_scores, scores);
+            assert_eq!(
+                result.players.iter().map(|p| p.rank).collect::<Vec<_>>(),
+                (1..=count as u8).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                result
+                    .players
+                    .iter()
+                    .map(|p| p.seat.index())
+                    .collect::<Vec<_>>(),
+                (0..count as u8).collect::<Vec<_>>()
+            );
+            assert!(machine.release_kyoku().is_err());
+            assert_eq!(
+                machine
+                    .events()
+                    .iter()
+                    .filter(|e| matches!(e, GameEvent::EndGame))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(feature = "task8-test-support")]
+    #[test]
+    fn task8_final_double_ron_holds_canonical_end_and_literal_standings_until_release() {
+        for (mode, scores, ranks) in [
+            (
+                GameMode::ThreePlayerRedEast,
+                vec![-4_600, 105_000, 102_600],
+                vec![3, 1, 2],
+            ),
+            (
+                GameMode::FourPlayerRedEast,
+                vec![-4_800, 105_200, 102_600, 100_000],
+                vec![4, 1, 2, 3],
+            ),
+        ] {
+            let humans = (0..mode.seat_count())
+                .map(|i| Participant::new(format!("p{i}"), "same", ParticipantKind::Human))
+                .collect();
+            let mut machine = MatchMachine::with_task8_fixture(
+                mode,
+                humans,
+                TimeControl::Unlimited,
+                "double-ron-final",
+            )
+            .unwrap();
+            assert_eq!(machine.journal_event_count, 3);
+            assert_eq!(machine.events().len(), 3);
+            let decision = machine.current_decision().unwrap().unwrap();
+            let dealer = Seat::new(0).unwrap();
+            let discard = decision.actions_for(dealer).iter().find(|offer| {
+                matches!(&offer.action, GameAction::Discard { tile, .. } if tile.id() == 77)
+            }).unwrap();
+            machine
+                .submit_action(dealer, decision.id(), &discard.id)
+                .unwrap();
+            let response = machine.current_decision().unwrap().unwrap();
+            for entry in response.entries() {
+                let action = entry
+                    .actions
+                    .iter()
+                    .find(|offer| {
+                        if entry.seat.index() <= 2 {
+                            matches!(offer.action, GameAction::Ron(_))
+                        } else {
+                            matches!(offer.action, GameAction::Pass)
+                        }
+                    })
+                    .unwrap();
+                machine
+                    .submit_action(entry.seat, response.id(), &action.id)
+                    .unwrap();
+            }
+            assert!(machine.held_kyoku().is_some());
+            assert!(machine.result().is_none());
+            assert!(machine.current_decision().unwrap().is_none());
+            assert!(
+                !machine
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::EndGame))
+            );
+            for step in 0..=2 {
+                machine.publish_kyoku_step(step).unwrap();
+                assert!(machine.result().is_none());
+                assert!(machine.current_decision().unwrap().is_none());
+                assert!(
+                    !machine
+                        .events()
+                        .iter()
+                        .any(|e| matches!(e, GameEvent::EndGame))
+                );
+            }
+            let suffix = machine.release_kyoku().unwrap();
+            assert_eq!(suffix, [GameEvent::EndKyoku, GameEvent::EndGame]);
+            let result = machine.result().unwrap();
+            assert_eq!(result.final_scores, scores);
+            assert_eq!(
+                result.players.iter().map(|p| p.rank).collect::<Vec<_>>(),
+                ranks
+            );
+            assert_eq!(
+                result
+                    .players
+                    .iter()
+                    .map(|p| p.seat.index())
+                    .collect::<Vec<_>>(),
+                (0..mode.seat_count() as u8).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn held_results_do_not_open_decision() {
+        let mut machine = first_held(GameMode::FourPlayerRedEast);
+        let seat = Seat::new(0).unwrap();
+        assert!(machine.current_decision().unwrap().is_none());
+        assert!(machine.legal_actions(seat).unwrap().is_empty());
+        assert_eq!(machine.resolve_expired(), Err(MatchError::ResultsPending));
+        assert_eq!(
+            machine.apply(seat, GameAction::Pass),
+            Err(MatchError::ResultsPending)
+        );
+        assert_eq!(
+            machine.submit_action(seat, "old", "old"),
+            Err(MatchError::ResultsPending)
+        );
+        assert!(
+            !machine
+                .project(Audience::Public)
+                .unwrap()
+                .to_json()
+                .unwrap()
+                .contains("kyoku_results")
+        );
+    }
+
+    #[test]
+    fn draw_projection_releases_reason_and_settlement() {
+        let mut machine = first_held(GameMode::ThreePlayerRedEast);
+        let steps = machine.held_kyoku().unwrap().wins.len();
+        assert_eq!(steps, 0);
+        assert_eq!(
+            machine
+                .held_kyoku()
+                .unwrap()
+                .settlement
+                .draw_reason
+                .as_deref(),
+            Some("exhaustive_draw")
+        );
+        let sequence = machine.held_kyoku().unwrap().kyoku_sequence;
+        let before = machine
+            .held_kyoku()
+            .unwrap()
+            .settlement
+            .changes
+            .iter()
+            .map(|c| c.before)
+            .collect::<Vec<_>>();
+        let first = machine.publish_kyoku_step(0).unwrap();
+        if steps == 0 {
+            assert_eq!(first.len(), 1);
+            assert!(
+                matches!(&first[0], GameEvent::Ryukyoku { reason: Some(reason), .. } if reason == "exhaustive_draw")
+            );
+        } else {
+            assert!(first.is_empty());
+        }
+        for audience in [
+            Audience::Public,
+            Audience::Player(Seat::new(0).unwrap()),
+            Audience::Player(Seat::new(1).unwrap()),
+            Audience::ReplayAdmin,
+            Audience::BenchmarkAdmin,
+        ] {
+            let projection = machine.project(audience).unwrap().to_json().unwrap();
+            let json: serde_json::Value = serde_json::from_str(&projection).unwrap();
+            assert_eq!(json["kyoku_results"]["kyoku_sequence"], sequence);
+            assert_eq!(
+                json["kyoku_results"]["wins"].as_array().unwrap().len(),
+                usize::from(steps > 0)
+            );
+            assert_eq!(json["kyoku_results"]["settlement"].is_object(), steps == 0);
+            assert_eq!(
+                json["players"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p["score"].as_i64().unwrap() as i32)
+                    .collect::<Vec<_>>(),
+                before
+            );
+            if matches!(audience, Audience::Public) {
+                assert!(
+                    json["players"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|p| p.get("hand").is_none())
+                );
+            }
+        }
+        for step in 1..=steps {
+            machine.publish_kyoku_step(step).unwrap();
+        }
+        let json: serde_json::Value =
+            serde_json::from_str(&machine.serialize(Audience::Public).unwrap()).unwrap();
+        assert!(json["kyoku_results"]["settlement"].is_object());
+        assert_eq!(
+            json["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["score"].as_i64().unwrap() as i32)
+                .collect::<Vec<_>>(),
+            machine
+                .held_kyoku()
+                .unwrap()
+                .settlement
+                .changes
+                .iter()
+                .map(|c| c.after)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(machine.held_kyoku().unwrap().kyoku_sequence, sequence);
+        assert_eq!(
+            machine
+                .events()
+                .iter()
+                .filter(|event| matches!(event, GameEvent::StartKyoku { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn result_projection_releases_one_winner_after_prior_draws() {
+        let mode = GameMode::FourPlayerRedEast;
+        let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 0xD0).unwrap();
+        for _ in 0..20_000 {
+            if let Some(hold) = machine.held_kyoku() {
+                if !hold.wins.is_empty() {
+                    let all = hold.wins.len();
+                    assert!(machine.publish_kyoku_step(0).unwrap().is_empty());
+                    let public: serde_json::Value =
+                        serde_json::from_str(&machine.serialize(Audience::Public).unwrap())
+                            .unwrap();
+                    assert_eq!(public["kyoku_results"]["wins"].as_array().unwrap().len(), 1);
+                    assert!(public["kyoku_results"]["settlement"].is_null());
+                    assert!(
+                        !machine
+                            .events()
+                            .iter()
+                            .any(|event| matches!(event, GameEvent::Hora { .. }))
+                    );
+                    for step in 1..=all {
+                        machine.publish_kyoku_step(step).unwrap();
+                    }
+                    return;
+                }
+                machine.publish_kyoku_step(0).unwrap();
+                machine.release_kyoku().unwrap();
+            }
+            if machine.is_complete() {
+                break;
+            }
+            let (seat, action) = Seat::all(mode)
+                .into_iter()
+                .find_map(|seat| {
+                    let actions = machine.legal_actions(seat).unwrap();
+                    let chosen = actions
+                        .iter()
+                        .find(|action| matches!(action, GameAction::Tsumo | GameAction::Ron(_)))
+                        .or_else(|| {
+                            actions
+                                .iter()
+                                .find(|action| matches!(action, GameAction::RiichiDiscard { .. }))
+                        })
+                        .or_else(|| {
+                            actions.iter().find(|action| {
+                                matches!(action, GameAction::Discard { .. } | GameAction::Pass)
+                            })
+                        })
+                        .or_else(|| actions.first())?;
+                    Some((seat, chosen.clone()))
+                })
+                .unwrap();
+            machine.apply(seat, action).unwrap();
+        }
+        panic!("seed did not reach a win");
+    }
+
+    #[test]
+    fn two_ron_steps_keep_future_winner_and_pot_private() {
+        let mode = GameMode::FourPlayerRedEast;
+        let mut machine = MatchMachine::new_with_seed(mode, roster(mode), 230).unwrap();
+        machine.engine = crate::engine::tests::prepared_capture(mode, true, false);
+        let outcome = machine
+            .engine
+            .apply_simultaneous(&[
+                (
+                    Seat::new(1).unwrap(),
+                    GameAction::Ron(Seat::new(0).unwrap()),
+                ),
+                (
+                    Seat::new(2).unwrap(),
+                    GameAction::Ron(Seat::new(0).unwrap()),
+                ),
+            ])
+            .unwrap();
+        machine.record_outcome(outcome).unwrap();
+        let record = machine.held_kyoku().unwrap().clone();
+        assert_eq!(record.wins.len(), 2);
+        assert_eq!(
+            record
+                .wins
+                .iter()
+                .map(|win| win.seat.index())
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(record.settlement.pot_before, 2);
+        machine.publish_kyoku_step(0).unwrap();
+        for audience in [
+            Audience::Public,
+            Audience::Player(Seat::new(0).unwrap()),
+            Audience::Player(Seat::new(1).unwrap()),
+            Audience::Player(Seat::new(2).unwrap()),
+            Audience::BenchmarkAdmin,
+            Audience::ReplayAdmin,
+        ] {
+            let json: serde_json::Value =
+                serde_json::from_str(&machine.serialize(audience).unwrap()).unwrap();
+            assert_eq!(json["kyotaku"], 2, "{audience:?}");
+            assert!(json["decision"].is_null());
+            assert_eq!(
+                json["kyoku_results"]["wins"],
+                serde_json::json!([record.wins[0]])
+            );
+            assert!(json["kyoku_results"]["settlement"].is_null());
+            assert_eq!(
+                json["players"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p["score"].as_i64().unwrap() as i32)
+                    .collect::<Vec<_>>(),
+                record
+                    .settlement
+                    .changes
+                    .iter()
+                    .map(|c| c.before)
+                    .collect::<Vec<_>>()
+            );
+            if matches!(audience, Audience::Public) {
+                assert!(
+                    json["players"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|p| p.get("hand").is_none())
+                );
+            }
+        }
+        assert_eq!(
+            machine
+                .events()
+                .iter()
+                .filter(|e| matches!(e, GameEvent::StartKyoku { .. }))
+                .count(),
+            1
+        );
+        assert!(machine.publish_kyoku_step(1).unwrap().is_empty());
+        for audience in [
+            Audience::Public,
+            Audience::Player(Seat::new(0).unwrap()),
+            Audience::Player(Seat::new(1).unwrap()),
+            Audience::Player(Seat::new(2).unwrap()),
+            Audience::BenchmarkAdmin,
+            Audience::ReplayAdmin,
+        ] {
+            let second: serde_json::Value =
+                serde_json::from_str(&machine.serialize(audience).unwrap()).unwrap();
+            assert_eq!(
+                second["kyoku_results"]["wins"],
+                serde_json::json!(record.wins)
+            );
+            assert_eq!(second["kyotaku"], 2);
+            assert!(second["decision"].is_null());
+            assert!(second["kyoku_results"]["settlement"].is_null());
+        }
+        machine.publish_kyoku_step(2).unwrap();
+        let settled: serde_json::Value =
+            serde_json::from_str(&machine.serialize(Audience::Public).unwrap()).unwrap();
+        assert_eq!(settled["kyotaku"], record.settlement.pot_after);
+        assert_eq!(
+            settled["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["score"].as_i64().unwrap() as i32)
+                .collect::<Vec<_>>(),
+            record
+                .settlement
+                .changes
+                .iter()
+                .map(|c| c.after)
+                .collect::<Vec<_>>()
+        );
+        assert!(settled["kyoku_results"]["settlement"].is_object());
+    }
+
+    #[test]
+    fn terminal_event_prefix_hides_combined_settlement() {
+        let mut machine = first_held(GameMode::FourPlayerRedEast);
+        let steps = machine.held_kyoku().unwrap().wins.len();
+        let end = machine.held_kyoku().unwrap().end_event_index;
+        machine
+            .held
+            .as_mut()
+            .unwrap()
+            .future_events
+            .push(GameEvent::Ryukyoku {
+                reason: Some("next-kyoku-sentinel".into()),
+                tehais: None,
+                delta: None,
+                scores: None,
+            });
+        assert!(
+            !machine
+                .serialize(Audience::Public)
+                .unwrap()
+                .contains("next-kyoku-sentinel")
+        );
+        assert!(!machine.events().iter().any(|e| matches!(
+            e,
+            GameEvent::EndKyoku | GameEvent::Hora { .. } | GameEvent::Ryukyoku { .. }
+        )));
+        assert_eq!(machine.release_kyoku(), Err(MatchError::ResultsPending));
+        for step in 0..steps {
+            assert!(machine.publish_kyoku_step(step).unwrap().is_empty());
+            assert!(
+                !machine
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::Hora { .. } | GameEvent::Ryukyoku { .. }))
+            );
+        }
+        assert_eq!(
+            machine.publish_kyoku_step(steps + 1),
+            Err(MatchError::ResultsPending)
+        );
+        let released = machine.publish_kyoku_step(steps).unwrap();
+        assert!(
+            released
+                .iter()
+                .any(|e| matches!(e, GameEvent::Hora { .. } | GameEvent::Ryukyoku { .. }))
+        );
+        assert!(
+            !released
+                .iter()
+                .any(|e| matches!(e, GameEvent::EndKyoku | GameEvent::StartKyoku { .. }))
+        );
+        assert_eq!(machine.held_kyoku().unwrap().end_event_index, end);
+        assert!(
+            !machine
+                .serialize(Audience::Public)
+                .unwrap()
+                .contains("next-kyoku-sentinel")
+        );
+        machine.held.as_mut().unwrap().future_events.pop();
+        let suffix = machine.release_kyoku().unwrap();
+        assert!(matches!(suffix.first(), Some(GameEvent::EndKyoku)));
+        assert_eq!(machine.events().len(), machine.journal_event_count);
+        assert_eq!(machine.release_kyoku(), Err(MatchError::ResultsPending));
+        let persisted = machine.take_persistence_events();
+        assert!(!persisted.is_empty());
+        assert!(!persisted.iter().any(|event| matches!(event, GameEvent::Ryukyoku { reason: Some(reason), .. } if reason == "next-kyoku-sentinel")));
+        assert!(machine.take_persistence_events().is_empty());
+    }
+
+    #[test]
+    fn held_final_result_is_not_complete() {
+        let mut machine = MatchMachine::new_with_seed(
+            GameMode::ThreePlayerRedEast,
+            roster(GameMode::ThreePlayerRedEast),
+            0xD0,
+        )
+        .unwrap();
+        for _ in 0..20000 {
+            if machine.engine.is_done() {
+                break;
+            }
+            if machine.held_kyoku().is_some() {
+                for step in 0..=machine.held_kyoku().unwrap().wins.len() {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+                continue;
+            }
+            let (seat, action) = Seat::all(machine.mode())
+                .into_iter()
+                .find_map(|seat| {
+                    let actions = machine.legal_actions(seat).unwrap();
+                    (!actions.is_empty()).then(|| (seat, default_action(&actions)))
+                })
+                .unwrap();
+            machine.apply(seat, action).unwrap();
+        }
+        assert!(machine.held_kyoku().is_some());
+        assert!(machine.result().is_none());
+        assert!(!machine.is_complete());
     }
 
     #[test]
@@ -746,6 +1652,13 @@ mod tests {
             .collect();
         let mut machine = MatchMachine::new_with_seed(mode, participants, 0xD0_u64).unwrap();
         for _ in 0..2_000 {
+            if let Some(hold) = machine.held_kyoku() {
+                let steps = hold.wins.len();
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
             let decision = machine.current_decision().unwrap().expect("decision");
             let seats: Vec<_> = decision.eligible().collect();
             if decision.kind() == DecisionKind::Response && seats.len() > 1 {
@@ -789,9 +1702,22 @@ mod tests {
                 MatchMachine::new_with_seed(mode, participants.clone(), seed).unwrap();
             machine.set_time_control(TimeControl::Unlimited);
             for _ in 0..2_000 {
+                if let Some(hold) = machine.held_kyoku() {
+                    let steps = hold.wins.len();
+                    for step in 0..=steps {
+                        machine.publish_kyoku_step(step).unwrap();
+                    }
+                    machine.release_kyoku().unwrap();
+                }
                 machine.resolve_expired().unwrap();
+                if machine.held_kyoku().is_some() || machine.is_complete() {
+                    continue;
+                }
                 machine.current_decision().unwrap().expect("decision");
                 machine.resolve_expired().unwrap();
+                if machine.held_kyoku().is_some() || machine.is_complete() {
+                    continue;
+                }
                 let decision = machine.current_decision().unwrap().expect("decision");
                 let seats: Vec<_> = decision.eligible().collect();
                 let human = seats.iter().copied().find(|seat| {
@@ -917,6 +1843,13 @@ mod tests {
             .collect();
         let mut machine = MatchMachine::new_with_seed(mode, participants, 0xD0_u64).unwrap();
         for _ in 0..2_000 {
+            if let Some(hold) = machine.held_kyoku() {
+                let steps = hold.wins.len();
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
             let decision = machine.current_decision().unwrap().expect("decision");
             let seats: Vec<_> = decision.eligible().collect();
             if decision.kind() == DecisionKind::Response && seats.len() > 1 {

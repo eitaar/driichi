@@ -10,6 +10,35 @@ test('missing registered portrait keeps the selected character and join action u
  await page.getByLabel('Display name').fill('Mika');
  await expect(page.getByRole('button',{name:'Join room'})).toBeEnabled();
 });
+test('primary action keeps readable contrast throughout enabling', async ({ page }) => {
+ await page.goto('/');
+ const button = page.getByRole('button', { name: 'Open room' });
+ const ratios = await button.evaluate(async element => {
+  const button = element as HTMLButtonElement;
+  const luminance = (color: string) => {
+   const channels = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(value => {
+    const channel = value / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+   });
+   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  };
+  button.disabled = true;
+  await Promise.all(button.getAnimations().map(animation => animation.finished));
+  getComputedStyle(button).color;
+  button.disabled = false;
+  const ratios: number[] = [];
+  const start = performance.now();
+  do {
+   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+   const style = getComputedStyle(button);
+   const foreground = luminance(style.color), background = luminance(style.backgroundColor);
+   ratios.push((Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05));
+  } while (performance.now() - start < 300);
+  return ratios;
+ });
+ expect(ratios.length).toBeGreaterThan(0);
+ expect(Math.min(...ratios)).toBeGreaterThanOrEqual(4.5);
+});
 test('narrow entry and character choice remain scrollable without horizontal overflow',async({page})=>{
  await page.setViewportSize({width:390,height:844});
  await page.route('**/api/v1/characters/human',route=>route.fulfill({json:[{id:'player-red',name:'Red Player'}]}));

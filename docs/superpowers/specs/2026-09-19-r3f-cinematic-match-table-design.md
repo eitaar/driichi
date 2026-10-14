@@ -1,11 +1,23 @@
 # Cinematic R3F Match Table Redesign
 
-**Status:** Approved implementation specification
+**Status:** Accepted original architecture; visual/acceptance sections superseded as noted below
 **Date:** 2026-09-19
 **Scope:** Live Match 4p, Live Match 3p, and Replay table presentation
 **Supersedes:** `2026-09-19-immersive-match-table-design.md`
 
-## Authority and intent
+## 2026-10-02 visual and acceptance supersession
+
+The original camera/composition, material, motion, concept-image and acceptance values below describe the September design, not the current approval. The later human-approved #8 Dora, #9 soft-table and #11 acceptance resolutions take precedence; see `../../../DESIGN.md` and `../plans/2026-10-02-approved-table-integration.md`. R3F ownership, instancing, authoritative actions, privacy and DOM accessibility remain binding.
+
+- Live uses the viewport; Replay reserves its DOM transport region. Do not restore the old fixed 16:9 letterbox or duplicate the local DOM hand in 3D. Three-player rendering omits the fourth seat.
+- Use soft Phong-like game shading, white body/atlas backing, ochre backs, continuous rounded dark blue-gray frame, lighter recessed blue-gray felt and compact dark names. Center texture is 2048² using a 1024-unit layout with score82/round64/labels44–48; score/wind/riichi and separate Honba/Sticks live on the central device with semantic DOM equivalents.
+- Rivers progress owner-left to right and wrap outward. Rotate only a valid authoritative `players[].riichi_discard_index`, widening that row. Replay reconstructs it from Reach followed by that actor's Dahai; missing information is not the latest discard.
+- Walls are count-only diagrams: upper-to-lower depletion, at most one partial live stack and nominal seven-stack/14-slot dead-wall space. No inferred cut, dice, rinshan occupancy or hidden tile identities.
+- Ordinary Dora has a narrow white face sheen on a shared DOM/3D clock (about2s/0.6s pass), not halo/bloom. Red artwork alone, indicators, backs and result tiles are not targets. Demand rendering stops during gaps, hidden tabs and no targets; Reduced Motion uses static meaning rather than looping sheen.
+- Existing Settings permits local PNG/JPEG/WebP surface/surround images <=10MiB/16MP, centered cover, no upload/storage, navigation reset and load-race/resource cleanup. Replay has cosmetic Settings, never gameplay or confirmation controls.
+- Automated coverage is all four sizes × Live/Replay ×3p/4p (16), with DPR2/fallback/resize checks. Required integrated human visual and Chrome/Edge/verified target-GPU acceptance cannot be replaced by original concept approval, unit tests or SwiftShader timings. No new concept/image generation is requested.
+
+## Original authority and intent (historical visual direction)
 
 This specification replaces the rejected PixiJS faux-3D table with one shared true-3D scene built with Three.js and `@react-three/fiber` v9. Sol owns art direction, concept selection, visual comparison, and final acceptance. Implementation workers receive only approved concept images, this numeric specification, and bounded file/task scopes; they do not decide whether the result is visually acceptable.
 

@@ -22,6 +22,7 @@ use crate::{
     },
     match_machine::DecisionResult,
     projection::{Audience, AudienceProjection},
+    results::{KyokuResultRecord, KyokuSettlement, PublishedKyokuResults, WinResult},
 };
 
 pub const ROOM_COMMAND_CAPACITY: usize = 256;
@@ -276,6 +277,8 @@ pub struct RoomHistoryProjection {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomKyokuProjection {
     pub events: Vec<RoomHistoryEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authoritative_results: Option<PublishedKyokuResults>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +287,8 @@ pub struct RoomKyokuSummary {
     pub kyoku: u8,
     pub honba: u8,
     pub results: Vec<RoomKyokuResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authoritative_results: Option<PublishedKyokuResults>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,12 +397,16 @@ pub enum RoomHistoryEvent {
 struct RoomHistoryBuffer {
     current: Vec<GameEvent>,
     previous: Vec<RoomKyokuSummary>,
+    kyoku_sequence: u64,
+    completed_results: Option<PublishedKyokuResults>,
 }
 
 impl RoomHistoryBuffer {
     fn reset(&mut self, events: &[GameEvent]) {
         self.current.clear();
         self.previous.clear();
+        self.kyoku_sequence = 0;
+        self.completed_results = None;
         self.record(events);
     }
 
@@ -406,6 +415,8 @@ impl RoomHistoryBuffer {
             if matches!(event, GameEvent::StartKyoku { .. }) {
                 self.finish_current();
                 self.current.clear();
+                self.kyoku_sequence += 1;
+                self.completed_results = None;
             }
             if !self.current.is_empty() || matches!(event, GameEvent::StartKyoku { .. }) {
                 self.current.push(event.clone());
@@ -414,12 +425,30 @@ impl RoomHistoryBuffer {
     }
 
     fn finish_current(&mut self) {
-        if let Some(summary) = RoomKyokuSummary::from_events(&self.current) {
+        if let Some(mut summary) = RoomKyokuSummary::from_events(&self.current) {
+            summary.authoritative_results = self.completed_results.take();
             self.previous.push(summary);
         }
     }
 
-    fn projection(&self, audience: Audience) -> RoomHistoryProjection {
+    fn archive_published(&mut self, results: PublishedKyokuResults) -> Result<(), RoomError> {
+        if self.current.is_empty()
+            || self.kyoku_sequence != results.kyoku_sequence
+            || results.settlement.is_none()
+        {
+            return Err(RoomError::Match(
+                "published results do not match current Kyoku".into(),
+            ));
+        }
+        self.completed_results = Some(results);
+        Ok(())
+    }
+
+    fn projection(
+        &self,
+        audience: Audience,
+        published: Option<PublishedKyokuResults>,
+    ) -> RoomHistoryProjection {
         RoomHistoryProjection {
             current_kyoku: (!self.current.is_empty()).then(|| RoomKyokuProjection {
                 events: self
@@ -427,6 +456,9 @@ impl RoomHistoryBuffer {
                     .iter()
                     .filter_map(|event| project_history_event(event, audience))
                     .collect(),
+                authoritative_results: published
+                    .filter(|results| results.kyoku_sequence == self.kyoku_sequence)
+                    .or_else(|| self.completed_results.clone()),
             }),
             previous_kyoku: self.previous.clone(),
         }
@@ -488,6 +520,7 @@ impl RoomKyokuSummary {
             kyoku,
             honba,
             results,
+            authoritative_results: None,
         })
     }
 }
@@ -660,6 +693,37 @@ pub struct BenchmarkProgress {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResultStepId {
+    pub match_id: String,
+    pub kyoku_sequence: u64,
+    pub step_index: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KyokuEndContent {
+    Win(WinResult),
+    Settlement(KyokuSettlement),
+    Draw(KyokuSettlement),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KyokuEndStep {
+    pub id: ResultStepId,
+    pub content: KyokuEndContent,
+    pub published_at_ms: u64,
+    pub deadline_at_ms: u64,
+    pub remaining_ms: u64,
+    pub required: Vec<ParticipantId>,
+    pub confirmed: Vec<ParticipantId>,
+}
+
+struct ActiveResultStep {
+    step: KyokuEndStep,
+    deadline: Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomSnapshot {
     pub id: RoomId,
     pub join_code: RoomJoinCode,
@@ -676,6 +740,7 @@ pub struct RoomSnapshot {
     pub match_players: Vec<MatchPlayerSnapshot>,
     pub roster: Vec<MatchPlayerSnapshot>,
     pub result: Option<MatchResult>,
+    pub kyoku_end: Option<KyokuEndStep>,
     pub revision: u64,
     pub persistence_degraded: bool,
     pub replay_available: bool,
@@ -689,6 +754,9 @@ pub enum RoomEvent {
     SelectionChanged,
     PhaseChanged(RoomPhase),
     MatchStarted(MatchId),
+    KyokuEndStepChanged {
+        match_id: MatchId,
+    },
     DecisionOpened {
         match_id: MatchId,
         decision: Decision,
@@ -764,6 +832,7 @@ pub enum RoomEffect {
     },
     FlushKyoku {
         match_id: MatchId,
+        record: KyokuResultRecord,
         completion: oneshot::Sender<Result<(), RoomEffectError>>,
     },
     CreateBenchmarkRun {
@@ -902,6 +971,10 @@ pub enum RoomCommand {
         decision_id: DecisionId,
         action_id: ActionId,
     },
+    ConfirmResult {
+        participant_id: ParticipantId,
+        step_id: ResultStepId,
+    },
     Rematch,
     Shutdown {
         mode: ShutdownMode,
@@ -911,6 +984,7 @@ pub enum RoomCommand {
     GetMatchView {
         participant_id: ParticipantId,
     },
+    GetPublicMatchView,
     GetHistoryProjection {
         participant_id: ParticipantId,
     },
@@ -923,6 +997,13 @@ pub enum RoomCommand {
 }
 
 impl RoomCommand {
+    pub fn confirm_result(participant_id: impl Into<ParticipantId>, step_id: ResultStepId) -> Self {
+        Self::ConfirmResult {
+            participant_id: participant_id.into(),
+            step_id,
+        }
+    }
+
     pub fn join(participant: Participant) -> Self {
         Self::Join {
             participant,
@@ -1101,9 +1182,11 @@ pub enum RoomResponse {
     Action(DecisionResult),
     MatchEvents(Vec<GameEvent>),
     MatchView {
+        snapshot: RoomSnapshot,
         match_id: Option<MatchId>,
         events: Vec<GameEvent>,
         projection: Option<AudienceProjection>,
+        history: RoomHistoryProjection,
     },
     HistoryProjection(RoomHistoryProjection),
     Deleted,
@@ -1192,6 +1275,11 @@ pub struct RoomConnection {
 }
 
 impl RoomConnection {
+    #[cfg(feature = "task8-test-support")]
+    pub fn task8_receiver_is_closed(&self) -> bool {
+        self.receiver.is_closed()
+    }
+
     pub async fn recv(&mut self) -> Option<RoomEvent> {
         self.receiver.recv().await
     }
@@ -1361,6 +1449,7 @@ pub struct RoomState {
     match_roster: Vec<MatchPlayerSnapshot>,
     match_machine: Option<MatchMachine>,
     history: RoomHistoryBuffer,
+    result_step: Option<ActiveResultStep>,
     result: Option<MatchResult>,
     benchmark: Option<BenchmarkProgress>,
     benchmark_roster_ids: Vec<ParticipantId>,
@@ -1407,6 +1496,7 @@ impl RoomState {
             match_roster: Vec::new(),
             match_machine: None,
             history: RoomHistoryBuffer::default(),
+            result_step: None,
             result: None,
             benchmark: None,
             benchmark_roster_ids: Vec::new(),
@@ -1520,6 +1610,14 @@ impl RoomState {
             match_players: roster.clone(),
             roster,
             result: self.result.clone(),
+            kyoku_end: self.result_step.as_ref().map(|active| {
+                let mut step = active.step.clone();
+                step.remaining_ms = active
+                    .deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis() as u64;
+                step
+            }),
             revision: self.revision,
             persistence_degraded: self.persistence_degraded,
             replay_available: self.replay_available,
@@ -1587,11 +1685,43 @@ impl RoomState {
             MatchRole::Player(seat) => Audience::Player(seat),
             MatchRole::None | MatchRole::Spectator => Audience::Public,
         };
-        Ok(self.history.projection(audience))
+        Ok(self.history.projection(
+            audience,
+            self.match_machine
+                .as_ref()
+                .and_then(MatchMachine::published_kyoku_results),
+        ))
     }
 
     fn public_history_projection(&self) -> RoomHistoryProjection {
-        self.history.projection(Audience::Public)
+        self.history.projection(
+            Audience::Public,
+            self.match_machine
+                .as_ref()
+                .and_then(MatchMachine::published_kyoku_results),
+        )
+    }
+
+    #[allow(dead_code)] // Task 4 calls this after settlement publication and before next StartKyoku.
+    pub(crate) fn archive_published_kyoku(
+        &mut self,
+        match_id: &MatchId,
+        results: PublishedKyokuResults,
+    ) -> Result<(), RoomError> {
+        if !matches!(&self.phase, RoomPhase::Playing(active) if active == match_id)
+            || self
+                .match_machine
+                .as_ref()
+                .and_then(MatchMachine::published_kyoku_results)
+                .as_ref()
+                != Some(&results)
+            || results.settlement.is_none()
+        {
+            return Err(RoomError::Match(
+                "published result does not match active Match/Kyoku".into(),
+            ));
+        }
+        self.history.archive_published(results)
     }
 
     fn record_history(&mut self, events: &[GameEvent]) {
@@ -2038,6 +2168,27 @@ impl RoomState {
         } else {
             MatchMachine::with_time_control
         };
+        #[cfg(feature = "task8-test-support")]
+        let fixture =
+            std::env::var("DRIICHI_TASK8_FIXTURE")
+                .map(Some)
+                .or_else(|error| match error {
+                    std::env::VarError::NotPresent => Ok(None),
+                    _ => Err(RoomError::Match("invalid Task8 fixture selector".into())),
+                })?;
+        #[cfg(feature = "task8-test-support")]
+        let mut machine = if let Some(fixture) = fixture {
+            MatchMachine::with_task8_fixture(
+                self.config.mode,
+                participants,
+                self.config.time_control,
+                &fixture,
+            )
+        } else {
+            constructor(self.config.mode, participants, self.config.time_control)
+        }
+        .map_err(|error| RoomError::Match(error.to_string()))?;
+        #[cfg(not(feature = "task8-test-support"))]
         let mut machine = constructor(self.config.mode, participants, self.config.time_control)
             .map_err(|error| RoomError::Match(error.to_string()))?;
         if all_bots {
@@ -2079,6 +2230,7 @@ impl RoomState {
         self.phase = RoomPhase::Playing(match_id);
         self.reset_history(machine.events());
         self.match_machine = Some(machine);
+        self.result_step = None;
         self.match_roster = roster.clone();
         self.result = None;
         for entry in roster {
@@ -2101,6 +2253,7 @@ impl RoomState {
         };
         self.phase = RoomPhase::PostMatch(match_id.clone());
         self.match_machine = None;
+        self.result_step = None;
         self.result = Some(result);
         let remove: Vec<_> = self
             .participants
@@ -2377,12 +2530,14 @@ impl RoomState {
             | RoomCommand::StartBenchmark { .. }
             | RoomCommand::StopBenchmark
             | RoomCommand::SubmitAction { .. }
+            | RoomCommand::ConfirmResult { .. }
             | RoomCommand::Rematch
             | RoomCommand::GetProjection { .. }
             | RoomCommand::GetPublicProjection
             | RoomCommand::GetBenchmarkAdminProjection
             | RoomCommand::GetMatchEvents
             | RoomCommand::GetMatchView { .. }
+            | RoomCommand::GetPublicMatchView
             | RoomCommand::GetHistoryProjection { .. }
             | RoomCommand::GetPublicHistoryProjection => {
                 return Err(RoomError::Match("actor-only command".into()));
@@ -2666,6 +2821,9 @@ impl Actor {
     fn next_wake(&mut self) -> Instant {
         let now = Instant::now();
         let mut wake = now + Duration::from_secs(1);
+        if let Some(step) = &self.state.result_step {
+            wake = wake.min(step.deadline);
+        }
         if let Some(machine) = self.state.match_machine.as_mut()
             && let Ok(Some(decision)) = machine.current_decision()
         {
@@ -2726,6 +2884,7 @@ impl Actor {
             )),
             RoomCommand::GetMatchView { participant_id } => {
                 let projection = self.state.projection_for(&participant_id)?;
+                let history = self.state.history_projection(&participant_id)?;
                 let match_id = match &self.state.phase {
                     RoomPhase::Playing(id) | RoomPhase::PostMatch(id) => Some(id.clone()),
                     RoomPhase::Lobby => None,
@@ -2737,9 +2896,31 @@ impl Actor {
                     .map(|machine| machine.events().to_vec())
                     .unwrap_or_default();
                 Ok(RoomResponse::MatchView {
+                    snapshot: self.state.snapshot(),
                     match_id,
                     events,
                     projection,
+                    history,
+                })
+            }
+            RoomCommand::GetPublicMatchView => {
+                let projection = self.state.public_projection()?;
+                let match_id = match &self.state.phase {
+                    RoomPhase::Playing(id) | RoomPhase::PostMatch(id) => Some(id.clone()),
+                    RoomPhase::Lobby => None,
+                };
+                let events = self
+                    .state
+                    .match_machine
+                    .as_ref()
+                    .map(|machine| machine.events().to_vec())
+                    .unwrap_or_default();
+                Ok(RoomResponse::MatchView {
+                    snapshot: self.state.snapshot(),
+                    match_id,
+                    events,
+                    projection,
+                    history: self.state.public_history_projection(),
                 })
             }
             RoomCommand::GetHistoryProjection { participant_id } => self
@@ -2788,6 +2969,41 @@ impl Actor {
                 self.submit_action(participant_id, decision_id, action_id)
                     .await
             }
+            RoomCommand::ConfirmResult {
+                participant_id,
+                step_id,
+            } => {
+                if self
+                    .state
+                    .result_step
+                    .as_ref()
+                    .is_some_and(|active| Instant::now() >= active.deadline)
+                {
+                    self.advance_match().await?;
+                }
+                if let Some(active) = &mut self.state.result_step
+                    && active.step.id == step_id
+                    && Instant::now() < active.deadline
+                    && active.step.required.contains(&participant_id)
+                    && self
+                        .state
+                        .participants
+                        .get(&participant_id)
+                        .is_some_and(|p| {
+                            p.participant.kind == ParticipantKind::Human
+                                && p.presence == Presence::Connected
+                                && p.controller == RoomController::Interactive
+                                && matches!(p.role, MatchRole::Player(_))
+                        })
+                    && !active.step.confirmed.contains(&participant_id)
+                {
+                    active.step.confirmed.push(participant_id);
+                    self.state.bump_revision();
+                    self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+                    self.advance_match().await?;
+                }
+                Ok(RoomResponse::Accepted(self.state.snapshot()))
+            }
             RoomCommand::Rematch if self.state.config.benchmark => {
                 Err(RoomError::BenchmarkUnavailable)
             }
@@ -2817,11 +3033,30 @@ impl Actor {
                 if matches!(command, RoomCommand::Disconnect { .. }) {
                     self.sync_machine_controllers().await;
                 }
+                if let Some(active) = &mut self.state.result_step {
+                    let previous_required = active.step.required.len();
+                    active.step.required.retain(|id| {
+                        self.state.participants.get(id).is_some_and(|p| {
+                            p.participant.kind == ParticipantKind::Human
+                                && p.presence == Presence::Connected
+                                && p.controller == RoomController::Interactive
+                                && matches!(p.role, MatchRole::Player(_))
+                        })
+                    });
+                    if active.step.required.len() != previous_required {
+                        self.state.bump_revision();
+                        self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+                    }
+                    self.advance_match().await?;
+                }
                 if self.state.is_empty_expired(now) {
                     self.state.deleted = true;
                     self.publish(RoomEvent::RoomDeleted);
                 }
-                Ok(response)
+                Ok(match response {
+                    RoomResponse::Accepted(_) => RoomResponse::Accepted(self.state.snapshot()),
+                    other => other,
+                })
             }
         }
     }
@@ -3232,6 +3467,16 @@ impl Actor {
         if !expired.is_empty() {
             self.publish(RoomEvent::Snapshot(self.state.snapshot()));
         }
+        if self.state.result_step.is_some()
+            || self
+                .state
+                .match_machine
+                .as_ref()
+                .is_some_and(|machine| machine.held_kyoku().is_some())
+        {
+            self.advance_match().await?;
+            return Ok(RoomResponse::Accepted(self.state.snapshot()));
+        }
         if self
             .state
             .match_machine
@@ -3313,6 +3558,115 @@ impl Actor {
         }
     }
 
+    fn start_result_step(&mut self, now: Instant) -> Result<(), RoomError> {
+        let RoomPhase::Playing(match_id) = self.state.phase.clone() else {
+            return Err(RoomError::Playing);
+        };
+        let record = self
+            .state
+            .match_machine
+            .as_ref()
+            .and_then(MatchMachine::held_kyoku)
+            .ok_or_else(|| RoomError::Match("missing held Kyoku".into()))?;
+        let index = self
+            .state
+            .match_machine
+            .as_ref()
+            .and_then(MatchMachine::next_kyoku_step_index)
+            .ok_or_else(|| RoomError::Match("missing held Kyoku".into()))?;
+        let content = if let Some(win) = record.wins.get(index) {
+            KyokuEndContent::Win(win.clone())
+        } else if record.wins.is_empty() {
+            KyokuEndContent::Draw(record.settlement.clone())
+        } else {
+            KyokuEndContent::Settlement(record.settlement.clone())
+        };
+        let mut required: Vec<_> = self
+            .state
+            .match_roster
+            .iter()
+            .filter_map(|entry| {
+                let participant = self.state.participants.get(&entry.participant_id)?;
+                (entry.kind == ParticipantKind::Human
+                    && participant.presence == Presence::Connected
+                    && participant.controller == RoomController::Interactive
+                    && matches!(participant.role, MatchRole::Player(_)))
+                .then(|| entry.participant_id.clone())
+            })
+            .collect();
+        required.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let published_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.state.result_step = Some(ActiveResultStep {
+            step: KyokuEndStep {
+                id: ResultStepId {
+                    match_id: match_id.to_string(),
+                    kyoku_sequence: record.kyoku_sequence,
+                    step_index: index as u16,
+                },
+                content,
+                published_at_ms,
+                deadline_at_ms: published_at_ms + 5_000,
+                remaining_ms: 5_000,
+                required,
+                confirmed: Vec::new(),
+            },
+            deadline: now + Duration::from_secs(5),
+        });
+        let released = self
+            .state
+            .match_machine
+            .as_mut()
+            .ok_or(RoomError::Playing)?
+            .publish_kyoku_step(index)
+            .map_err(|error| RoomError::Match(error.to_string()))?;
+        self.state.record_history(&released);
+        self.state.bump_revision();
+        self.publish(RoomEvent::KyokuEndStepChanged {
+            match_id: match_id.clone(),
+        });
+        self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+        Ok(())
+    }
+
+    async fn advance_result_step(&mut self, now: Instant) -> Result<(), RoomError> {
+        let active = self.state.result_step.take().ok_or(RoomError::Playing)?;
+        let RoomPhase::Playing(match_id) = self.state.phase.clone() else {
+            return Err(RoomError::Playing);
+        };
+        let record = self
+            .state
+            .match_machine
+            .as_ref()
+            .and_then(MatchMachine::held_kyoku)
+            .ok_or(RoomError::Playing)?;
+        if usize::from(active.step.id.step_index) < record.wins.len() {
+            self.start_result_step(now)?;
+        } else {
+            let published = self
+                .state
+                .match_machine
+                .as_ref()
+                .and_then(MatchMachine::published_kyoku_results)
+                .ok_or_else(|| RoomError::Match("settlement not published".into()))?;
+            self.state.archive_published_kyoku(&match_id, published)?;
+            let suffix = self
+                .state
+                .match_machine
+                .as_mut()
+                .ok_or(RoomError::Playing)?
+                .release_kyoku()
+                .map_err(|error| RoomError::Match(error.to_string()))?;
+            self.state.record_history(&suffix);
+            self.state.bump_revision();
+            self.publish(RoomEvent::KyokuEndStepChanged { match_id });
+            self.publish(RoomEvent::Snapshot(self.state.snapshot()));
+        }
+        Ok(())
+    }
+
     async fn advance_match(&mut self) -> Result<(), RoomError> {
         // Bound benchmark slices so stop/disconnect commands run between decisions and Matches.
         let bound = if self.benchmark_running() { 32 } else { 10_000 };
@@ -3324,6 +3678,28 @@ impl Actor {
             let Some(_) = self.state.match_machine.as_ref() else {
                 return Ok(());
             };
+            if self
+                .state
+                .match_machine
+                .as_ref()
+                .is_some_and(|m| m.held_kyoku().is_some())
+            {
+                if self.state.result_step.is_none() {
+                    self.start_result_step(Instant::now())?;
+                }
+                let active = self.state.result_step.as_ref().expect("started step");
+                if Instant::now() < active.deadline
+                    && active
+                        .step
+                        .required
+                        .iter()
+                        .any(|id| !active.step.confirmed.contains(id))
+                {
+                    return Ok(());
+                }
+                self.advance_result_step(Instant::now()).await?;
+                continue;
+            }
             if self
                 .state
                 .match_machine
@@ -3408,19 +3784,56 @@ impl Actor {
             _ => return Ok(()),
         };
         self.state.record_history(result.events());
-        for event in result.events() {
-            self.send_append(match_id.clone(), vec![event.clone()])
-                .await;
-            if matches!(event, GameEvent::EndKyoku) {
-                let _ = self.flush_kyoku(match_id.clone()).await;
-            }
+        if self
+            .state
+            .match_machine
+            .as_ref()
+            .is_some_and(|machine| machine.held_kyoku().is_some())
+            && self.state.result_step.is_none()
+        {
+            self.start_result_step(Instant::now())?;
         }
+        let record = self
+            .state
+            .match_machine
+            .as_ref()
+            .and_then(MatchMachine::held_kyoku)
+            .cloned();
+        let private = self
+            .state
+            .match_machine
+            .as_mut()
+            .map(MatchMachine::take_persistence_events)
+            .unwrap_or_default();
+        self.persist_events(match_id.clone(), private, record).await;
         self.publish(RoomEvent::ActionResolved { match_id, result });
         self.publish(RoomEvent::Snapshot(self.state.snapshot()));
         Ok(())
     }
 
-    async fn send_append(&mut self, match_id: MatchId, events: Vec<GameEvent>) {
+    async fn persist_events(
+        &mut self,
+        match_id: MatchId,
+        events: Vec<GameEvent>,
+        mut record: Option<KyokuResultRecord>,
+    ) {
+        for event in events {
+            let end = matches!(event, GameEvent::EndKyoku);
+            self.send_append(match_id.clone(), vec![event]);
+            if end {
+                if let Some(record) = record.take() {
+                    self.flush_kyoku(match_id.clone(), record).await;
+                } else if self.state.config.replay_save && self.state.replay_available {
+                    self.fail_replay(
+                        match_id.clone(),
+                        "kyoku ended without an authoritative record".to_owned(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn send_append(&mut self, match_id: MatchId, events: Vec<GameEvent>) {
         if !self.state.config.replay_save || !self.state.replay_available {
             return;
         }
@@ -3437,19 +3850,19 @@ impl Actor {
         }
     }
 
-    async fn flush_kyoku(&mut self, match_id: MatchId) -> Result<(), RoomError> {
+    async fn flush_kyoku(&mut self, match_id: MatchId, record: KyokuResultRecord) {
         if !self.state.config.replay_save || !self.state.replay_available {
-            return Ok(());
+            return;
         }
         let (completion, receiver) = oneshot::channel();
         let effect = RoomEffect::FlushKyoku {
             match_id: match_id.clone(),
+            record,
             completion,
         };
         if self.send_ack_effect(effect, receiver).await.is_err() {
             self.fail_replay(match_id, "replay flush failed".to_owned());
         }
-        Ok(())
     }
 
     async fn complete_match(&mut self, result: MatchResult) -> Result<(), RoomError> {
@@ -3528,6 +3941,7 @@ impl Actor {
         }
         self.state.phase = RoomPhase::Lobby;
         self.state.match_machine = None;
+        self.state.result_step = None;
         self.state.match_roster.clear();
         self.state.history = RoomHistoryBuffer::default();
         self.state.result = None;
@@ -3937,6 +4351,744 @@ fn _audience_for_role(role: MatchRole) -> Option<Audience> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        GameAction,
+        engine::{EngineAdapter, tests::prepared_capture},
+    };
+
+    #[test]
+    fn history_archives_only_published_winners_on_matching_kyoku() {
+        let mode = GameMode::FourPlayerRedEast;
+        let roster = (0..4)
+            .map(|seat| Participant::new(format!("p{seat}"), "same", ParticipantKind::Human))
+            .collect::<Vec<_>>();
+        let (_, initial) = EngineAdapter::new(mode, Some(230)).unwrap();
+        let mut history = RoomHistoryBuffer::default();
+        history.reset(&initial);
+        let mut adapter = prepared_capture(mode, true, false);
+        let outcome = adapter
+            .apply_simultaneous(&[
+                (
+                    Seat::new(1).unwrap(),
+                    GameAction::Ron(Seat::new(0).unwrap()),
+                ),
+                (
+                    Seat::new(2).unwrap(),
+                    GameAction::Ron(Seat::new(0).unwrap()),
+                ),
+            ])
+            .unwrap();
+        let record = adapter
+            .result_record(
+                outcome.ended.as_ref().unwrap(),
+                &roster,
+                1,
+                initial.len(),
+                &outcome.events,
+            )
+            .unwrap();
+        let first = PublishedKyokuResults {
+            kyoku_sequence: 1,
+            wins: record.wins[..1].to_vec(),
+            settlement: None,
+        };
+        assert!(
+            history
+                .projection(Audience::Public, None)
+                .current_kyoku
+                .unwrap()
+                .authoritative_results
+                .is_none()
+        );
+        assert!(history.archive_published(first.clone()).is_err());
+        for audience in [
+            Audience::Public,
+            Audience::Player(Seat::new(0).unwrap()),
+            Audience::BenchmarkAdmin,
+            Audience::ReplayAdmin,
+        ] {
+            let projection = history.projection(audience, Some(first.clone()));
+            let current = projection.current_kyoku.unwrap();
+            assert_eq!(current.authoritative_results, Some(first.clone()));
+            assert!(
+                current
+                    .events
+                    .iter()
+                    .all(|event| !matches!(event, RoomHistoryEvent::Hora { .. }))
+            );
+            let json = serde_json::to_value(&current).unwrap();
+            assert_eq!(
+                json["authoritative_results"]["wins"],
+                serde_json::json!([record.wins[0]])
+            );
+            assert!(json["authoritative_results"]["settlement"].is_null());
+        }
+        assert_eq!(
+            history
+                .projection(Audience::Public, Some(first.clone()))
+                .current_kyoku
+                .unwrap()
+                .authoritative_results,
+            Some(first)
+        );
+        let complete = PublishedKyokuResults {
+            kyoku_sequence: 1,
+            wins: record.wins.clone(),
+            settlement: Some(record.settlement.clone()),
+        };
+        let wrong = PublishedKyokuResults {
+            kyoku_sequence: 2,
+            ..complete.clone()
+        };
+        assert!(history.archive_published(wrong).is_err());
+        let end = outcome
+            .events
+            .iter()
+            .position(|event| matches!(event, GameEvent::EndKyoku))
+            .unwrap();
+        history.record(&outcome.events[..end]);
+        history.archive_published(complete.clone()).unwrap();
+        assert_eq!(
+            history
+                .projection(Audience::Public, None)
+                .current_kyoku
+                .unwrap()
+                .authoritative_results,
+            Some(complete.clone())
+        );
+        history.record(&outcome.events[end..]);
+        assert_eq!(
+            history.previous.last().unwrap().authoritative_results,
+            Some(complete)
+        );
+        assert!(
+            history
+                .projection(Audience::Public, None)
+                .current_kyoku
+                .unwrap()
+                .authoritative_results
+                .is_none()
+        );
+        history.reset(&initial);
+        assert!(history.previous.is_empty());
+        assert!(
+            history
+                .projection(Audience::Public, None)
+                .current_kyoku
+                .unwrap()
+                .authoritative_results
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn room_history_reads_held_machine_without_publishing_or_cross_match_archive() {
+        let mode = GameMode::FourPlayerRedEast;
+        let roster = (0..4)
+            .map(|seat| Participant::new(format!("p{seat}"), "same", ParticipantKind::BuiltInBot))
+            .collect();
+        let mut machine = MatchMachine::with_seed(mode, roster, 0xD0).unwrap();
+        for _ in 0..2000 {
+            if machine.held_kyoku().is_some() {
+                break;
+            }
+            let (seat, action) = Seat::all(mode)
+                .into_iter()
+                .find_map(|seat| {
+                    let actions = machine.legal_actions(seat).unwrap();
+                    let chosen = actions
+                        .iter()
+                        .find(|action| {
+                            matches!(action, GameAction::Discard { .. } | GameAction::Pass)
+                        })
+                        .or_else(|| actions.first())?;
+                    Some((seat, chosen.clone()))
+                })
+                .unwrap();
+            machine.apply(seat, action).unwrap();
+        }
+        let wins = machine.held_kyoku().expect("first ended Kyoku").wins.len();
+        let mut room = RoomState::new(RoomConfig::new(
+            "history",
+            mode,
+            CharacterCatalog::starter(),
+        ))
+        .unwrap();
+        let match_id = MatchId::new("held").unwrap();
+        room.phase = RoomPhase::Playing(match_id.clone());
+        room.reset_history(machine.events());
+        room.match_machine = Some(machine);
+        for _ in 0..2 {
+            assert!(
+                room.public_history_projection()
+                    .current_kyoku
+                    .unwrap()
+                    .authoritative_results
+                    .is_none()
+            );
+        }
+        let released = room
+            .match_machine
+            .as_mut()
+            .unwrap()
+            .publish_kyoku_step(0)
+            .unwrap();
+        room.record_history(&released);
+        let published = room
+            .match_machine
+            .as_ref()
+            .unwrap()
+            .published_kyoku_results()
+            .unwrap();
+        assert_eq!(
+            room.public_history_projection()
+                .current_kyoku
+                .unwrap()
+                .authoritative_results,
+            Some(published.clone())
+        );
+        assert_eq!(
+            room.public_history_projection()
+                .current_kyoku
+                .unwrap()
+                .authoritative_results,
+            Some(published)
+        );
+        assert!(
+            room.archive_published_kyoku(
+                &MatchId::new("other").unwrap(),
+                room.match_machine
+                    .as_ref()
+                    .unwrap()
+                    .published_kyoku_results()
+                    .unwrap()
+            )
+            .is_err()
+        );
+        for step in 1..=wins {
+            let released = room
+                .match_machine
+                .as_mut()
+                .unwrap()
+                .publish_kyoku_step(step)
+                .unwrap();
+            room.record_history(&released);
+        }
+        let full = room
+            .match_machine
+            .as_ref()
+            .unwrap()
+            .published_kyoku_results()
+            .unwrap();
+        room.archive_published_kyoku(&match_id, full.clone())
+            .unwrap();
+        let suffix = room
+            .match_machine
+            .as_mut()
+            .unwrap()
+            .release_kyoku()
+            .unwrap();
+        room.record_history(&suffix);
+        assert_eq!(
+            room.public_history_projection()
+                .previous_kyoku
+                .last()
+                .unwrap()
+                .authoritative_results,
+            Some(full)
+        );
+    }
+
+    fn held_result_state(want_win: bool) -> (RoomState, MatchId) {
+        let mode = GameMode::FourPlayerRedEast;
+        let mut config = RoomConfig::new("results", mode, CharacterCatalog::starter());
+        config.replay_save = false;
+        let mut state = RoomState::new(config).unwrap();
+        for seat in 0..4 {
+            let id = format!("p{seat}");
+            state
+                .apply_simple(
+                    RoomCommand::join(Participant::new(id.as_str(), &id, ParticipantKind::Human)),
+                    Instant::now(),
+                )
+                .unwrap();
+            state
+                .apply_simple(RoomCommand::select(id.as_str()), Instant::now())
+                .unwrap();
+        }
+        for seat in 0..4 {
+            state
+                .apply_simple(
+                    RoomCommand::set_ready(
+                        format!("p{seat}"),
+                        vec!["player-blue".into(), "player-red".into()],
+                    ),
+                    Instant::now(),
+                )
+                .unwrap();
+        }
+        let (id, _, original_roster) = state.build_match().unwrap();
+        let players = original_roster
+            .iter()
+            .map(|p| state.participants[&p.participant_id].participant.clone())
+            .collect();
+        let mut machine = MatchMachine::with_seed(mode, players, 0xD0).unwrap();
+        let roster = machine
+            .players()
+            .iter()
+            .enumerate()
+            .map(|(seat, player)| {
+                let mut entry = original_roster
+                    .iter()
+                    .find(|p| p.participant_id == player.id)
+                    .unwrap()
+                    .clone();
+                entry.seat = Seat::new(seat as u8).unwrap();
+                entry
+            })
+            .collect();
+        for _ in 0..20_000 {
+            if let Some(record) = machine.held_kyoku() {
+                if !record.wins.is_empty() == want_win {
+                    state.commit_match(id.clone(), machine, roster);
+                    return (state, id);
+                }
+                machine.publish_kyoku_step(0).unwrap();
+                machine.release_kyoku().unwrap();
+            }
+            let (seat, action) = Seat::all(mode)
+                .into_iter()
+                .find_map(|seat| {
+                    let actions = machine.legal_actions(seat).unwrap();
+                    actions
+                        .iter()
+                        .find(|a| matches!(a, GameAction::Tsumo | GameAction::Ron(_)))
+                        .or_else(|| {
+                            actions
+                                .iter()
+                                .find(|a| matches!(a, GameAction::RiichiDiscard { .. }))
+                        })
+                        .or_else(|| {
+                            actions.iter().find(|a| {
+                                matches!(a, GameAction::Discard { .. } | GameAction::Pass)
+                            })
+                        })
+                        .or_else(|| actions.first())
+                        .map(|a| (seat, a.clone()))
+                })
+                .unwrap();
+            machine.apply(seat, action).unwrap();
+        }
+        panic!("seed did not reach a win")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn live_view_pairs_published_step_projection_and_history_at_one_revision() {
+        let (state, id) = held_result_state(true);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        for public in [false, true] {
+            let response = handle
+                .send(if public {
+                    RoomCommand::GetPublicMatchView
+                } else {
+                    RoomCommand::GetMatchView {
+                        participant_id: ParticipantId::new("p0"),
+                    }
+                })
+                .await
+                .unwrap();
+            let RoomResponse::MatchView {
+                snapshot,
+                match_id,
+                events,
+                projection,
+                history,
+            } = response
+            else {
+                panic!("expected coherent match view")
+            };
+            let step = snapshot.kyoku_end.expect("held step");
+            assert_eq!(match_id.unwrap().to_string(), id.to_string());
+            assert_eq!(step.id.match_id, id.to_string());
+            let current = history.current_kyoku.unwrap();
+            let released = current.authoritative_results.unwrap();
+            assert_eq!(released.wins.len(), 1);
+            assert!(released.settlement.is_none());
+            match projection.unwrap() {
+                AudienceProjection::Player(view) => {
+                    assert!(view.decision.is_none());
+                    assert_eq!(view.kyoku_results, Some(released.clone()));
+                }
+                AudienceProjection::Public(view) => {
+                    assert!(view.decision.is_none());
+                    assert_eq!(view.kyoku_results, Some(released.clone()));
+                }
+                _ => panic!("wrong audience"),
+            }
+            let current_start = events
+                .iter()
+                .rposition(|event| matches!(event, GameEvent::StartKyoku { .. }))
+                .unwrap();
+            assert!(
+                !events[current_start..]
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::EndKyoku))
+            );
+        }
+        let before = handle.send(RoomCommand::GetPublicMatchView).await.unwrap();
+        let RoomResponse::MatchView {
+            snapshot: before, ..
+        } = before
+        else {
+            panic!("view")
+        };
+        tokio::time::advance(Duration::from_secs(5)).await;
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let after = handle.send(RoomCommand::GetPublicMatchView).await.unwrap();
+        let RoomResponse::MatchView {
+            snapshot: after,
+            history,
+            ..
+        } = after
+        else {
+            panic!("view")
+        };
+        assert_ne!(before.kyoku_end.unwrap().id, after.kyoku_end.unwrap().id);
+        let settled = history
+            .current_kyoku
+            .unwrap()
+            .authoritative_results
+            .unwrap();
+        assert_eq!(settled.wins.len(), 1);
+        assert!(settled.settlement.is_some());
+        tokio::time::advance(Duration::from_secs(5)).await;
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let released = handle
+            .send(RoomCommand::GetMatchView {
+                participant_id: ParticipantId::new("p0"),
+            })
+            .await
+            .unwrap();
+        let RoomResponse::MatchView {
+            snapshot,
+            projection,
+            events,
+            history,
+            ..
+        } = released
+        else {
+            panic!("view")
+        };
+        assert!(snapshot.kyoku_end.is_none());
+        let AudienceProjection::Player(player) = projection.unwrap() else {
+            panic!("player view")
+        };
+        if matches!(snapshot.phase, RoomPhase::Playing(_)) {
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::EndKyoku))
+            );
+            assert!(history.current_kyoku.is_some());
+            if let Some(decision) = player.decision {
+                assert!(!decision.actions.is_empty());
+            }
+        } else {
+            assert!(matches!(snapshot.phase, RoomPhase::PostMatch(_)));
+            assert!(player.decision.is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn result_step_expires_at_five_seconds() {
+        let (state, id) = held_result_state(true);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let original = handle.snapshot().await.unwrap().kyoku_end.unwrap();
+        assert_eq!(original.deadline_at_ms - original.published_at_ms, 5000);
+        let history = handle.public_history_projection().await.unwrap();
+        let current = history.current_kyoku.unwrap();
+        let released = current.authoritative_results.unwrap();
+        assert_eq!(released.wins.len(), 1);
+        assert!(released.settlement.is_none());
+        assert!(!current.events.iter().any(|event| matches!(
+            event,
+            RoomHistoryEvent::EndKyoku | RoomHistoryEvent::Hora { .. }
+        )));
+        tokio::time::advance(Duration::from_millis(4999)).await;
+        assert_eq!(
+            handle.snapshot().await.unwrap().kyoku_end.unwrap().id,
+            original.id
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let next = handle.snapshot().await.unwrap().kyoku_end.unwrap();
+        assert_ne!(next.id, original.id);
+        assert_eq!(next.id.match_id, id.to_string());
+        assert_eq!(next.deadline_at_ms - next.published_at_ms, 5000);
+        assert_eq!(
+            handle.snapshot().await.unwrap().kyoku_end.unwrap().id,
+            next.id
+        );
+        let RoomResponse::Accepted(stale) = handle
+            .send(RoomCommand::confirm_result("p0", original.id))
+            .await
+            .unwrap()
+        else {
+            panic!("stale confirmation")
+        };
+        assert!(stale.kyoku_end.unwrap().confirmed.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn confirmation_is_bound_to_step_and_reconnect_joins_next_cohort() {
+        let (state, _) = held_result_state(true);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let step = handle.snapshot().await.unwrap().kyoku_end.unwrap();
+        assert_eq!(step.required.len(), 4);
+        handle.send(RoomCommand::disconnect("p0")).await.unwrap();
+        handle.send(RoomCommand::reconnect("p0")).await.unwrap();
+        assert!(
+            !handle
+                .snapshot()
+                .await
+                .unwrap()
+                .kyoku_end
+                .unwrap()
+                .required
+                .contains(&ParticipantId::new("p0"))
+        );
+        for id in ["p1", "p2", "p3"] {
+            handle
+                .send(RoomCommand::confirm_result(id, step.id.clone()))
+                .await
+                .unwrap();
+        }
+        let next = handle.snapshot().await.unwrap().kyoku_end.unwrap();
+        assert_ne!(next.id, step.id);
+        assert!(next.required.contains(&ParticipantId::new("p0")));
+        handle
+            .send(RoomCommand::confirm_result("p0", step.id))
+            .await
+            .unwrap();
+        assert!(
+            handle
+                .snapshot()
+                .await
+                .unwrap()
+                .kyoku_end
+                .unwrap()
+                .confirmed
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn result_confirmation_resend_other_participant_and_last_disconnect() {
+        let (state, _) = held_result_state(true);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let step = handle.snapshot().await.unwrap().kyoku_end.unwrap();
+        let mut wrong = step.id.clone();
+        wrong.kyoku_sequence += 1;
+        handle
+            .send(RoomCommand::confirm_result("p0", wrong))
+            .await
+            .unwrap();
+        handle
+            .send(RoomCommand::confirm_result("outsider", step.id.clone()))
+            .await
+            .unwrap();
+        assert!(
+            handle
+                .snapshot()
+                .await
+                .unwrap()
+                .kyoku_end
+                .unwrap()
+                .confirmed
+                .is_empty()
+        );
+        let (first, second) = tokio::join!(
+            handle.send(RoomCommand::confirm_result("p0", step.id.clone())),
+            handle.send(RoomCommand::confirm_result("p1", step.id.clone()))
+        );
+        first.unwrap();
+        second.unwrap();
+        handle
+            .send(RoomCommand::confirm_result("p0", step.id.clone()))
+            .await
+            .unwrap();
+        let current = handle.snapshot().await.unwrap().kyoku_end.unwrap();
+        assert_eq!(current.id, step.id);
+        assert_eq!(current.confirmed.len(), 2);
+        let RoomResponse::Accepted(after_p2) =
+            handle.send(RoomCommand::disconnect("p2")).await.unwrap()
+        else {
+            panic!("disconnect response")
+        };
+        assert_eq!(after_p2, handle.snapshot().await.unwrap());
+        let RoomResponse::Accepted(after_p3) =
+            handle.send(RoomCommand::disconnect("p3")).await.unwrap()
+        else {
+            panic!("disconnect response")
+        };
+        let settled = handle.snapshot().await.unwrap();
+        assert_eq!(after_p3.kyoku_end, settled.kyoku_end);
+        assert_eq!(after_p3.revision, settled.revision);
+        assert_ne!(settled.kyoku_end.unwrap().id, step.id);
+        handle
+            .send(RoomCommand::confirm_result("p1", step.id))
+            .await
+            .unwrap();
+        assert!(
+            handle
+                .snapshot()
+                .await
+                .unwrap()
+                .kyoku_end
+                .unwrap()
+                .confirmed
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn draw_result_has_one_step_and_no_hidden_next_decision() {
+        let (state, _) = held_result_state(false);
+        let handle = RoomActor::spawn_with_state(state);
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let step = handle.snapshot().await.unwrap().kyoku_end.unwrap();
+        assert!(matches!(step.content, KyokuEndContent::Draw(_)));
+        assert_eq!(step.id.step_index, 0);
+        let RoomResponse::Projection(Some(projection)) =
+            handle.send(RoomCommand::GetPublicProjection).await.unwrap()
+        else {
+            panic!("projection")
+        };
+        assert!(matches!(projection, AudienceProjection::Public(_)));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        handle.send(RoomCommand::Tick).await.unwrap();
+        assert!(handle.snapshot().await.unwrap().kyoku_end.is_none());
+        assert!(
+            handle
+                .public_history_projection()
+                .await
+                .unwrap()
+                .previous_kyoku
+                .last()
+                .unwrap()
+                .authoritative_results
+                .as_ref()
+                .unwrap()
+                .settlement
+                .is_some()
+        );
+    }
+
+    #[cfg(feature = "task8-test-support")]
+    #[tokio::test]
+    async fn task8_room_connection_closed_detects_removed_sender_with_buffered_snapshot() {
+        let state = RoomState::new(RoomConfig::new(
+            "subscription",
+            GameMode::FourPlayerRedEast,
+            CharacterCatalog::starter(),
+        ))
+        .unwrap();
+        let (_, receiver) = mpsc::channel(ROOM_COMMAND_CAPACITY);
+        let (effects, _) = mpsc::channel(ROOM_EFFECT_CAPACITY);
+        let (failure_sender, failures) = mpsc::channel(ROOM_EFFECT_CAPACITY);
+        let (sender, buffered) = mpsc::channel(1);
+        let mut connection = RoomConnection {
+            id: 1,
+            receiver: buffered,
+        };
+        let mut actor = Actor {
+            state,
+            receiver,
+            effects,
+            failure_sender,
+            failures,
+            cleanup_requested: HashSet::new(),
+            subscriptions: HashMap::from([(1, sender)]),
+            next_subscription: 2,
+        };
+        assert!(!connection.task8_receiver_is_closed());
+        actor.publish(RoomEvent::Snapshot(actor.state.snapshot()));
+        assert!(!connection.task8_receiver_is_closed());
+        actor.publish(RoomEvent::Snapshot(actor.state.snapshot())); // actual Full removal
+        assert!(actor.subscriptions.is_empty());
+        assert!(connection.task8_receiver_is_closed());
+        assert!(matches!(
+            connection.recv().await,
+            Some(RoomEvent::Snapshot(_))
+        ));
+        assert!(connection.recv().await.is_none());
+        let (sender, dropped_receiver) = mpsc::channel(1);
+        actor.subscriptions.insert(2, sender);
+        drop(dropped_receiver);
+        actor.publish(RoomEvent::Snapshot(actor.state.snapshot())); // actual Closed removal
+        assert!(actor.subscriptions.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zero_target_steps_preserve_order_and_archive_before_release() {
+        let (mut state, _) = held_result_state(true);
+        let wins = state
+            .match_machine
+            .as_ref()
+            .unwrap()
+            .held_kyoku()
+            .unwrap()
+            .wins
+            .len();
+        let sequence = state
+            .match_machine
+            .as_ref()
+            .unwrap()
+            .held_kyoku()
+            .unwrap()
+            .kyoku_sequence;
+        for participant in state.participants.values_mut() {
+            participant.presence = Presence::Disconnected;
+        }
+        let handle = RoomActor::spawn_with_state(state);
+        let mut events = handle.subscribe().await.unwrap();
+        handle.send(RoomCommand::Tick).await.unwrap();
+        let mut changes = 0;
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, RoomEvent::KyokuEndStepChanged { .. }) {
+                changes += 1;
+            }
+        }
+        assert_eq!(changes, wins + 2); // each winner, settlement, release
+        let current = handle.public_history_projection().await.unwrap();
+        let previous = current.previous_kyoku.last().unwrap();
+        assert_eq!(
+            previous.authoritative_results.as_ref().unwrap().wins.len(),
+            wins
+        );
+        assert_eq!(
+            previous
+                .authoritative_results
+                .as_ref()
+                .unwrap()
+                .kyoku_sequence,
+            sequence
+        );
+        assert!(
+            previous
+                .authoritative_results
+                .as_ref()
+                .unwrap()
+                .settlement
+                .is_some()
+        );
+        assert!(handle.snapshot().await.unwrap().kyoku_end.is_none());
+        assert_eq!(handle.public_history_projection().await.unwrap(), current);
+    }
 
     #[test]
     fn benchmark_rejects_humans_and_requires_explicit_selected_roster() {
@@ -4025,6 +5177,13 @@ mod tests {
         }
         let (id, mut machine, roster) = state.build_match().unwrap();
         for _ in 0..10_000 {
+            if let Some(hold) = machine.held_kyoku() {
+                let steps = hold.wins.len();
+                for step in 0..=steps {
+                    machine.publish_kyoku_step(step).unwrap();
+                }
+                machine.release_kyoku().unwrap();
+            }
             if machine.is_complete() {
                 break;
             }

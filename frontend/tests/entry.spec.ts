@@ -191,7 +191,7 @@ for (const viewport of [
       const override = fontFamily ? await page.addStyleTag({ content: `.lobby-shell { font-family: ${fontFamily}; }` }) : null;
       const readyButton = await page.getByRole("button", { name: /set ready/i }).boundingBox();
       expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
-      await override?.evaluate((element) => element.remove());
+      await override?.evaluate((element) => element.parentNode?.removeChild(element));
     }
     await page.screenshot({ path: `test-results/task-11/lobby-${viewport.label}.png`, fullPage: false });
   });
