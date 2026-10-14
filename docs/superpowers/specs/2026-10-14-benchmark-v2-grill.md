@@ -172,7 +172,7 @@ These remain candidates, not implementation mandates:
 
 ## Decision tree — Round 6 frontier
 
-\`\`\`text
+```text
 Benchmark v2
 ├── D1–D3 Research, additive v1, self-hosted                          [DECIDED]
 ├── D4,D10,D15,D21 Strict verified Runs, historic + new              [DECIDED]
@@ -197,7 +197,7 @@ Benchmark v2
     │   └── Later: durable queue transitions and Run status model
     └── Q33 Quota exhaustion behavior                                [FRONTIER]
         └── Later: retention policy defaults, export rules
-\`\`\`
+```
 
 ### Round 6 questions — awaiting owner
 
