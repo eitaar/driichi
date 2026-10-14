@@ -42,7 +42,7 @@ jobs:
       - name: Run server library tests
         run: cargo +"$RUST_TOOLCHAIN" test -p double_riichi_server --lib
 
-  test-all:
+  test-local:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -99,13 +99,82 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 
-      - name: Install browser runtime
-        run: npx --prefix frontend playwright install --with-deps chromium
-
       - name: Run deterministic local gates
         env:
           GIT_COMMIT: ${{ github.sha }}
-        run: just test-all
+        run: just check test-yamai
+
+  test-browser:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: 3.14
+
+      - name: Set up Rust
+        shell: bash
+        run: >
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          --component rustfmt
+
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
+      - name: Install just
+        shell: bash
+        run: cargo install just --version 1.40.0 --locked
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install browser runtime
+        run: npx --prefix frontend playwright install --with-deps chromium
+
+      - name: Run browser gates
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+        run: just test-e2e
+
+  test-worker:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install browser runtime
+        run: npx --prefix frontend playwright install --with-deps chromium
 
       - name: Verify built Dedicated Worker renderer
         shell: bash
@@ -122,3 +191,19 @@ jobs:
           timeout --signal=TERM --kill-after=10s 720s npx --no-install playwright test \
             --config=playwright.worker.config.ts --output "$evidence/test-results" \
             2>&1 | tee "$evidence/browser.log"
+
+  # Preserve the required check name; every independent gate must actually succeed.
+  test-all:
+    needs: [test-local, test-browser, test-worker, test-mcp-task14]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Require every gate to succeed
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ needs.test-local.result }}" = success
+          test "${{ needs.test-browser.result }}" = success
+          test "${{ needs.test-worker.result }}" = success
+          test "${{ needs.test-mcp-task14.result }}" = success
