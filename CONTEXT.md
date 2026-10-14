@@ -78,11 +78,11 @@ _Avoid_: Ranked mode, bot replacement
 
 **Experiment**:
 A research comparison of eligible verified Benchmark Runs, which may include previously completed Runs or newly arranged Runs. Each Run retains its own participant identities, results, and history.
+_Avoid_: Benchmark Run, Match
 
 **Verified Benchmark Run**:
 A Benchmark Run whose conditions relevant to a proposed Experiment can be independently checked against recorded evidence, rather than inferred from names or incomplete history.
 _Avoid_: All historical Runs, manually asserted compatibility
-_Avoid_: Benchmark Run, Match
 
 **Benchmark Run**:
 A fixed roster's series of one or more completed and recorded Matches, with seats rotated between Matches. Aborted or unrecorded Matches do not count toward its target; results belong to each Participant rather than the Bot Token it uses.
