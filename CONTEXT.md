@@ -93,11 +93,11 @@ An authenticated Admin observing a live Benchmark Match with access to every pla
 _Avoid_: Spectator, Replay View
 
 **Benchmark Dashboard**:
-The Admin's primary view for managing ongoing Benchmark Runs, watching the live table and reviewing per-Match and accumulated Bot performance. It is usable without an Experiment.
+The Admin's primary view for managing ongoing Benchmark Runs, watching the single live 3D Mahjong table (expandable to fullscreen) and reviewing per-Match and accumulated Bot performance. It is usable without an Experiment.
 _Avoid_: A/B-only Experiment report, game controller
 
 **Benchmark v2 Capability**:
-A versioned identity/reset-capability declaration required of a software Participant joining a Benchmark v2 Run, with or without an Experiment. It is not proof that any claimed model binary actually executed.
+A versioned identity and reset-capability declaration required from each software Participant in a Benchmark v2 Run, including standalone Runs, without requiring an Experiment. It is a trusted claim rather than independent binary execution evidence.
 _Avoid_: Bot Token, A/B candidate, runtime attestation
 
 **Paired Evaluation**:
@@ -143,6 +143,10 @@ _Avoid_: Unverified Run, Paired Block
 **Interrupted Experiment**:
 An Experiment whose active work was interrupted by a server restart or crash, pending reconciliation and explicit Admin Resume.
 _Avoid_: Completed Experiment, Blocked Experiment
+
+**Live Table Fullscreen**:
+The focused display of a single active Mahjong 3D table expanded beyond its ordinary dashboard panel, without creating another Match, changing game state or showing three concurrent tables.
+_Avoid_: Multi-table viewer, additional Match, simultaneous Run
 
 **Blocked Experiment**:
 An Experiment awaiting a potentially recoverable prerequisite, which an Admin may resolve before explicit resumption.

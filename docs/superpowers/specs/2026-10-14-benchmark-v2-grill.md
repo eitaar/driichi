@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview in progress — Rounds 1–13 decided; Round 14 unanswered**
+Status: **Design interview in progress — Rounds 1–14 decided; Round 15 unanswered**
 Owner: eitaar
 Scope: research-oriented improvements to driichi's Benchmark Mode, not implementation approval.
 
@@ -36,7 +36,7 @@ The user confirmed that **3p Benchmark runs only 3p and 4p Benchmark runs only 4
 - **Q110 B overrides D2** for legacy **Benchmark Bot admission compatibility** on the planned v2 release. Do not extend that decision to unrelated Room/game protocols without explicit owner scope. Old Bot integrations need migration; no breaking release has been executed.
 - **Q114 B changes the UI roll-out** from previously recommended visible per-section releases to **one user-visible whole-app UI cutover**. Q112 A still sets the **internal** implementation order (UI foundation + existing Benchmark dashboard before v2 feature screens). Internal incremental branches/reviews are permitted.
 - **Q113 A** selects shadcn/ui with Tailwind/tokens, not a Three.js or engine replacement.
-- **Q117 A** confirms one-page 3D table + live stats; its literal addendum is **"3卓を全画面表示できるように"**, unresolved between one fullscreen *3D* table and *three* concurrent tables. **Do not infer multiple active Matches or a particular fullscreen interaction** before Q125.
+- **Q117 A / Q125 B** confirms one-page 3D table + live stats, and **one 3D Mahjong table expandable to fullscreen** (the intended meaning of "3卓"). There is **no three-table simultaneous view** and no extra Match concurrency.
 - **Q123 A** demands a separately attributed real-rendered regression investigation/bug fix for the previously observed center-score/Seat mismatch; the issue is **not known fixed**.
 - All product and UI code changes, CI and merge remain forbidden until future owner authorization.
 
@@ -547,13 +547,13 @@ The user requests a modernized app UI with meaningless decorative/poetic copy re
 
 ## Verified v1 baseline## Decisions — Round 13 (2026-10-14)
 
-### D113. Breaking Benchmark Bot admission migration — DECIDED (Q110: B)
+### D113. Breaking Benchmark Bot admission migration — DECIDED (Q110: B; Q131 A, Q132 A)
 
-The owner intentionally chooses a **new-release cutover requiring the v2 protocol at the existing Benchmark Bot entry points**. Old Benchmark-only Bot clients need upgrading; do not promise a permanently coexisting old v1 Benchmark admission API. Preserve historic persisted results; do not infer that non-Benchmark Room or ordinary game clients must change. The precise affected endpoints, version mismatch responses and upgrade procedure remain pending. **No live protocol or code change has occurred or been approved yet.**
+At the explicitly authorized future new Benchmark release, **replace the existing legacy Benchmark Bot admission with mandatory v2 capabilities**, not a permanent v1 compatibility endpoint. **Q131 A:** old unsupported v1 Benchmark clients receive an actionable, explicit protocol/version mismatch with upgrade guidance; never claim missing build/checkpoint/reset data as valid. **Q132 A:** drain/stop existing v1 Benchmark Runs deliberately *before* cutover; preserve recorded history, accurately label incomplete/interrupted work, and never silently upgrade an in-flight v1 Run to strict v2. This breaking choice does not automatically affect unrelated Room or normal-play APIs. Exact endpoint inventory, wire status/error fields and maintenance/rollback workflow remain open. No production migration or code changes are authorized now.
 
-### D114. Native Built-in v2 Bot contract — DECIDED (Q111: A)
+### D114. Native Built-in v2 Bot contract — DECIDED (Q111: A, Q133: A)
 
-Built-in Bots use server-owned identity and Match reset operations that satisfy required v2 capabilities, not artificial external Bot Tokens or independent binary attestation.
+Server-native Built-in Bots implement the same mandatory **Participant-scoped protocol/capability version, build/checkpoint identity and clean reset contract** as external MJAI/MCP Bots without external Bot Tokens. **Q133 A** requires a versioned Participant identity/model declaration for **every** v2 Benchmark Run, standalone or Experiment, and an explicit reset acknowledgement/record when an eligible retry occurs. Declarations by trusted external Bot Token holders are accepted without independent binary attestation; no gratuitous per-Match heavyweight process proof is required.
 
 ### D115. Shared UI foundation before v2 features — DECIDED (Q112: A)
 
@@ -563,29 +563,29 @@ Develop modern shared components/tokens and redesign the **existing standalone B
 
 Adopt shadcn/ui in the existing React/Vite frontend with an explicit design token system and incremental Tailwind integration during internal development. Preserve the specialist 3D/Pixi table renderer; primitive selection and concrete theme tokens remain open.
 
-### D117. Every app page in one public UI cutover — DECIDED (Q114: B)
+### D117. Every app page in one public UI cutover — DECIDED (Q114: B, Q126: A)
 
-Include all app pages (Admin, Benchmark, Room/Lobby, game table pages, Replay and shared navigation) in **one public-facing UI release**. Internal implementation may progress by components/pages with tests and review; do **not** publish a permanently mixed old/new UI. Define route inventory, release gate and rollback before implementation.
+All app pages (Admin, Benchmark, Lobby/Room, live game, Replay and shared navigation) receive a coordinated new UI in **one public release**. Internal development **may and should** proceed incrementally by page/component with independent review and verification (Q126 A); partial public cutovers are not approved. The one-release signoff requires full route coverage and a rollback/compatibility gate; exact rollout method remains to decide.
 
 ### D118. Delete cryptic decorative prose, keep functional guidance — DECIDED (Q115: A)
 
 Remove decorative pseudo-poetic, promotional or cryptic copy, replacing with concise functional labels where useful. Preserve errors, privacy/security notices, accessibility descriptions and necessary help.
 
-### D119. Functional minimal dense dashboard visual direction — DECIDED (Q116: A)
+### D119. Functional minimal dense dashboard visual direction — DECIDED (Q116: A; Q127 A)
 
-Use modern restrained visual hierarchy, readable numbers and clear information-dense Admin/Benchmark UI. Avoid global cyberpunk motion and ornamental HUD controls on settings pages; reduced motion/accessible interactions remain necessary.
+Modern minimal, information-dense dashboard visuals, coherent **light and dark themes**. Initial palette follows the operating-system/browser theme preference, with **manual override** available to users (Q127 A). Maintain accessible colors/contrast, readable statistics and reduced motion. Exact color tokens, theme-preference persistence and flash-of-wrong-theme safeguards are open.
 
-### D120. Run-first table alongside live statistics — DECIDED (Q117: A; ambiguous addendum preserved)
+### D120. Run-first table alongside live statistics — DECIDED (Q117: A; Q125: B clarifies fullscreen)
 
-Display live 3D table, current Run status/controls and primary statistics together. Match history and diagnostics may use lower panels/tabs. **Literal owner addendum:** "3卓を全画面表示できるように". This may denote **a 3D Mahjong table in fullscreen** or **three concurrently shown tables in fullscreen**. Those have different concurrency implications; Q125 must choose before any specific UI design. Do not silently assume the owner approved three simultaneous Matches or the one-table fullscreen alternative.
+The ordinary Benchmark dashboard presents one live **3D Mahjong table together with current Run progress, controls and key performance statistics**; history and detailed diagnostics remain accessible below or via tabs. **Q125 B resolves the original Japanese addendum "3卓を全画面表示できるように": the owner meant the existing 3D table should be expandable to fullscreen, *one live Match at a time***. This does **not** ask for three Mahjong tables or simultaneous Runs/Matches. Fullscreen entry/exit, access to live overlays and mobile behavior are new Round 15 questions.
 
-### D121. Interrupted and Blocked are distinct — DECIDED (Q118: A)
+### D121. Interrupted and Blocked are distinct — DECIDED (Q118: A; Q134: A)
 
-Persist **Interrupted** for crash/restart-origin halted execution pending reconciliation. **Blocked** means a potentially recoverable prerequisite failure. Neither auto-resumes or counts as Completed; Resume requires Admin action and eligibility. Specific state transition table remains open.
+**Interrupted** means restart/crash stopped active work pending reconciliation; **Blocked** means a recoverable unmet prerequisite. Neither auto-resumes or counts as Completed. **Q134 A** requires SQLite transactions, conditional current-state/revision checks and unique fixture/Attempt keys so simultaneous Admin Resume or callbacks cannot schedule duplicate work or overwrite durable results. Persisted transition-table specifics and conflict response remain open.
 
-### D122. SSE 15s heartbeat / 45s stale — DECIDED (Q119: A)
+### D122. SSE 15s heartbeat / 45s stale — DECIDED (Q119: A; Q135: A)
 
-Send non-sensitive keepalive approximately every 15 seconds and visibly mark the authorized Admin live view stale when connectivity is absent for approximately 45 seconds. Reconnect with fresh auth and snapshot and/or polling fallback, separating idle game state from connection loss. Exact timing tolerances/backoff remain to specify.
+Non-sensitive SSE keepalives about every **15 seconds**; visibly stale/disconnected after roughly **45 seconds** without stream/heartbeat connectivity, not when a Bot simply spends time deciding. **Q135 A** requires bounded exponential authenticated reconnect backoff **with jitter**, a polling fallback during repeated failures, fresh authorized snapshot and clear stale labeling. Specific attempt ceilings, backoff intervals and fallback/recovery behavior remain open.
 
 ### D123. Hyndman–Fan Type 7 bootstrap quantile — DECIDED (Q120: A)
 
@@ -595,17 +595,79 @@ Use explicitly pinned **Type 7** linear interpolation at 2.5%/97.5% quantiles fo
 
 Base optional diagnostic expiry on persisted UTC timestamps and bounded maintenance, not browser timezone or sudden clock-reset deletion. Do not expire durable Match results/Replay/Attempts.
 
-### D125. Manifest + canonical JSON/normalized CSV in one archive — DECIDED (Q122: A)
+### D125. Manifest + canonical JSON/normalized CSV in one archive — DECIDED (Q122: A; Q136: A)
 
-Package consistent snapshot-revision research outputs as a single archive with manifest, schema version, canonical JSON and normalized CSV keyed IDs. Exclude credentials/hidden wall/embedded Replay, retaining only authorized references.
+Only an **authorized Admin** may create/download a consistent-revision Experiment research archive containing a schema/snapshot manifest, canonical JSON and normalized CSV. **Do not** embed Bot Tokens, private credentials, future concealed wall state or Replay body content; stable Replay references remain separately access-controlled. Exporting an active Experiment may describe incomplete Blocks/Run progress without suggesting a finalized paired claim. Archive authorization, expiring download mechanics and audit granularity remain open.
 
-### D126. Investigate center-score Seat bug separately from styling — DECIDED (Q123: A)
+### D126. Investigate center-score Seat bug separately from styling — DECIDED (Q123: A; Q137: A; Q138: A)
 
-Use reproducible actual rendered pixel/Seat identity tests to establish the original normal-live misassignment and fix verified root cause in a separately attributable work item. Test main-thread and Worker routes, 3p/4p, Replay and Admin focus. Never claim a shadcn restyle fixed a 3D score-placement issue without evidence. No code or tests authorized now.
+Do not claim shadcn/ui or CSS redesign magically fixed the previously user-observed **normal-live central score shown near the wrong Seat**. Identify/reproduce it with rendered-pixel 3p/4p screenshot tests, including main-thread and Worker/bitmap variants, then fix a demonstrated cause in a distinct attributable work item. **Q137 A:** the *whole-app one-public-release UI cutover* is gated on route-wide E2E smoke, accessibility and targeted rendered visual checks for desktop/mobile. **Q138 A:** record baseline route startup, JS bundle, memory, interaction and live 3D rendering performance before the redesign, with reviewed regression budgets. Specific budget numbers/platform fixtures are still open. **These are design requirements only; no test execution was requested or performed.**
 
-### D127. Bounded timing samples, no false exact p95 — DECIDED (Q124: A)
+### D127. Bounded timing samples, no false exact p95 — DECIDED (Q124: A; Q139: A)
 
-Enforce bounded Match-time latency sample memory. On overflow mark measurement completeness and do not present an extrapolated subset percentile as the **exact** Match p95. Keep independently measured outcome/error denominators. Choose p95 suppression vs explicit approximation and cap in Round 14.
+Match-time Decision sample buffers have a fixed bound. After overflow, report accurate **count and streaming mean** for genuinely observed first-response / accepted-valid-action timings, mark the distribution **incomplete** and show **p95 unavailable**, not an artificially exact p95 computed from silently discarded samples. Do not allocate unbounded RAM. Quantitative cap, denominator fidelity and UI representation remain a future decision.
+
+## Verified v1 baseline## Decisions — Round 14 (2026-10-14)
+
+### D128. Exactly one live 3D table may expand fullscreen — DECIDED (Q125: B)
+
+The owner's phrase "3卓を全画面表示できるように" **means the current single 3D Mahjong table**, as embedded in the Run-first Benchmark dashboard, must offer fullscreen expansion **of one active Match at a time**. Do **not** design three simultaneous Mahjong tables or extra Match concurrency. Existing live preview, chosen Participant focus and read-only state persist across fullscreen transitions. Entry/exit, mobile API fallback and accessibility details remain open (Q140).
+
+### D129. Internally phased development, one whole-app public UI release — DECIDED (Q126: A)
+
+Develop/review/verify shared UI components and individual pages incrementally, but expose **the completely migrated app** in a single release. No mixed-theme public rollout. Require all-route regression testing, a coherent release gate and rollback strategy (Q144), consistent with Q112 A and Q114 B.
+
+### D130. Light/dark theme with system default and user override — DECIDED (Q127: A)
+
+Both palettes are supported. Initially follow system/OS preference, but allow users to select a manual override. Persisting that override, server-rendering/initial-flash behavior and accessibility contrast tests remain open (Q141).
+
+### D131. Shared role-aware navigation shell — DECIDED (Q128: A)
+
+Use a consistent app-wide navigation shell for Admin, Room/Lobby, normal game, Run-first Benchmark dashboard, optional Experiments and Replay, showing appropriate destinations/actions according to permissions. The shell is a UI affordance **not a substitute for server authorization**. Exact routes, deep-link retention and permission failure behavior remain open (Q143).
+
+### D132. Responsive compact Benchmark dashboard — DECIDED (Q129: A)
+
+On compact screens, stack one live 3D table, Run status/controls and key accumulated statistics vertically, with Match history/detail in accessible tabs. Do not hide the table just because the viewport is small; support the single-table fullscreen functionality of D128. Tab preservation and device-specific fullscreen fallback remain open (Q142).
+
+### D133. Keep specialist 3D/Pixi renderers in UI redesign — DECIDED (Q130: A)
+
+Retain the current Three.js/Pixi specialized table/game rendering paths; rework shared shell/chrome, overlays and controls to match shadcn/ui/tokens. A separately proven rendering correctness bug may be fixed independently. Do not assume a generic component library can replace the game renderer or remove game views from the all-pages release.
+
+### D134. Explicit version mismatch and migration guidance — DECIDED (Q131: A)
+
+After the future deliberate breaking Benchmark Bot cutover, reject v1-only Benchmark Bot clients with an actionable **protocol/version mismatch** indication and guidance for updating. Never silently insert fake checkpoint declarations or treat a legacy client as v2-capable. Exact transport-specific error and closing behavior remain open (Q145).
+
+### D135. Drain legacy v1 Runs before strict-v2 cutover — DECIDED (Q132: A)
+
+Before enabling new v2-only Benchmark admissions, perform a deliberate drain/stop of existing v1 Benchmark Runs. Preserve durable historical Run/Match/Replay results and report incompletely finished work honestly; do not silently reinterpret v1 in-flight Attempts as v2. Cutover sequencing/maintenance and rollback behavior remain open (Q146).
+
+### D136. Every v2 Bot declares identity and supports clean reset — DECIDED (Q133: A)
+
+For *both standalone and Experiment-managed* v2 Runs, each Participant must provide a versioned v2 capability/identity declaration with build/checkpoint identity. External Bots use trusted, authenticated self-declarations, not independent execution attestation; Built-in Bots implement native server identity/reset. Clean-reset evidence is required when an eligible retry occurs, not a forced externally attested process restart before every Match. Exact negotiation schema and rejection errors remain open (Q147).
+
+### D137. SQLite transactional state/revision CAS and uniqueness — DECIDED (Q134: A)
+
+Condition state changes on SQLite's authoritative **current revision/state**, enforce transitions within a transaction and unique fixture/Attempt identities, and reject/reconcile races rather than letting stale browsers or duplicate completion callbacks mutate already committed progress. Exact API conflict response and transaction schema remain open (Q148).
+
+### D138. Bounded SSE reconnect backoff and polling fallback — DECIDED (Q135: A)
+
+On Admin SSE loss, show stale/disconnected, retry with **bounded exponential backoff plus jitter and fresh authentication**, and transition to authorized polling when necessary. New authenticated snapshots supersede cached frames; the viewer remains read-only and does not stall ongoing games. Specific backoff caps/fallback thresholds remain open (Q149).
+
+### D139. Admin-only export archives with no secrets/Replay bodies — DECIDED (Q136: A)
+
+Only authenticated Admins may export consistent Experiment JSON/CSV archives. Keep Bot Tokens, secret protocol payloads and Replay content out of the archive; Replay IDs remain permission-protected references. Decide download expiry, audit and packaging mechanics later (Q150).
+
+### D140. Whole-app E2E/accessibility/render acceptance for single UI cutover — DECIDED (Q137: A)
+
+Gate the entire one-release UI redesign on **every real app route**, responsive desktop/mobile smoke tests, accessibility checks and targeted **actual-rendered 3D screenshot** tests for live Room, Benchmark live, Replay and Admin focus. Preserve permission boundaries, UI semantics and normal gameplay, and cover both main-thread and Worker/bitmap paths where available. Explicit coverage matrix and required evidence remain open (Q151).
+
+### D141. Measure performance baseline and reject unreviewed regressions — DECIDED (Q138: A)
+
+Before any frontend redesign coding, capture known-good **route startup, JS bundle footprint, interactive responsiveness, memory and live 3D render performance** in a repeatable environment. Require reviewed regression budgets before the one-release UI cutover, rather than unlimited degradation for appearance. Concrete supported devices, thresholds and exception process remain open (Q152).
+
+### D142. On bounded sample overflow, hide exact p95 — DECIDED (Q139: A)
+
+Maintain accurate online **count/mean** for valid observed Decision timings even if bounded raw sample memory is exceeded. Once a per-Match distribution is incomplete, label its p95 **Unavailable / Incomplete** (unless a future separately approved *approximate* estimator is explicitly distinguished). Do not invent exact values from dropped samples, mix failures with valid timings or silently allocate unbounded memory. The buffer cap and whether full aggregate median also becomes unavailable remain open (Q153).
 
 ## Verified v1 baseline (not v2 decisions)
 
@@ -628,58 +690,58 @@ These remain candidates, not implementation mandates:
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Decision tree — Round 14 frontier
+## Decision tree — Round 15 frontier
 
 ```text
-Benchmark v2 + one-release whole-app UI redesign
-├── D120 "3卓" fullscreen ambiguity                 [OPEN]
-│   └── Q125 3D fullscreen vs three tables          [FRONTIER]
-│       └── Later: fullscreen behavior / concurrent viewer design
-├── D115–D119 shadcn/tokens, all-app UI cutover     [DECIDED]
-│   ├── Q126 internal staged work + atomic release  [FRONTIER]
-│   ├── Q127 light/dark theme                       [FRONTIER]
-│   ├── Q128 shared navigation model               [FRONTIER]
-│   ├── Q129 small-screen dashboard                [FRONTIER]
-│   └── Q130 specialized Three.js rendering boundary [FRONTIER]
-├── D113,D114 mandatory breaking Benchmark v2 Bot  [DECIDED]
-│   ├── Q131 protocol mismatch admission feedback [FRONTIER]
-│   ├── Q132 outstanding v1 Runs during migration  [FRONTIER]
-│   └── Q133 minimum identity/reset capability    [FRONTIER]
-├── D121 durable Interrupted vs Blocked             [DECIDED]
-│   └── Q134 state transition concurrency         [FRONTIER]
-├── D122 SSE heartbeat/stale                        [DECIDED]
-│   └── Q135 bounded authenticated reconnect       [FRONTIER]
-├── D125 export archive                             [DECIDED]
-│   └── Q136 Admin export authorization           [FRONTIER]
-├── D126 rendered-score bug gate                    [DECIDED]
-│   └── Q137 entire-app UI regression acceptance [FRONTIER]
-├── D119 modern UI                                  [DECIDED]
-│   └── Q138 frontend performance gate            [FRONTIER]
-└── D127 latency cap                                [DECIDED]
-    └── Q139 p95 on incomplete samples            [FRONTIER]
+Benchmark v2 & full-app UI redesign
+├── D128,D132 single fullscreen 3D table / responsive   [DECIDED]
+│   ├── Q140 Fullscreen enter/exit and overlay behavior  [FRONTIER]
+│   └── Q142 Mobile fullscreen fallback                 [FRONTIER]
+├── D130,D131 modern theme and shared navigation       [DECIDED]
+│   ├── Q141 Theme override persistence                 [FRONTIER]
+│   ├── Q143 Deep links / permission-restricted nav     [FRONTIER]
+│   └── Q154 Copy audit and language compatibility      [FRONTIER]
+├── D129,D140,D141 one public UI cutover, tested        [DECIDED]
+│   ├── Q144 Atomic UI launch / rollback strategy       [FRONTIER]
+│   ├── Q151 Route-wide UI acceptance matrix           [FRONTIER]
+│   ├── Q152 Performance regression budget             [FRONTIER]
+│   └── Q155 Pixel-visual baselines and 3D correctness   [FRONTIER]
+├── D134–D136 strict-v2 Bot breaking migration          [DECIDED]
+│   ├── Q145 Protocol mismatch wire contract           [FRONTIER]
+│   ├── Q146 Legacy Run drain deadline/recovery         [FRONTIER]
+│   └── Q147 Capability handshake validation           [FRONTIER]
+├── D137 durable CAS and unique Attempt identities      [DECIDED]
+│   └── Q148 Stale Admin transition response           [FRONTIER]
+├── D138 authorized SSE retry/polling                    [DECIDED]
+│   └── Q149 Backoff / polling takeover policy         [FRONTIER]
+├── D139 Admin-only export archive                      [DECIDED]
+│   └── Q150 Archived download authorization lifetime  [FRONTIER]
+└── D142 bounded Decision timing                        [DECIDED]
+    └── Q153 Latency sample cap + median completeness   [FRONTIER]
 ```
 
-### Round 14 questions — awaiting owner
+### Round 15 questions — awaiting owner
 
-- **Q125, "3卓を全画面表示" exactly means:** A — **three different live Mahjong tables** shown simultaneously in fullscreen across separate Rooms/Runs; B — **one existing 3D table** can expand into fullscreen from the dashboard; C — both options as separately designed features. **Recommendation B, provisional only:** the user's literal phrase must be clarified, especially because per-Run Matches are sequential and 3-table concurrency is a separate workload.
-- **Q126, whole-app one-release strategy:** A — develop/test each page group internally in reviewable changes but publish the completely redesigned UI **once**, with acceptance/rollback gate; B — visibly publish half-migrated pages independently; C — one unreviewed monolithic change with no interim tests. **Recommendation A:** Q112 A and Q114 B can coexist.
-- **Q127, color theme:** A — coherent light/dark palettes, default to system and offer manual override; B — light-only; C — dark-only. **Recommendation A**.
-- **Q128, app navigation hierarchy:** A — shared shell with role-aware Admin, Rooms/Lobby, Run-first Benchmark, optional Experiments and Replay destinations; B — duplicate navigation separately; C — put every Admin function inside the 3D game overlay. **Recommendation A**.
-- **Q129, responsive Benchmark dashboard:** A — on compact screens present table, status and key stats in an accessible stacked layout with history tabs; B — hide the 3D board on mobile; C — desktop-only controls. **Recommendation A**; a true three-table viewer, if chosen, needs its own later layout decision.
-- **Q130, restyle of specialized game rendering:** A — retain the existing Three.js/Pixi renderer and modernize shared UI shell/chrome and game overlays, fixing separately established bugs; B — replace the 3D scene with generic shadcn controls; C — exclude gameplay routes from full-app restyle. **Recommendation A**.
-- **Q131, post-cutover old Bot:** A — reject unsupported v1-only Benchmark Bots with explicit actionable version-mismatch error/migration documentation; B — silently fabricate model declarations; C — disconnect without a reason. **Recommendation A**.
-- **Q132, active v1 Benchmark Runs during cutover:** A — planned drain/stop and preserve historic results, do not silently convert an in-flight old Run to v2; B — delete old Run history; C — auto-convert unverified legacy attempts. **Recommendation A**.
-- **Q133, minimum strict-v2 ordinary-Run capability:** A — each Participant declares version + build/checkpoint identity on admission; a clean reset acknowledgement is required when needed for an eligible retry; B — mandatory measured process restart for each Match; C — version label only with no identity/reset. **Recommendation A**; do not introduce remote attestation.
-- **Q134, state transition concurrency:** A — SQLite conditional revision/state updates, transaction-enforced transitions and unique fixture/attempt keys; B — let stale browser state overwrite persisted state; C — assume two Admin Resumes never race. **Recommendation A**.
-- **Q135, SSE reconnect policy:** A — bounded authenticated exponential backoff with jitter, polling fallback and visible stale state; B — unbounded rapid reconnect attempts; C — never retry. **Recommendation A**.
-- **Q136, research export authorization:** A — authenticated Admin-only snapshot archive export, excluding credentials and embedded private Replay payloads; B — public Spectators may export all hidden Bot/game data; C — include active Bot Tokens for reproducibility. **Recommendation A**.
-- **Q137, whole-app visual acceptance:** A — page/route coverage across desktop/mobile with UI smoke/accessibility + targeted real rendered 3D Seat/score tests before the single public cutover; B — test only Benchmark despite full redesign; C — treat TypeScript compilation as full UI validation. **Recommendation A**.
-- **Q138, UI performance regression:** A — measure route startup, bundle, UI responsiveness and live 3D performance before restyle; set reviewed regression budgets for the single public cutover; B — any slowdown is acceptable for visuals; C — exclude gameplay/Benchmark from performance checks. **Recommendation A**.
-- **Q139, overflow of per-Match latency samples:** A — retain reliable count/mean, mark distribution incomplete and **hide exact p95** after exceeding sample cap unless a separately labeled approximation is later specified; B — silently label sampled p95 exact; C — allocate unlimited memory. **Recommendation A**.
+- **Q140, single 3D table fullscreen controls:** A — an explicit fullscreen toggle for the *existing single table*, Escape/close to return to the same dashboard state, accessible controls and compact read-only live overlays (current Match/seat/status) while fullscreen; B — replace dashboard permanently when entering fullscreen; C — create three simultaneous Matches. **Recommendation A**: respects Q125 B without changing game scheduling.
+- **Q141, theme preference storage:** A — system default until explicit choice, persist user override locally and apply early to prevent a visible wrong-theme flash; B — reset override after each page; C — store a theme on each Room/Match independently. **Recommendation A**; server-synced preferences can be discussed later if accounts require them.
+- **Q142, fullscreen on small/mobile devices:** A — use Fullscreen API where supported; otherwise an accessible viewport-filling in-page presentation, preserving orientation/return control; B — remove mobile fullscreen entirely; C — require landscape and permanently lock navigation. **Recommendation A**.
+- **Q143, shared nav and protected deep links:** A — use role-aware navigation but independently guard every server resource; preserve valid deep links through auth and display an explicit access-denied view where appropriate; B — treat hidden links as sufficient authorization; C — redirect all pages to Home and lose deep links. **Recommendation A**.
+- **Q144, whole-app UI cutover and rollback:** A — a single tested UI artifact/release behind a controlled switch with a prepared prior-UI rollback artifact; freeze the route inventory and signoff checklist before launch; B — overwrite each page live as soon as ready; C — release without any rollback path. **Recommendation A**; no backend protocol cutover is implied merely by a UI release.
+- **Q145, strict v2 Bot mismatch wire error:** A — define explicit versioned `unsupported_benchmark_protocol` structured error (supported/required version, migration-doc location), with HTTP/WS/MCP transport-appropriate failure framing and no leaked secrets; B — generic 500 with no version; C — silently claim v2 capability. **Recommendation A**.
+- **Q146, active legacy Benchmark Run during protocol cutover:** A — announce a maintenance/drain window, allow eligible current Matches to persist, then mark unfinished Runs interrupted and preserve history; require explicit operator review before strict-v2 start; B — erase all Runs at deployment; C — silently let a v1 Match become a v2 Match. **Recommendation A**.
+- **Q147, admission handshake validation:** A — per-Participant negotiated version plus immutable trusted build/checkpoint declaration before Run starts, and a scoped reset capability recorded for retry (Built-in supplied natively); B — one shared Token version with no per-Participant identity; C — defer verification until an Experiment is created. **Recommendation A**.
+- **Q148, stale SQLite CAS/Admin actions:** A — return an explicit state/revision conflict with latest authoritative status and no duplicate work; client offers Refresh/Retry, not silent overwriting; B — execute both Admin Resumes; C — overwrite DB using stale UI state. **Recommendation A**.
+- **Q149, SSE retry and polling handoff:** A — bounded exponential retry with jitter and one active stream per viewer; after repeated failures use authenticated polling until stream resubscription succeeds with a new snapshot; B — flood reconnects while polling and streaming simultaneously; C — continue to label a stale snapshot live. **Recommendation A**.
+- **Q150, exported archive delivery:** A — only Admin can start/get an export; use short-lived authenticated download or streaming response, no permanent bearer links, with access rechecked and audit of export request; B — generate a forever-public download URL; C — package Bot Tokens so consumers can fetch anything. **Recommendation A**.
+- **Q151, complete UI-route test matrix:** A — inventory every current route/role/state, test critical happy/error/permission flows at desktop/mobile, plus automated accessibility smoke and a manual final review before one release; B — only test the Benchmark page; C — treat build compilation as equivalent to acceptance. **Recommendation A**.
+- **Q152, UI performance budgets:** A — baseline pinned desktop and modest mobile profiles (bundle size, route startup, interaction latency, 3D FPS/memory), with explicit budgets and owner-reviewed exceptions; B — only optimize CSS size; C — unlimited slowdowns for aesthetics. **Recommendation A**; concrete percentage/ms/FPS targets remain an implementation acceptance choice.
+- **Q153, bounded timing sample precision:** A — keep accurate streaming count/mean for all genuinely observed samples, allocate fixed raw-sample cap and mark **median and p95 unavailable** after overflow, with clear completeness flag; B — calculate exact median/p95 from the surviving subset; C — allocate all raw samples without cap. **Recommendation A**.
+- **Q154, multilingual UI copy audit:** A — remove opaque marketing/poetic copy in all supported locales via one inventory, retain short functional translations and accessible text; B — clean English only while keeping obsolete decorative translations; C — delete all helpful/translated UI instructions. **Recommendation A**, not silently changing which languages are already supported.
+- **Q155, actual-rendered 3D visual regression baselines:** A — use pinned renderer/browser/viewport screenshot fixtures with distinct player scores and verified Participant-to-Seat IDs, thresholds and reviewable baselines across light/dark/fullscreen, normal Room, Benchmark, Replay and Admin focus; B — use CSS-unit tests only; C — approve without checking the known wrong-Seat issue. **Recommendation A**.
 
 ### Deferred decisions
 
-After Round 14: depending on Q125, either specify one-table fullscreen transitions or multi-live-table authorization/resource limits; exact theme tokens/shadcn primitives, route/copy audit, responsive navigation and all-app cutover/rollback; precise breaking Benchmark protocol endpoints/status codes and migration guide; SQLite state tables and error handling, fixture RNG serialization and Bot reset wire events; SSE stale/reconnect policies, research export manifest schema, deterministic real-pixel screenshots and measurable UI performance budgets. **No code changes, UI changes, CI runs, or PR merges without explicit approval.**
+Once Round 15 settles: actual route inventory and ownership matrix, concrete shadcn primitive package choices, UI theme tokens and component acceptance, physical deployment/rollback switches, strict-v2 error transport schemas and release drain operational steps, reset request wire payloads, SQLite transition table implementation, seed-stream encoding and serialized fixture golden vectors, SSE retry defaults and throughput test cases, authorized archive packaging tests, latency allocation cap defaults and exact streaming-metric definition. Neither the UI release nor the v2 backend/protocol cutover is authorised to start in this docs-only design interview.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 
