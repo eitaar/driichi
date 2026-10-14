@@ -97,7 +97,7 @@ The Admin's primary view for managing ongoing Benchmark Runs, watching the live 
 _Avoid_: A/B-only Experiment report, game controller
 
 **Benchmark v2 Capability**:
-A versioned identity/reset-capability declaration associated with a software Participant joining a Benchmark v2 Run. Its presence is independent of Experiment membership and is not proof that a particular binary actually executed.
+A versioned identity/reset-capability declaration required of a software Participant joining a Benchmark v2 Run, with or without an Experiment. It is not proof that any claimed model binary actually executed.
 _Avoid_: Bot Token, A/B candidate, runtime attestation
 
 **Paired Evaluation**:
@@ -139,6 +139,10 @@ _Avoid_: Current Match, concurrent Runs
 **Descriptive-only Run**:
 A verified Benchmark Run attached to an Experiment whose results do not meet the Experiment's paired fixture conditions. It appears separately from paired statistics and is excluded from paired effect and paired uncertainty calculations.
 _Avoid_: Unverified Run, Paired Block
+
+**Interrupted Experiment**:
+An Experiment whose active work was interrupted by a server restart or crash, pending reconciliation and explicit Admin Resume.
+_Avoid_: Completed Experiment, Blocked Experiment
 
 **Blocked Experiment**:
 An Experiment awaiting a potentially recoverable prerequisite, which an Admin may resolve before explicit resumption.
