@@ -1,10 +1,10 @@
-# driichi UI/UX — Grill with Docs (completed UI-1–UI-5; outcomes UI-6 open)
+# driichi UI/UX — Grill with Docs (UI-6 decided; UI-7 open)
 
 Date: 2026-10-14
-Status: **UI-D67 explicitly brings in-game Win/Draw, Score Transfer and Final Standings into the new design. UI-6 Q301–Q309 are pending. Previously decided UI-D1–UI-D66 stay binding; no product code/CI/deployment/merge approval.**
+Status: **UI-6 Q301–Q309 owner-decided (UI-D68–D76); explicit LEFT large Character/RIGHT hand, points and Yaku on darkened 3D table. Five dependent UI-7 Q310–Q314 await owner. Prior UI decisions/cancellations remain; design docs only; no implementation, CI, deployment or merge.**
 Scope: shadcn/ui (Base UI) + Tailwind-based English-only redesign for **all** public/admin pages, starting with Run-first Benchmark Dashboard. One public all-pages cutover; no planned old-UI rollback. Dedicated existing Three.js/Pixi Mahjong renderer remains.
 
-**Read first:** newer owner **UI-D67** reopens *only* visual design of end-of-Kyoku outcome and post-Match ranking screens; UI-6 answers remain pending. Previous no-pending-questions audit predates the new explicit owner request. Earlier owner **UI-D66** selects subtly slanted portrait character cards with prominent avatar/name and very few SVG status/own-player icons instead of repetitive Ready/You text badges. UI-D66 supersedes the *vertical-only visual layout* of older UI-D30/UI-D47 but preserves stable participant collection semantics. Current code demonstrates **normal-room Seat assignment occurs at Start Match, NOT in the pre-Match Lobby**. The correction below supersedes the unimplementable Q296 A East/South/West/North prestart order **while preserving its intent: stable participant cards that do not jump on readiness**. Latest owner **UI-D65 overrides only the normal-game action-button PLACEMENT clauses** of UI-D31 (Q267 B), UI-D48 (Q284 B), and UI-D61 (Q297 A). The original 64 question choices are retained as historical design decisions and all their *unrelated* requirements remain active. The latest authority map and consistency audit below supersede any older archived options, particularly the rejected original UI-3 A/B/C definitions. Old "pending/frontier" text in archived proposal sections is not a new open decision.
+**Read first:** newer owner **UI-D67** reopens *only* visual design of end-of-Kyoku outcome and post-Match ranking screens; UI-6 answers now decided; UI-7 Q310–Q314 pending. Previous no-pending-questions audit predates the new explicit owner request. Earlier owner **UI-D66** selects subtly slanted portrait character cards with prominent avatar/name and very few SVG status/own-player icons instead of repetitive Ready/You text badges. UI-D66 supersedes the *vertical-only visual layout* of older UI-D30/UI-D47 but preserves stable participant collection semantics. Current code demonstrates **normal-room Seat assignment occurs at Start Match, NOT in the pre-Match Lobby**. The correction below supersedes the unimplementable Q296 A East/South/West/North prestart order **while preserving its intent: stable participant cards that do not jump on readiness**. Latest owner **UI-D65 overrides only the normal-game action-button PLACEMENT clauses** of UI-D31 (Q267 B), UI-D48 (Q284 B), and UI-D61 (Q297 A). The original 64 question choices are retained as historical design decisions and all their *unrelated* requirements remain active. The latest authority map and consistency audit below supersede any older archived options, particularly the rejected original UI-3 A/B/C definitions. Old "pending/frontier" text in archived proposal sections is not a new open decision.
 
 ## Dependencies and explicit cancellations
 
@@ -441,7 +441,7 @@ This is a **later and more specific owner directive**, overriding earlier layout
 
 ### UI-D67. Redesign Win/Draw, Score Transfer and Final Standings — SCOPE DECIDED, PRESENTATION PENDING
 
-**Owner request:** `ゲーム内UIも新デザインに変更したい`, referring directly to Kyoku end hand reveal / score movement and full Match final rankings. The old assumption to *keep these result overlays' current visual design* is superseded. The user has **not** chosen a specific result layout or authorized implementation.
+**Owner request:** `ゲーム内UIも新デザインに変更したい`, referring directly to Kyoku end hand reveal / score movement and full Match final rankings. The old assumption to *keep these result overlays' current visual design* is superseded. The owner has **now selected the layout and behavior** as authoritative UI-D68–D76 below; product implementation remains unauthorized.
 
 **Grounded existing main branch `frontend/src/game/gameplay.tsx`:**
 - `RoundWinSurface` exposes the authorized **winner** portrait/name, concealed winning tiles and melds, winning tile marker, legitimate Yaku/han/fu and win points.
@@ -473,7 +473,7 @@ UI-D67: end-of-Kyoku + Post-Match visual redesign
 
 All nine questions are **independent** at this stage, A/B/C are **viable**, recommendations vary and no owner answer is prefilled.
 
-### Round UI-6 questions — A/B/C all awaiting owner
+### Archived UI-6 questions — answered, NOT an active frontier
 
 **Q301. Desktop Win Result placement**
 - A: compact **floating table-edge panel**, preserving most 3D tabletop (continuity; denser information).
@@ -521,9 +521,85 @@ All nine questions are **independent** at this stage, A/B/C are **viable**, reco
 - **B (recommended):** **expandable bottom sheet** above real table, summary then detail (context, extra expansion).
 - C: **small centered overlay** with Details expansion (compact, potentially crowded).
 
-### Next steps — after owner UI-6 answers only
+### Archived UI-6 handoff (superseded)
 
 Recompute any truly dependent Win/Draw/Score/Final interaction branches, then consistency-audit alongside existing UI-D1–D66. Do not add decorative micro-questions or rewrite prior decisions. Owner approval of scope does NOT authorize code, CI, deployment or merge.
+
+## Authoritative result UI-6 owner decisions — 2026-10-15
+
+**ALL answered:** Q301 C, Q302 B, Q303 B, Q304 A, Q305 B, Q306 A, Q307 A, Q308 A, Q309 B. Original UI-6 choices below are an **ARCHIVE**, not an open questionnaire.
+
+**Binding owner clarification:** Show a **LARGE Character on the LEFT**, and **winning hand, actual awarded points and Yaku on the RIGHT**, **above a dark semi-transparent scrim** between result content and the existing REAL 3D table. This precise clarification overrides ambiguous generic Q301/Q302 option prose. It does not require another renderer, artwork copy or any opponent's concealed hand reveal.
+
+### UI-D68. Split Win stage with dark translucent table scrim — DECIDED Q301 C
+LEFT: prominent authorized winner Character/name. RIGHT: visible actual winning concealed tiles, melds, highlighted winning tile, full Yaku and exact points. Overlay-wide dark translucent scrim dims the real tabletop without modifying 3D textures/materials.
+
+### UI-D69. Character-first emphasis — DECIDED Q302 B
+The Character/earned points are heroes but hand and Yaku remain clearly readable immediately at RIGHT, not behind a hidden detail tab. Do not trade hand accuracy for spectacle.
+
+### UI-D70. Unified Draw shell — DECIDED Q303 B
+Reuse Win visual shell and scrim for genuine Draw reason and authorized settlement. Do not depict a winner or fabricate hidden tiles, tenpai or Yaku. Q311 decides non-winner LEFT hero.
+
+### UI-D71. Animated Before → ±Change → After scoreboard — DECIDED Q304 A
+Display exact signed server settlement deltas per actual Participant, with reliable Participant/Seat associations across 3p/4p. Brief local number transitions/Skip do not change server points. Q310 decides its composition relative to Win/Draw result.
+
+### UI-D72. Compact result footer — DECIDED Q305 B
+Footer groups legitimate Continue/Waiting, cosmetic Skip and compact Review. Preserve actual `KyokuEndStep` timer, required player acknowledgements and spectator permissions; review/skip never advance the Match or pause the authoritative timer. Q314 details Review UI.
+
+### UI-D73. Winner hero + ranked final Match standings — DECIDED Q306 A
+Only in actual `Post-Match`, large first-place Character plus genuine ranked list of all Players/final points. Not a 4-card equal grid or invented podium. Q313 determines hero/list geometry.
+
+### UI-D74. Return to Room only — DECIDED Q307 A
+Only one post-Match navigation action: `Return to Room`, where authorized. Replay/rematch are navigated from Room, not extra buttons on final results.
+
+### UI-D75. Restrained motion — DECIDED Q308 A
+Use brief restrained fades/transitions/score count with reduced-motion instant values. Never couple visuals to server timers or acknowledgements.
+
+### UI-D76. Mobile expandable outcome Bottom Sheet — DECIDED Q309 B
+Responsive Bottom Sheet keeps actual 3D table behind, summary first, with expandable hand/Yaku/score or full final ranks and reachable Continue. Existing `1024×600` landscape gameplay gate still needs separately authorized implementation work; UI design is not shipped. Q312 decides initially shown summary.
+
+### Conflict and scope audit
+The latest left/right/scrim layout is binding; prior game action buttons above hand (UI-D65), slanted icon-minimal Lobby (UI-D66), existing tile/Character/Three.js renderer, winner-only privacy, 3p/4p seat mapping, and all server-scored KyokuEndStep/Continue/Post-Match semantics remain. Breaking Bot Protocol v2 and A/B Experiment remain canceled. **UI-D68–D76 decide design only, not implementation/CI/deploy/merge.**
+
+## Newly unlocked independent Results UI-7 frontier — all UNANSWERED
+
+```text
+Q301 C + Q302 B + Q304 A → Q310 Result vs Score Transfer stage
+Q303 B + Character-first → Q311 Draw LEFT hero
+Q309 B + Character-first → Q312 initial collapsed phone summary
+Q306 A → Q313 final Match hero/list layout
+Q305 B → Q314 Review inspection interaction
+```
+
+All A/B/C below are feasible and distinct, with mixed recommendations. **Q310–Q314 are the only new owner questions now, and start unselected.**
+
+**Q310 — Win/Draw and Score Transfer stage**
+- **A (recommended):** ONE dimmed overlay switches between Win/Draw details and a complete scoreboard when the actual server result step changes. Clear stages, less simultaneous content.
+- B: ONE vertically scrollable overlay keeps Win detail and Score Transfer list together when authorized. Easy comparison, taller page.
+- C: ONE overlay with Result / Scores tabs when both are available; active tab tracks real step unless changed by the user. Compact, extra control.
+
+**Q311 — Draw LEFT hero without a winning Character**
+- A: Large typographic Draw reason and modest tile motif using existing assets. Minimal and direct.
+- **B (recommended):** an equal-weight group of actual participating Character portraits, labeled Draw, with no fake winner emphasis. Character-led but visually denser.
+- C: contextual framing of the same real existing 3D table (NOT a second renderer) and Draw heading on LEFT. Immersive, more layout care.
+
+**Q312 — Initially collapsed mobile result Bottom Sheet**
+- **A (recommended):** winner's Character/avatar, name and prominent points plus required action; full hand/Yaku/settlement on Expand. Lightweight.
+- B: portrait/name/points PLUS compact winning tile preview; detailed hand/Yaku on Expand. Useful preview, denser.
+- C: portrait/name and concise Yaku/han summary; expand for big score, hand and settlement. More educational, less score-first.
+- For Draw / Final Standings use authorized Draw reason or Match result summary instead, not a fictional winner.
+
+**Q313 — Final Standings desktop Winner Hero + rank list**
+- A: Winner Character large LEFT; all final ranks/points on RIGHT. Same visual grammar as Win stage, needs desktop width.
+- B: Wide winner hero banner TOP; ranked results BELOW. Ceremonial and easy to stack, longer page.
+- **C (recommended):** rank-one row itself is large Character hero, other ranked rows follow. Compact cohesive standings list, less separate hero.
+
+**Q314 — Review control while a Kyoku result is showing**
+- A: Expand more result details INLINE while keeping result footer visible. One flow, more height.
+- **B (recommended):** open a secondary accessible detail sheet/modal above result stage, Close returns, server timer continues. Focused review, another layer.
+- C: switch result overlay to fuller INSPECTION view, with same server-dependent Continue footer and a Back control. No nested modal, separate view state.
+
+After Q310–Q314, recompute only material dependencies; if none remain, perform final consistency audit. PR remains Draft and docs-only, no CI/merge; generic PR title should stay fixed.
 
 ## Final authority map and consistency audit (2026-10-14)
 
