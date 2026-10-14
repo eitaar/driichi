@@ -45,8 +45,32 @@ test("local surface image renders and clears in the actual product Worker under 
   expect(colors.blue).toBeGreaterThan(colors.total / 20);
   await page.getByRole("button", { name: "Clear surface image", exact: true }).click();
   await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+  const cleared = await table.locator("canvas").screenshot();
+  if (!cleared.equals(baseline)) {
+    const difference = await page.evaluate(async ([before, after]) => {
+      const decode = async (encoded: string) => {
+        const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(encoded), char => char.charCodeAt(0))], { type: "image/png" }));
+        const canvas = document.createElement("canvas"); canvas.width = bitmap.width; canvas.height = bitmap.height;
+        const context = canvas.getContext("2d")!; context.drawImage(bitmap, 0, 0); bitmap.close();
+        return { width: canvas.width, height: canvas.height, pixels: context.getImageData(0, 0, canvas.width, canvas.height).data };
+      };
+      const first = await decode(before), last = await decode(after);
+      let differentPixels = 0, maxChannelDelta = 0, left = first.width, top = first.height, right = -1, bottom = -1;
+      if (first.width === last.width && first.height === last.height) {
+        for (let index = 0; index < first.pixels.length; index += 4) {
+          const delta = Math.max(...[0, 1, 2, 3].map(channel => Math.abs(first.pixels[index + channel] - last.pixels[index + channel])));
+          if (!delta) continue;
+          differentPixels++; maxChannelDelta = Math.max(maxChannelDelta, delta);
+          const x = index / 4 % first.width, y = Math.floor(index / 4 / first.width);
+          left = Math.min(left, x); right = Math.max(right, x); top = Math.min(top, y); bottom = Math.max(bottom, y);
+        }
+      }
+      return { before: [first.width, first.height], after: [last.width, last.height], differentPixels, maxChannelDelta, bounds: [left, top, right, bottom] };
+    }, [baseline.toString("base64"), cleared.toString("base64")]);
+    console.info("[native-clear-mismatch]", JSON.stringify({ beforeBytes: baseline.length, afterBytes: cleared.length, ...difference }));
+  }
   // Avoid an unbounded byte-array diff when an exact PNG comparison fails.
-  expect((await table.locator("canvas").screenshot()).equals(baseline)).toBe(true);
+  expect(cleared.equals(baseline)).toBe(true);
   expect(uploaded).toEqual([]);
 });
 
