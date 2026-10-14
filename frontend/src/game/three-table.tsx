@@ -187,7 +187,7 @@ export function ThreeTable({
   const [webglFallback, setWebglFallback] = useState(false);
   const [rendererCreated, setRendererCreated] = useState(false);
   const [renderStats, setRenderStats] = useState<
-    (SceneRenderStats & { layout: object; atlas: TileAtlas }) | null
+    (SceneRenderStats & { layout: object; atlas: TileAtlas; appearance: TableAppearance | undefined }) | null
   >(null);
   const [motion, setMotion] = useState<SceneMotion | null>(null);
   const [lastConsumedAnimationId, setLastConsumedAnimationId] = useState<number | null>(null);
@@ -269,6 +269,8 @@ export function ThreeTable({
     && rendererCreated
     && renderStats?.layout === layout
     && renderStats.atlas === atlas
+    && renderStats.appearance?.surface === appearance?.surface
+    && renderStats.appearance?.surround === appearance?.surround
     && !isFallback,
   );
   const renderedTileCount = ready ? renderStats?.tileCount ?? 0 : 0;
@@ -287,8 +289,8 @@ export function ThreeTable({
     : 0;
   const recordRenderReady = useCallback((stats: SceneRenderStats) => {
     if (!layout || !atlas) return;
-    setRenderStats({ ...stats, layout, atlas });
-  }, [atlas, layout]);
+    setRenderStats({ ...stats, layout, atlas, appearance });
+  }, [atlas, layout, appearance]);
   const reportConsumed = useCallback((id: number) => {
     setLastConsumedAnimationId(id);
     onAnimationConsumedRef.current?.(id);

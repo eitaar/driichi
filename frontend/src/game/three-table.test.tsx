@@ -1,5 +1,5 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import { StrictMode } from "react";
+import { StrictMode, useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CanvasTexture } from "three";
 import type { ProjectedState, RoomSnapshot } from "./types";
@@ -183,6 +183,31 @@ describe("ThreeTable native Worker adapter", () => {
     expect(currentWorker().messages.filter(input => input.scene).at(-1)!.scene!.projection.decision).toBeUndefined();
     expect(state.decision).toBe(decision);
     expect(state.decision?.actions[0].action_id).toBe("discard-1");
+  });
+  it("invalidates image readiness in the clear commit before passive effects can queue the Worker", async () => {
+    const state = projection();
+    const image = { image: { width: 8, height: 4 } as ImageBitmap, dispose: vi.fn() };
+    const selected = { surface: image, surround: null };
+    const cleared = { surface: null, surround: null };
+    const commits: string[] = [];
+    function Surface({ appearance }: { appearance: typeof selected | typeof cleared }) {
+      useLayoutEffect(() => {
+        if (appearance === cleared) commits.push(screen.getByTestId("three-table").dataset.renderReady!);
+      }, [appearance]);
+      return <ThreeTable projection={state} room={room} appearance={appearance} />;
+    }
+    const view = render(<Surface appearance={selected} />);
+    await ready();
+    const worker = currentWorker(), oldRevision = worker.messages.at(-1)!.revision;
+    platform.ready = false;
+    view.rerender(<Surface appearance={cleared} />);
+    expect(commits).toEqual(["false"]);
+    act(() => worker.frame(oldRevision));
+    expect(screen.getByTestId("three-table")).toHaveAttribute("data-render-ready", "false");
+    await waitFor(() => expect(worker.messages.at(-1)!.revision).toBeGreaterThan(oldRevision));
+    expect(worker.messages.at(-1)!.assets.surface).toBeNull();
+    act(() => worker.frame());
+    await ready();
   });
   it("bounds rendering to one in-flight input and latest pending, ignoring stale processed acknowledgements", async () => {
     platform.processed = platform.ready = false;

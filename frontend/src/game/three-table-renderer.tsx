@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { SceneRenderStats } from "./three-table-scene";
 import type { MatchSceneLayout } from "./three-table-layout";
 import type { SceneMotion } from "./three-table-motion";
@@ -183,6 +183,6 @@ export function ThreeTableRenderer(props: Props) {
       catch { window.clearTimeout(cleanupTimer); worker.terminate(); }
     };
   }, [props.atlas]);
-  useEffect(() => { enqueue.current?.(); }, [props.layout, props.projection, props.appearance, props.motion, props.sheenEnabled, props.reducedMotion, center]);
+  useLayoutEffect(() => { enqueue.current?.(); }, [props.layout, props.projection, props.appearance, props.motion, props.sheenEnabled, props.reducedMotion, center]);
   return <div ref={host} className="three-table-renderer" aria-hidden="true" />;
 }
