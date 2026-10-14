@@ -206,4 +206,3 @@ test("cached Replay navigation resets local images and playback and retires the 
   await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
   expect(nonGet).toEqual([]);
 });
-
