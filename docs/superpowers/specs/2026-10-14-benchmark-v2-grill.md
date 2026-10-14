@@ -1,57 +1,56 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview Round 20 answers recorded; final consistency review complete; pending explicit owner signoff. No implementation approved.**
+Status: **New owner decision: abandon breaking Benchmark Bot protocol v2; UI/UX interview reopened (Round UI-1 unanswered). Documentation only; no implementation approval.**
 Owner: eitaar
-Scope: lean improvements to ordinary Bot-only Benchmark Runs plus coordinated whole-app UI redesign; **A/B Experiment and its previously selected requirements withdrawn by Q234 C**. This is documentation, not implementation approval.
+Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI/UX redesign. **A/B Experiment canceled (Q234 C); breaking Benchmark Bot protocol v2 canceled by later explicit owner instruction.** Current MJAI/MCP/Built-in Bot contracts and authentication remain in place. Documentation only.
 
-**Owner simplification constraint (Round 19, reinforced Q234 C/Q235 A): DO NOT OVERENGINEER.** Prefer existing Room/Run/SQLite/React components, one self-hosted server, finite serial Matches within each Run, minimal versioned Bot capability migration and direct UI; **withdrawn A/B Experiment decisions are NOT binding**. Only independently reaffirmed ordinary-Run reliability/privacy requirements remain mandatory. Only ask the owner about truly material remaining product trade-offs. Minor constants, file naming, wire-format examples, exact library plumbing, and test harness choices can be specified by implementers within documented invariants without further owner grilling. No autonomous implementation approval follows from agreeing with this principle.
+**Owner simplification constraint (Round 19, reinforced Q234 C/Q235 A): DO NOT OVERENGINEER.** Prefer existing Room/Run/SQLite/React components, one self-hosted server, finite serial Matches within each Run and direct UI. **Withdrawn A/B Experiment AND withdrawn breaking Bot protocol decisions are NOT binding**. Only independently reaffirmed ordinary-Run reliability/privacy requirements remain mandatory. Only ask the owner about truly material remaining product trade-offs. Minor constants, file naming, wire-format examples, exact library plumbing, and test harness choices can be specified by implementers within documented invariants without further owner grilling. No autonomous implementation approval follows from agreeing with this principle.
 
-## Authoritative current scope — Round 20 supersession (2026-10-14)
+## Authoritative current scope — owner update after Round 20 (2026-10-14)
 
-**READ THIS SECTION FIRST.** This is the definitive active design; the historical Round 1–19 choices below document prior exploration, **not** a backlog of still-approved Experiment work. If any earlier heading still says "DECIDED", Q234 C and the supersession index below take precedence. Historical passages are preserved for traceability, never as instructions to implement canceled features.
+**READ THIS FIRST.** The owner has now explicitly withdrawn two previously agreed feature sets:
+1. **Q234 C:** the entire A/B Experiment product and its research-specific pairing/statistics/RNG/export infrastructure.
+2. **Latest instruction — "v2プロトコルを破棄":** the entire planned **breaking Benchmark Bot protocol v2** requirement. This OVERRIDES prior Q99 B, Q110 B, D101/D105/D113 and every later mandatory-v2 handshake, required build/checkpoint attestation, one-time Reset Ack, version-preflight, `unsupported_benchmark_protocol` migration error, v1 drain/cutover and migration grace choice. Old headings labeled DECIDED below are historical, **not current requirements**.
 
-### In scope: ordinary Benchmark Mode, no Experiment
+**"Benchmark Mode v2" is now a PRODUCT/UX work label, NOT a new Bot wire protocol version.** Continue to support existing MJAI, MCP and Built-in Bot authentication/actions within the currently shipped rules; ordinary Room/game bot protocol behavior must remain intact. No mandatory v2 adapter, mandatory model identity declaration, handshake negotiation, migration banner or compulsory Bot update.
 
-- An **Admin-created, finite Run** of 1–1,000 **sequential Bot-only Matches**, with a fixed chosen roster and **exactly one selected 3p OR 4p ruleset** per Run. After a Match's required result and Replay are durably recorded, proceed automatically to the next Match until target/Stop/failure. Maintain the deployed 3p MJAI restriction unless changed separately; no automatic simultaneous 3p+4p or infinite Run loop.
-- **Run-first dashboard**: real-time progress, scores and standings/placement/first-place/cumulative statistics, Match history and authorized Replays, one **read-only 3D live table** with Admin all-hands privacy checks and focus following Participant ID across Seats; accessible fullscreen of **that same one table**, preserved across Match transitions. SSE with stale labeling, bounded reconnect and simple authenticated polling fallback.
-- **Durability, stop, restart and errors**: SQLite authoritative Run/Match/Attempt records, Replay evidence before counting a completed Match, idempotent completion and Admin actions. On restart reconcile saved work and explicitly Admin Resume only (after v2-capable Bots revalidate); a requested Stop prevents the next Match, finishes/persists the current one if possible, and ends as **Stopped** with actual completed/target counts, not Completed. No Experiment or A/B fixtures/paired-block system is needed to use these features.
-- **Future separately authorized breaking Benchmark Bot admission migration remains approved** despite removal of its previous research use cases: minimal per-Participant v2 version, trusted build/checkpoint claim and valid clean-reset acknowledgment on an eligible retry, native Built-in Bot behavior, explicit unsupported version errors; Admin preflight, staged old-v1 Run drain (10-minute default, 60-minute maximum) and preserved historical records. **No automatic change to ordinary Room/MJAI/MCP gameplay protocols**. Q234 C does NOT authorize loosening prior required Benchmark v2 capability, but implement it as narrowly as possible; no binary attestation or general model registry.
-- **UI redesign**: English-only, concise functional copy; React/Vite with a shared Tailwind + shadcn/**Base UI** component/token layer while keeping existing specialized Three.js/Pixi rendering; role-aware navigation and protected deep links; System/Light/Dark preference; whole app published **together**, internally reviewable in phases; **no old-UI rollback** by explicit owner selection. Require evidence-based release Go/No-Go, cross-route desktop/mobile/accessibility and actual-rendered score-to-Seat verification, basic measured performance regression limits. Incident response is a **forward fix** and server-enforced maintenance mode, not hidden rollback.
-- Existing ordinary Run statistics and **genuinely independent server-observed Decision timing** may remain bounded and accurately labeled (Count/Mean and only complete-distribution Median/p95). Existing mandatory Match/Replay failure evidence remains; basic ordinary logging is allowed. Do **not** add the withdrawn research-oriented experiment diagnostics/export infrastructure just because older sections mention timing/quotas.
+### Active standalone Benchmark features
 
-### Explicitly OUT of scope — Q234 C CANCELS all prior A/B Experiment design
+- Admin configures one 3p **or** 4p game mode/ruleset and a fixed number of selected supported software participants; 1–1,000 sequential completed Matches per ordinary Run. Preserve the shipped 3p MJAI restriction unless separately changed. No humans, auto-filled vacant slots, dual-mode Runs, permanent Runner infrastructure, Experiment or A/B pairing.
+- Reuse existing Rust RoomActor/MatchMachine/SQLite and unchanged existing Bot communication; a new Match starts only after mandatory results/Replay have persisted. Authoritative Participant IDs and Seat rotation yield per-Match scores, ranks, average rank, first-place rate and accumulated table-relative net score. Never double count failed/unpersisted results.
+- Distinguish natural **Completed**, Admin-requested **Stopped** (e.g., 40/100), unexpected **Interrupted** and actual **Failed**. Admin Stop prevents new Matches and finishes the current one when possible. After crash reconcile durable Run state and permit explicit Admin Resume **only if the same participant roster can be safely reconnected/re-validated using existing authentication and current game rules**. **No automatic resumption, no synthetic clean-reset acknowledgement, no silently retried uncertain Match**. If an external Bot may retain unsafe state, fail/hold the Run for explicit intervention instead of inventing a new mandatory Bot protocol.
+- Run-first Admin UX: list/history, creation & participant selection, Run progress/stats, one live read-only Three.js table with authorized omniscient Admin view and Participant focus, fullscreen persistent between successive Matches, desktop/mobile, meaningful connectivity/stale states. Existing live UI currently uses **GET HTTP polling ~1s**; prior planned authenticated SSE with bounded polling fallback remains an *optional server-side observation improvement* and is not a Bot protocol migration.
+- English-only, clear, functional UI copy, shared Tailwind + shadcn/ui **Base UI** tokens and components; preserve existing 3D/Pixi rendering. Internally staged changes, **one public all-pages UI cutover with no prepared old-UI rollback**. Require reviewable E2E/a11y/performance and *real output* Seat/score visual checks before release. Any incident uses scoped server-enforced maintenance and a forward fix, preserving private data.
+- Prior independent ordinary Run stats and scoped optional timing remain only if practically useful; do not reinstate withdrawn research telemetry/storage products. Avoid overengineering.
 
-No `Experiment` entity/API/UI, A/B Candidate/Reference Bot roles, Paired Block/paired Match plans, cross-Run Experiment queues or attached historical comparisons, retrospective verified cohort registration, research-only model comparison workflows, fixed A/B Seed/Seat fixture scheduling, ChaCha20/HKDF research RNG stream derivation, RFC8785/JCS Fixture fingerprints or golden vectors **for Experiment**, seed reproducibility research feature, drift analysis, paired placement-effect estimates, Bootstrap/resampling or confidence intervals, Experiment-scoped Interrupted/Blocked/Failed orchestration, Experiment-only diagnosis/log quotas, or Experiment JSON/CSV archive/export with its download authentication, staging and quotas.
+### Explicitly out of scope
 
-In particular the previous **3p 6-Match / 4p 8-Match A/B blocks**, **10,000-replicate bootstrap/95% CI**, **20 complete-block CI threshold**, **256 MiB research archive quota**, and paired Fixture PRNG/hash requirements **must NOT be implemented for this scope**. The ordinary Mahjong engine's existing RNG and Replay format are unaffected, and no new deterministic research PRNG is mandated. Histories of *actually shipped* v1 Runs/Replays must never be deleted simply because planned v2 Experiment functionality was canceled. No Experiment feature has been deployed by this docs PR.
+- **Any breaking Benchmark Bot v2 protocol/admission/restart/migration requirement:** versioned capability handshake, required build/checkpoint proofs or declarations, reset request/ACK with 60s timeout, mandatory three-Attempt reset-based retries, mismatch code/version guidance, compatibility preflight statuses, mandatory v1 Match drain (10min default/60min cap), protocol release/migration infrastructure, independent attestation, and special new MJAI/MCP wire messages. None will be required for this UI/core Benchmark work.
+- **All previously canceled A/B Experiments:** Experiment entity/API/UI, Candidate/Reference pairings, paired Blocks, research fixture/seed stream PRNG and JCS hash, Bootstrap CI/statistics, research-only diagnostics and Experiment archive/export.
+- New distributed schedulers, parallel-per-Run Match execution, rewritten game engine, independent UI renderer, or app-wide behavior changing solely to support removed features.
 
-### Supersession ledger and authority
+### Supersession and design authority
 
-- **Q233 A → D236:** An early Admin Stop uses terminal **Stopped** with actual count, separate from natural **Completed** or crash **Interrupted**; no implicit Resume of a terminal Stopped Run.
-- **Q234 C → D237:** CANCELLATION explicitly overrides **all earlier approvals of Experiment-specific scope**, even if those headings still read `DECIDED`. Their descriptions survive *only* as historical interview evidence.
-- **Q235 A → D238:** Existing one-server/SQLite deployment; serial Matches per Run. Do not design distributed cluster, new scheduler service or multi-table concurrency.
-- **Q236 A → D239:** End the question-by-question grilling after this consistency check, with a concise final approval gate. Implementation detail choices delegated to a subsequent separately approved plan; do not start coding or CI or merge now.
-- The no-rollback UI choice (Q144 C), English-only UI (Q170 B), and future **breaking Benchmark Bot v2 admission** (Q110 B) are separate explicit user decisions, **not** undone by Experiment cancellation.
+- **New owner decision (post Q236) overrides all old required-v2-bot protocol decisions.** Prior D101/D105/D113/D114/D134–D136/D148–D150/D164–D166/D182–D184/D193/D200–D202/D212/D219–D221/D231 and reset/protocol clauses in mixed decisions are historical only **to the extent they require a new Bot contract**. Other independent ordinary Run/SQLite/Admin privacy clauses survive. A row of legacy protocol decisions cannot be treated as implementation permission.
+- **Q234 C** still cancels Experiment-only decisions and derived infra. Both cancellations are independent.
+- **Q233 A/Q235 A:** `Stopped` distinct from `Completed` and single-server SQLite with sequential Match progression remain active.
+- English-only UI Q170 B, shadcn/Base UI Q172 A, one whole-app public UI release Q114 B, and **no old-UI rollback** Q144 C remain active.
+- **New UI/UX interview** is documented separately in `docs/superpowers/specs/2026-10-14-ui-ux-grill.md`; owner choices in that note are still pending. The former "grilling closed" decision Q236 A applied to the previous architectural scope. This is a newly requested, bounded *UI/UX* interview, not an open-ended return to Experiment/protocol requirements.
 
-### Remaining high-level blockers / risks (no new owner questionnaire)
+### Known risks and scope checks before implementation
 
-1. **Approval boundary:** The updated slim scope needs an explicit final owner signoff *after review*. A Draft docs PR is not a product implementation authorization, CI approval, or merge instruction.
-2. **Potential size of protocol migration after removing Experiments:** strict v2 Bot admission, clean-reset contracts and breaking old Benchmark integrations remain explicitly required, although their research motivation is gone. Minimize surface; implement separately with migration tests and advance notice. Only a **separate explicit owner change** may rescind the breaking migration.
-3. **Compatibility/rules:** existing restriction on **3p MJAI** and unrelated Room protocols must be honored; don't promise every type of Bot in every mode without verifying today's policy.
-4. **Known visual bug:** normal Room live center score-to-Seat presentation was previously reported wrong but has not been reproduced or shown fixed. Treat actual-rendered targeted tests and proven repair separately from new UI style.
-5. **Operational choice:** the requested single public all-page UI release has **no old-UI rollback path**. Upfront tests, access controls, recorded Go/No-Go and forward-only incident repair are the compensating safeguards; downtime risk remains.
-6. **Historical writing:** pre-Q234 C Experiment sections below are an archive. A future Experiment project would need a new owner decision and a separately scoped proposal, **not automatic reactivation** of these old decisions.
+1. **No code/CI/migration/merge authorization.** Keep Draft PR #23 docs-only and await UI choices/final signoff.
+2. The preexisting **3p MJAI exclusion** is still enforced; UX must reflect available Bot/mode combinations. Verify compatibility in code, not an invented version handshake.
+3. Recovering an interrupted Run requires preserving Match/Replay identity and cautious Bot reattachment; when safe continuation cannot be demonstrated from current Bot/Room state, do NOT silently retry or claim an unfinished Match completed. No new mandatory Reset protocol exists.
+4. The previously reported live center score-to-Seat mismatch was **not verified fixed**. New UI screenshot tests must validate actual 3p/4p Participant→Seat→score in normal Room, Benchmark, Replay, and renderer Worker paths.
+5. A single full-app UI release without old-UI rollback remains a deliberate operational risk. Evidence-based go/no-go and forward-only safety containment are required.
 
-### Minimal implementation handoff (future work only; NOT authorized here)
+### Minimal future handoff — separately authorized, not part of this PR
 
-**Milestone UI (separately authorized):** shared Base UI tokens and page shell, preserve renderer, test real live score/Seat bug, create Run-first table/fullscreen and coordinated all-pages cutover with explicit evidence gate/no rollback.
-
-**Milestone Core Benchmark (separately authorized):** small Run state machine + Replay/result persistence, sequential Match loop, Stop and explicit crash Resume, stats/history, authenticated live SSE with bounded fallback. Reuse current Room/Run/SQLite architecture.
-
-**Milestone Bot protocol migration (separately authorized):** narrowly scoped version/checkpoint/reset capability for every ordinary v2 Bot, operator compatibility preflight, bounded v1 drain, actionable old Bot mismatch; keep unrelated normal room/game API behavior intact.
-
-No additional Experiment milestones; no distributed/scheduler frameworks. Implementation-owned wire details and exact server file layout should be specified when code changes are separately approved, not grilled indefinitely.
+- UI/UX choices → common shadcn/Base UI shell with English-only copy, one-table dashboard, remaining routes, accessibility/visual/performance gates.
+- Core Run enhancements → authoritative reconciliation and explicit Resume only when safe, readable stats/history and optionally more efficient authorized observation updates.
+- **No planned Bot protocol migration phase**. Retain the existing connector and Room API contracts.
 
 ## Sources and invariants
 
@@ -63,7 +62,9 @@ No additional Experiment milestones; no distributed/scheduler frameworks. Implem
 
 Keep actual deployed v1 behavior as a historical baseline, not permission to activate withdrawn Experiment plans.
 
-## New UI design requirement and Q99 migration conflict — OWNER NOTES (2026-10-14)
+## Historical UI and former protocol-migration notes — SUPERSEDED for Bot wire protocol
+
+**Historical note:** The preexisting text below predates the owner's later explicit removal of the entire breaking Benchmark Bot protocol v2. Any statement requiring that new admission/reset/migration protocol is *withdrawn*; read the authoritative current scope above. The UI component choices remain active.
 
 **Confirmed across Rounds 13–16:** Replace the app's obscure decorative/poetic marketing copy with short functional **English-language** UI text, using **shadcn/ui with Base UI primitives, Tailwind and design tokens**. **Q170 B intentionally supersedes the prior D157 all-locales audit:** redesigned UI labels/text are English-only and may be hard-coded in the new pages. Round 17 Q175 A directs removal/disablement of any legacy language selectors and stale translation-only UI **if source inspection actually finds them**, preserving game assets and protocol data. Do not imply locale support without evidence or advertise languages the English-only redesign does not support. Keep functional instructions, security/privacy/accessibility text and errors. The existing React 19 + Vite 8 + TypeScript frontend uses bespoke CSS and has no Tailwind/shadcn dependency in its inspected package manifest; its Admin/Benchmark views embed a Three.js table that need not be rewritten. Official Vite integration guidance: https://ui.shadcn.com/docs/installation/vite .
 
@@ -246,7 +247,7 @@ Each **candidate leg** of a comparison block has 3 Matches for a 3p Benchmark or
 
 Summarize only actual observed first responses and accepted legal actions in timing distributions. Separately show invalid-action rate, timeout rate, missing-response rate and disconnection rate, with explicit denominators and missingness; never convert failed decisions into fictional successful timing observations.
 
-### D31. Strict Match reset gate before retries — DECIDED (Q30: A)
+### D31. Strict Match reset gate before retries — DECIDED (Q30: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Before Admin resumes an interrupted scheduled Match, check the same declared Bot build/checkpoint identities and confirm a **fresh, clean Match-level Bot state**. Reconnection alone is not clean-reset evidence. Round 7 requires an explicit authenticated Bot clean-Match reset acknowledgement for the same declared checkpoint before retries; the handshake shape and idempotent processing remain open. Existing maximum of 3 Attempts remains.
 
@@ -288,7 +289,7 @@ Store the **Root Seed**, deterministically derived per-Match seed/fixture schedu
 
 Start the server's Bot latency clock when an action request is **dispatched to the Bot Controller**, not when the Decision is initially created. Record separate elapsed times for the first received response and the first accepted complete legal Game Action. Network/protocol overhead is included in external Bot metrics; label synchronous Built-in Bot timings as server-observed rather than inference-only. Round 9 requires count, mean, median and p95 for both first-response and accepted-legal-action latency where observed, plus separately denominated error rates. Exact MJAI/MCP framing and retry/invalid response attribution remain open.
 
-### D41. Explicit authenticated clean Match reset acknowledgement — DECIDED (Q40: A)
+### D41. Explicit authenticated clean Match reset acknowledgement — DECIDED (Q40: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Before retrying a scheduled Match, each affected external Bot must explicitly **acknowledge a fresh Match-level reset under its authenticated token and matching declared build/checkpoint identity**. A reconnect alone does not count. As with artifact declarations, the operator trusts this acknowledgement; it is not independent proof of the Bot's internal memory. Internal Built-in Bot reset evidence and the specific handshake/correlation contract remain open. This is a lightweight protocol acknowledgement, not a mandatory process restart.
 
@@ -326,7 +327,7 @@ Admin selects a fixed target **number of complete Paired Blocks before the Exper
 
 A historical Run with **complete qualifying metadata under the selected trusted Bot declaration policy** may be attached to an Experiment even if its actual Seed/Seat plan is **not** compatible with the paired schedule. Such a Run must be **explicitly labeled descriptive / unpaired** and excluded from paired effect estimation and paired confidence intervals. Missing provenance is still disqualifying (D15); do not silently upgrade a descriptive Run to Paired.
 
-### D50. Changed checkpoint prevents continued Run — DECIDED (Q49: A)
+### D50. Changed checkpoint prevents continued Run — DECIDED (Q49: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 If an existing Participant reports a different immutable build/checkpoint identity after the Run has begun, **block further execution of that Run**. Preserve all previously durable results and provenance; the changed model must be evaluated in a **new Experiment**, not appended to the existing frozen comparison. Mere token reconnection or a new credential is not permission to change the claimed model. Round 9 permits credential rotation with a freshly Admin-issued valid Token only when Participant identity and frozen build/checkpoint declaration match. Revoked Tokens are never accepted; incompatible checkpoint changes still block the Run.
 
@@ -391,7 +392,7 @@ A fully verified but unpaired historical Run may appear under a clearly identifi
 
 An external Bot may reauthenticate with a **new valid Admin-issued Bot Token** if it is still the **same Participant** and presents a declaration matching that Run's immutable executable/build/checkpoint identity. A revoked/expired previous credential never remains valid. Changing credentials does not grant permission to alter the model version, skip reset confirmation, or change seats. Round 10 chooses optional versioned v2-only metadata/reset extensions for MJAI/MCP; the mapping from a new Token to an existing authorized Participant and wire schema still require validation (D77).
 
-### D64. Built-in Bot reset is server-managed and recorded — DECIDED (Q63: A)
+### D64. Built-in Bot reset is server-managed and recorded — DECIDED (Q63: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Before a Match retry, the server **reinitializes each relevant Built-in Bot's Match state and records a reset result**, rather than inventing a Bot Token or blindly assuming reset. External Bots continue to provide explicit token-authenticated clean-Match reset acknowledgements. The exact reset hook/state boundary and failure handling remain open, without authorization to change general v1 Built-in Bot behavior.
 
@@ -451,7 +452,7 @@ An Experiment's paired comparison runs **one exact game mode**, such as `3p-red-
 
 **SQLite is the source of truth** for Experiment identity/configuration/freeze boundary, selected exact game mode, planned Paired Blocks and fixtures, Run queue/links, statuses, Attempts and durable result pointers. In-memory workers or Room orchestration derive their execution view from persisted state and cannot independently invent progress. Existing v1 Run/Room behavior and APIs remain unchanged. After crash/restart, reconcile scheduled identity with persistent Replay and final results before any advancement. Exact transaction/queue state machine and filesystem+DB commit protocol remain open.
 
-### D77. Versioned v2 Bot metadata/reset extension — DECIDED (Q76: A; Q99 B and Q110 B refine admission)
+### D77. Versioned v2 Bot metadata/reset extension — DECIDED (Q76: A; Q99 B and Q110 B refine admission) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Versioned MJAI/MCP capability negotiation conveys trusted Participant-specific build/checkpoint declarations and correlated clean-reset acknowledgements. Every Bot in **Benchmark v2, including standalone Runs**, must implement its v2 capability (D101). Round 13 Q110 B selects **migration of existing Benchmark Bot entry points at a future authorised v2 release**, rather than perpetual v1 Benchmark protocol support; it intentionally supersedes the previous additive-only legacy Benchmark guarantee. Existing live routes are not changed by this design interview. Built-in Bots implement native capabilities, without pretending to need external Bot Tokens. Trust is operator-issued, not binary attestation.
 
@@ -509,7 +510,7 @@ After server restart, reconstruct the saved Experiment plan, successful Match re
 
 Assign durable identity for `Experiment / Paired Block / scheduled Fixture / Attempt`. Each actual Attempt has its own unique Match ID and immutable attempt number; on successful durable Match commit, the **scheduled fixture** is counted at most once. Preserve all failed Attempts separately, make completion/reconciliation idempotent and prevent duplicate score increments after restart or duplicated completion signals. SQLite constraints and transaction endpoints remain open.
 
-### D91. One-time scoped reset request ID for external Bots — DECIDED (Q90: A) — PARTIAL: research/Experiment clauses canceled Q234 C
+### D91. One-time scoped reset request ID for external Bots — DECIDED (Q90: A) — PARTIAL: research/Experiment clauses canceled Q234 C — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 A v2-capable adapter issues an **opaque single-use reset request ID** scoped to the Participant, planned Match and Attempt (and the immutable declared build/checkpoint). Accept a clean-state acknowledgement only for the matching authenticated Participant and current request; reject duplicated, stale, replayed or wrong-Attempt acknowledgements. This is a lightweight protocol correlation check, **not** independent proof of binary execution. Built-in Bot reset is controlled by server lifecycle separately.
 
@@ -551,7 +552,7 @@ Automatically advance Match-to-Match until the configured 1–1,000 completed-Ma
 
 Give every active ordinary Benchmark Run Admin-only read-only 3D live preview and ongoing statistics, then historical results and authorized Replay links after completion. Do not reserve the live view for A/B Experiments.
 
-### D101. All Benchmark v2 Bots must support v2 capability — DECIDED (Q99: B; migration settled by Q110 B)
+### D101. All Benchmark v2 Bots must support v2 capability — DECIDED (Q99: B; migration settled by Q110 B) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Every MJAI/MCP/Built-in Participant in every Benchmark v2 Run must support the versioned v2 identity/reset capability, **even without Experiment membership**. The owner also selected an intentionally breaking new-release switch of existing Benchmark bot connections (D113). Legacy-only Bot clients therefore need upgrading before that cutover. Existing Replay/results remain accessible; exact deployed route inventory and migration/error notices are open. This is not permission to perform the cutover now or require independent runtime attestation.
 
@@ -567,7 +568,7 @@ On restart, first reconcile staged and final Replay artifacts with authoritative
 
 Use SQLite to persist explicit Experiment states and transitions (e.g., Draft, Queued, Running, PauseRequested, Paused, Blocked, Interrupted, Completed, CancelRequested, Cancelled, Failed). Differentiate Run/Attempt states; exact transition edges remain open.
 
-### D105. Per-Participant negotiated v2 capability/version — DECIDED (Q103: A)
+### D105. Per-Participant negotiated v2 capability/version — DECIDED (Q103: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Negotiate declared capability **per Participant**, not per Bot Token, since one token may authenticate several Participants. Round 12 Q99 B requires all Benchmark v2 participants to be capable; Round 13 Q110 B authorises the *design choice* to migrate legacy Benchmark bot admission upon future release. No running endpoint changes during the design interview.
 
@@ -601,11 +602,11 @@ The user requests a modernized app UI with meaningless decorative/poetic copy re
 
 ## Decisions — Round 13 (2026-10-14)
 
-### D113. Breaking Benchmark Bot admission migration — DECIDED (Q110: B; Q131 A, Q132 A)
+### D113. Breaking Benchmark Bot admission migration — DECIDED (Q110: B; Q131 A, Q132 A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 At the explicitly authorized future new Benchmark release, **replace the existing legacy Benchmark Bot admission with mandatory v2 capabilities**, not a permanent v1 compatibility endpoint. **Q131 A:** old unsupported v1 Benchmark clients receive an actionable, explicit protocol/version mismatch with upgrade guidance; never claim missing build/checkpoint/reset data as valid. **Q132 A:** drain/stop existing v1 Benchmark Runs deliberately *before* cutover; preserve recorded history, accurately label incomplete/interrupted work, and never silently upgrade an in-flight v1 Run to strict v2. This breaking choice does not automatically affect unrelated Room or normal-play APIs. Exact endpoint inventory, wire status/error fields and maintenance/rollback workflow remain open. No production migration or code changes are authorized now.
 
-### D114. Native Built-in v2 Bot contract — DECIDED (Q111: A, Q133: A)
+### D114. Native Built-in v2 Bot contract — DECIDED (Q111: A, Q133: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Server-native Built-in Bots implement the same mandatory **Participant-scoped protocol/capability version, build/checkpoint identity and clean reset contract** as external MJAI/MCP Bots without external Bot Tokens. **Q133 A** requires a versioned Participant identity/model declaration for **every** v2 Benchmark Run, standalone or Experiment, and an explicit reset acknowledgement/record when an eligible retry occurs. Declarations by trusted external Bot Token holders are accepted without independent binary attestation; no gratuitous per-Match heavyweight process proof is required.
 
@@ -687,15 +688,15 @@ On compact screens stack the one live table, status/Run controls and key scores 
 
 Retain the current Three.js/Pixi specialized table/game rendering paths; rework shared shell/chrome, overlays and controls to match shadcn/ui/tokens. A separately proven rendering correctness bug may be fixed independently. Do not assume a generic component library can replace the game renderer or remove game views from the all-pages release.
 
-### D134. Explicit version mismatch and migration guidance — DECIDED (Q131: A; Q145: A)
+### D134. Explicit version mismatch and migration guidance — DECIDED (Q131: A; Q145: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 After separately authorized v2 Benchmark cutover, unsupported legacy Benchmark Bots receive a **structured versioned `unsupported_benchmark_protocol` error** with required/supported version metadata and migration-document location, using transport-appropriate HTTP/WS/MCP failure framing and **no leaked credentials/secrets**. Never fabricate valid model/checkpoint declarations. Exact codes, message schema and close/status mapping are a new frontier.
 
-### D135. Drain legacy v1 Runs before strict-v2 cutover — DECIDED (Q132: A; Q146: A)
+### D135. Drain legacy v1 Runs before strict-v2 cutover — DECIDED (Q132: A; Q146: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Announce a future maintenance/drain window before v2-only Benchmark admission. Allow eligible **currently active legacy Matches to finish and persist** within that window, then stop/mark unfinished v1 Runs **Interrupted** as appropriate, retaining all durable Match/Replay/history and operator review before enabling strict-v2 admission. Do not delete old data or silently upgrade legacy Attempts. Exact timeout and incomplete-running-Match treatment are still open.
 
-### D136. Every v2 Bot declares identity and supports clean reset — DECIDED (Q133: A; Q147: A) — PARTIAL: research/Experiment clauses canceled Q234 C
+### D136. Every v2 Bot declares identity and supports clean reset — DECIDED (Q133: A; Q147: A) — PARTIAL: research/Experiment clauses canceled Q234 C — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 At v2 admission for **ordinary standalone and optional Experiment Runs**, each **Participant** negotiates a version/capability and claims its build/checkpoint identity, frozen for eligible Run conditions. The adapter records that Participant's clean-Match reset capability, requiring a matching explicit acknowledgement on eligible retry. Built-in Bot identity/reset is server-native. Bot Token may identify many Participants and does not replace their individual model identity; trusted declaration is **not external binary attestation**. Exact handshake event/field schema and validation failure behavior remain open.
 
@@ -747,15 +748,15 @@ Navigation may hide unauthorized destinations for convenience, but **every serve
 
 **Risk acknowledged in design:** because no prior-UI restoration procedure will be supplied, an inaccessible/failed full-app launch could require a forward-fix emergency deployment or temporarily suspending affected operations. Maintain all existing committed **all-route E2E/accessibility/real-rendered visual/performance prelaunch checks**, release acceptance and user-data preservation; **how to respond after a severe incident without rolling back is still open** in Round 16 Q160. No product/UI release, migration or code change is authorized by this decision.
 
-### D148. Structured transport-appropriate legacy Benchmark protocol error — DECIDED (Q145: A)
+### D148. Structured transport-appropriate legacy Benchmark protocol error — DECIDED (Q145: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 After the separately authorized strict-v2 Benchmark admission cutover, a legacy-only Bot receives a typed/versioned **`unsupported_benchmark_protocol`** error including required/supported version metadata and a migration-document location, framed appropriately for HTTP/WS/MCP. Avoid secret-bearing messages, generic unexplained 500s, silent disconnects and invented v2 capability claims. Exact per-transport code/payload and handshake transition are open.
 
-### D149. Maintenance-window drain before v2 cutover — DECIDED (Q146: A)
+### D149. Maintenance-window drain before v2 cutover — DECIDED (Q146: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Announce a cutover/drain window. Allow eligible running v1 Matches to finish and **durably persist** before stopping unfinished v1 Runs, preserving historical Match/Replay results and recording incomplete/interrupted status. No loss of old history or unproven v1-to-v2 in-flight conversion. Drain timeout, announcement mechanism and nonresponsive-Bot policy remain open.
 
-### D150. Participant-level strict-v2 admission handshake — DECIDED (Q147: A)
+### D150. Participant-level strict-v2 admission handshake — DECIDED (Q147: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Negotiate **version and supported capability per Participant**, capture its immutable trusted model/build/checkpoint declaration **before** admitting it to any v2 Benchmark Run, and record the capability to perform correlated clean reset on an eligible retry. External Bot declarations use Admin-issued trusted tokens (a token may authenticate many Participants); Built-in Bots expose server-native identity/reset. Do not defer capability admission until Experiment creation.
 
@@ -815,15 +816,15 @@ Remember a safe same-origin target deep link through the authentication transiti
 
 **Preserve Q144 C's explicit no-rollback choice.** If the one-release app-wide UI cutover causes a major incident, isolate broken/unsafe flows in restricted or maintenance mode where appropriate, protect durable data, document operator severity/decision and deploy a **new forward corrective patch**, **not a prior-UI restoration artifact**. This does not guarantee instant recovery; absent rollback increases outage/repair risk. Exact incident severity triggers, scope and maintenance UX remain open.
 
-### D164. Stable structured v2-only Benchmark protocol mismatch — DECIDED (Q161: A)
+### D164. Stable structured v2-only Benchmark protocol mismatch — DECIDED (Q161: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Use the typed `unsupported_benchmark_protocol` contract containing required/supported version information and a stable migration-document reference, with safe transport-specific HTTP/WebSocket/MCP envelope. Do not expose secrets, fake a Bot build/reset acknowledgement or silently accept v1-only Benchmark clients. Exact protocol schema, error codes and retryability mapping remain open.
 
-### D165. Read-only pre-cutover v2 Bot capability preflight — DECIDED (Q162: A)
+### D165. Read-only pre-cutover v2 Bot capability preflight — DECIDED (Q162: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Provide an Admin-readable, **non-mutating** compatibility preflight of registered Benchmark Bot Participants against the required v2 handshake so incompatible adapters are identifiable **before** the deliberately breaking release. Report missing/unreachable/unsupported distinctly rather than claiming unreachable Bots are incompatible or deploying a silent upgrade. The check is not independent runtime attestation and does not authorize actual v1 cutover. Preflight timing, reachability method and stable output status taxonomy remain open.
 
-### D166. Bounded grace for an unresponsive active v1 Match — DECIDED (Q163: A)
+### D166. Bounded grace for an unresponsive active v1 Match — DECIDED (Q163: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 At planned legacy Benchmark drain, stop scheduling new Matches, allow an in-flight valid Match a configured finite grace to reach durable Replay/final results, and then record an unfinished/interrupted outcome if not safely complete. Preserve all earlier durable history and never fabricate a completed Match. A numerical grace timeout and user-visible maintenance scheduling contract remain open.
 
@@ -889,15 +890,15 @@ The deliberate **no-old-UI-rollback** choice Q144 C remains. On serious postlaun
 
 Record a versioned operator **Go/No-Go** checklist keyed by exact release commit, evidence links for route-wide E2E, a11y, rendered seat/score screenshots and measured performance, plus reviewer identity and decision time. Q144 C's lack of rollback increases importance of gating, but **this design does not authorize tests or deployment**. Storage/retention of the release evidence awaits Q196.
 
-### D182. Compatible / Incompatible / Unknown preflight states — DECIDED (Q179: A)
+### D182. Compatible / Incompatible / Unknown preflight states — DECIDED (Q179: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Read-only Benchmark Bot preflight reports `compatible`, `incompatible`, and `unknown/unreachable` separately. A disconnected or unresponsive external Bot must not be declared verified-compatible or fabricated-incompatible. How unknown affects the cutover operator decision is open (Q197).
 
-### D183. Finite operator-adjustable legacy drain grace — DECIDED (Q180: A, Q198: A)
+### D183. Finite operator-adjustable legacy drain grace — DECIDED (Q180: A, Q198: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 On future strict-v2 cutover, stop scheduling new v1 Benchmark Matches and allow the active Match a **default ten-minute completion grace**, operator-configurable within a documented finite maximum (Q198 A). Then persist interrupted/incomplete status, not fabricated results. Maintain completed Replay/Match/Run history; maximum allowed grace remains an open Q217.
 
-### D184. Shared semantic mismatch error, transport-appropriate framing — DECIDED (Q181: A)
+### D184. Shared semantic mismatch error, transport-appropriate framing — DECIDED (Q181: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Retain `unsupported_benchmark_protocol` and required/supported version + migration-document semantics across HTTP, WebSocket and MCP, while each transport uses its own valid response/status/close framing. No generic 500-only message, fake claims or HTTP-only coercion. Exact status/close names and envelope mapping remain Q199.
 
@@ -933,7 +934,7 @@ Use a project-owned **shared `ui` component library + canonical design tokens** 
 
 Produce an immutable, canonical planned Fixture representation that records **exact game mode/rules, engine version, ordered Participant IDs/build declarations, seat permutation, Root Seed and named independent gameplay RNG streams**. Hash/version the derivation and publish deterministic golden vectors. Seed equality does **not** guarantee the same trajectory when Candidate Bot actions differ. Fixed A/B paired Blocks and 1–1,000-Match Run chunk bounds remain; exact PRNG/KDF choice is Q207 and wire/hash serialization is Q208.
 
-### D193. Authenticated scoped one-time Match reset envelope — DECIDED (Q190: A)
+### D193. Authenticated scoped one-time Match reset envelope — DECIDED (Q190: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Require a **versioned, one-time Reset Request ID** attached to its authenticated **Participant, Experiment (when present), Run, Fixture, Attempt and trusted checkpoint/build declaration**, with one matching clean-reset acknowledgment before an eligible retry. Duplicate/out-of-scope/stale acknowledgments never count as a valid new reset. Built-in Bots get the server-native equivalent. Reset acknowledgment timeout and retry error behavior remain Q209; do not treat reconnect as reset.
 
@@ -963,15 +964,15 @@ Under the deliberate **no-old-UI-rollback** policy, a postlaunch incident normal
 
 Keep a versioned release-evidence record keyed by exact release commit, test/screenshot/performance evidence references, decision, named approver and timestamp. Prevent missing or failed gate evidence from silently being reclassified as passing; never embed credentials/private concealed hands in shared reports. Round 19 Q215 A selects a versioned, append-only release checklist/evidence; exact storage path is implementation-level. No tests, CI, or release are authorized by this interview.
 
-### D200. Unknown Bot preflight may coexist with cutover, but never grants v2 admission — DECIDED (Q197: A)
+### D200. Unknown Bot preflight may coexist with cutover, but never grants v2 admission — DECIDED (Q197: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Display `Compatible`, `Incompatible`, and `Unknown/Unreachable` separately before the deliberate breaking v2 Benchmark Bot cutover. An operator may approve the migration **after explicitly acknowledging remaining Unknowns**; **each Unknown Bot remains ineligible for new v2 Runs until it later completes a legitimate v2 Participant handshake**. Do not fake compatibility or permanently label an unreachable Bot incompatible. Round 19 Q216 A requires a prominent and acknowledged Unknown warning; unknown Bots remain ineligible for v2 Run admission.
 
-### D201. Default 10-minute configurable finite legacy Match drain grace — DECIDED (Q198: A)
+### D201. Default 10-minute configurable finite legacy Match drain grace — DECIDED (Q198: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 After stopping **new** old-Benchmark Match scheduling, give the already-running legacy Match a **default 10-minute** grace, configurable by Admin within a finite documented upper bound. Completed Matches persist normally; a Match exceeding the grace becomes honestly interrupted/incomplete without a false result, preserving history. Round 19 Q217 A fixes the **60-minute hard upper bound**; incomplete Match status is not a completed result.
 
-### D202. Typed version mismatch semantics carried in HTTP/WS/MCP-native error frames — DECIDED (Q199: A)
+### D202. Typed version mismatch semantics carried in HTTP/WS/MCP-native error frames — DECIDED (Q199: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Use one versioned `unsupported_benchmark_protocol` semantic error with required/supported protocol versions and a stable migration-document identifier, mapped to **native HTTP validation error, WebSocket handshake/error/close semantics and MCP tool errors**, respectively. Do not misuse HTTP-only framing inside a non-HTTP transport or leak tokens. Round 19 Q218 A confirms **transport-native** errors with stable version fields; concrete codes are implementation-contract choices.
 
@@ -1011,7 +1012,7 @@ Select **one explicitly named, pinned cross-language deterministic gameplay PRNG
 
 Serialize exact engine/ruleset/mode identity, ordered Participant IDs/checkpoint declarations, seat map, Root Seed and all named stream IDs to a strict **versioned canonical byte/JSON representation** and hash those exact bytes. Publish known-answer Fixture golden hashes/vectors; unordered maps or UI display labels must not influence identity. Round 19 Q227 A selects **RFC 8785/JCS canonical JSON + SHA-256**; exact typed field/encoding layout is implementation work.
 
-### D212. Bounded authenticated one-time Reset Ack, failed Ack is failed Attempt — DECIDED (Q209: A) — PARTIAL: research/Experiment clauses canceled Q234 C
+### D212. Bounded authenticated one-time Reset Ack, failed Ack is failed Attempt — DECIDED (Q209: A) — PARTIAL: research/Experiment clauses canceled Q234 C — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 A software Participant must answer a correlated versioned, scoped authenticated Reset Request ID with a **correct one-time Ack before a configurable finite timeout**. Missing, expired, mismatched or duplicate acknowledgements never establish clean initial state. Record the failed reset prerequisite/Attempt under the existing **maximum three Attempts** policy; do not mark a Match completed or skip integrity evidence. Retry eligibility is explicit. Round 19 Q228 A sets the default **60-second** per-Participant Ack deadline.
 
@@ -1043,15 +1044,15 @@ During a no-rollback UI incident, **disable affected actions on the server**, no
 
 Record exact released commit, checklist, linked E2E/a11y/3D visual/performance evidence, approver and timestamp in a versioned append-only history. Do not purge failed gates or embed private data/credentials. Simple Markdown/repository release artifacts suffice; no dedicated approval platform is required.
 
-### D219. Acknowledge Unknown preflight; never bypass v2 admission — DECIDED (Q216: A)
+### D219. Acknowledge Unknown preflight; never bypass v2 admission — DECIDED (Q216: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 A future operator can approve the **planned breaking** Benchmark protocol cutover with explicitly acknowledged `Unknown/Unreachable` Bots, but those Bots **cannot enter v2 Runs** until they pass a real v2 Participant-specific handshake. Keep Compatible/Incompatible/Unknown distinctions.
 
-### D220. Legacy v1 Match drain grace defaults 10 min, max 60 min — DECIDED (Q217: A)
+### D220. Legacy v1 Match drain grace defaults 10 min, max 60 min — DECIDED (Q217: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 During authorized maintenance, stop new v1 Matches, allow the current Match a default **10 minutes** to finish and persist, and permit Admin configuration up to a hard maximum of **60 minutes**. On expiry record an honest interrupted/incomplete outcome and preserve prior history.
 
-### D221. Transport-native HTTP/WS/MCP mismatch error — DECIDED (Q218: A)
+### D221. Transport-native HTTP/WS/MCP mismatch error — DECIDED (Q218: A) — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 One typed `unsupported_benchmark_protocol` error with required/supported version metadata and a stable migration-document reference, encoded in the **native failure path of HTTP, WebSocket and MCP**. Avoid generic 500s and misuse of HTTP-only envelopes. Precise HTTP status/WS close code is an implementation contract detail to document when actually implementing.
 
@@ -1091,7 +1092,7 @@ Use a **pinned specific ChaCha20-family deterministic stream PRNG**, deriving na
 
 Define exact versioned Fixture schema and **RFC 8785 canonical JSON UTF-8 bytes**, seed/int encodings, ordered Participants/Seat/rule/engine/stream descriptors, and calculate **SHA-256 over explicitly version-tagged canonical bytes**. Require published known-answer hashes and cross-language tests. Avoid ambiguous floating-point seed fields or unordered UI object identity. The schema's incidental field labels are implementation details.
 
-### D231. 60-second authenticated Reset Ack default — DECIDED (Q228: A) — PARTIAL: research/Experiment clauses canceled Q234 C
+### D231. 60-second authenticated Reset Ack default — DECIDED (Q228: A) — PARTIAL: research/Experiment clauses canceled Q234 C — SUPERSEDED: mandatory Bot v2 protocol withdrawn after Round 20
 
 Default to a **60-second finite timeout per Participant** for a scoped, authenticated, one-time Reset Ack, operator adjustable within safe finite limits. Wrong/missing/expired Ack is a failed Reset prerequisite/Attempt under the preexisting **three-Attempt** policy; never mark an unfinished Match completed. No generic process attestation.
 
@@ -1158,47 +1159,26 @@ These remain candidates, not implementation mandates:
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Final dependency tree — lean scope after Round 20 (no pending design questionnaire)
+## Current design tree — UI/UX interview opened; no Bot v2 protocol
 
 ```text
-driichi Benchmark Mode v2 — owner-selected scope
-├── CORE: ordinary Bot-only Run (D236 Stopped 40/100)
-│   ├── exact one 3p OR 4p ruleset; existing 3p MJAI restriction
-│   ├── finite 1–1,000 Matches, sequential inside one Run
-│   ├── durable Replay/results, statistics and history
-│   ├── Run-first SSE dashboard, ONE live 3D table/fullscreen
-│   └── manual reconciliation/Resume, Stop at Match boundary
-├── UI: all pages together, shadcn/Base UI + Tailwind
-│   ├── English-only minimal accessible copy, light/dark
-│   ├── keep Three.js/Pixi; real score-to-Seat regression gate
-│   └── no rollback: prelaunch evidence + forward-only incident fix
-├── FUTURE BREAKING BENCHMARK BOT ADMISSION ONLY
-│   ├── v2 participant version/build + eligible retry reset ack
-│   ├── explicit mismatch/migration guide; preflight
-│   └── safely drain v1 Run; retain all history
-├── DEPLOYMENT: existing one-server SQLite, no distributed queue
-├── CANCELED BY Q234 C: all A/B Experiment-related work
-│   ├── Experiment entities/queue/pairing/paired Blocks
-│   ├── seeded A/B Fixture PRNG/JCS hash/golden vectors
-│   ├── paired effect/Bootstrap CI/statistical resampling
-│   └── Experiment research archive and special diagnostics
-└── PROCESS: archive historical decisions; await owner final signoff
-    └── no code, UI changes, CI, deployment or merge authorized
+driichi product: existing MJAI/MCP/Built-in integrations unchanged
+├── Benchmark Run: finite, sequential 3p OR 4p Matches
+│   ├── create/select roster → start; durable scores/Replay
+│   ├── Stopped vs Completed vs Interrupted/Failed
+│   └── explicit safe Admin Resume, no synthetic retry/reset
+├── Dashboard & UI/UX DESIGN — Round UI-1 now open
+│   ├── visual direction / information hierarchy
+│   ├── desktop layout and one-table live observation
+│   ├── Run creation, list, trends and actions
+│   ├── mobile interaction, errors/stale state, global navigation
+│   └── English-only shadcn/Base UI, actual Three.js retained
+├── Whole-app UI release: one public cutover, no old-UI rollback
+├── CANCELED: breaking Benchmark Bot protocol v2
+└── CANCELED: A/B Experiment and paired research services
 ```
 
-### Final consistency audit
-
-**Resolved with precedence:** Q234 C replaces all previous "Experiment optional but approved" language. `Run` is still first-class and doesn't require any Experiment; `Stopped`, `Completed`, and `Interrupted` are distinct; match-completion integrity, v2 Participant admission and admin privacy do not depend on any canceled research calculations. Single-server serial-per-Run coexists with unrelated regular Room gameplay. Fullscreen remains one active table; 3p does not start 4p; historical v1 stored results remain.
-
-**Identified risks rather than new questions:** independently selected future strict-v2 breaking Bot cutover now has less product justification and should be minimal; old 3p MJAI exclusion may restrict some chosen bot lineups; a normal-live score/Seat display bug is reported but not verified; a coordinated no-rollback UI release needs strong preflight acceptance. No new assumption or hidden Experiment feature is introduced.
-
-**Not blockers for approving the lean design:** specific native HTTP/WS/MCP status bytes, SQLite column names, adaptive SSE retry details, React component file layout, exact graphical thresholds after measured baseline, optional logs or raw Decision sample implementation, and test golden fixture formatting for ordinary code. Implementers can decide and document these within the fixed privacy/durability/UI constraints after separate approval.
-
-**Required next user action:** review the slim active scope and give explicit **final design signoff** if correct. That signoff alone is **not** permission to edit product code or run CI; a separate request must authorize implementation. This interview is closed; keep PR #23 Draft and unmerged.
-
-### Prior Round 20 question text (historical)
-
-Q233 A = Stopped, preserve partial counts. Q234 **C** = cancel all approved Experiment specifications. Q235 A = existing single-server SQLite/serial Matches. Q236 A = finish interview after a concise consistency review. Questions and old recommendations are archived above; do not interpret older Q234 A recommendation as current owner intent.
+The user expressly reopened grilling to settle **UI/UX**, not Bot/Experiment backend machinery. The complete first independent frontier (UI-1 Q237–Q246) and recommended options are in [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md). Do not treat the proposed UI choices as already approved. Further UI decisions may depend on owner responses; no product edits permitted.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 

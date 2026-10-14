@@ -73,7 +73,7 @@ A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby,
 _Avoid_: Hidden room, ranked room
 
 **Benchmark Mode**:
-A bot-only Room mode where chosen supported software Participants repeatedly play finite, sequential Matches within one selected three-player or four-player ruleset. The Admin observes one live table and reviews accumulated results; an A/B research Experiment is NOT part of the currently approved design. Benchmark v2 participants must meet the planned version/capability admission protocol. Humans, supplied missing Bots and automatic concurrent 3p+4p modes are not supported.
+A bot-only Room mode where chosen supported software Participants repeatedly play finite, sequential Matches within one selected three-player or four-player ruleset. The Admin observes one live table and reviews accumulated results; an A/B research Experiment is NOT part of the currently approved design. All Bots use existing compatible MJAI/MCP/Built-in authentication and gameplay protocols; no breaking Benchmark-only v2 Bot contract is required. Humans, supplied missing Bots and automatic concurrent 3p+4p modes are not supported.
 _Avoid_: Ranked mode, bot replacement
 
 **Benchmark Run**:
@@ -92,41 +92,17 @@ _Avoid_: Spectator, Replay View
 The Admin's primary view for managing ordinary Benchmark Runs, watching one live 3D Mahjong table (expandable to fullscreen) and reviewing current progress, per-Match and cumulative Bot statistics and Replay history.
 _Avoid_: A/B-only Experiment report, game controller
 
-**Benchmark v2 Capability**:
-A versioned Participant-scoped Bot identity/build declaration and clean-reset capability required for admission to the future Benchmark v2 protocol. It is trusted without independently proving which model binary executed.
-_Avoid_: Bot Token, A/B candidate, runtime attestation
-
-**Benchmark Protocol Mismatch**:
-The refusal of a Bot Participant to enter a Benchmark because its advertised capability/protocol version is incompatible with the required Benchmark version. It is an admission failure, not evidence that the Bot played or failed a Match.
-_Avoid_: Disconnect during Match, invalid Game Action
-
-**Benchmark Protocol Preflight**:
-A non-mutating assessment of a Bot Participant's declared compatibility with the required Benchmark protocol, which can be Compatible, Incompatible or Unknown when evidence cannot be obtained.
-_Avoid_: Runtime attestation, connection health, completed Match
-
-**Benchmark Drain**:
-The deliberate suspension of scheduling new Benchmark Matches while the currently active Match receives a bounded chance to finish and preserve its result before a planned Benchmark Bot protocol cutover.
-_Avoid_: Deleting Run history, restarting a Match, migrating a Bot by assumption
-
 **Benchmark Match Attempt**:
-A single attempt to execute a scheduled ordinary Benchmark Run Match. A failed/incomplete Attempt is recorded separately; a retry creates a new Attempt of the same Match without overwriting old evidence.
+A single attempt to execute a scheduled ordinary Benchmark Run Match. A failed/incomplete Attempt is recorded separately and never counts as a completed Match. Do not automatically retry an uncertain Match or assume an external Bot reset; deliberate safe restart/recovery is handled by Run control without new mandatory Bot protocol messages.
 _Avoid_: Completed Match, Rematch
 
 **Server-observed Latency**:
 Response timing observed by the game server, distinguished into time to first response and time until a legal Game Action is accepted. It is different from optional Bot-reported inference time.
 _Avoid_: Inference time, guaranteed model compute time
 
-**Trusted Bot Declaration**:
-A code/build or checkpoint identity claimed for one software Participant by an authenticated Bot Token holder and recorded for the Benchmark Run. This is an operator-trusted claim, not independent proof of the running executable.
-_Avoid_: Runtime attestation, measured binary
-
 **Live Table Fullscreen**:
 The focused display of a single active Mahjong 3D table expanded beyond its ordinary dashboard panel, without creating another Match, changing game state or showing three concurrent tables.
 _Avoid_: Multi-table viewer, additional Match, simultaneous Run
-
-**Match Reset Acknowledgement**:
-A trusted authenticated Bot Participant's explicit, scoped declaration that it returned to a clean Match state for an eligible retry under its recorded build/checkpoint. For Built-in Bots the server records its own reset operation.
-_Avoid_: Reconnection, process restart proof
 
 **Observation Focus**:
 The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Focus follows that Participant when Seats rotate between Matches; it never changes the Participant's identity, Seat, Controller, or game state.
