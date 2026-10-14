@@ -105,7 +105,7 @@ Response timing observed by the game server, distinguished into time to first re
 _Avoid_: Inference time, guaranteed model compute time
 
 **Experiment Configuration**:
-The defined conditions governing which Benchmark Runs can be compared in an Experiment. Those conditions are fixed once its first Match begins.
+The declared conditions defining which Benchmark Runs may be compared in an Experiment. They become fixed at the first Match start for newly run experiments, or at the first eligible historical Run attachment/explicit retrospective comparison start for historical experiments.
 _Avoid_: Annotation, Admin display preferences
 
 **Diagnostic Log**:
@@ -120,12 +120,20 @@ _Avoid_: Runtime attestation, measured binary
 A scheduled group of three-player or four-player Matches balancing Seat assignments and common seed conditions across candidate model comparisons. Only completely recorded comparison blocks contribute to paired effect statistics.
 _Avoid_: Kyoku, single Match
 
+**Descriptive-only Run**:
+A verified Benchmark Run attached to an Experiment whose results do not meet the Experiment's paired fixture conditions. It remains visible as descriptive evidence but is excluded from paired effect and paired uncertainty calculations.
+_Avoid_: Unverified Run, Paired Block
+
+**Paired Effect**:
+The measured difference between two Candidate Models across complete matched Paired Blocks. Mean placement is the primary playing-strength measure, with relative score and first-place rate as additional measures.
+_Avoid_: Single-Match ranking, guaranteed model superiority
+
 **Reference Bot**:
 A software Participant held unchanged across the A/B candidate comparison so the other seats provide the same reference opponents.
 _Avoid_: Candidate model, alternate test condition
 
 **Candidate Model**:
-One of two software implementations, A or B, compared in the same evaluation position against a fixed roster of Reference Bots.
+One of two software implementations, A or B, evaluated in the same candidate Seat positions against an unchanged roster of Reference Bots. A model version is not itself a Participant identity.
 _Avoid_: Participant identity, Bot Token
 
 **Match Reset Acknowledgement**:
