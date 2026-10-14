@@ -112,6 +112,10 @@ _Avoid_: Match Attempt, Replay, scheduled Run
 A non-mutating assessment of a Bot Participant's declared compatibility with the required Benchmark protocol, which can be Compatible, Incompatible or Unknown when evidence cannot be obtained.
 _Avoid_: Runtime attestation, connection health, completed Match
 
+**Benchmark Drain**:
+The controlled stopping of new Benchmark Match scheduling while an already active Match is given a finite opportunity to finish and preserve its result before a protocol maintenance cutover.
+_Avoid_: Deleting Run history, restarting a Match, migrating a Bot by assumption
+
 **Paired Evaluation**:
 A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
 _Avoid_: Identical replay, same match outcome
