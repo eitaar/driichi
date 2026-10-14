@@ -11,6 +11,23 @@ test.use({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
 test("local surface image renders and clears in the actual product Worker under unchanged CSP", async ({ page }) => {
   const uploaded: string[] = [];
   page.on("request", request => { if (request.method() !== "GET") uploaded.push(request.url()); });
+  await page.addInitScript(() => {
+    const trace: unknown[] = [];
+    (window as unknown as { __clearTrace: unknown[] }).__clearTrace = trace;
+    const post = Worker.prototype.postMessage;
+    const watched = new WeakSet<Worker>();
+    Worker.prototype.postMessage = function (...args: unknown[]) {
+      const message = args[0] as { type?: string; revision?: number; assets?: { surface?: ImageBitmap | null } };
+      if (message.type === "init" && !watched.has(this)) {
+        watched.add(this);
+        this.addEventListener("message", event => {
+          if (trace.length < 64) trace.push({ direction: "reply", now: performance.now(), type: event.data.type, revision: event.data.revision });
+        });
+      }
+      if (trace.length < 64) trace.push({ direction: "input", now: performance.now(), type: message.type, revision: message.revision, surface: message.assets?.surface === undefined ? "absent" : message.assets.surface === null ? "null" : "image" });
+      return Reflect.apply(post, this, args);
+    };
+  });
   const response = await page.goto("/tests/support/renderer-worker-product.html");
   expect(response!.headers()["content-security-policy"]).toContain("img-src 'self';");
   const table = page.getByTestId("three-table");
@@ -46,8 +63,13 @@ test("local surface image renders and clears in the actual product Worker under 
   await page.getByRole("button", { name: "Clear surface image", exact: true }).click();
   await expect(page.getByRole("button", { name: "Clear surface image", exact: true })).toBeDisabled();
   await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+  const cleared = await table.locator("canvas").screenshot();
+  if (!cleared.equals(baseline)) {
+    const later = await table.locator("canvas").screenshot();
+    console.info("[native-clear-sync]", JSON.stringify({ firstStillUploaded: cleared.equals(rendered), laterStillUploaded: later.equals(rendered), laterMatchesBaseline: later.equals(baseline), clearDisabled: await page.getByRole("button", { name: "Clear surface image", exact: true }).isDisabled(), renderReady: await table.getAttribute("data-render-ready"), trace: await page.evaluate(() => (window as unknown as { __clearTrace: unknown[] }).__clearTrace) }));
+  }
   // Avoid an unbounded byte-array diff when an exact PNG comparison fails.
-  expect((await table.locator("canvas").screenshot()).equals(baseline)).toBe(true);
+  expect(cleared.equals(baseline)).toBe(true);
   expect(uploaded).toEqual([]);
 });
 
