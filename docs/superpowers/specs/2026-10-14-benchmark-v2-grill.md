@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview in progress — Rounds 1–10 decided; Round 11 unanswered**
+Status: **Design interview in progress — Rounds 1–11 decided; Round 12 unanswered**
 Owner: eitaar
 Scope: research-oriented improvements to driichi's Benchmark Mode, not implementation approval.
 
@@ -15,6 +15,14 @@ Scope: research-oriented improvements to driichi's Benchmark Mode, not implement
 
 Keep v1's currently shipped behavior as the compatibility baseline. A design idea below is **not** a requirement or implemented feature until the owner decides it.
 
+## Owner clarification — Core Benchmark vs Experiment (2026-10-14)
+
+**Benchmark Mode itself is first and foremost an environment for continuous, sequential Mahjong competition among explicitly selected MJAI, MCP, and Built-in Bots**. Admins select the exact 3p *or* 4p game mode and roster, configure a Run, then watch the engine repeatedly start the next Match after the previous Match is durably recorded, **until the Run's configured target or a stop/failure condition is reached** (per the current v1 1–1,000 Match contract). The Admin dashboard must offer **ongoing statistics, per-Match results and a live table preview**. Live observation is read-only, shows all present hands only to the Admin, and must not change game progression. The existing v1 Run workflow already includes these concepts.
+
+**An Experiment is an optional additional layer** for controlled A/B evaluations, provenance, paired statistics and grouping/sequencing multiple Runs. An ordinary Benchmark Run must not require that the Admin create an Experiment, name A/B candidates, supply a research seed, complete paired Blocks, or adopt the v2 MJAI/MCP declaration extension merely to keep Bot-vs-Bot Matches running and inspect the dashboard/live view. All previously selected statistical/reproducibility requirements are **Experiment-scoped**, unless deliberately and separately approved as additive non-breaking features for ordinary Runs. No plan to replace Benchmark Mode with an A/B-only comparison product was approved.
+
+The user confirmed that **3p Benchmark runs only 3p and 4p Benchmark runs only 4p**; never auto-run both. The phrase "continuous" means automatic Match-to-Match progression in an active Run, **not automatically endless runs or infinite autonomous scheduling**. Whether to add an optional unattended follow-on Run workflow is an open Round 12 decision; current v1 bounded targets stay unchanged.
+
 ## Benchmark game-mode invariant — CONFIRMED BY OWNER (2026-10-14)
 
 A Benchmark Room/Run/Experiment evaluation is configured for **one specific game mode**. A `4p` Benchmark plays **only four-player Mahjong** with four seats; a `3p` Benchmark plays **only three-player Mahjong** with three seats. **Creating or running one NEVER automatically starts or also executes the other**. A/B candidates, fixed reference Bots, seed fixtures, Paired Blocks, metrics and the target count all stay within the chosen mode. Round 9's 6-Match (3p) and 8-Match (4p) comparison-block sizes describe **alternative modes**, not combined workloads. The existing three-player MJAI prohibition remains in force.
@@ -25,9 +33,9 @@ These constraints hold for the existing v1 behavior and must not be weakened by 
 
 ### D1. Product goal — DECIDED
 
-**Choice:** Research and experimentation platform.
+**Choice:** Preserve a general continuous Bot-vs-Bot Benchmark environment with dashboard/live observation, and extend it with optional research-grade Experiments.
 
-The goal is broader than ranking bots by playing strength. The platform should support rigorous AI-related experiments and the evaluation of changes to software participants. The broad evidence categories and Experiment purpose have now been selected in Rounds 2–3; exact statistical methods, data contracts, and Experiment state transitions remain open.
+The owner explicitly clarified in Round 11 that the essential Benchmark is sequential automated Matches between selected MJAI/MCP/Built-in Bots with statistics and an Admin live table preview. A/B pairing and Bootstrap statistics add a separate optional research workflow, **not a replacement or mandatory prerequisite** for ordinary benchmarking. This refines the Round 1 'research platform' goal without undoing any A/B design decisions.
 
 ### D2. Compatibility strategy — DECIDED
 
@@ -45,7 +53,7 @@ Prioritize one operator controlling a self-hosted instance, rather than building
 
 ### D4. Experiment groups Benchmark Runs — DECIDED (Q4: B)
 
-Introduce **Experiment** as a research-level concept for organizing and comparing multiple existing Benchmark Runs. Preserve Run identity, fixed-roster semantics, recorded Match data, and existing v1 API behavior. Round 3 decided that an Experiment supports both adding previously completed Runs and creating/running new Runs through the Admin interface. This does not authorize a general workflow pipeline.
+Introduce **Experiment** as an **optional** research-level concept for organizing and comparing multiple existing Benchmark Runs. Preserve the independent, continuously progressing Bot-vs-Bot Run, Run identity, fixed-roster semantics, recorded Match data, dashboard/live preview and existing v1 API behavior. Round 3 decided that an Experiment supports both adding previously completed Runs and creating/running new Runs through the Admin interface. This does not authorize a general workflow pipeline.
 
 ### D5. Paired Evaluation — DECIDED IN PRINCIPLE (Q5: C)
 
@@ -61,7 +69,7 @@ Support resuming eligible interrupted v2 experiments/runs **only at a verified M
 
 ### D8. Web UI is the primary interface — DECIDED (Q8: A)
 
-Make the Admin Web UI the primary mechanism for configuring, observing, and comparing v2 experiments. Do not require an editable headless manifest or CLI as a v2 design prerequisite; existing APIs remain compatible.
+Make the Admin Web UI the primary mechanism for starting/monitoring ordinary Bot-vs-Bot Benchmark Runs **and**, optionally, configuring/comparing v2 Experiments. The Run dashboard must keep live progress, match-level and accumulated statistics, and read-only live table preview as first-class experiences. Do not require Experiment creation, a CLI or headless manifest for the ordinary Benchmark workflow; existing APIs remain compatible.
 
 ### D9. Admin live-observation focus — DECIDED USER REQUIREMENT
 
@@ -73,7 +81,7 @@ During a running Benchmark, authenticated Admins can inspect **all bots' conceal
 
 ### D10. Existing and newly created Runs in an Experiment — DECIDED (Q9: C)
 
-Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. Round 6 adopts token-authenticated Bot self-declarations as sufficient artifact identity under the owner's trust policy. Round 7 binds an immutable model declaration to each Participant for the Run and requires matching declarations upon resume; linking reversibility remains open.
+An **optional** Experiment supports both attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. The normal dashboard and standalone Match-loop do not require Experiment membership. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. Round 6 adopts token-authenticated Bot self-declarations as sufficient artifact identity under the owner's trust policy. Round 7 binds an immutable model declaration to each Participant for the Run and requires matching declarations upon resume; linking reversibility remains open.
 
 ### D11. Fixed random seed and balanced seats — DECIDED (Q10: B)
 
@@ -398,10 +406,72 @@ Require **real rendered screenshot/pixel-level regression tests plus seat-mappin
 
 Research exports include stable **authorized Replay IDs or references** associated with Match/result identities, but **do not embed Replay contents by default**. An exported reference does not grant public access: Replay authorization rules remain enforced when the referenced Replay is fetched. No Bot credentials/tokens, concealed future-wall states or secret protocol traffic are included. Exact link/identifier format, access-control tests and schema version remain open.
 
+## Decisions — Round 11 (2026-10-14)
+
+### D83. Split Experiment Runs only at whole Paired Block boundaries — DECIDED (Q82: A)
+
+To exceed a candidate Run's 1,000-Match limit, split the **Experiment** into whole-Block-aligned chunks. Each 3p candidate Run covers no more than **333 complete Paired Blocks × 3 Matches = 999 Matches**; each 4p candidate Run covers at most **250 × 4 = 1,000 Matches**. Create corresponding A/B candidate Runs for the same chunk. Never cut a candidate leg mid-Block, exceed the v1 Run limit, or switch to the other game mode. Each Run itself remains a normal automated sequence of Bot-vs-Bot Matches; an **ordinary standalone Run** is not split into A/B chunks without its Admin explicitly choosing the Experiment workflow. The per-Experiment chunk planner/queuing schema remains to specify.
+
+### D84. Sequential A-then-B chunk execution — DECIDED (Q83: A)
+
+Within a paired chunk, run the complete Candidate **A Run**, then its corresponding Candidate **B Run**; then advance to the next paired chunk. The continuous Match progression *within each Run* is unchanged. Record actual wall-clock/environment/provenance data so possible time-of-day or drift confounding can be disclosed; sequential A then B does not itself eliminate environmental bias. Automated execution between Experiment-managed Runs stays bounded by the fixed Experiment plan.
+
+### D85. Canonical cyclic reference seating shared by A and B — DECIDED (Q84: A)
+
+Within one exact 3p/4p game mode, define a canonical fixed order of Reference Participant IDs and cyclically place them in the Seats not occupied by the Candidate. Rotate the Candidate through every Seat once per Paired Block, then use **the exact same Participant-to-Seat reference mapping** for corresponding B-leg Matches as A-leg Matches. Persist the seed, fixture identity and resulting seating plan. The canonical starting anchor, direction and deterministic algorithm/version are still to be specified.
+
+### D86. Equal-weight complete-Block mean-placement difference — DECIDED (Q85: A)
+
+For every **complete matched A/B Paired Block**, calculate that Block's `mean_placement(B) - mean_placement(A)`, and take the **arithmetic mean of the Block-level differences with equal Block weight** for the primary observed effect. Incomplete Blocks and descriptive-only Runs are excluded from this estimator; raw completed constituent Matches remain available descriptively. The already-approved 95% confidence interval bootstraps these same complete Block-level differences.
+
+### D87. Pinned statistical PRNG, input ordering and quantile convention — DECIDED (Q86: A)
+
+Define and persist a **versioned analysis PRNG and its seed format**, canonical input order, number of replicates (**10,000**), and the exact 95% percentile-interval quantile/interpolation method. Statistical RNG is separate from Mahjong game RNG. The particular standardized PRNG and interpolation specification are still open; host-language unspecified defaults must not decide reproducibility.
+
+### D88. Durable Replay before one atomic SQLite completion commit — DECIDED (Q87: A)
+
+Persist a valid Replay durably first (via a safe staging/finalization protocol), then **atomically in SQLite** commit final result, Replay reference, fixture/Attempt association, and Run progress. Replay files and SQLite are not one cross-store ACID transaction, so recovery must reconcile Replay files and DB records, clean orphaned staging artifacts only when safe, and never count an absent/invalid Replay. The exact staging/finalize/cleanup ordering and file durability primitive remain an implementation-design frontier.
+
+### D89. Persisted Experiment recovery requires explicit Admin Resume — DECIDED (Q88: A)
+
+After server restart, reconstruct the saved Experiment plan, successful Match results, remaining Run queue, and fixture identities from SQLite and durable Replays. Mark previously **in-flight work as Interrupted/Blocked pending reconciliation**; do **not** automatically resume an active Match, Run or Experiment. Admin must explicitly request Resume after valid identity/reset checks. Standalone legacy v1 interruption remains fail-closed/read-only under its existing lifecycle.
+
+### D90. Immutable scheduled fixture and Attempt idempotency identities — DECIDED (Q89: A)
+
+Assign durable identity for `Experiment / Paired Block / scheduled Fixture / Attempt`. Each actual Attempt has its own unique Match ID and immutable attempt number; on successful durable Match commit, the **scheduled fixture** is counted at most once. Preserve all failed Attempts separately, make completion/reconciliation idempotent and prevent duplicate score increments after restart or duplicated completion signals. SQLite constraints and transaction endpoints remain open.
+
+### D91. One-time scoped reset request ID for external Bots — DECIDED (Q90: A)
+
+A v2-capable adapter issues an **opaque single-use reset request ID** scoped to the Participant, planned Match and Attempt (and the immutable declared build/checkpoint). Accept a clean-state acknowledgement only for the matching authenticated Participant and current request; reject duplicated, stale, replayed or wrong-Attempt acknowledgements. This is a lightweight protocol correlation check, **not** independent proof of binary execution. Built-in Bot reset is controlled by server lifecycle separately.
+
+### D92. Periodic and pre-payload Admin SSE authorization enforcement — DECIDED (Q91: A)
+
+Check Admin session/authorization on initial SSE connection, **periodically throughout streaming**, and **before emitting private all-hands state**. Close on known expiry, revocation or access loss; do not let an old open stream bypass read-only/Admin-only projection limits. Polling fallback and authorized Replay fetches enforce their own auth. Exact interval and revocation notification integration remain future implementation-design choices.
+
+### D93. Bounded latest-state queue for slow Admin viewers — DECIDED (Q92: A)
+
+Bound each Admin SSE viewer's pending-state memory. Replace obsolete queued snapshots with the most recent authoritative state/revision instead of accumulating every Match action; ensure terminal Match/Run state is delivered when possible or is obtainable via a fresh authorized snapshot on reconnect. Clients too slow to remain within bounds should be disconnected/reconnected safely, with stale-state indication. Do not block the engine's continuous Match progression for a slow spectator.
+
+### D94. Fail closed when mandatory Replay/results cannot persist — DECIDED (Q93: A)
+
+If the server cannot durably store **required** Replay, result or failed-Attempt evidence, prevent further Match advancement and do not mark the unfinished Match completed. Display an appropriate recoverable Blocked or terminal Failed state based on integrity/recovery eligibility, while preserving previous durable results. **Optional diagnostic log truncation is different** and must not stop healthy Match progression. Never delete previously committed Match results to reclaim space. Storage error/recovery transaction details remain open.
+
+### D95. Pinned deterministic rendered screenshot regressions — DECIDED (Q94: A)
+
+Use a **pinned browser/graphics/rendering environment and viewport** with deterministic game state, distinct per-Seat scores, camera/view orientations, and documented pixel-difference tolerances for rendered screenshot regressions. Pair these with authoritative Participant/Seat/score association tests across 3p/4p, normal live, Replay and Benchmark Admin focus, as well as Reduced Motion and GPU/Worker paths. This does not claim the earlier user-reported normal-live center-score misplacement is fixed. No test code/CI execution is authorized until implementation permission.
+
+### D96. Consistent exported SQLite snapshot/revision — DECIDED (Q95: A)
+
+Generate versioned JSON and normalized CSV from **one coherent persisted SQLite snapshot/revision**, including common snapshot timestamp, Experiment configuration/version, scheduled fixtures, committed Match data and incomplete/active status. During a running Experiment, label any partial/incomplete Paired Blocks and provisional descriptive results; do not present in-flight work as finalized. Replay references remain access-controlled, and no credential/secret data enters export. The snapshot transaction duration/streaming strategy remains open.
+
+### D97. Benchmark core purpose is continuous Bot-vs-Bot Matches + dashboard/live preview — OWNER CLARIFICATION (not a multiple-choice question)
+
+Benchmark Mode's principal user experience is **MCP/MJAI/Built-in Bots fighting one Match after another in an Admin-created 3p or 4p Benchmark Run**, while the dashboard reports accumulated/per-Match performance and offers live game preview. An A/B Experiment with fixture scheduling, statistical confidence intervals, and provenance requirements is an **optional additional analysis/orchestration layer**. The user did not approve requiring an Experiment to start ordinary Benchmark Matches, requiring non-experimental Bots to adopt v2 proof extensions, replacing the main dashboard with an A/B-only view, or auto-running both 3p and 4p. All v1 bounded Run semantics remain unless separately decided. User's "continuous" statement does **not** authorize infinite or unattended auto-renewing Runs.
+
 ## Verified v1 baseline (not v2 decisions)
 
-- A Benchmark Run has a fixed participant roster, rotating seats, and 1–1,000 completed and durably recorded Matches.
-- Its statistics are mean placement, first-place rate, and cumulative score relative to the table mean.
+- A Benchmark Run automatically and sequentially plays bot-vs-bot Matches under a fixed selected roster, rotating seats, until its configured 1–1,000 completed and durably recorded Match target is reached (or it stops/fails). It does not require an Experiment.
+- Its Admin dashboard provides live progress, a read-only all-current-hands live table preview, per-Match results, and statistics such as mean placement, first-place rate and cumulative score relative to the table mean.
 - Run history survives process restarts, but running Runs become interrupted and are not resumed automatically.
 - Reproducible seed input and cross-Run ranking are explicitly excluded by the v1 design.
 - MJAI, MCP, and Built-in Bots are existing participant kinds; Benchmark Mode does not admit Human players.
@@ -419,54 +489,57 @@ These remain candidates, not implementation mandates:
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Decision tree — Round 11 frontier
+## Decision tree — Round 12 frontier
 
 ```text
 Benchmark v2
-├── D58,D70,D71 single-mode paired fixtures split across Runs  [DECIDED]
-│   ├── Q82 Block-aligned Run chunking                       [FRONTIER]
-│   ├── Q83 A/B leg ordering within the run queue             [FRONTIER]
-│   └── Q84 Deterministic Seat/fixture assignment             [FRONTIER]
-├── D59,D72–D74 reproducible 95% paired Bootstrap            [DECIDED]
-│   ├── Q85 Unit of A/B effect aggregation                    [FRONTIER]
-│   └── Q86 Analysis PRNG/quantile convention                 [FRONTIER]
-├── D76 SQLite authoritative, D65 Replay+result completion   [DECIDED]
-│   ├── Q87 Replay + DB persistence transaction boundary      [FRONTIER]
-│   ├── Q88 Restart behavior for interrupted Experiment       [FRONTIER]
-│   └── Q89 Idempotency key for scheduled Attempt             [FRONTIER]
-├── D77 trusted, optional v2 Bot metadata/reset extension    [DECIDED]
-│   └── Q90 Reset acknowledgement correlation                 [FRONTIER]
-├── D78,D79 private 4 Hz SSE snapshots                        [DECIDED]
-│   ├── Q91 SSE revocation/expiry checking mechanism          [FRONTIER]
-│   └── Q92 Slow Admin viewer/backpressure                    [FRONTIER]
-├── D80 1 GiB/7-day diagnostics plus durable results          [DECIDED]
-│   └── Q93 Mandatory storage failures                        [FRONTIER]
-├── D81 visual screenshot regression testing                 [DECIDED]
-│   └── Q94 Rendered screenshot baseline strategy            [FRONTIER]
-└── D69,D82 versioned JSON/CSV and authorized Replay links   [DECIDED]
-    └── Q95 Export snapshot consistency                      [FRONTIER]
+├── D1,D4,D8,D97 continuous bot-only Run + dashboard           [CONFIRMED CORE]
+│   ├── Q96 Run-first vs Experiment-first navigation           [FRONTIER]
+│   ├── Q97 Continuous Run target semantics                    [FRONTIER]
+│   ├── Q98 Core dashboard live-preview lifecycle              [FRONTIER]
+│   └── Q99 V2 metadata required for standalone Runs?          [FRONTIER]
+├── D83,D84 Run-chunking with sequential A→B legs              [DECIDED]
+│   └── Q100 A/B temporal drift evidence/reporting             [FRONTIER]
+├── D88 Replay stage then SQLite completion                    [DECIDED]
+│   └── Q101 Orphan Replay staging cleanup policy              [FRONTIER]
+├── D76,D89,D90 SQLite authoritative and identity-reconciled   [DECIDED]
+│   └── Q102 Persisted Experiment lifecycle schema             [FRONTIER]
+├── D77,D91 versioned Bot metadata/reset extensions           [DECIDED]
+│   └── Q103 Negotiation of optional v2 capability             [FRONTIER]
+├── D92,D93 private bounded SSE stream                         [DECIDED]
+│   └── Q104 SSE heartbeat / stale-view timeout                [FRONTIER]
+├── D80,D94 diagnostics optional / mandatory fail-closed      [DECIDED]
+│   └── Q105 Diagnostic expiry enforcement                     [FRONTIER]
+├── D86,D87, 10k block bootstrap                              [DECIDED]
+│   └── Q106 Precise percentile algorithm                      [FRONTIER]
+├── D69,D96 consistent versioned JSON/CSV                     [DECIDED]
+│   └── Q107 Export schema evolution                           [FRONTIER]
+├── D95 rendered screenshot tests and core preview            [DECIDED]
+│   └── Q108 Graphics paths covered in visual acceptance      [FRONTIER]
+└── D67 Match-level count/mean/median/p95                     [DECIDED]
+    └── Q109 Latency sample retention vs bounded summaries    [FRONTIER]
 ```
 
-### Round 11 questions — awaiting owner
+### Round 12 questions — awaiting owner
 
-- **Q82, Run chunking for large fixed experiments:** A — allocate whole **Paired Blocks per candidate Run** (3p: at most 333 blocks/Run, 4p: 250 blocks/Run) and never split a candidate leg across Run boundaries; B — split each Run strictly after 1,000 Matches even mid-Block; C — allow a candidate Run above 1,000. **Recommendation A:** preserves v1 Run limit and auditable block boundaries.
-- **Q83, A/B candidate execution order:** A — execute all of A's Matches for a chunk, then all of B's Matches for that same chunk; B — create short A and B Runs per Block, alternating legs; C — independently randomize all candidate legs without recording order. **Recommendation A** for fewer Run transitions under sequential scheduling, acknowledging potential time/environment drift; later record actual wall-clock and environment metadata.
-- **Q84, Reference Bot seat rotation fixture mapping:** A — deterministically rotate Candidate through all Seats and assign each fixed Reference Participant to remaining Seats according to a canonical cyclic order, then replay **the identical mapping** in the B leg; B — independently randomize the reference seating in each leg; C — leave references in fixed Seats and force Candidate to remain one Seat. **Recommendation A** for reproducible seat-balanced fixtures.
-- **Q85, block-level primary effect estimator:** A — for each complete A/B Block compute the mean-placement difference (B minus A), then **average the complete-Block differences equally**, excluding descriptive-only/incomplete blocks; B — pool all Matches without Block identity; C — use only the best Match from each Block. **Recommendation A**, matching the existing whole-Block bootstrap unit.
-- **Q86, deterministic statistical algorithm contract:** A — record a pinned **analysis PRNG/version, canonical input ordering, seed, bootstrap replicate count and percentile interpolation method**; B — rely on the host language's unspecified default RNG and percentile behavior; C — regenerate an unrecorded random seed every dashboard view. **Recommendation A**, making the already-approved 10,000-replicate 95% CI reproducible across versions.
-- **Q87, Replay/SQLite cross-store completion:** A — stage the Replay durably, then commit final result+Replay reference and Run progress **atomically in SQLite** with idempotent recovery/garbage cleanup; B — update Run progress before persisting the Replay; C — rely on current browser state to repair partial saves. **Recommendation A**, aligning with D65/D76 even though filesystem+SQLite are not a single ACID transaction.
-- **Q88, Experiment status after server restart:** A — restore the persisted plan/results but set in-flight work to **Blocked/Interrupted**, requiring Admin's explicit Resume after reconciliation and clean Bot reset; B — immediately auto-resume without Admin; C — discard all queued Runs. **Recommendation A**, retaining the earlier explicit manual-resume decision.
-- **Q89, idempotent scheduled attempt identity:** A — assign an immutable **Experiment/Block/Fixture/Attempt key** and enforce uniqueness of counted completion at the fixture level while preserving each failed Attempt's own Match ID; B — deduplicate only by Display Name and timestamp; C — assume the completion callback executes once. **Recommendation A**, preventing double counting across crashes and multiple Runs.
-- **Q90, Bot reset acknowledgement correlation:** A — server issues an **opaque one-time reset request ID** scoped to Participant, planned Match and Attempt, and accepts only a matching authenticated acknowledgement with unchanged declared checkpoint; B — accept any generic `reset: true` message; C — treat a reconnect as reset. **Recommendation A**, small protocol change and robust replay protection without remote attestation.
-- **Q91, Admin SSE revocation strategy:** A — validate authorization periodically *and before releasing snapshots*, immediately close on known expiry/revocation; B — validate just at connection start; C — stream to anyone holding any Bot Token. **Recommendation A**, ensuring no revoked viewer continues receiving all-hands updates.
-- **Q92, slow Admin SSE clients:** A — use a bounded per-client queue and **replace superseded pending snapshots with the newest authoritative state**, terminating/restarting clients that cannot keep up; B — buffer every revision without limit; C — drop terminal state when buffers fill. **Recommendation A**, consistent with snapshot coalescing and final-state preservation.
-- **Q93, required storage full/unwritable:** A — **fail closed**: stop advancing Matches if Replay/results/failed-Attempt evidence cannot be durably saved; show recoverable Blocked or terminal Failed according to integrity; B — continue matches and keep results only in RAM; C — delete prior completed Match results to free space. **Recommendation A**, because optional diagnostics may be truncated but mandatory results cannot.
-- **Q94, screenshot regression acceptance baselines:** A — run screenshot comparisons in a **pinned deterministic browser/rendering environment** with controlled viewports, fixed distinct scores, camera orientations and documented pixel-diff tolerance; B — compare screenshots from arbitrary browsers without baseline pinning; C — use only mocked Canvas paint tests. **Recommendation A**, so the visual wrong-Seat bug can be detected meaningfully.
-- **Q95, exports during an active Experiment:** A — generate JSON/CSV from one **consistent persisted snapshot with an export timestamp/revision**, explicitly identifying incomplete Blocks and work-in-progress without implying a final result; B — stream independent tables at different progress states with no revision marker; C — prohibit all exports until complete. **Recommendation A**, supporting research during long-running experiments without inconsistent joins.
+- **Q96, primary Benchmark UI:** A — **Run-first dashboard** to create/select 3p/4p Bot roster, start continuous bounded Matches, see stats/live table, with a separate optional Experiments area; B — make Experiment creation mandatory before any benchmark; C — show only A/B comparison charts. **Recommendation A**, reflecting the owner's clarification and existing v1 usability.
+- **Q97, "continuous" progression after the target:** A — the server automatically starts the next Match while the **configured Run target remains**, then stops as v1 already does; an Experiment may queue additional capped Runs, but an ordinary Run never silently renews forever; B — ordinary Runs auto-create indefinite successors without an Admin target; C — require Admin to click Next Match after every completion. **Recommendation A**, preserving the existing 1–1,000 bounded behavior; this question confirms what “continuous” should mean in v2.
+- **Q98, ordinary Run live-preview lifecycle:** A — a first-class Admin read-only live 3D table and per-Match progress **during any active standalone Run** (not Experiment-only), plus durable statistics/Replay links when the Match finishes; B — show live table only during paired A/B Experiments; C — never show a live table, only saved Replays. **Recommendation A**, as directly requested.
+- **Q99, v2 proof metadata for standalone Run:** A — standalone/legacy-compatible Runs keep working with existing MJAI/MCP/Built-in Bots, without mandatory hashes/reset extensions; only **Experiment-eligible** Runs opt in to stricter v2 metadata; B — require every Bot to upgrade before any Benchmark Run; C — disable old MJAI/MCP Bots. **Recommendation A**, to keep Experiment eligibility separate from playing Battles.
+- **Q100, sequential A then B environmental drift:** A — capture actual Run/Match start/end timestamps, engine/bot versions and visibly disclose **potential temporal/environment drift** without pretending the fixed seeds eliminate it; B — call A/B timings perfectly equivalent without metadata; C — override Q83 and alternate all Matches automatically. **Recommendation A**, while retaining the approved A-then-B queue.
+- **Q101, orphaned staged Replay file:** A — after startup reconciliation, remove only **provably unreferenced staged Replays** after a safety grace period, preserving artifacts under active/pending recovery; B — delete all staging files immediately without checking references; C — retain every orphan permanently. **Recommendation A**, for safe filesystem cleanup.
+- **Q102, persisted Experiment lifecycle:** A — record explicit statuses such as Draft, Queued, Running, PauseRequested, Paused, Blocked, Interrupted, Completed, CancelRequested, Cancelled, Failed; enforce transitions in SQLite while distinguishing Experiment vs Run state; B — derive all states from frontend timers; C — store only Running and Completed. **Recommendation A**, to make pause/resume, failure and crashed progress unambiguous.
+- **Q103, optional Bot capability negotiation:** A — negotiate/advertise supported **v2 identity/reset capability version per Participant** when joining/arming an Experiment, while preserving v1 MJAI/MCP wire behavior; B — inject new mandatory fields into every old message; C — infer capabilities solely from Bot Token. **Recommendation A**, avoiding breaking ordinary bots.
+- **Q104, SSE stale heartbeat contract:** A — send non-sensitive keepalive heartbeats (e.g. ~15 seconds), mark the UI stale after a separately configured missing heartbeat/state timeout, then reconnect/poll; B — show old hands as live indefinitely while a silent connection remains; C — disconnect on any missed snapshot even if there were no game changes. **Recommendation A**, separating lack of gameplay events from connection loss.
+- **Q105, optional diagnostic expiry enforcement:** A — remove expired optional diagnostics automatically at startup and on a periodic bounded maintenance job, keeping mandatory Match/Attempt evidence separate; B — require Admin to manually clean every expired file; C — remove mandatory Replays when the diagnostics cap is reached. **Recommendation A**, making the agreed 7-day retention meaningful.
+- **Q106, percentile bootstrap quantile:** A — pin a documented **linear-interpolation percentile method** (e.g. quantile Type 7), including deterministic 2.5%/97.5% endpoints and seed-controlled 10k replicates; B — use each language's unspecified percentile default; C — round each replicate to an integer before intervals. **Recommendation A**, reproducible and appropriate for mean-placement effects.
+- **Q107, export schema evolution:** A — add a `schema_version`, stable ID fields, nullable/missing-data semantics and explicit paired/descriptive labels to JSON and each CSV manifest, evolving via additive changes and versioned breaking migrations; B — change field meaning in place with no versioning; C — export only a rendered screenshot. **Recommendation A**, useful for reproducible Python analysis.
+- **Q108, visual test rendering paths:** A — test real frontend rendering for **both main-thread and Worker/bitmap 3D paths** when supported, verifying final pixels + Seat-to-score identity under 3p/4p, ordinary Run preview, Replay, and Admin focused view; B — only test a mocked painter; C — only test a static spectator image. **Recommendation A**, because the reported bug could reside in orientation or GPU bitmap flips.
+- **Q109, latency samples behind Match p95:** A — maintain bounded in-Match decision samples to compute exact count/mean/median/p95, persist durable Match aggregates and optional full samples only in quota-limited diagnostics; B — persist every raw Decision latency forever; C — compute p95 using only Match averages. **Recommendation A**, sustaining accurate Match-level metrics without mandatory huge storage.
 
 ### Deferred decisions
 
-After Round 11: exact engine RNG/hash and stream-name specification; transaction commit/replay staging details; agent metadata/reset wire schemas and return errors; risk of A/B temporal drift depending on Q83; numerical CI method/version details and secondary-metric intervals; export schema and migration versions; SSE heartbeat/expiry cadence/default resource limits; optional detailed diagnostic cleanup/redaction implementation; high-fidelity rendered score-location acceptance thresholds and fixture test infrastructure. User signoff needed before **any** product-code changes, CI run, or PR merge.
+After Round 12, finalize the authoritative Run-first UI navigation/controls and whether ordinary Run continuation has finite vs recurring boundaries; exact v2 adapter handshake/error schemas and the deterministic engine RNG fixture contract; atomic Replay/SQLite recovery and state transition table; temporal-drift and statistical validation test cases; SSE auth heartbeat/backpressure thresholds; diagnostics defaults and retention; versioned JSON/CSV wire schemas; worker/GPU screenshot baseline QA and user verification of the reported normal-live center-score seat mismatch. Do **not** create an Experiment as a prerequisite for ordinary continuous Benchmark use, and do not interpret A/B research design as replacing the bot arena or its dashboard/live view.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 

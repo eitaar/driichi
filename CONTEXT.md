@@ -73,11 +73,11 @@ A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby,
 _Avoid_: Hidden room, ranked room
 
 **Benchmark Mode**:
-A bot-only Room mode for controlled evaluation of software Participants across Matches, including comparison of playing strength and research experiments. A Benchmark uses its selected three-player **or** four-player game mode exclusively; starting either does not automatically execute the other. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play subject to game-mode restrictions, but missing players are never automatically supplied.
+A bot-only Room mode where selected MJAI, MCP, and Built-in Bots repeatedly play Matches one after another under one chosen three-player or four-player mode. The Admin can watch live play, track results and inspect accumulated performance through a Benchmark dashboard. A research Experiment is optional and never replaces this continuous-match purpose. Human Participants cannot play; missing players are never automatically supplied; existing game-mode restrictions apply. Starting 3p never also runs 4p and vice versa.
 _Avoid_: Ranked mode, bot replacement
 
 **Experiment**:
-A research comparison of eligible verified Benchmark Runs, which may include previously completed Runs or newly arranged sequential Runs. An Experiment selects one exact game mode, never automatically both 3p and 4p. Each Run retains its own participant identities, results, and history.
+An optional research comparison and organization of eligible Benchmark Runs, including historical or newly arranged sequential Runs. It is not required to start or observe an ordinary bot-vs-bot Benchmark Run. Each Experiment uses one exact game mode, never automatically both 3p and 4p; each Run retains its own identity, results and history.
 _Avoid_: Benchmark Run, Match
 
 **Verified Benchmark Run**:
@@ -85,12 +85,16 @@ A Benchmark Run with complete recorded game conditions and trusted Bot Token-aut
 _Avoid_: All historical Runs, independent binary attestation
 
 **Benchmark Run**:
-A fixed roster's series of one or more completed and recorded Matches, with seats rotated between Matches. Aborted or unrecorded Matches do not count toward its target; results belong to each Participant rather than the Bot Token it uses.
+An automatically progressing series of bot-vs-bot Matches among a fixed roster, played sequentially until its configured target or stopping condition. The Admin can view live play, per-Match outcomes and accumulated statistics. Seats rotate between Matches; aborted/unrecorded Matches do not count toward its target; results belong to each Participant, not its Bot Token.
 _Avoid_: Rematch, Replay
 
 **Benchmark Admin Observer**:
 An authenticated Admin observing a live Benchmark Match with access to every player's concealed information. Ordinary Spectators remain limited to the Public View.
 _Avoid_: Spectator, Replay View
+
+**Benchmark Dashboard**:
+The Admin's primary view for managing ongoing Benchmark Runs, watching the live table and reviewing per-Match and accumulated Bot performance. It is usable without an Experiment.
+_Avoid_: A/B-only Experiment report, game controller
 
 **Paired Evaluation**:
 A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched planned seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
@@ -125,7 +129,7 @@ A recorded seed for statistical resampling and uncertainty estimation, kept inde
 _Avoid_: Root Seed, per-Match seed
 
 **Experiment Run Queue**:
-The persisted ordered collection of Benchmark Runs scheduled under one Experiment. Long evaluations can span multiple sequential Runs without increasing any Run's Match limit.
+The ordered collection of Benchmark Runs under an optional Experiment. Large fixed evaluations may span multiple sequential Runs while each ordinary Run retains its own Match target.
 _Avoid_: Current Match, concurrent Runs
 
 **Descriptive-only Run**:
