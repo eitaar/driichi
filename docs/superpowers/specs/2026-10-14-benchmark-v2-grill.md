@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Breaking Bot v2 protocol and A/B Experiment canceled; UI/UX Q237–Q300 plus later UI-D65 above-hand actions and UI-D66 tilted minimal-icon Lobby cards recorded; normal Lobby Seat unassigned until Match starts. Design pending owner signoff, docs only, no code/CI/merge.**
+Status: **Bot v2 protocol and A/B Experiment canceled. Existing UI Q237–Q300/UI-D65/UI-D66 still binding; owner UI-D67 adds Win/Draw/Score Transfer/Final Standings to the visual redesign. New UI-6 Q301–Q309 pending. Docs only; no code/CI/merge approval.**
 Owner: eitaar
 Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI/UX redesign. **A/B Experiment canceled (Q234 C); breaking Benchmark Bot protocol v2 canceled by later explicit owner instruction.** Current MJAI/MCP/Built-in Bot contracts and authentication remain in place. Documentation only.
 
@@ -23,6 +23,10 @@ Scope: ordinary Bot-only Benchmark Runs and coordinated English-only full-app UI
 - Run-first Admin UX (UI-1–UI-4 owner decisions): restrained modern **neutral/slate + teal/green** English shell; searchable/paginated Run index; short New Run → inline real-time Room Ready Panel next to eligible Bot roster and Start. **Desktop:** ONE existing live 3D table (~2/3) with Leaderboard (~1/3) and Participant focus. Below: **FOUR visible ordinary Run charts** with **full-width cumulative table-relative net score as HERO**, and moving-average rank, **Bot-wise 100%-stacked horizontal rank bars** and **selected-Bot per-Match relative net score-change columns** as secondary cards. Recent **50 completed Matches** by default, switch to **All Matches**; one shared **provisional data notice** when sample is small; each chart's legend/selection is independent, names/colors consistent. **Mobile Q244 C + Q256 B/Q263 A:** charts-first in default-open Performance/Consistency categories plus small jump menu, **NO inline/background 3D**; only manual **Open Live Table** to one portrait/landscape-responsive fullscreen overlay, close restores scroll/focus. **Other pages:** Home Join+art two columns (mobile Join first); same-URL two-step Room name→character Join; Lobby gently angled portrait Character cards **grouped horizontally on desktop with large existing art/name and at most two small SVG state/self icons, no repetitive Ready/You text chips**, stable Participant order WITHOUT any prestart East/South/West/North assignment; normal 3D game with **server-legal contextual action buttons immediately above the player's concealed hand on PC and mobile ONLY when relevant** (latest UI-D65 overrides prior side panel/mobile Dock; existing 3D tabletop and semi-transparent HUD preserved); Replay **desktop vertical Kyoku chapters/mobile dropdown**; desktop Admin Rooms Master–Detail/mobile list→detail; History desktop right Drawer/mobile bottom Sheet; shell success Toast persists route changes while blocking errors remain inline. Stop requires confirmation and explicit safe Interrupted Resume only; honest Stale status and no fabricated stats. **Q293 C**: recent-50 hero charts retain absolute Run-to-date cumulative values with a separately labeled local-window gain/loss; **Q294 A**: selected-Bot variation chart initially chooses leaderboard leader by lowest mean rank, not forcibly reselecting on live refresh; **Q295 A**: identifiable Match datapoints open existing history Drawer; **Q296 A**: stable pre-Match Participant-card order with compass Seat UNASSIGNED until normal Match start (Q296 A correction); **Q297 A is superseded for action placement by UI-D65**: legal action buttons appear above the concealed hand when relevant; no desktop reserved side panel or independent mobile Dock; **Q298 B**: Kyoku jumps preserve Play/Pause; **Q299 A**: same-URL in-app Back returns to Step 1 but browser Back leaves the Join page; **Q300 B**: mobile live action disabled with honest no-live reason plus latest persisted Replay link, including temporary between-Match waiting. Existing live observer polls via **GET HTTP ~1s**; optional SSE is a server-observation improvement only, not Bot protocol. UI-5 is decided; do not open another questionnaire without a new owner scope change.
 - English-only, clear, functional UI copy, shared Tailwind + shadcn/ui **Base UI** tokens and components; preserve existing 3D/Pixi rendering. Internally staged changes, **one public all-pages UI cutover with no prepared old-UI rollback**. Require reviewable E2E/a11y/performance and *real output* Seat/score visual checks before release. Any incident uses scoped server-enforced maintenance and a forward fix, preserving private data.
 - Prior independent ordinary Run stats and scoped optional timing remain only if practically useful; do not reinstate withdrawn research telemetry/storage products. Avoid overengineering.
+
+### Newly opened in-game Result UI design (UI-D67; 2026-10-15)
+
+Owner explicitly asked to redesign **Kyoku Win/Draw (including authorized winner hand reveal), Score Transfer, and post-Match Final Standings**, not just maintain current result overlay appearance. Existing `RoundWinSurface`, `SettlementPresentation`, `ScoreTransfer`, `ResultsPanel` and real Three.js/tiles/portrait assets form the implementation baseline. **Visual choices Q301–Q309 in the companion [UI/UX Grill](docs/superpowers/specs/2026-10-14-ui-ux-grill.md) are currently unanswered**. Preserve true Yaku/score, required Kyoku-end timer/Continue, authorized hand disclosure, identity/Seat mapping, 3p/4p outcomes, accessible/reduced-motion behavior and post-Match result. Mobile layout is a design goal, not shipped support. No new Bot messages, A/B Experiment, new game engine or code/CI/merge permission.
 
 ### Explicitly out of scope
 
@@ -1180,7 +1184,7 @@ driichi product: existing MJAI/MCP/Built-in integrations unchanged
 │   ├── create/select roster → start; durable scores/Replay
 │   ├── Stopped vs Completed vs Interrupted/Failed
 │   └── explicit safe Admin Resume, no synthetic retry/reset
-├── Dashboard & UI/UX DESIGN — UI-1–UI-5 Q237–Q300 decided; only design signoff remains
+├── Dashboard & UI/UX DESIGN — past UI-D1–D66 decided; new in-game outcome UI-6 open
 │   ├── visual direction / information hierarchy
 │   ├── desktop layout and one-table live observation
 │   ├── Run creation, list, trends and actions
@@ -1191,7 +1195,8 @@ driichi product: existing MJAI/MCP/Built-in integrations unchanged
 │   ├── UI-D66: subtly tilted portrait Lobby cards, large avatar/name, minimal accessible SVG status/self icons
 │   ├── normal prestart Lobby: stable Participant list; Seat assigned randomly only at Start Match
 │   ├── Kyoku chapters, responsive Room/Drawer navigation
-│   └── UI-5 signed cumulative window / Drawer / Seat order / Replay / Join / no-live semantics documented
+│   ├── UI-5 window / Drawer / Seat order / Replay / Join / no-live semantics documented
+│   └── UI-D67: new Win/Draw, Score Transfer and Final Standings UI; Q301–Q309 pending
 │   English-only shadcn/Base UI, actual Three.js retained
 ├── Whole-app UI release: one public cutover, no old-UI rollback
 ├── CANCELED: breaking Benchmark Bot protocol v2

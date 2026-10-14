@@ -1,10 +1,10 @@
-# driichi UI/UX — Grill with Docs (Rounds UI-1–UI-5; final design review)
+# driichi UI/UX — Grill with Docs (completed UI-1–UI-5; outcomes UI-6 open)
 
 Date: 2026-10-14
-Status: **Q237–Q300 and owner UI-D65 preserved; new owner UI-D66 finalizes angled portrait Lobby cards and icon-minimal passive states. Pre-Match Seat remains unassigned. Pending final design signoff; documentation only, no code authorized.**
+Status: **UI-D67 explicitly brings in-game Win/Draw, Score Transfer and Final Standings into the new design. UI-6 Q301–Q309 are pending. Previously decided UI-D1–UI-D66 stay binding; no product code/CI/deployment/merge approval.**
 Scope: shadcn/ui (Base UI) + Tailwind-based English-only redesign for **all** public/admin pages, starting with Run-first Benchmark Dashboard. One public all-pages cutover; no planned old-UI rollback. Dedicated existing Three.js/Pixi Mahjong renderer remains.
 
-**Read first:** latest owner **UI-D66** selects subtly slanted portrait character cards with prominent avatar/name and very few SVG status/own-player icons instead of repetitive Ready/You text badges. UI-D66 supersedes the *vertical-only visual layout* of older UI-D30/UI-D47 but preserves stable participant collection semantics. Current code demonstrates **normal-room Seat assignment occurs at Start Match, NOT in the pre-Match Lobby**. The correction below supersedes the unimplementable Q296 A East/South/West/North prestart order **while preserving its intent: stable participant cards that do not jump on readiness**. Latest owner **UI-D65 overrides only the normal-game action-button PLACEMENT clauses** of UI-D31 (Q267 B), UI-D48 (Q284 B), and UI-D61 (Q297 A). The original 64 question choices are retained as historical design decisions and all their *unrelated* requirements remain active. The latest authority map and consistency audit below supersede any older archived options, particularly the rejected original UI-3 A/B/C definitions. Old "pending/frontier" text in archived proposal sections is not a new open decision.
+**Read first:** newer owner **UI-D67** reopens *only* visual design of end-of-Kyoku outcome and post-Match ranking screens; UI-6 answers remain pending. Previous no-pending-questions audit predates the new explicit owner request. Earlier owner **UI-D66** selects subtly slanted portrait character cards with prominent avatar/name and very few SVG status/own-player icons instead of repetitive Ready/You text badges. UI-D66 supersedes the *vertical-only visual layout* of older UI-D30/UI-D47 but preserves stable participant collection semantics. Current code demonstrates **normal-room Seat assignment occurs at Start Match, NOT in the pre-Match Lobby**. The correction below supersedes the unimplementable Q296 A East/South/West/North prestart order **while preserving its intent: stable participant cards that do not jump on readiness**. Latest owner **UI-D65 overrides only the normal-game action-button PLACEMENT clauses** of UI-D31 (Q267 B), UI-D48 (Q284 B), and UI-D61 (Q297 A). The original 64 question choices are retained as historical design decisions and all their *unrelated* requirements remain active. The latest authority map and consistency audit below supersede any older archived options, particularly the rejected original UI-3 A/B/C definitions. Old "pending/frontier" text in archived proposal sections is not a new open decision.
 
 ## Dependencies and explicit cancellations
 
@@ -437,9 +437,97 @@ This is a **later and more specific owner directive**, overriding earlier layout
 
 **Supersession:** UI-D66 refines Q266 B/UI-D30 and Q283 B/UI-D47 **in card visual composition and passive status copy only**, retaining a stable ordered Participant collection; it does not supersede the technical correction to Q296 A/UI-D60, and does not reverse UI-D65's above-hand contextual action row. No further questioning required.
 
+## Scope addition: in-game outcome UI redesign — UI-6 (2026-10-15)
+
+### UI-D67. Redesign Win/Draw, Score Transfer and Final Standings — SCOPE DECIDED, PRESENTATION PENDING
+
+**Owner request:** `ゲーム内UIも新デザインに変更したい`, referring directly to Kyoku end hand reveal / score movement and full Match final rankings. The old assumption to *keep these result overlays' current visual design* is superseded. The user has **not** chosen a specific result layout or authorized implementation.
+
+**Grounded existing main branch `frontend/src/game/gameplay.tsx`:**
+- `RoundWinSurface` exposes the authorized **winner** portrait/name, concealed winning tiles and melds, winning tile marker, legitimate Yaku/han/fu and win points.
+- `SettlementPresentation`/`ScoreTransfer` renders settlement score movement from server `KyokuSettlement`; local Pause/Resume review and Skip affect visual animation, not the Match's authoritative timer.
+- `KyokuEndStep` governs countdown and per-Participant `Continue` acknowledgements or spectator Dismiss. Keep deadline, action idempotence and `Waiting for players` semantics.
+- `ResultsPanel` presents actual sorted ranks and final points when `room.phase === "post_match"`, with `Return to room`. CSS is largely in `frontend/src/styles.css`.
+- Current live gameplay rejects non-landscape or viewport smaller than 1024×600; the proposed phone UI is **not yet implemented**. Also an earlier Seat↔score mismatch report remains unverified.
+
+**Domain boundaries (already in `CONTEXT.md`, no glossary or ADR edits needed):** `Kyoku` = one dealt hand within a `Match`. Win/Draw/Score Transfer are events or outcomes of a Kyoku, **Final Standings** belong to the complete Match's **Post-Match** phase. `Replay` is not a live Win/Draw screen. Do not conflate these.
+
+**Binding constraints even before Q301–Q309 answers:** Use existing Three.js Mahjong tabletop, actual winner-only authorized hand information (NOT all opponents' concealed tiles), existing SVG tile/character portrait assets, true 3p/4p Player-to-Seat mapping, Yaku and points, and server authoritative result/timer/Continue/Draw/Post-Match permissions. Cosmetic Skip/Replay animation never bypasses required server acknowledgements or invents draws, hands, scores or final ranks. Keep the current above-hand action-button placement UI-D65, angled Lobby UI-D66, Admin role/privacy, English-only modern UI, keyboard/touch support, reduced motion, and no A/B Experiment / breaking Benchmark Bot v2 protocol. Redesigning overlay components does not require another Mahjong engine, second table or new backend result schema. **No implementation/CI/merge is authorized.**
+
+### UI-6 decision tree — entire currently unlocked independent frontier
+
+```text
+UI-D67: end-of-Kyoku + Post-Match visual redesign
+├─ Win result
+│  ├─ Q301 desktop overlay/table relationship
+│  └─ Q302 visual hierarchy: hand vs portrait vs yaku
+├─ Q303 Draw visual treatment
+├─ Q304 Score Transfer visual presentation
+├─ Q305 server-confirmed Continue/review controls
+├─ Post-Match
+│  ├─ Q306 Final Standings layout
+│  └─ Q307 next navigation action(s)
+├─ Q308 animation intensity
+└─ Q309 mobile results surface pattern
+```
+
+All nine questions are **independent** at this stage, A/B/C are **viable**, recommendations vary and no owner answer is prefilled.
+
+### Round UI-6 questions — A/B/C all awaiting owner
+
+**Q301. Desktop Win Result placement**
+- A: compact **floating table-edge panel**, preserving most 3D tabletop (continuity; denser information).
+- B: **centered large overlay** over dimmed real table (strong result focus; more occlusion).
+- **C (recommended):** **split result-stage panel** with winner/tiles on one side and scoring on the other, real table visible behind (roomy; needs responsive care).
+
+**Q302. Win Result information priority**
+- **A (recommended):** **winning tiles and highlighted winning tile** are primary, clear Yaku/han/fu/points adjacent, portrait secondary (most informative).
+- B: **winner Character and total points** are primary, tiles/Yaku still clearly readable below (celebration focus).
+- C: **Yaku/points calculation** first, portrait and tiles beneath (review focus).
+
+**Q303. Draw (流局) presentation**
+- A: compact **draw banner + settlement**, tabletop largely visible (fast, more distinct from Win).
+- **B (recommended):** **same result shell** as Win, swapping winner elements for truthful Draw reason and settlement (consistent UI).
+- C: **special Draw card** prioritizing draw type, reason and points movement (distinguishable, more variants).
+
+**Q304. Score Transfer style**
+- **A (recommended):** accessible **before → signed delta → after** per-Player animated scoreboard (readable, uses overlay space).
+- B: **seat-anchored +/− around actual 3D table** with accessible summary (immersive, needs Seat mapping checks).
+- C: **Participant portrait/name result cards** with signed delta and final totals (character focus, more space).
+
+**Q305. Kyoku result controls**
+- A: keep **separate restyled existing timer/Continue/Waiting, Pause/Resume and Skip** controls (all options explicit).
+- **B (recommended):** one **compact result-footer bar** for Continue/Waiting/Skip, with Review expansion (less clutter).
+- C: **Review and Continue side-by-side** and one compact animation control icon (fast access to details).
+- All options must retain existing server confirmation/deadline logic, no optimistic advancement.
+
+**Q306. Final Match standings**
+- A: **winner large hero portrait + ranked list** (compact/celebratory).
+- **B (recommended):** **equal-size portrait cards for all 3/4 Participants**, each clearly marked rank and final score (balanced).
+- C: **podium composition** with prominent 1st and supporting lower-ranked panels (dramatic, responsive effort).
+
+**Q307. Post-Match actions**
+- A: only **Return to room** (minimal).
+- **B (recommended):** Return primary + **Watch Replay** secondary iff persisted and authorized (fast review).
+- C: Return primary + **Host/Admin-only Rematch Setup shortcut** if authorized, without auto-start (faster new Match).
+
+**Q308. Results motion intensity**
+- **A (recommended):** restrained brief panel reveal/score counting, respect reduced-motion (modern restrained).
+- B: skippable ~1–2s staged portrait/tiles/points reveal, no impact to server timeouts (celebratory).
+- C: instant result values, no automatic transition; optional replay of visual change (fast analytical).
+
+**Q309. Phone Win/Draw/Final Standings presentation**
+- A: **full-screen scrollable outcome layout** (legible, hides more table).
+- **B (recommended):** **expandable bottom sheet** above real table, summary then detail (context, extra expansion).
+- C: **small centered overlay** with Details expansion (compact, potentially crowded).
+
+### Next steps — after owner UI-6 answers only
+
+Recompute any truly dependent Win/Draw/Score/Final interaction branches, then consistency-audit alongside existing UI-D1–D66. Do not add decorative micro-questions or rewrite prior decisions. Owner approval of scope does NOT authorize code, CI, deployment or merge.
+
 ## Final authority map and consistency audit (2026-10-14)
 
-**UI/UX interview is CLOSED.** The owner answered every choice in **Q237–Q300** (64 original decisions) and later issued precise overrides: **above-hand game actions UI-D65** and **angled icon-minimal Lobby cards UI-D66**. Only this later override supersedes the older Q267/Q284/Q297 side-panel/Dock arrangement. The main Benchmark architecture D1–D239 remains an audit trail, NOT a requirement to reinstate withdrawn Experiment or mandatory Bot-protocol migrations. After this consistency review there are **no new owner-level UI design questions waiting**. An **explicit final owner *design* signoff is still pending**, and it does **not** by itself authorize implementing, running CI, deploying or merging PR #23.
+**The earlier UI-1–UI-5 interview Q237–Q300 closed** (with later UI-D65/UI-D66 refinements). **Latest owner UI-D67 now opens a bounded new in-game outcome-screen visual interview UI-6: Q301–Q309 awaiting answers**; the old closing audit is historical for the prior scope. Only this later override supersedes the older Q267/Q284/Q297 side-panel/Dock arrangement. The main Benchmark architecture D1–D239 remains an audit trail, NOT a requirement to reinstate withdrawn Experiment or mandatory Bot-protocol migrations. This audit recorded no owner-level open questions *at that time*; the **later explicit scope change UI-D67 now has Q301–Q309 pending**. An **explicit final owner *design* signoff is still pending**, and it does **not** by itself authorize implementing, running CI, deploying or merging PR #23.
 
 ### Authority precedence
 
