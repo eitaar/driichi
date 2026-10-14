@@ -73,123 +73,59 @@ A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby,
 _Avoid_: Hidden room, ranked room
 
 **Benchmark Mode**:
-A bot-only Room mode where selected MJAI, MCP, and Built-in Bots repeatedly play Matches within one chosen three-player or four-player mode. The Admin reviews live play, per-Match outcomes and accumulated statistics. Research Experiments are optional; Bot capabilities may depend on the deployed Benchmark protocol version. Humans and automatically supplied missing Bots are not permitted; starting 3p never also runs 4p.
+A bot-only Room mode where chosen supported software Participants repeatedly play finite, sequential Matches within one selected three-player or four-player ruleset. The Admin observes one live table and reviews accumulated results; an A/B research Experiment is NOT part of the currently approved design. Benchmark v2 participants must meet the planned version/capability admission protocol. Humans, supplied missing Bots and automatic concurrent 3p+4p modes are not supported.
 _Avoid_: Ranked mode, bot replacement
 
-**Experiment**:
-An optional research comparison and organization of eligible Benchmark Runs, including historical or newly arranged sequential Runs. It is not required to start or observe an ordinary bot-vs-bot Benchmark Run. Each Experiment uses one exact game mode, never automatically both 3p and 4p; each Run retains its own identity, results and history.
-_Avoid_: Benchmark Run, Match
-
-**Verified Benchmark Run**:
-A Benchmark Run with complete recorded game conditions and trusted Bot Token-authenticated build/checkpoint declarations. Identity is accepted under the operator's trust policy rather than independently measured at runtime.
-_Avoid_: All historical Runs, independent binary attestation
-
 **Benchmark Run**:
-An automatically progressing series of bot-vs-bot Matches among a fixed roster, played sequentially until its configured target or stopping condition. The Admin can view live play, per-Match outcomes and accumulated statistics. Seats rotate between Matches; aborted/unrecorded Matches do not count toward its target; results belong to each Participant, not its Bot Token.
+An automatically progressing, finite series of Bot-vs-Bot Matches among a fixed roster in one game mode. Matches progress sequentially until the configured 1–1,000 completed-Match target, Admin Stop or failure. The Admin sees live play, outcomes and cumulative statistics; results belong to Participants, not Bot Tokens. Aborted/unrecorded Matches do not count; restart recovery requires explicit Admin Resume.
 _Avoid_: Rematch, Replay
 
 **Stopped Benchmark Run**:
-A Benchmark Run intentionally stopped by an Admin before its configured completed-Match target, after finishing the active Match when possible and retaining all durably recorded Match results. This is distinct from reaching the target, an unexpected interruption or a failed Match.
-_Avoid_: Completed Run, Failed Experiment, deleting history
+A Benchmark Run intentionally ended by an Admin before its configured target; the current Match finishes and is persisted when possible, and the actual completed/target counts and historical results remain accessible. Distinct from Completed (target reached) and Interrupted (unexpected crash), and is not implicitly resumed.
+_Avoid_: Completed Run, Interrupted Run, deleting history
 
 **Benchmark Admin Observer**:
 An authenticated Admin observing a live Benchmark Match with access to every player's concealed information. Ordinary Spectators remain limited to the Public View.
 _Avoid_: Spectator, Replay View
 
 **Benchmark Dashboard**:
-The Admin's primary view for managing ongoing Benchmark Runs, watching the single live 3D Mahjong table (expandable to fullscreen) and reviewing per-Match and accumulated Bot performance. It is usable without an Experiment.
+The Admin's primary view for managing ordinary Benchmark Runs, watching one live 3D Mahjong table (expandable to fullscreen) and reviewing current progress, per-Match and cumulative Bot statistics and Replay history.
 _Avoid_: A/B-only Experiment report, game controller
 
 **Benchmark v2 Capability**:
-A versioned identity and reset-capability declaration required from each software Participant in a Benchmark v2 Run, including standalone Runs, without requiring an Experiment. It is a trusted claim rather than independent binary execution evidence.
+A versioned Participant-scoped Bot identity/build declaration and clean-reset capability required for admission to the future Benchmark v2 protocol. It is trusted without independently proving which model binary executed.
 _Avoid_: Bot Token, A/B candidate, runtime attestation
 
 **Benchmark Protocol Mismatch**:
 The refusal of a Bot Participant to enter a Benchmark because its advertised capability/protocol version is incompatible with the required Benchmark version. It is an admission failure, not evidence that the Bot played or failed a Match.
 _Avoid_: Disconnect during Match, invalid Game Action
 
-**Benchmark Fixture**:
-An immutable planned assignment of a Benchmark Match's exact rules, Bot Participants, Seats and deterministic seed/stream identity. A Fixture is a plan and may have more than one failed Attempt, but at most one successfully committed Match outcome.
-_Avoid_: Match Attempt, Replay, scheduled Run
-
 **Benchmark Protocol Preflight**:
 A non-mutating assessment of a Bot Participant's declared compatibility with the required Benchmark protocol, which can be Compatible, Incompatible or Unknown when evidence cannot be obtained.
 _Avoid_: Runtime attestation, connection health, completed Match
 
 **Benchmark Drain**:
-The controlled stopping of new Benchmark Match scheduling while an already active Match is given a finite opportunity to finish and preserve its result before a protocol maintenance cutover.
+The deliberate suspension of scheduling new Benchmark Matches while the currently active Match receives a bounded chance to finish and preserve its result before a planned Benchmark Bot protocol cutover.
 _Avoid_: Deleting Run history, restarting a Match, migrating a Bot by assumption
 
-**Paired Evaluation**:
-A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
-_Avoid_: Identical replay, same match outcome
-
 **Benchmark Match Attempt**:
-A single attempt to execute a scheduled Benchmark Match. Incomplete attempts remain separately recorded as failed; a retry is a new Attempt of the same planned Match and never changes the result of previous attempts.
+A single attempt to execute a scheduled ordinary Benchmark Run Match. A failed/incomplete Attempt is recorded separately; a retry creates a new Attempt of the same Match without overwriting old evidence.
 _Avoid_: Completed Match, Rematch
 
 **Server-observed Latency**:
 Response timing observed by the game server, distinguished into time to first response and time until a legal Game Action is accepted. It is different from optional Bot-reported inference time.
 _Avoid_: Inference time, guaranteed model compute time
 
-**Experiment Configuration**:
-The declared conditions defining which Benchmark Runs may be compared in an Experiment. They become fixed at the first Match start for newly run experiments, or at the first eligible historical Run attachment/explicit retrospective comparison start for historical experiments.
-_Avoid_: Annotation, Admin display preferences
-
-**Diagnostic Log**:
-Optional detailed evidence collected during a Benchmark, governed by storage and retention limits. Bodies whose secrets cannot safely be redacted are omitted and marked as such. Missing detail is acknowledged separately from durable Match statistics.
-_Avoid_: Benchmark result, Replay
-
 **Trusted Bot Declaration**:
-Code/build or checkpoint identity claimed for one software Participant by an authenticated holder of an Admin-issued Bot Token, recorded for its Benchmark Run. It is trusted by the operator but not independently proven to be the running executable.
+A code/build or checkpoint identity claimed for one software Participant by an authenticated Bot Token holder and recorded for the Benchmark Run. This is an operator-trusted claim, not independent proof of the running executable.
 _Avoid_: Runtime attestation, measured binary
-
-**Paired Block**:
-A complete A/B comparison under one chosen game mode and matched seed conditions: in 3p, three Matches for A and three for B (six total); in 4p, four for A and four for B (eight total). Each Candidate Model occupies every Seat once against the fixed reference roster. Only fully recorded A/B blocks contribute to paired effect statistics.
-_Avoid_: Kyoku, single Match
-
-**Analysis Seed**:
-A recorded seed for statistical resampling and uncertainty estimation, kept independent of the random seeds that govern actual Mahjong Matches.
-_Avoid_: Root Seed, per-Match seed
-
-**Experiment Run Queue**:
-The ordered collection of Benchmark Runs under an optional Experiment. Large fixed evaluations may span multiple sequential Runs while each ordinary Run retains its own Match target.
-_Avoid_: Current Match, concurrent Runs
-
-**Descriptive-only Run**:
-A verified Benchmark Run attached to an Experiment whose results do not meet the Experiment's paired fixture conditions. It appears separately from paired statistics and is excluded from paired effect and paired uncertainty calculations.
-_Avoid_: Unverified Run, Paired Block
-
-**Interrupted Experiment**:
-An Experiment whose active work was interrupted by a server restart or crash, pending reconciliation and explicit Admin Resume.
-_Avoid_: Completed Experiment, Blocked Experiment
 
 **Live Table Fullscreen**:
 The focused display of a single active Mahjong 3D table expanded beyond its ordinary dashboard panel, without creating another Match, changing game state or showing three concurrent tables.
 _Avoid_: Multi-table viewer, additional Match, simultaneous Run
 
-**Blocked Experiment**:
-An Experiment awaiting a potentially recoverable prerequisite, which an Admin may resolve before explicit resumption.
-_Avoid_: Terminal failure, Cancelled Experiment
-
-**Failed Experiment**:
-An Experiment terminated by exhausted Match retries or an unrecoverable integrity error; existing results and failure evidence remain accessible.
-_Avoid_: Blocked Experiment, Cancelled Experiment
-
-**Paired Effect**:
-The measured difference between two Candidate Models across complete matched Paired Blocks of one exact game mode. For mean placement, Candidate A advantage is mean placement(B) minus mean placement(A); a positive value favors A. Relative score and first-place rate are secondary, and uncertainty is assessed by block-level bootstrap intervals.
-_Avoid_: Single-Match ranking, guaranteed model superiority
-
-**Reference Bot**:
-A software Participant held unchanged across the A/B candidate comparison so the other seats provide the same reference opponents.
-_Avoid_: Candidate model, alternate test condition
-
-**Candidate Model**:
-One of two software implementations, A or B, evaluated in the same candidate Seat positions against an unchanged roster of Reference Bots. A model version is not itself a Participant identity.
-_Avoid_: Participant identity, Bot Token
-
 **Match Reset Acknowledgement**:
-A trusted, authenticated external software Participant's explicit declaration that it has returned to a clean initial Match state under its recorded build/checkpoint identity. For Built-in Bots, the server records its own reset operation.
+A trusted authenticated Bot Participant's explicit, scoped declaration that it returned to a clean Match state for an eligible retry under its recorded build/checkpoint. For Built-in Bots the server records its own reset operation.
 _Avoid_: Reconnection, process restart proof
 
 **Observation Focus**:
