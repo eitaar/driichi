@@ -73,7 +73,7 @@ A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby,
 _Avoid_: Hidden room, ranked room
 
 **Benchmark Mode**:
-A bot-only Room mode where selected MJAI, MCP, and Built-in Bots repeatedly play Matches one after another under one chosen three-player or four-player mode. The Admin can watch live play, track results and inspect accumulated performance through a Benchmark dashboard. A research Experiment is optional and never replaces this continuous-match purpose. Human Participants cannot play; missing players are never automatically supplied; existing game-mode restrictions apply. Starting 3p never also runs 4p and vice versa.
+A bot-only Room mode where selected MJAI, MCP, and Built-in Bots repeatedly play Matches within one chosen three-player or four-player mode. The Admin reviews live play, per-Match outcomes and accumulated statistics. Research Experiments are optional; Bot capabilities may depend on the deployed Benchmark protocol version. Humans and automatically supplied missing Bots are not permitted; starting 3p never also runs 4p.
 _Avoid_: Ranked mode, bot replacement
 
 **Experiment**:
@@ -95,6 +95,10 @@ _Avoid_: Spectator, Replay View
 **Benchmark Dashboard**:
 The Admin's primary view for managing ongoing Benchmark Runs, watching the live table and reviewing per-Match and accumulated Bot performance. It is usable without an Experiment.
 _Avoid_: A/B-only Experiment report, game controller
+
+**Benchmark v2 Capability**:
+A versioned identity/reset-capability declaration associated with a software Participant joining a Benchmark v2 Run. Its presence is independent of Experiment membership and is not proof that a particular binary actually executed.
+_Avoid_: Bot Token, A/B candidate, runtime attestation
 
 **Paired Evaluation**:
 A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched planned seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
