@@ -88,6 +88,10 @@ _Avoid_: All historical Runs, independent binary attestation
 An automatically progressing series of bot-vs-bot Matches among a fixed roster, played sequentially until its configured target or stopping condition. The Admin can view live play, per-Match outcomes and accumulated statistics. Seats rotate between Matches; aborted/unrecorded Matches do not count toward its target; results belong to each Participant, not its Bot Token.
 _Avoid_: Rematch, Replay
 
+**Stopped Benchmark Run**:
+A Benchmark Run intentionally stopped by an Admin before its configured completed-Match target, after finishing the active Match when possible and retaining all durably recorded Match results. This is distinct from reaching the target, an unexpected interruption or a failed Match.
+_Avoid_: Completed Run, Failed Experiment, deleting history
+
 **Benchmark Admin Observer**:
 An authenticated Admin observing a live Benchmark Match with access to every player's concealed information. Ordinary Spectators remain limited to the Public View.
 _Avoid_: Spectator, Replay View
