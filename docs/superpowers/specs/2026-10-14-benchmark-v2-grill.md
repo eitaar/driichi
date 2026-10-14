@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview in progress — Rounds 1–6 decided; Round 7 unanswered**
+Status: **Design interview in progress — Rounds 1–7 decided; Round 8 unanswered**
 Owner: eitaar
 Scope: research-oriented improvements to driichi's Benchmark Mode, not implementation approval.
 
@@ -67,7 +67,7 @@ During a running Benchmark, authenticated Admins can inspect **all bots' conceal
 
 ### D10. Existing and newly created Runs in an Experiment — DECIDED (Q9: C)
 
-Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. Round 6 adopts token-authenticated Bot self-declarations as sufficient artifact identity under the owner's trust policy. The binding/lifecycle of declarations and linking reversibility remain open.
+Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. Round 6 adopts token-authenticated Bot self-declarations as sufficient artifact identity under the owner's trust policy. Round 7 binds an immutable model declaration to each Participant for the Run and requires matching declarations upon resume; linking reversibility remains open.
 
 ### D11. Fixed random seed and balanced seats — DECIDED (Q10: B)
 
@@ -147,7 +147,7 @@ When the Experiment's **first Match starts**, freeze its comparability-defining 
 
 ### D27. Quota/expiry-controlled optional diagnostics — DECIDED (Q26: B)
 
-Detailed diagnostic logs have **Admin-configurable retention time and capacity quotas** with conservative self-hosted defaults. Durable Match-level outcome and reliability summaries and failure/Attempt records survive expiry or quota enforcement. The precise quota scope, quota-exceeded behavior, redaction and export/archival policy remain open.
+Detailed diagnostic logs have **Admin-configurable retention time and capacity quotas** with conservative self-hosted defaults. Durable Match-level outcome and reliability summaries and failure/Attempt records survive expiry or quota enforcement. Round 7 selects a global self-hosted diagnostics cap with optional tighter per-Experiment caps. Quota exhaustion drops optional details with visible truncation; specific cap defaults, redaction, and export policy remain open.
 
 ## Decisions — Round 6 (2026-10-14)
 
@@ -157,7 +157,7 @@ The operator issues Bot Tokens only to trusted parties. An authenticated MJAI/MC
 
 ### D29. Balanced seed/seat comparison blocks — DECIDED (Q28: B)
 
-Use blocks of 3 Matches in 3p and 4 Matches in 4p, balancing Seat assignments for the relevant Participants and recording the distinct planned Match seeds. Reuse the identical block seed/Seat plan when comparing candidate versions. Divergent Bot decisions still prevent claims of identical full game trajectories. The candidate/reference roster and missing-block statistics remain open.
+Use blocks of 3 Matches in 3p and 4 Matches in 4p, balancing Seat assignments for the relevant Participants and recording the distinct planned Match seeds. Reuse the identical block seed/Seat plan when comparing candidate versions. Divergent Bot decisions still prevent claims of identical full game trajectories. Round 7 selects one A/B candidate slot against an unchanged roster of 2/3 reference Bots; only fully completed paired blocks contribute to paired estimates, while partial Match results remain descriptive. Effect-size methodology remains open.
 
 ### D30. Valid-response timing and failures are separate — DECIDED (Q29: B)
 
@@ -165,7 +165,7 @@ Summarize only actual observed first responses and accepted legal actions in tim
 
 ### D31. Strict Match reset gate before retries — DECIDED (Q30: A)
 
-Before Admin resumes an interrupted scheduled Match, check the same declared Bot build/checkpoint identities and confirm a **fresh, clean Match-level Bot state**. Reconnection alone is not clean-reset evidence. A light token-authenticated reset acknowledgement consistent with D28 is a candidate, not yet approved; the exact reset mechanism is the next frontier. Existing maximum of 3 Attempts remains.
+Before Admin resumes an interrupted scheduled Match, check the same declared Bot build/checkpoint identities and confirm a **fresh, clean Match-level Bot state**. Reconnection alone is not clean-reset evidence. Round 7 requires an explicit authenticated Bot clean-Match reset acknowledgement for the same declared checkpoint before retries; the handshake shape and idempotent processing remain open. Existing maximum of 3 Attempts remains.
 
 ### D32. SSE current-state snapshots — DECIDED (Q31: B)
 
@@ -173,7 +173,7 @@ An authenticated Admin receives a complete current snapshot on SSE connect or re
 
 ### D33. Pause/Cancel after persisted current Match — DECIDED (Q32: A)
 
-Allow the active Match to finish and save its result before fulfilling an Experiment Pause or Cancel. Never abort a Match simply because the Admin presses these controls. Pausing, cancellation terminality, incomplete blocks, and the queued Run lifecycle remain to be defined.
+Allow the active Match to finish and save its result before fulfilling an Experiment Pause or Cancel. Never abort a Match simply because the Admin presses these controls. Round 7 makes Pause resumable with immutable scheduled Runs preserved, and Cancel terminal with committed results retained and partial blocks labeled; exact API/state transitions remain open.
 
 ### D34. Quota exhaustion truncates optional diagnostics — DECIDED (Q33: B)
 
@@ -182,6 +182,48 @@ When optional detailed diagnostic storage reaches its quota, stop collecting **o
 ### D35. Smooth Admin focus and reduced-motion handling — DECIDED (Q34: B)
 
 Selecting a different Bot animates a short smooth 3D perspective change while showing that Bot's enlarged hand. Honor Reduced Motion by switching without animation. Observation Focus follows the **Participant identity** across rotated Seats. The center scoreboard must continue to map each score to the correct Seat throughout the transition; the reported normal-Match wrong-seat visual defect is still unverified as fixed.
+
+## Decisions — Round 7 (2026-10-14)
+
+### D36. Per-Participant immutable Bot identity declaration — DECIDED (Q35: B)
+
+Each software **Participant**, not the shared Bot Token, declares its own executable/build hash and model checkpoint identifier **before admission to a Run**. Persist the claimed identity along with the authenticated declarant/issuer and the Run participation, and require **the same declaration at Resume**. The declaration becomes immutable for that Run and cannot be silently changed by reusing a Bot Token or changing Display Name. The operator explicitly trusts authenticated declarations; this does **not** require independent executable measurements or cryptographic runtime attestation (D28). The metadata transport and failure behavior on a changed declaration remain open.
+
+### D37. One A/B candidate slot against fixed reference Bots — DECIDED (Q36: A)
+
+The default controlled comparison contrasts **Candidate A and Candidate B** one at a time in the same evaluation slot, with the **other two Bots in 3p or three Bots in 4p unchanged** as a reference roster. Compare A's and B's results using matched seed/Seat fixture blocks, not arbitrary mixtures of changing opponents. A and B may correspond to separate Participant identities and separate Runs; do not conflate a Participant ID with a model version. A general multi-changing-roster study is not selected for the initial v2 default. Which outcome metric has priority is open.
+
+### D38. Complete blocks only for paired effect estimates — DECIDED (Q37: A)
+
+A Paired Block contributes to **paired A/B effect statistics only when its required scheduled Matches are all completed and durably recorded for the compared versions**. If any required Match is missing, the block is incomplete and **excluded entirely from paired-effect estimation**; already completed constituent Matches still appear in descriptive Run statistics, with visible failure/missingness evidence. Never silently replace the missing fixture with a new seed. How to present a verified-but-unpaired Run in an Experiment remains open.
+
+### D39. Versioned RNG derivation and engine contract — DECIDED (Q38: B)
+
+Store the **Root Seed**, deterministically derived per-Match seed/fixture schedule, a **versioned seed derivation algorithm**, labeled RNG domains/streams, and the **game engine and RNG version** needed to interpret or reproduce an Experiment. An arbitrary matching numeric seed is insufficient to assert compatibility across different RNG or rules-engine behavior. Specific PRNG/hash versions, canonical encoding and compatibility checks remain open; v1 stored results do not retroactively acquire these fields.
+
+### D40. Controller-dispatch-started server-observed latency — DECIDED (Q39: A)
+
+Start the server's Bot latency clock when an action request is **dispatched to the Bot Controller**, not when the Decision is initially created. Record separate elapsed times for the first received response and the first accepted complete legal Game Action. Network/protocol overhead is included in external Bot metrics; label synchronous Built-in Bot timings as server-observed rather than inference-only. Exact MJAI/MCP framing, retry/invalid response attribution and per-Match aggregations remain open.
+
+### D41. Explicit authenticated clean Match reset acknowledgement — DECIDED (Q40: A)
+
+Before retrying a scheduled Match, each affected external Bot must explicitly **acknowledge a fresh Match-level reset under its authenticated token and matching declared build/checkpoint identity**. A reconnect alone does not count. As with artifact declarations, the operator trusts this acknowledgement; it is not independent proof of the Bot's internal memory. Internal Built-in Bot reset evidence and the specific handshake/correlation contract remain open. This is a lightweight protocol acknowledgement, not a mandatory process restart.
+
+### D42. Exhausted scheduled Match halts the Experiment — DECIDED (Q41: A)
+
+After all **three permitted Attempts** for one scheduled Match fail, halt Experiment progress and show that Match and Experiment as explicitly **Blocked/Failed**; do not skip the fixture, silently progress to further blocks, or fabricate a complete paired sample. Retain failed Attempts, earlier completed Matches, and their evidence. Changing immutable settings requires a **new Experiment** rather than reopening this exhausted schedule. Whether the persisted terminal status is named \`blocked\` or \`failed\` and how the UI presents it remain open.
+
+### D43. Configurable bounded SSE cadence with mandatory terminal state — DECIDED (Q42: B)
+
+Coalesce intermediate Admin live state revisions into a **configurable capped update rate**. The stream may skip intermediate animation frames; it must still deliver an authoritative terminal/Match-completed view (or allow recovery by a fresh snapshot if connectivity fails), without hiding the final result. Admin SSE auth/expiry and polling fallback remain mandatory. Precise default cap, slow client policy, reconnect UI and retained revision budget remain open.
+
+### D44. Pause preserves queue; Cancel terminates without deleting results — DECIDED (Q43: A)
+
+On **Pause**, finish/persist the current Match, retain the immutable Experiment plan and its queued Runs, and allow explicit Admin resumption. On **Cancel**, finish/persist the current Match and transition to a terminal cancelled state; preserve committed results, failed-Attempt evidence, and clear labels for unfinished Paired Blocks. Neither operation rewrites the initial Experiment configuration, erases history or changes standalone v1 Run behavior. Exact persistence/restart state transitions remain open.
+
+### D45. Global diagnostic capacity with optional per-Experiment caps — DECIDED (Q44: B)
+
+Enforce a **self-host-wide cap for optional detailed diagnostic storage**, with optional tighter caps assigned to individual Experiments. Preserve durability of Match summaries and failed-Attempt evidence outside the optional-detail quota. When the cap is reached, stop optional detail collection and mark trace gaps, rather than terminating successful game progress. Exact defaults, disk reservation for mandatory records, retention timing and redaction rules remain open.
 
 ## Verified v1 baseline (not v2 decisions)
 
@@ -204,47 +246,61 @@ These remain candidates, not implementation mandates:
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Decision tree — Round 7 frontier
+## Decision tree — Round 8 frontier
 
 ```text
 Benchmark v2
-├── D28 trusted Bot Token declarations                   [DECIDED]
-│   └── Q35 declaration identity and lifecycle           [FRONTIER]
-│       └── Later: schema, hash consistency/revocation
-├── D29 seeded and Seat-balanced blocks                  [DECIDED]
-│   ├── Q36 candidate vs reference comparison roster     [FRONTIER]
-│   │   └── Later: paired statistical estimators
-│   ├── Q37 incomplete paired blocks                     [FRONTIER]
-│   └── Q38 RNG derivation versioning                    [FRONTIER]
-├── D30 separate reliability failure metrics             [DECIDED]
-│   └── Q39 server timing clock boundary                 [FRONTIER]
-├── D31 verified clean Bot reset; 3 Attempt cap           [DECIDED]
-│   ├── Q40 lightweight reset evidence                   [FRONTIER]
-│   └── Q41 exhausted retry policy                       [FRONTIER]
-├── D32 SSE latest snapshots; D35 animated focus         [DECIDED]
-│   └── Q42 update rate and coalescing                    [FRONTIER]
-├── D33 persisted Match boundary Pause/Cancel            [DECIDED]
-│   └── Q43 queued Run / partial block disposition        [FRONTIER]
-└── D34 durable summaries on diagnostic quota            [DECIDED]
-    └── Q44 diagnostic quota scope                       [FRONTIER]
+├── Verified paired A/B experiment against fixed reference Bots [D15,D36–D39]
+│   ├── Q45 Primary outcome/effect measure                  [FRONTIER]
+│   │   └── Later: precise estimand, effect visualization
+│   ├── Q46 Confidence/uncertainty calculation             [FRONTIER]
+│   │   └── Later: alpha/CI defaults, bootstrap validation
+│   ├── Q47 Planned sample size and stopping               [FRONTIER]
+│   │   └── Later: workload and progress UX
+│   ├── Q48 Fully verified but non-paired historic Runs    [FRONTIER]
+│   │   └── Later: Experiment admission and warning labels
+│   ├── Q50 Engine/RNG revision comparison boundary        [FRONTIER]
+│   │   └── Later: compatibility tests
+│   └── Q56 Across 3p/4p results                           [FRONTIER]
+│       └── Later: rankings and grouping layout
+├── Trusted per-Participant frozen Bot identity           [D28,D36]
+│   └── Q49 Declared checkpoint change mid-Run             [FRONTIER]
+│       └── Later: token revocation/reconnect semantics
+├── Controller timing + durable Match and failed Attempts [D30,D40,D42]
+│   └── Q51 Ambiguous persistence after restart            [FRONTIER]
+│       └── Later: idempotent recovery, transaction barriers
+├── Admin SSE latest-state stream + focus                 [D32,D35,D43]
+│   └── Q52 UI behavior on live-feed disconnect            [FRONTIER]
+│       └── Later: auth/reconnect tests and visual regression
+├── Experiment Web research reporting                     [D1,D8,D37]
+│   └── Q53 Results export scope                           [FRONTIER]
+│       └── Later: JSON/CSV schema/version
+├── Optional diagnostic log capacity/retention            [D27,D34,D45]
+│   └── Q54 Diagnostic payload/privacy policy             [FRONTIER]
+│       └── Later: data schema, caps/expiry defaults
+└── Immutable Experiment config + historic Run linking    [D10,D26,D44]
+    └── Q55 Freeze point for retrospective Experiments     [FRONTIER]
+        └── Later: state machine, attach/detach rules
 ```
 
-### Round 7 questions — awaiting owner
+### Round 8 questions — awaiting owner
 
-- **Q35, trusted Bot hash declaration lifecycle:** A — one declaration per Bot Token, independent of Participants; B — each Participant provides its own build/checkpoint declaration when a Run is admitted, stored with issuer identity and checked unchanged at resume; C — require a signed claim for every action. **Recommendation B**: multiple bots may share a token; do not add per-action proof machinery.
-- **Q36, which versions are compared:** A — compare candidate A vs candidate B with the same other 2/3 reference Bots and the same seed/Seat block; B — allow all bot positions to vary as a *roster-level* study; C — compare arbitrary rosters without controls. **Recommendation A**, the clearest default causal contrast.
-- **Q37, incomplete paired blocks:** A — include only complete paired blocks in paired-effect statistics while preserving completed Match summaries and missingness indicators; B — statistical weighting of incomplete blocks; C — swap in new seeds without disclosure. **Recommendation A**, protect pair integrity.
-- **Q38, reproducible seed algorithm:** A — record only Root Seed and assume future engine upgrades reproduce the stream; B — save a versioned seed derivation contract, stream labels and engine/RNG version; C — record only Git SHA without a specific derivation contract. **Recommendation B**.
-- **Q39, server timing start:** A — clock starts on dispatch to the Bot Controller, ends separately at first response and at accepted legal Game Action, with transport overhead explicitly included; B — start when the Decision is created (includes queue delays); C — Bot inference timestamps only. **Recommendation A**.
-- **Q40, clean Match reset assurance:** A — explicit authenticated Bot declaration that it reset to its initial Match state for the same declared checkpoint; B — process restart/launcher verification; C — reconnect is reset evidence. **Recommendation A**, consistent with owner-trusted Tokens and no new attestation service.
-- **Q41, after 3 failed Attempts:** A — mark the planned Match and Experiment blocked/failed and halt the queue, requiring a separate Experiment for changed conditions; B — leave an explicit missing fixture and continue later blocks with incomplete-pairing status; C — silently skip. **Recommendation A**.
-- **Q42, SSE observation rate:** A — send every change; B — configurable bounded snapshot refresh, coalescing intermediate revisions but always delivering final/terminal state; C — one-second refresh only. **Recommendation B**.
-- **Q43, paused and canceled Experiments:** A — Pause preserves queued Runs and can be resumed by Admin; Cancel is terminal while retaining results and labeling incomplete blocks; B — Pause deletes queued Runs; C — Cancel deletes all results. **Recommendation A**.
-- **Q44, diagnostic quota jurisdiction:** A — per-Experiment limit only; B — self-host-wide cap with optional per-Experiment caps; C — no global limit. **Recommendation B**.
+- **Q45, primary A/B playing-strength metric:** A — first-place rate delta primary; B — **mean placement difference** primary, with relative final score and first-place rate as secondary metrics; C — centered relative score delta primary. **Recommendation B:** widely interpretable in Mahjong, with a clear signed A-vs-B delta; analyze 3p and 4p separately until Q56 is settled. Raw per-Match numbers remain available.
+- **Q46, statistical uncertainty:** A — show average differences without interval estimates; B — **resample complete matched Paired Blocks** and report a confidence interval for the A/B difference, with explicit sample count; C — assume each Match outcome is independent and compute a simple per-Match normal-theory interval. **Recommendation B:** respect the design's paired/block sampling structure; exact CI level can be decided later.
+- **Q47, planned sample count / stopping:** A — Admin fixes a target count of **complete Paired Blocks** before start, then the system finishes that plan (subject to bounded failures); B — automatically stop when a significance threshold is met; C — run until Admin manually stops. **Recommendation A:** avoid unplanned optional stopping and make results reproducible.
+- **Q48, verified historic Run with incompatible seed/Seat plans:** A — reject any Run not pairable with the Experiment's fixtures; B — allow **verified** non-paired Runs into Experiment for clearly separated descriptive comparison, never paired significance; C — call all verified Run comparisons paired. **Recommendation B** if the Experiment concept should retain the retrospective grouping goal; no provenance fabrication.
+- **Q49, model declaration changes after first Match:** A — **block the active Run/Resume**, retain completed evidence, and require a fresh Experiment for altered model conditions; B — allow metadata update while the same Run continues, labeling epochs; C — accept changed hashes without flagging. **Recommendation A:** matches frozen Experiment Configuration.
+- **Q50, seed-compatible game-engine revisions:** A — require exact matching recorded engine/RNG/derivation versions for paired eligibility; B — permit differing builds only after documented tests establish identical game rules and deterministic fixture behavior; C — accept any engine version if the root seed matches. **Recommendation A** initially: unambiguous reproducibility and simple strict matching.
+- **Q51, Match completion persisted but Run counter stale after crash:** A — treat it as failed and replay the Match; B — **reconcile durable Replay/results and schedule identity idempotently**, count a uniquely persisted successful Match once, and retry only genuinely incomplete attempts; C — ask Admin to manually decide whether it counted. **Recommendation B:** no duplicate scores or overwritten match outcomes.
+- **Q52, SSE temporarily disconnects during Admin viewing:** A — **mark the view as disconnected/stale**, attempt authenticated reconnect and fall back to polling while preserving read-only behavior; B — leave the last frame displayed as though still live; C — discard the visual state immediately on network glitches. **Recommendation A:** an operator should never mistake a stale hand for the live hand.
+- **Q53, results export:** A — dashboards only, no export; B — **versioned JSON and CSV** for Experiment/Run/Match statistics, paired-block IDs and provenance; C — export full per-decision trajectories and concealed wall states by default. **Recommendation B:** practical research reproducibility without requiring detailed event logging or a headless-first interface.
+- **Q54, optional diagnostic payload retention:** A — timing/error metadata only, never message bodies; B — **metadata by default**, optionally store explicitly enabled *redacted* protocol payloads under quotas; C — permanently store full raw MJAI/MCP traffic including secrets. **Recommendation B:** useful targeted debugging without automatically persisting credentials/private payloads.
+- **Q55, when historic-only Experiments become immutable:** A — **snapshot and freeze the comparison plan at the first eligible historic Run attachment or explicit retrospective start**, even though matches ran before the Experiment existed; B — freeze only when a newly scheduled Match starts; C — permit silently changing which historical Runs are grouped after reporting results. **Recommendation A:** retrospectively grouped Matches cannot sensibly reuse a future first-Match start as their freeze trigger.
+- **Q56, mixing 3p and 4p results:** A — merge raw mean ranks and score deltas as one result; B — **treat 3p and 4p as separate Experiment comparison cohorts**, with no combined leaderboard or significance claim; C — normalize ranks to a common percentile and produce a shared aggregate leaderboard. **Recommendation B** for comparability across different game structure/rules.
 
 ### Deferred decisions
 
-After Round 7: statistics/uncertainty and A/B effect sizes once comparison roles are settled; seed/RNG implementation and engine-version compatibility; Bot metadata and reset acknowledgement contract; retry/queue transactions and idempotency; SSE authorization, slow clients and reconnection; export/retention/redaction details; migration/API compatibility; camera-score correctness visual tests. Do not represent trusted Bot self-declarations as independent measurements.
+Following the Round 8 frontier: precise paired effect estimators and confidence level; minimum blocks for meaningful uncertainty; compatible runtime artifact/seed serialization schema; batch fixture scheduling UX; idempotent transaction boundaries and Experiment/Run state machine; model hash declaration/reset handshake format (D36,D41 resolved policy, wire schema still open); SSE auth/reconnect heartbeat and cap defaults; diagnostic quotas, redaction and retention defaults; export schema; retired or revoked token handling; 3p/4p visual acceptance tests for the reported normal-Match central score-to-Seat mismatch. Never treat trusted Bot claims as measured attestation, or pair incomplete fixture sets silently.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 

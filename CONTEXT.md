@@ -113,12 +113,24 @@ Optional detailed evidence collected during a Benchmark, governed by storage and
 _Avoid_: Benchmark result, Replay
 
 **Trusted Bot Declaration**:
-Code/build or checkpoint identity claimed by a software Participant authenticated with an Admin-issued Bot Token. It is trusted by the operator but not independently proven to be the running executable.
+Code/build or checkpoint identity claimed for one software Participant by an authenticated holder of an Admin-issued Bot Token, recorded for its Benchmark Run. It is trusted by the operator but not independently proven to be the running executable.
 _Avoid_: Runtime attestation, measured binary
 
 **Paired Block**:
-A scheduled group of three-player or four-player Matches balancing Seat assignments and shared seed conditions for comparison.
+A scheduled group of three-player or four-player Matches balancing Seat assignments and common seed conditions across candidate model comparisons. Only completely recorded comparison blocks contribute to paired effect statistics.
 _Avoid_: Kyoku, single Match
+
+**Reference Bot**:
+A software Participant held unchanged across the A/B candidate comparison so the other seats provide the same reference opponents.
+_Avoid_: Candidate model, alternate test condition
+
+**Candidate Model**:
+One of two software implementations, A or B, compared in the same evaluation position against a fixed roster of Reference Bots.
+_Avoid_: Participant identity, Bot Token
+
+**Match Reset Acknowledgement**:
+A trusted, authenticated software Participant's explicit declaration that it has returned to a clean initial Match state under its recorded build/checkpoint identity.
+_Avoid_: Reconnection, process restart proof
 
 **Observation Focus**:
 The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Focus follows that Participant when Seats rotate between Matches; it never changes the Participant's identity, Seat, Controller, or game state.
