@@ -6,11 +6,11 @@ import {
   ResultsPanel,
   RoundWinSurface,
   handActionMap,
-  type RoundWinEffect,
 } from "./gameplay";
 import { actionCandidates } from "./actions";
 import { useGameStore } from "./store";
 import type { ProjectedState, RoomSnapshot } from "./types";
+import { decodeWinResult } from "./results";
 
 function player(seat: number, display_name: string) {
   return {
@@ -223,26 +223,36 @@ describe("result surfaces", () => {
   });
 
   it("renders a compact accessible round win with a neutral portrait fallback", () => {
-    const effect: RoundWinEffect = {
-      characterId: "missing-character",
-      displayName: "Mika",
-      result: "Ron",
-      han: 3,
-      fu: 40,
-      points: 8_000,
-      winningTile: 16,
-      hand: [0, 4, 8, 12, 20, 24, 28, 32, 36, 40, 44, 48, 52],
-      yaku: [{ name: "riichi", han: 1 }],
-    };
-    render(<RoundWinSurface effect={effect} assets={{ "missing-character": false }} reducedMotion />);
+    const room = liveRoom();
+    room.roster![0] = { ...room.roster![0], display_name: "Mika", character_id: "missing-character" };
+    const result = decodeWinResult({ ...resultWin, evaluation: { Ordinary: { han: 5, fu: 30, limit: null } },
+      yaku: [{ id: 31, name: "dora", han: 5, yakuman_multiplier: null }], win_points: 8000 }, room.game_mode)!;
+    render(<RoundWinSurface result={result} room={room} assets={{ "missing-character": false }} reducedMotion />);
 
     expect(screen.getByTestId("round-win-surface")).toHaveAttribute("data-motion", "static");
     expect(screen.getByRole("heading", { name: "Mika" })).toBeVisible();
     expect(screen.getByRole("img", { name: "Mika portrait unavailable" })).toBeVisible();
     expect(screen.getByLabelText("Ron win details")).toBeVisible();
-    expect(screen.getByText("Riichi")).toBeVisible();
-    expect(screen.getByText("1 han")).toBeVisible();
-    expect(screen.getAllByRole("img")).toHaveLength(14);
+    expect(screen.getByText("Dora")).toBeVisible();
+    expect(screen.getByText("5 han")).toBeVisible();
+    expect(screen.getByText("5 han · 30 fu")).toBeVisible();
+    expect(screen.getByText("8,000")).toBeVisible();
+    expect(screen.queryByText(/Mangan/)).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("winning-tile")).toHaveLength(1);
+    expect(screen.getAllByRole("img")).toHaveLength(15);
+  });
+
+  it("rejects a recorded winner with a foreign seat or invalid roster", () => {
+    const result = decodeWinResult(resultWin, "4p-red-east")!;
+    const room = liveRoom();
+    const view = render(<RoundWinSurface result={result} room={room} assets={{}} />);
+    expect(screen.getByTestId("round-win-surface")).toBeVisible();
+    view.rerender(<RoundWinSurface result={{ ...result, seat: 1 }} room={room} assets={{}} />);
+    expect(screen.queryByTestId("round-win-surface")).not.toBeInTheDocument();
+    view.rerender(<RoundWinSurface result={result} room={{ ...room, roster: room.roster!.map((player) => ({ ...player, participant_id: "p0" })) }} assets={{}} />);
+    expect(screen.queryByTestId("round-win-surface")).not.toBeInTheDocument();
+    view.rerender(<RoundWinSurface result={result} room={{ ...room, roster: room.roster!.slice(0, 3) }} assets={{}} />);
+    expect(screen.queryByTestId("round-win-surface")).not.toBeInTheDocument();
   });
 
   it("keeps final standings semantic and highlights the winner portrait", () => {

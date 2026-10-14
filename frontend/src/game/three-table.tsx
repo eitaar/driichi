@@ -1,7 +1,4 @@
 import {
-  Component,
-  type ErrorInfo,
-  type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
@@ -9,37 +6,25 @@ import {
   useRef,
   useState,
 } from "react";
-import { Canvas } from "@react-three/fiber";
 import "./live-table.css";
-import { NoToneMapping, SRGBColorSpace } from "three";
+import { ThreeTableRenderer } from "./three-table-renderer";
 
 import type { AnimationItem } from "./animation";
-import { MatchTableScene, type SceneRenderStats } from "./three-table-scene";
+import type { SceneRenderStats } from "./three-table-scene";
 import { nextSceneMotion, type SceneMotion } from "./three-table-motion";
 import { createTileAtlas, type TileAtlas } from "./tile-atlas";
-import { buildMatchSceneLayout, CAMERA, type TableSurface } from "./three-table-layout";
+import { buildMatchSceneLayout, type TableSurface } from "./three-table-layout";
 import { tileAssetUrl, tileLabel } from "./tiles";
 import { isDora } from "./dora";
 import { startDoraSheen, type DoraSheenClock } from "./dora-sheen";
 import type { TableAppearance } from "./table-appearance";
 import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 
-export interface PortraitEffect {
-  characterId: string;
-  displayName: string;
-  result: "Ron" | "Tsumo";
-  han?: number;
-  fu?: number;
-  limit?: string;
-  points?: number;
-}
-
 export interface ThreeTableProps {
   projection: ProjectedState | null;
   room: RoomSnapshot | null;
   animations?: AnimationItem[];
   reducedMotion?: boolean;
-  portraitEffect?: PortraitEffect | null;
   onAnimationConsumed?: (id: number) => void;
   onAnimationCancelled?: (id: number) => void;
   surface?: TableSurface;
@@ -51,28 +36,6 @@ export interface TablePlayerOverlayProps {
   projection: ProjectedState;
   room: RoomSnapshot | null;
   surface: TableSurface;
-}
-
-interface BoundaryProps {
-  children: ReactNode;
-  fallback: ReactNode;
-  onError(): void;
-}
-
-class TableErrorBoundary extends Component<BoundaryProps, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError(): { failed: boolean } {
-    return { failed: true };
-  }
-
-  componentDidCatch(_error: Error, _info: ErrorInfo): void {
-    this.props.onError();
-  }
-
-  render(): ReactNode {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
 }
 
 function roundFact(projection: ProjectedState): string {
@@ -134,19 +97,6 @@ function TableFallback({
       <span>{doraFact(projection)}.</span>
     </div>
   );
-}
-
-function canCreateWebGL(): boolean {
-  if (typeof document === "undefined") return true;
-  if (typeof WebGLRenderingContext === "undefined") return false;
-  try {
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
-    context?.getExtension("WEBGL_lose_context")?.loseContext();
-    return context !== null;
-  } catch {
-    return false;
-  }
 }
 
 function characterIdFor(room: RoomSnapshot | null, participantId: string): string | null {
@@ -226,7 +176,6 @@ export function ThreeTable({
   room,
   animations = [],
   reducedMotion = false,
-  portraitEffect: _portraitEffect = null,
   onAnimationConsumed: _onAnimationConsumed,
   onAnimationCancelled: _onAnimationCancelled,
   surface = "live",
@@ -235,7 +184,7 @@ export function ThreeTable({
 }: ThreeTableProps) {
   const [atlas, setAtlas] = useState<TileAtlas | null>(null);
   const [atlasFailed, setAtlasFailed] = useState(false);
-  const [webglFallback, setWebglFallback] = useState(() => !canCreateWebGL());
+  const [webglFallback, setWebglFallback] = useState(false);
   const [rendererCreated, setRendererCreated] = useState(false);
   const [renderStats, setRenderStats] = useState<
     (SceneRenderStats & { layout: object; atlas: TileAtlas }) | null
@@ -244,7 +193,6 @@ export function ThreeTable({
   const [lastConsumedAnimationId, setLastConsumedAnimationId] = useState<number | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const sheen = useMemo<DoraSheenClock>(() => ({ sweep: { value: -10 }, strength: { value: 0 }, listeners: new Set() }), []);
-  const contextCleanupRef = useRef<(() => void) | null>(null);
   const motionFrameTimesRef = useRef<number[]>([]);
   const motionPixelRatioRef = useRef<number | null>(null);
   const activeMotionRef = useRef<{
@@ -260,9 +208,13 @@ export function ThreeTable({
   onAnimationConsumedRef.current = _onAnimationConsumed;
   onAnimationCancelledRef.current = _onAnimationCancelled;
   const hasProjection = projection !== null;
+  // Decisions/clocks belong to Window; they neither change geometry nor enter the Worker.
+  const renderProjection = projection ? { ...projection, decision: undefined } : null;
+  const projectionKey = JSON.stringify(renderProjection);
+  const sceneProjection = useMemo(() => renderProjection, [projectionKey]);
   const layout = useMemo(
-    () => (projection ? buildMatchSceneLayout(projection, room, surface) : null),
-    [projection, surface],
+    () => (sceneProjection ? buildMatchSceneLayout(sceneProjection, room, surface) : null),
+    [sceneProjection, surface],
   );
 
   const localHand = projection?.players?.find((player) => player.seat === layout?.players.find((seat) => seat.isLocal)?.seat)?.hand ?? [];
@@ -304,18 +256,12 @@ export function ThreeTable({
   }, [hasProjection]);
 
   const markFallback = useCallback(() => {
-    contextCleanupRef.current?.();
-    contextCleanupRef.current = null;
     setRendererCreated(false);
     setRenderStats(null);
     setWebglFallback(true);
   }, []);
-  useEffect(() => () => contextCleanupRef.current?.(), []);
-  useEffect(() => {
-    if (!layout || !atlas || rendererCreated || webglFallback) return;
-    const timeout = window.setTimeout(markFallback, 3_000);
-    return () => window.clearTimeout(timeout);
-  }, [atlas, layout, markFallback, rendererCreated, webglFallback]);
+  const invalidateRender = useCallback(() => setRenderStats(null), []);
+  const recordCreated = useCallback(() => setRendererCreated(true), []);
   const isFallback = atlasFailed || webglFallback;
   const ready = Boolean(
     layout
@@ -502,70 +448,21 @@ export function ThreeTable({
           wallCount={layout?.wallCount ?? 0}
         />
       ) : atlas && layout ? (
-        <TableErrorBoundary
-          onError={markFallback}
-          fallback={
-            <TableFallback
-              projection={projection}
-              wallCount={layout.wallCount}
-            />
-          }
-        >
-          <Canvas
-            aria-hidden="true"
-            // Demand when idle; a bounded always loop only while an exact-target
-            // motion is active, then it returns to demand in the completion commit.
-            frameloop={motion ? "always" : "demand"}
-            dpr={[1, 2]}
-            camera={{
-              fov: CAMERA.fov,
-              position: [...CAMERA.position],
-              near: CAMERA.near,
-              far: CAMERA.far,
-            }}
-            gl={{
-              antialias: true,
-              alpha: false,
-              depth: true,
-              stencil: false,
-              precision: "highp",
-              powerPreference: "high-performance",
-            }}
-            fallback={
-              <TableFallback
-                projection={projection}
-                wallCount={layout.wallCount}
-              />
-            }
-            onCreated={({ gl }) => {
-              gl.outputColorSpace = SRGBColorSpace;
-              gl.toneMapping = NoToneMapping;
-              gl.toneMappingExposure = 1;
-              gl.shadowMap.enabled = true;
-              contextCleanupRef.current?.();
-              const onContextLost = (event: Event) => {
-                event.preventDefault();
-                markFallback();
-              };
-              gl.domElement.addEventListener("webglcontextlost", onContextLost);
-              contextCleanupRef.current = () =>
-                gl.domElement.removeEventListener("webglcontextlost", onContextLost);
-              setRendererCreated(true);
-            }}
-          >
-            <MatchTableScene
-              layout={layout}
-              projection={projection}
-              atlas={atlas}
-              sheen={sheen}
-              appearance={appearance}
-              motion={motion}
-              onMotionComplete={completeMotion}
-              onMotionFrame={recordMotionFrame}
-              onRenderReady={recordRenderReady}
-            />
-          </Canvas>
-        </TableErrorBoundary>
+        <ThreeTableRenderer
+          layout={layout}
+          projection={sceneProjection!}
+          atlas={atlas}
+          appearance={appearance}
+          motion={motion}
+          sheenEnabled={hasSheenTargets}
+          reducedMotion={reducedMotion}
+          onCreated={recordCreated}
+          onFailure={markFallback}
+          onInvalidate={invalidateRender}
+          onMotionComplete={completeMotion}
+          onMotionFrame={recordMotionFrame}
+          onRenderReady={recordRenderReady}
+        />
       ) : (
         <div role="status" aria-label="3D table loading">
           Preparing 3D table

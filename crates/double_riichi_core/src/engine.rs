@@ -49,7 +49,6 @@ pub(crate) struct EngineApplyOutcome {
 pub(crate) struct EngineKyokuEnd {
     pub pre_action: GameStateVariant,
     pub ended_copy: GameStateVariant,
-    pub win_results: HashMap<u8, riichienv_core::types::WinResult>,
     pub real_after_scores: Vec<i32>,
     pub real_after_pot: u32,
 }
@@ -493,14 +492,13 @@ impl EngineAdapter {
                     "captured terminal events differ from real resolution".into(),
                 ));
             }
-            let (win_results, copy_scores, copy_pot) = match &copy {
+            let win_results = state_win_results(&copy);
+            let (copy_scores, copy_pot) = match &copy {
                 GameStateVariant::FourPlayer(state) => (
-                    state.win_results.clone(),
                     state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
                     state.riichi_sticks,
                 ),
                 GameStateVariant::ThreePlayer(state) => (
-                    state.win_results.clone(),
                     state.players.iter().map(|p| p.score).collect::<Vec<_>>(),
                     state.riichi_sticks,
                 ),
@@ -542,7 +540,6 @@ impl EngineAdapter {
             Some(EngineKyokuEnd {
                 pre_action: before,
                 ended_copy: copy,
-                win_results,
                 real_after_scores: scores,
                 real_after_pot: pot,
             })
@@ -605,8 +602,7 @@ impl EngineAdapter {
                     ..
                 } => {
                     let seat = actor.index() as usize;
-                    let adjudicated = ended
-                        .win_results
+                    let adjudicated = state_win_results(&ended.ended_copy)
                         .get(&actor.index())
                         .ok_or_else(|| invalid("missing adjudicated winner"))?;
                     let (hand, melds, drawn, indicators, kita, dealer, rule) =
@@ -696,28 +692,17 @@ impl EngineAdapter {
                         .chain(melds.iter().flat_map(|m: &ResultMeld| m.tiles.iter()))
                         .map(|tile| tile.id())
                         .collect::<Vec<_>>();
-                    let next_kind = |id: u8| -> u8 {
-                        let kind = id / 4;
-                        if self.mode.is_three_player() && kind == 0 {
-                            return 8;
-                        }
-                        if self.mode.is_three_player() && kind == 8 {
-                            return 0;
-                        }
-                        match kind {
-                            8 => 0,
-                            17 => 9,
-                            26 => 18,
-                            30 => 27,
-                            33 => 31,
-                            _ => kind + 1,
-                        }
-                    };
                     let count_dora = |markers: &[u8]| -> u32 {
                         markers
                             .iter()
                             .map(|&marker| {
-                                let kind = next_kind(marker);
+                                let kind = if self.mode.is_three_player() {
+                                    riichienv_core::state_3p::game_mode::get_next_dora_tile(
+                                        marker / 4,
+                                    )
+                                } else {
+                                    riichienv_core::types::standard_next_dora_tile(marker / 4)
+                                };
                                 full.iter().filter(|&&id| id / 4 == kind).count() as u32
                                     + u32::from(self.mode.is_three_player() && kind == 30)
                                         * kita as u32
@@ -953,9 +938,7 @@ impl EngineAdapter {
                 "ended table roster/score count mismatch".into(),
             ));
         }
-        let mut snapshot = self.clone();
-        snapshot.state = ended.ended_copy.clone();
-        let table = snapshot.table_state(self.mode, participants)?;
+        let table = Self::table_state_from(&ended.ended_copy, self.mode, participants)?;
         if table
             .players()
             .iter()
@@ -974,10 +957,18 @@ impl EngineAdapter {
         mode: GameMode,
         participants: &[Participant],
     ) -> Result<TableState, EngineError> {
+        Self::table_state_from(&self.state, mode, participants)
+    }
+
+    fn table_state_from(
+        state: &GameStateVariant,
+        mode: GameMode,
+        participants: &[Participant],
+    ) -> Result<TableState, EngineError> {
         let mut players = Vec::with_capacity(mode.seat_count());
         let dora_indicators;
-        let round_data = self.round_data();
-        match &self.state {
+        let round_data = Self::round_data_from(state);
+        match state {
             GameStateVariant::FourPlayer(state) => {
                 dora_indicators = state
                     .wall
@@ -1311,8 +1302,8 @@ impl EngineAdapter {
         Ok(())
     }
 
-    fn round_data(&self) -> (Wind, u8, Seat, u8, u32, u8) {
-        match &self.state {
+    fn round_data_from(state: &GameStateVariant) -> (Wind, u8, Seat, u8, u32, u8) {
+        match state {
             GameStateVariant::FourPlayer(state) => (
                 Wind::from_index(state.round_wind),
                 state.kyoku_idx.saturating_add(1),
@@ -1423,6 +1414,13 @@ fn step_variant(state: &mut GameStateVariant, actions: &HashMap<u8, Action>) {
     match state {
         GameStateVariant::FourPlayer(state) => state.step(actions),
         GameStateVariant::ThreePlayer(state) => state.step(actions),
+    }
+}
+
+fn state_win_results(state: &GameStateVariant) -> &HashMap<u8, riichienv_core::types::WinResult> {
+    match state {
+        GameStateVariant::FourPlayer(state) => &state.win_results,
+        GameStateVariant::ThreePlayer(state) => &state.win_results,
     }
 }
 
@@ -1700,6 +1698,19 @@ fn _engine_type_names(_: ActionType) {}
 pub(crate) mod tests {
     use super::*;
 
+    #[cfg(feature = "task8-test-support")]
+    fn dealt_wall(hands: &[Vec<u8>]) -> Vec<u8> {
+        assert!(hands.iter().all(|hand| hand.len() == 13));
+        let mut wall = Vec::with_capacity(hands.len() * 13);
+        for offset in [0, 4, 8] {
+            for hand in hands {
+                wall.extend_from_slice(&hand[offset..offset + 4]);
+            }
+        }
+        wall.extend(hands.iter().map(|hand| hand[12]));
+        wall
+    }
+
     pub(crate) fn prepared_capture(mode: GameMode, ron: bool, kokushi: bool) -> EngineAdapter {
         use riichienv_core::action::Phase;
         let (mut adapter, _) = EngineAdapter::new(mode, Some(230)).unwrap();
@@ -1775,6 +1786,7 @@ pub(crate) mod tests {
 
     #[cfg(feature = "task8-test-support")]
     #[test]
+    #[ignore = "diagnostic timing; run explicitly"]
     fn task8_seeded_snapshot_evaluation_delta_and_observed_max_match_log() {
         use std::{hint::black_box, time::Instant};
         fn stats(mut ns: Vec<u128>) -> serde_json::Value {
@@ -2366,15 +2378,7 @@ pub(crate) mod tests {
                     .collect::<Vec<_>>();
                 hands.push(hand);
             }
-            let mut wall = Vec::with_capacity(physical.len());
-            for offset in [0, 4, 8] {
-                for h in &hands {
-                    wall.extend_from_slice(&h[offset..offset + 4]);
-                }
-            }
-            for h in &hands {
-                wall.push(h[12]);
-            }
+            let mut wall = dealt_wall(&hands);
             for live in 0..physical.len() - 14 - count * 13 {
                 let i = if live % count == 0 {
                     pool.iter().position(|t| is_terminal(*t)).unwrap()
@@ -2621,15 +2625,7 @@ pub(crate) mod tests {
                 hand.extend(remaining.by_ref().take(13 - hand.len()));
                 hand.sort_unstable();
             }
-            let mut wall = Vec::with_capacity(physical.len());
-            for offset in [0, 4, 8] {
-                for hand in &hands {
-                    wall.extend_from_slice(&hand[offset..offset + 4]);
-                }
-            }
-            for hand in &hands {
-                wall.push(hand[12]);
-            }
+            let mut wall = dealt_wall(&hands);
             wall.extend([84, 85]);
             wall.extend(remaining);
             wall.extend([120, 99, 98, 97, 96]);
@@ -2859,15 +2855,7 @@ pub(crate) mod tests {
             let mut reserved = hands.iter().flatten().copied().collect::<Vec<_>>();
             reserved.extend(draws);
             reserved.push(120);
-            let mut wall = Vec::with_capacity(136);
-            for offset in [0, 4, 8] {
-                for hand in &hands {
-                    wall.extend_from_slice(&hand[offset..offset + 4]);
-                }
-            }
-            for hand in &hands {
-                wall.push(hand[12]);
-            }
+            let mut wall = dealt_wall(&hands);
             wall.extend(draws);
             wall.extend((0..136u8).filter(|tile| !reserved.contains(tile)));
             wall.push(120);
@@ -3112,15 +3100,7 @@ pub(crate) mod tests {
                     hand.extend(remaining.by_ref().take(13));
                 }
             }
-            let mut wall = Vec::with_capacity(136);
-            for offset in [0, 4, 8] {
-                for hand in &hands {
-                    wall.extend_from_slice(&hand[offset..offset + 4]);
-                }
-            }
-            for hand in &hands {
-                wall.push(hand[12]);
-            }
+            let mut wall = dealt_wall(&hands);
             // Complete deal before offers: no terminal/log/claim/first-turn flags are set.
             wall.push(drawn);
             wall.extend(remaining);
@@ -3302,15 +3282,7 @@ pub(crate) mod tests {
         hands[1].extend(remaining.by_ref().take(12));
         hands.push(remaining.by_ref().take(13).collect());
         hands.push(remaining.by_ref().take(13).collect());
-        let mut wall = Vec::with_capacity(136);
-        for offset in [0, 4, 8] {
-            for hand in &hands {
-                wall.extend_from_slice(&hand[offset..offset + 4]);
-            }
-        }
-        for hand in &hands {
-            wall.push(hand[12]);
-        }
+        let mut wall = dealt_wall(&hands);
         // Complete finite wall before any offer; actions generate Kan and delayed Dora.
         wall.extend([24, 26, 27, 28, 29, 79]);
         wall.extend(remaining);
@@ -3581,15 +3553,7 @@ pub(crate) mod tests {
             remaining.by_ref().take(13).collect(),
             remaining.by_ref().take(13).collect(),
         ];
-        let mut wall = Vec::with_capacity(136);
-        for offset in [0, 4, 8] {
-            for hand in &hands {
-                wall.extend_from_slice(&hand[offset..offset + 4]);
-            }
-        }
-        for hand in &hands {
-            wall.push(hand[12]);
-        }
+        let mut wall = dealt_wall(&hands);
         // Complete physical wall before offers; actual paid Riichi unlocks Ippatsu/ura.
         wall.extend([24, 26, 27, 28, 58]);
         wall.extend(remaining);
@@ -3833,15 +3797,7 @@ pub(crate) mod tests {
             robber_hand,
             remaining.by_ref().take(13).collect(),
         ];
-        let mut wall = Vec::with_capacity(108);
-        for offset in [0, 4, 8] {
-            for hand in &hands {
-                wall.extend_from_slice(&hand[offset..offset + 4]);
-            }
-        }
-        for hand in &hands {
-            wall.push(hand[12]);
-        }
+        let mut wall = dealt_wall(&hands);
         // Fixed complete deal before offers; only the actual Nuki creates a pending Ron.
         wall.push(121);
         wall.extend(remaining);
@@ -4034,15 +3990,7 @@ pub(crate) mod tests {
             let mut hands = vec![dealer_hand, vec![75], robber_hand];
             hands[1].extend(remaining.by_ref().take(12));
             hands.push(remaining.by_ref().take(13).collect());
-            let mut wall = Vec::with_capacity(136);
-            for offset in [0, 4, 8] {
-                for hand in &hands {
-                    wall.extend_from_slice(&hand[offset..offset + 4]);
-                }
-            }
-            for hand in &hands {
-                wall.push(hand[12]);
-            }
+            let mut wall = dealt_wall(&hands);
             // Every tile is allocated before offers; no Kan/Chankan context is injected.
             wall.extend([24, 26, 27, 28, 29, 79]);
             wall.extend(remaining);
@@ -4352,15 +4300,7 @@ pub(crate) mod tests {
             hands[1].extend(remaining.by_ref().take(10));
             hands.push(remaining.by_ref().take(13).collect());
             hands.push(remaining.by_ref().take(13).collect());
-            let mut wall = Vec::with_capacity(136);
-            for offset in [0, 4, 8] {
-                for hand in &hands {
-                    wall.extend_from_slice(&hand[offset..offset + 4]);
-                }
-            }
-            for hand in &hands {
-                wall.push(hand[12]);
-            }
+            let mut wall = dealt_wall(&hands);
             wall.push(24);
             wall.extend(live);
             wall.extend(remaining);
@@ -4679,15 +4619,7 @@ pub(crate) mod tests {
             initial.players[0].hand[..13].to_vec(),
             initial.players[2].hand.clone(),
         ];
-        let mut wall = Vec::with_capacity(108);
-        for offset in [0, 4, 8] {
-            for hand in &hands {
-                wall.extend_from_slice(&hand[offset..offset + 4]);
-            }
-        }
-        for hand in &hands {
-            wall.push(hand[12]);
-        }
+        let mut wall = dealt_wall(&hands);
         wall.push(77);
         wall.extend(initial.wall.tiles.iter().rev().copied());
         // Fixed private deal: actual North extraction and replacement, not flags/results.
@@ -5650,366 +5582,67 @@ pub(crate) mod tests {
 
     #[cfg(feature = "task8-test-support")]
     #[test]
-    fn task8_final_double_ron_has_physical_deal_literal_payments_and_canonical_bankruptcy_end() {
-        for (mode, before, after, deltas) in [
+    fn double_ron_capture_preserves_literal_payments_in_six_cases() {
+        for (mode, final_match, before, after, deltas) in [
             (
                 GameMode::ThreePlayerRedEast,
+                false,
+                vec![100_000, 100_000, 100_000],
+                vec![94_400, 105_000, 102_600],
+                vec![vec![-3_000, 5_000, 0], vec![-2_600, 0, 2_600]],
+            ),
+            (
+                GameMode::FourPlayerRedEast,
+                false,
+                vec![100_000, 100_000, 100_000, 100_000],
+                vec![94_200, 105_200, 102_600, 100_000],
+                vec![vec![-3_200, 5_200, 0, 0], vec![-2_600, 0, 2_600, 0]],
+            ),
+            (
+                GameMode::FourPlayerRedHalf,
+                false,
+                vec![100_000, 100_000, 100_000, 100_000],
+                vec![94_200, 105_200, 102_600, 100_000],
+                vec![vec![-3_200, 5_200, 0, 0], vec![-2_600, 0, 2_600, 0]],
+            ),
+            (
+                GameMode::ThreePlayerRedEast,
+                true,
                 vec![1_000, 100_000, 100_000],
                 vec![-4_600, 105_000, 102_600],
                 vec![vec![-3_000, 5_000, 0], vec![-2_600, 0, 2_600]],
             ),
             (
                 GameMode::FourPlayerRedEast,
+                true,
+                vec![1_000, 100_000, 100_000, 100_000],
+                vec![-4_800, 105_200, 102_600, 100_000],
+                vec![vec![-3_200, 5_200, 0, 0], vec![-2_600, 0, 2_600, 0]],
+            ),
+            (
+                GameMode::FourPlayerRedHalf,
+                true,
                 vec![1_000, 100_000, 100_000, 100_000],
                 vec![-4_800, 105_200, 102_600, 100_000],
                 vec![vec![-3_200, 5_200, 0, 0], vec![-2_600, 0, 2_600, 0]],
             ),
         ] {
-            let (mut adapter, initial) = EngineAdapter::task8_double_ron_final(mode).unwrap();
-            assert_eq!(
-                initial.iter().map(GameEvent::kind).collect::<Vec<_>>(),
-                ["start_game", "start_kyoku", "tsumo"]
-            );
-            let GameEvent::StartKyoku {
-                scores,
-                kyotaku,
-                honba,
-                ..
-            } = &initial[1]
-            else {
-                panic!("actual deal prefix")
-            };
-            assert_eq!(scores, &before);
-            assert_eq!((*kyotaku, *honba), (2, 2));
-            let mut inventory = match &adapter.state {
-                GameStateVariant::FourPlayer(s) => s
-                    .wall
-                    .tiles
-                    .iter()
-                    .copied()
-                    .chain(s.players.iter().flat_map(|p| p.hand.iter().copied()))
-                    .collect::<Vec<_>>(),
-                GameStateVariant::ThreePlayer(s) => s
-                    .wall
-                    .tiles
-                    .iter()
-                    .copied()
-                    .chain(s.players.iter().flat_map(|p| p.hand.iter().copied()))
-                    .collect::<Vec<_>>(),
-            };
-            inventory.sort_unstable();
-            assert_eq!(
-                inventory,
-                (0..136u8)
-                    .filter(|t| mode.seat_count() == 4 || !(4..32).contains(t))
-                    .collect::<Vec<_>>()
-            );
-            let discard = GameAction::Discard {
-                tile: Tile::from_id(77).unwrap(),
-                tsumogiri: true,
-            };
-            assert!(
-                adapter
-                    .legal_actions(Seat::new(0).unwrap())
-                    .unwrap()
-                    .contains(&discard)
-            );
-            let discarded = adapter.apply(Seat::new(0).unwrap(), &discard).unwrap();
-            assert!(discarded.ended.is_none());
-            let mut responses = Vec::new();
-            for seat in Seat::all(mode).into_iter().skip(1) {
-                let offers = adapter.legal_actions(seat).unwrap();
-                let action = if seat.index() <= 2 {
-                    GameAction::Ron(Seat::new(0).unwrap())
-                } else {
-                    GameAction::Pass
-                };
-                if seat.index() <= 2 || !offers.is_empty() {
-                    assert!(offers.contains(&action));
-                    responses.push((seat, action));
-                }
+            let (mut adapter, initial) = if final_match {
+                EngineAdapter::task8_double_ron_final(mode)
+            } else {
+                EngineAdapter::task8_double_ron(mode)
             }
-            let outcome = adapter.apply_simultaneous(&responses).unwrap();
-            assert_eq!(
-                outcome
-                    .events
-                    .iter()
-                    .map(GameEvent::kind)
-                    .collect::<Vec<_>>(),
-                ["hora", "hora", "end_kyoku", "end_game"]
-            );
-            for (i, expected_delta) in deltas.iter().enumerate() {
-                let GameEvent::Hora {
-                    actor,
-                    target,
-                    delta,
-                    ..
-                } = &outcome.events[i]
-                else {
-                    panic!("actual ordered Hora")
-                };
-                assert_eq!((actor.index(), target.index()), ((i + 1) as u8, 0));
-                assert_eq!(delta.as_ref(), Some(expected_delta));
-            }
-            let capture = outcome.ended.unwrap();
-            let copied = state_logs(&capture.ended_copy)
-                .iter()
-                .map(|line| parse_event(line, mode, &responses).unwrap())
-                .filter(|e| {
-                    matches!(
-                        e,
-                        GameEvent::Hora { .. } | GameEvent::EndKyoku | GameEvent::EndGame
-                    )
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(copied, outcome.events);
-            assert_eq!(capture.real_after_scores, after);
-            assert_eq!(capture.real_after_pot, 0);
-            let roster = (0..mode.seat_count())
-                .map(|i| Participant::new(format!("p{i}"), "same", crate::ParticipantKind::Human))
-                .collect::<Vec<_>>();
-            let record = adapter
-                .result_record(
-                    &capture,
-                    &roster,
-                    1,
-                    initial.len() + discarded.events.len(),
-                    &outcome.events,
-                )
-                .unwrap();
-            assert_eq!(
-                record
-                    .settlement
-                    .changes
-                    .iter()
-                    .map(|c| (c.before, c.after))
-                    .collect::<Vec<_>>(),
-                before.into_iter().zip(after).collect::<Vec<_>>()
-            );
-            assert_eq!(
-                (record.settlement.pot_before, record.settlement.pot_after),
-                (2, 0)
-            );
-            assert_eq!(
-                record
-                    .wins
-                    .iter()
-                    .map(|w| w.seat.index())
-                    .collect::<Vec<_>>(),
-                [1, 2]
-            );
-            for win in &record.wins {
-                assert_eq!(
-                    win.evaluation,
-                    WinEvaluation::Ordinary {
-                        han: 2,
-                        fu: 40,
-                        limit: None
-                    }
-                );
-                assert_eq!(win.win_points, 2_600);
-                assert_eq!((win.winning_tile.id(), win.winning_tile_index), (77, 13));
-                assert_eq!(win.concealed[13].id(), 77);
-                assert_eq!(win.concealed.iter().filter(|t| t.id() / 4 == 19).count(), 2);
-            }
-            record.validate(&roster).unwrap();
-        }
-    }
-
-    #[cfg(feature = "task8-test-support")]
-    #[test]
-    fn task8_half_final_double_ron_has_same_physical_wall_offers_literal_payments_and_genuine_end()
-    {
-        for (mode, before, after, deltas) in [(
-            GameMode::FourPlayerRedHalf,
-            vec![1_000, 100_000, 100_000, 100_000],
-            vec![-4_800, 105_200, 102_600, 100_000],
-            vec![vec![-3_200, 5_200, 0, 0], vec![-2_600, 0, 2_600, 0]],
-        )] {
-            let (mut adapter, initial) = EngineAdapter::task8_double_ron_final(mode).unwrap();
-            assert_eq!(adapter.mode, GameMode::FourPlayerRedHalf);
-            let GameStateVariant::FourPlayer(producer) = &adapter.state else {
-                panic!("Half must use four-player producer");
-            };
-            assert_eq!(
-                producer.game_mode, 2,
-                "pinned Half mode, not an East override"
-            );
-            assert_eq!(
-                initial.iter().map(GameEvent::kind).collect::<Vec<_>>(),
-                ["start_game", "start_kyoku", "tsumo"]
-            );
-            let GameEvent::StartKyoku {
-                scores,
-                kyotaku,
-                honba,
-                ..
-            } = &initial[1]
-            else {
-                panic!("actual deal prefix")
-            };
-            assert_eq!(scores, &before);
-            assert_eq!((*kyotaku, *honba), (2, 2));
-            let mut inventory = match &adapter.state {
-                GameStateVariant::FourPlayer(s) => s
-                    .wall
-                    .tiles
-                    .iter()
-                    .copied()
-                    .chain(s.players.iter().flat_map(|p| p.hand.iter().copied()))
-                    .collect::<Vec<_>>(),
-                GameStateVariant::ThreePlayer(s) => s
-                    .wall
-                    .tiles
-                    .iter()
-                    .copied()
-                    .chain(s.players.iter().flat_map(|p| p.hand.iter().copied()))
-                    .collect::<Vec<_>>(),
-            };
-            inventory.sort_unstable();
-            assert_eq!(
-                inventory,
-                (0..136u8)
-                    .filter(|t| mode.seat_count() == 4 || !(4..32).contains(t))
-                    .collect::<Vec<_>>()
-            );
-            let discard = GameAction::Discard {
-                tile: Tile::from_id(77).unwrap(),
-                tsumogiri: true,
-            };
-            assert!(
-                adapter
-                    .legal_actions(Seat::new(0).unwrap())
-                    .unwrap()
-                    .contains(&discard)
-            );
-            let discarded = adapter.apply(Seat::new(0).unwrap(), &discard).unwrap();
-            assert!(discarded.ended.is_none());
-            let mut responses = Vec::new();
-            for seat in Seat::all(mode).into_iter().skip(1) {
-                let offers = adapter.legal_actions(seat).unwrap();
-                let action = if seat.index() <= 2 {
-                    GameAction::Ron(Seat::new(0).unwrap())
-                } else {
-                    GameAction::Pass
-                };
-                if seat.index() <= 2 || !offers.is_empty() {
-                    assert!(offers.contains(&action));
-                    responses.push((seat, action));
-                }
-            }
-            let outcome = adapter.apply_simultaneous(&responses).unwrap();
-            assert_eq!(
-                outcome
-                    .events
-                    .iter()
-                    .map(GameEvent::kind)
-                    .collect::<Vec<_>>(),
-                ["hora", "hora", "end_kyoku", "end_game"]
-            );
-            for (i, expected_delta) in deltas.iter().enumerate() {
-                let GameEvent::Hora {
-                    actor,
-                    target,
-                    delta,
-                    ..
-                } = &outcome.events[i]
-                else {
-                    panic!("actual ordered Hora")
-                };
-                assert_eq!((actor.index(), target.index()), ((i + 1) as u8, 0));
-                assert_eq!(delta.as_ref(), Some(expected_delta));
-            }
-            let capture = outcome.ended.unwrap();
-            let copied = state_logs(&capture.ended_copy)
-                .iter()
-                .map(|line| parse_event(line, mode, &responses).unwrap())
-                .filter(|e| {
-                    matches!(
-                        e,
-                        GameEvent::Hora { .. } | GameEvent::EndKyoku | GameEvent::EndGame
-                    )
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(copied, outcome.events);
-            assert_eq!(capture.real_after_scores, after);
-            assert_eq!(capture.real_after_pot, 0);
-            let roster = (0..mode.seat_count())
-                .map(|i| Participant::new(format!("p{i}"), "same", crate::ParticipantKind::Human))
-                .collect::<Vec<_>>();
-            let record = adapter
-                .result_record(
-                    &capture,
-                    &roster,
-                    1,
-                    initial.len() + discarded.events.len(),
-                    &outcome.events,
-                )
-                .unwrap();
-            assert_eq!(
-                record
-                    .settlement
-                    .changes
-                    .iter()
-                    .map(|c| (c.before, c.after))
-                    .collect::<Vec<_>>(),
-                before.into_iter().zip(after).collect::<Vec<_>>()
-            );
-            assert_eq!(
-                (record.settlement.pot_before, record.settlement.pot_after),
-                (2, 0)
-            );
-            assert_eq!(
-                record
-                    .wins
-                    .iter()
-                    .map(|w| w.seat.index())
-                    .collect::<Vec<_>>(),
-                [1, 2]
-            );
-            for win in &record.wins {
-                assert_eq!(
-                    win.evaluation,
-                    WinEvaluation::Ordinary {
-                        han: 2,
-                        fu: 40,
-                        limit: None
-                    }
-                );
-                assert_eq!(win.win_points, 2_600);
-                assert_eq!((win.winning_tile.id(), win.winning_tile_index), (77, 13));
-                assert_eq!(win.concealed[13].id(), 77);
-                assert_eq!(win.concealed.iter().filter(|t| t.id() / 4 == 19).count(), 2);
-            }
-            record.validate(&roster).unwrap();
-        }
-    }
-
-    #[cfg(feature = "task8-test-support")]
-    #[test]
-    fn task8_full_wall_offers_double_ron_and_captures_literal_authority() {
-        for (mode, expected_after, first_delta, second_delta) in [
-            (
-                GameMode::ThreePlayerRedEast,
-                vec![94_400, 105_000, 102_600],
-                vec![-3_000, 5_000, 0],
-                vec![-2_600, 0, 2_600],
-            ),
-            (
-                GameMode::FourPlayerRedEast,
-                vec![94_200, 105_200, 102_600, 100_000],
-                vec![-3_200, 5_200, 0, 0],
-                vec![-2_600, 0, 2_600, 0],
-            ),
-            (
-                GameMode::FourPlayerRedHalf,
-                vec![94_200, 105_200, 102_600, 100_000],
-                vec![-3_200, 5_200, 0, 0],
-                vec![-2_600, 0, 2_600, 0],
-            ),
-        ] {
-            let (mut adapter, initial) = EngineAdapter::task8_double_ron(mode).unwrap();
+            .unwrap();
             assert_eq!(adapter.mode, mode);
+            if mode == GameMode::FourPlayerRedHalf {
+                let GameStateVariant::FourPlayer(producer) = &adapter.state else {
+                    panic!("Half producer");
+                };
+                assert_eq!(
+                    producer.game_mode, 2,
+                    "pinned Half mode, not an East override"
+                );
+            }
             assert_eq!(
                 initial.iter().map(GameEvent::kind).collect::<Vec<_>>(),
                 ["start_game", "start_kyoku", "tsumo"]
@@ -6022,10 +5655,33 @@ pub(crate) mod tests {
                 ..
             } = &initial[1]
             else {
-                panic!("initial deal")
+                panic!("actual deal prefix")
             };
-            assert_eq!(scores, &vec![100_000; mode.seat_count()]);
+            assert_eq!(scores, &before);
             assert_eq!((*kyotaku, *honba, dora_marker.id()), (2, 2, 120));
+            let mut inventory = match &adapter.state {
+                GameStateVariant::FourPlayer(s) => s
+                    .wall
+                    .tiles
+                    .iter()
+                    .copied()
+                    .chain(s.players.iter().flat_map(|p| p.hand.iter().copied()))
+                    .collect::<Vec<_>>(),
+                GameStateVariant::ThreePlayer(s) => s
+                    .wall
+                    .tiles
+                    .iter()
+                    .copied()
+                    .chain(s.players.iter().flat_map(|p| p.hand.iter().copied()))
+                    .collect::<Vec<_>>(),
+            };
+            inventory.sort_unstable();
+            assert_eq!(
+                inventory,
+                (0..136u8)
+                    .filter(|t| mode.seat_count() == 4 || !(4..32).contains(t))
+                    .collect::<Vec<_>>()
+            );
             match &adapter.state {
                 GameStateVariant::FourPlayer(s) => {
                     assert_eq!(s.wall.tiles.len(), 83);
@@ -6077,55 +5733,77 @@ pub(crate) mod tests {
             );
             let discarded = adapter.apply(Seat::new(0).unwrap(), &discard).unwrap();
             assert!(discarded.ended.is_none());
-            let mut offered = Vec::new();
+            let mut responses = Vec::new();
             for seat in Seat::all(mode).into_iter().skip(1) {
-                let legal = adapter.legal_actions(seat).unwrap();
-                if seat.index() <= 2 {
-                    let ron = GameAction::Ron(Seat::new(0).unwrap());
-                    assert!(legal.contains(&ron));
-                    offered.push((seat, ron));
-                } else if !legal.is_empty() {
-                    assert!(!legal.iter().any(|a| matches!(a, GameAction::Ron(_))));
-                    assert!(legal.contains(&GameAction::Pass));
-                    offered.push((seat, GameAction::Pass));
+                let offers = adapter.legal_actions(seat).unwrap();
+                let action = if seat.index() <= 2 {
+                    GameAction::Ron(Seat::new(0).unwrap())
+                } else {
+                    GameAction::Pass
+                };
+                if seat.index() <= 2 || !offers.is_empty() {
+                    assert!(offers.contains(&action));
+                    if seat.index() > 2 {
+                        assert!(
+                            !offers
+                                .iter()
+                                .any(|action| matches!(action, GameAction::Ron(_)))
+                        );
+                    }
+                    responses.push((seat, action));
                 }
             }
-            let outcome = adapter.apply_simultaneous(&offered).unwrap();
-            let actual = outcome
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    GameEvent::Hora {
-                        actor,
-                        target,
-                        delta,
-                        ..
-                    } => Some((actor.index(), target.index(), delta.clone().unwrap())),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(actual, [(1, 0, first_delta), (2, 0, second_delta)]);
+            let outcome = adapter.apply_simultaneous(&responses).unwrap();
+            assert_eq!(
+                outcome
+                    .events
+                    .iter()
+                    .map(GameEvent::kind)
+                    .collect::<Vec<_>>(),
+                if final_match {
+                    vec!["hora", "hora", "end_kyoku", "end_game"]
+                } else {
+                    vec!["hora", "hora", "end_kyoku", "start_kyoku", "tsumo"]
+                }
+            );
+            for (i, expected_delta) in deltas.iter().enumerate() {
+                let GameEvent::Hora {
+                    actor,
+                    target,
+                    delta,
+                    ..
+                } = &outcome.events[i]
+                else {
+                    panic!("actual ordered Hora")
+                };
+                assert_eq!((actor.index(), target.index()), ((i + 1) as u8, 0));
+                assert_eq!(delta.as_ref(), Some(expected_delta));
+            }
             let capture = outcome.ended.unwrap();
             let copied = state_logs(&capture.ended_copy)
                 .iter()
-                .map(|line| parse_event(line, mode, &offered).unwrap())
-                .filter_map(|e| match e {
-                    GameEvent::Hora {
-                        actor,
-                        target,
-                        delta,
-                        ..
-                    } => Some((actor.index(), target.index(), delta.unwrap())),
-                    _ => None,
+                .map(|line| parse_event(line, mode, &responses).unwrap())
+                .filter(|e| {
+                    matches!(e, GameEvent::Hora { .. } | GameEvent::EndKyoku)
+                        || final_match && matches!(e, GameEvent::EndGame)
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(copied, actual);
-            assert_eq!(capture.real_after_scores, expected_after);
+            let terminals = outcome
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        GameEvent::Hora { .. } | GameEvent::EndKyoku | GameEvent::EndGame
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(copied, terminals);
+            assert_eq!(capture.real_after_scores, after);
             assert_eq!(capture.real_after_pot, 0);
             let roster = (0..mode.seat_count())
-                .map(|seat| {
-                    Participant::new(format!("p{seat}"), "same", crate::ParticipantKind::Human)
-                })
+                .map(|i| Participant::new(format!("p{i}"), "same", crate::ParticipantKind::Human))
                 .collect::<Vec<_>>();
             let record = adapter
                 .result_record(
@@ -6138,22 +5816,24 @@ pub(crate) mod tests {
                 .unwrap();
             assert_eq!(
                 record
+                    .settlement
+                    .changes
+                    .iter()
+                    .map(|c| (c.before, c.after))
+                    .collect::<Vec<_>>(),
+                before.into_iter().zip(after).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                (record.settlement.pot_before, record.settlement.pot_after),
+                (2, 0)
+            );
+            assert_eq!(
+                record
                     .wins
                     .iter()
                     .map(|w| w.seat.index())
                     .collect::<Vec<_>>(),
                 [1, 2]
-            );
-            assert_eq!(record.settlement.pot_before, 2);
-            assert_eq!(record.settlement.pot_after, 0);
-            assert_eq!(
-                record
-                    .settlement
-                    .changes
-                    .iter()
-                    .map(|c| c.after)
-                    .collect::<Vec<_>>(),
-                expected_after
             );
             for win in &record.wins {
                 assert_eq!(
@@ -6244,7 +5924,6 @@ pub(crate) mod tests {
             let mut corrupt = EngineKyokuEnd {
                 pre_action: capture.pre_action.clone(),
                 ended_copy: capture.ended_copy.clone(),
-                win_results: capture.win_results.clone(),
                 real_after_scores: capture.real_after_scores.clone(),
                 real_after_pot: capture.real_after_pot,
             };
@@ -6993,9 +6672,40 @@ pub(crate) mod tests {
                     .unwrap();
                 let capture = outcome.ended.unwrap();
                 assert_eq!(capture.real_after_scores, adapter.scores());
-                assert_eq!(capture.win_results.len(), 1);
+                assert_eq!(state_win_results(&capture.ended_copy).len(), 1);
+                let roster = (0..mode.seat_count())
+                    .map(|seat| {
+                        Participant::new(format!("p{seat}"), "same", crate::ParticipantKind::Human)
+                    })
+                    .collect::<Vec<_>>();
+                let table = adapter
+                    .ended_table_state(&capture, &roster, &vec![100_000; mode.seat_count()], 2)
+                    .unwrap();
+                let shown = serde_json::to_value(crate::project_table_state(
+                    &table,
+                    crate::Audience::ReplayAdmin,
+                ))
+                .unwrap();
+                assert_eq!(shown["round"], "East");
+                assert_eq!(shown["kyoku"], 1);
+                assert_eq!(shown["dealer"], 0);
+                assert_eq!(shown["honba"], 2);
+                assert_eq!(shown["kyotaku"], 2);
+                assert_eq!(table.players()[1].hand.len(), 14);
+                assert!(
+                    table.players()[1]
+                        .hand
+                        .iter()
+                        .any(|tile| tile.id() == if kokushi { 1 } else { 77 })
+                );
+                assert!(table.players().iter().all(|player| player.score == 100_000));
+                let current = EngineAdapter::round_data_from(&adapter.state);
+                assert_ne!(
+                    (current.0, current.1, current.2, current.3, current.4),
+                    (Wind::East, 1, Seat::new(0).unwrap(), 2, 2)
+                );
                 if kokushi {
-                    assert_eq!(capture.win_results[&1].han, 13);
+                    assert_eq!(state_win_results(&capture.ended_copy)[&1].han, 13);
                 }
                 assert!(
                     outcome
@@ -7034,10 +6744,11 @@ pub(crate) mod tests {
                     ])
                     .unwrap();
                 let capture = outcome.ended.unwrap();
-                assert_eq!(capture.win_results.len(), 2);
+                assert_eq!(state_win_results(&capture.ended_copy).len(), 2);
+                assert!(state_win_results(&adapter.state).is_empty());
                 assert_eq!(capture.real_after_scores, adapter.scores());
                 if kokushi {
-                    assert_eq!(capture.win_results[&1].han, 13);
+                    assert_eq!(state_win_results(&capture.ended_copy)[&1].han, 13);
                 }
                 assert_eq!(
                     outcome

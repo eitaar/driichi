@@ -16,9 +16,9 @@ vi.mock("./game/audio", () => ({
 }));
 vi.mock("./game/assets", () => ({ decodeCharacterAsset: mockDecodeCharacterAsset }));
 vi.mock("./game/three-table", () => ({
-  ThreeTable: (props: { projection: { players?: unknown[] }; portraitEffect?: { characterId: string } | null; surface?: string }) => {
+  ThreeTable: (props: { projection: { players?: unknown[] }; surface?: string }) => {
     mockThreeTable(props);
-    return <div data-testid="replay-three-table" data-portrait={props.portraitEffect?.characterId ?? "none"} data-surface={props.surface}>{props.projection.players?.length ?? 0} players</div>;
+    return <div data-testid="replay-three-table" data-surface={props.surface}>{props.projection.players?.length ?? 0} players</div>;
   },
 }));
 
@@ -218,7 +218,7 @@ describe("Replay Admin workspace", () => {
     expect(screen.queryByText("No Replays yet.")).not.toBeInTheDocument();
   });
 
-  it("uses loaded Room assets for voice and portrait effects", async () => {
+  it("uses loaded Room assets for voice and the winning portrait", async () => {
     const fetchMock = vi.mocked(fetch);
     const horaReplay = {
       ...replay,
@@ -241,7 +241,7 @@ describe("Replay Admin workspace", () => {
     expect(await screen.findByText("ROOM ASSETS")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /next event/i }));
     await waitFor(() => expect(mockPlayVoices).toHaveBeenCalledWith([{ characterId: "ordinary-pack", kind: "tsumo" }]));
-    expect(screen.getByTestId("replay-three-table")).toHaveAttribute("data-portrait", "ordinary-pack");
+    expect(screen.getByRole("img", { name: "Seat 0 portrait" })).toHaveAttribute("src", expect.stringContaining("ordinary-pack"));
   });
 
   it("seeks saved authoritative results without inference or gameplay confirmation requests", async () => {
@@ -353,7 +353,7 @@ describe("Replay Admin workspace", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: /view replay match15/i }));
     expect(await screen.findByText("GENERIC / SILENT")).toBeVisible();
-    expect(screen.getByTestId("replay-three-table")).toHaveAttribute("data-portrait", "none");
+    expect(screen.queryByRole("img", { name: /portrait$/ })).not.toBeInTheDocument();
     expect(mockPlayVoices).not.toHaveBeenCalled();
   });
 

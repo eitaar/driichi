@@ -41,18 +41,35 @@ async fn result_hold_instrumented_benchmark_reaches_finalization() {
         let mut flushes = 0;
         let mut end_kyoku = 0;
         let mut initial = 0;
+        let mut journal = Vec::new();
         while let Some(effect) = effects.recv().await {
             if let RoomEffect::OpenMatch { initial_events, .. } = &effect {
                 initial += initial_events.len();
+                journal.extend(initial_events.iter().cloned());
             }
             if let RoomEffect::AppendEvents { events, .. } = &effect {
                 appends += events.len();
+                journal.extend(events.iter().cloned());
                 end_kyoku += events
                     .iter()
                     .filter(|event| matches!(event, double_riichi_core::GameEvent::EndKyoku))
                     .count();
             }
-            if matches!(effect, RoomEffect::FlushKyoku { .. }) {
+            if let RoomEffect::FlushKyoku { record, .. } = &effect {
+                assert_eq!(
+                    journal.len(),
+                    record.end_event_index + 1,
+                    "flush precedes future events"
+                );
+                assert!(matches!(
+                    journal.last(),
+                    Some(double_riichi_core::GameEvent::EndKyoku)
+                ));
+                for win in &record.wins {
+                    assert!(
+                        matches!(&journal[win.event_index], double_riichi_core::GameEvent::Hora { actor, target, .. } if *actor == win.seat && *target == win.target)
+                    );
+                }
                 flushes += 1;
             }
             let done = matches!(effect, RoomEffect::FinalizeMatch { .. });

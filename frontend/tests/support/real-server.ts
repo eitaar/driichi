@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { stripVTControlCharacters } from "node:util";
 
 const frontendRoot = process.cwd();
 const repositoryRoot = resolve(frontendRoot, "..");
@@ -104,44 +103,13 @@ export async function runCommand(
   let stderr = "";
   let timedOut = false;
   let observedCloseCode: number | null | undefined;
-  let lastOutput: number | null = null;
-  let line = "";
-  let discardingLine = false;
-  let lineOverflow = 0;
-  let counterSaturated = false;
-  const notices = { compiling_dependency: 0, compiling_core: 0, compiling_replay: 0, compiling_server: 0, compiling_other_workspace: 0, lock_wait: 0, finished: 0, warning: 0, error: 0, other: 0 };
-  let lastNotice: "unknown" | keyof typeof notices = "unknown";
-  const increment = (value: number) => { if (value < 65535) return value + 1; counterSaturated = true; return value; };
-  const classify = () => {
-    const text = stripVTControlCharacters(line).trim();
-    if (!text) return;
-    const compiling = /^Compiling ([a-zA-Z0-9_-]+) v\S+(?:\s|$)/.exec(text)?.[1];
-    const notice = compiling === "double_riichi_core" ? "compiling_core" : compiling === "double_riichi_replay" ? "compiling_replay"
-      : compiling === "double_riichi_server" ? "compiling_server" : ["double_riichi_mjai", "double_riichi_mcp"].includes(compiling ?? "") ? "compiling_other_workspace"
-      : compiling ? "compiling_dependency" : /^Blocking waiting for file lock(?:\s|$)/.test(text) ? "lock_wait"
-      : /^Finished\s/.test(text) ? "finished" : /^warning(?:\[|:)/.test(text) ? "warning" : /^error(?:\[|:)/.test(text) ? "error" : "other";
-    notices[notice] = increment(notices[notice]);
-    if (notice !== "other") lastNotice = notice;
-  };
-  const observeStderr = (chunk: string) => {
-    for (const character of chunk) {
-      if (character === "\n") { if (!discardingLine) classify(); line = ""; discardingLine = false; }
-      else if (!discardingLine) {
-        if (line.length + character.length <= 4096) line += character;
-        else { line = ""; discardingLine = true; lineOverflow = increment(lineOverflow); }
-      }
-    }
-  };
   const report = (state: "started" | "closed_success" | "closed_failure" | "process_error" | "timeout") => {
     if (!task8) return;
     const now = performance.now();
-    // Notices describe observed text, never a compiler phase, completion or CPU progress.
     console.log(`Task8 producer observation ${JSON.stringify({ build: task8.stage, state, timeout_ms: timeoutMilliseconds,
-      elapsed_ms: now - startedMonotonic, last_output_age_ms: lastOutput === null ? null : now - lastOutput,
+      elapsed_ms: now - startedMonotonic,
       observed_close: observedCloseCode !== undefined, exit: observedCloseCode ?? null,
-      stdout_utf8_bytes: Buffer.byteLength(stdout), stderr_utf8_bytes: Buffer.byteLength(stderr),
-      notices, last_notice: lastNotice, stderr_line_overflow_count: lineOverflow,
-      stderr_incomplete_line_count: line || discardingLine ? 1 : 0, counter_saturated: counterSaturated })}`);
+      stdout_utf8_bytes: Buffer.byteLength(stdout), stderr_utf8_bytes: Buffer.byteLength(stderr) })}`);
   };
   report("started");
   let child;
@@ -155,8 +123,8 @@ export async function runCommand(
   } catch (error) { report("process_error"); throw error; }
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => { stdout += chunk; if (task8) lastOutput = performance.now(); });
-  child.stderr.on("data", (chunk: string) => { stderr += chunk; if (task8) { lastOutput = performance.now(); observeStderr(chunk); } });
+  child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+  child.stderr.on("data", (chunk: string) => { stderr += chunk; });
   child.stdin.end(input);
   let exit: number;
   try {
@@ -419,7 +387,7 @@ async function launchRealServer(options: RealServerOptions, binary: string, root
     writePack(characterRoot, "mcp-agent", "mcp", "MCP Agent", botIcon, botPortrait);
 
     const rustPort = await freePort();
-    const frontendPort = await freePort();
+    const frontendPort = task8 ? rustPort : await freePort();
     const rustOrigin = `http://127.0.0.1:${rustPort}`;
     const frontendOrigin = `http://127.0.0.1:${frontendPort}`;
     const configPath = join(root, "config.toml");
@@ -452,13 +420,15 @@ async function launchRealServer(options: RealServerOptions, binary: string, root
     const viteLog = join(root, "vite.log");
     server = startProcess(binary, ["--config", configPath], repositoryRoot, { ...process.env, ...(options.task8 ? { DRIICHI_TASK8_FIXTURE: options.task8.fixture } : {}) }, serverLog);
     await waitForHttp(`${rustOrigin}/status`);
-    vite = startProcess(
-      npmCommand(),
-      npmArgs(["run", "dev", "--", "--host", "127.0.0.1", "--port", String(frontendPort)]),
-      frontendRoot,
-      { ...process.env, DRIICHI_E2E_SERVER_ORIGIN: rustOrigin },
-      viteLog,
-    );
+    if (!task8) {
+      vite = startProcess(
+        npmCommand(),
+        npmArgs(["run", "dev", "--", "--host", "127.0.0.1", "--port", String(frontendPort)]),
+        frontendRoot,
+        { ...process.env, DRIICHI_E2E_SERVER_ORIGIN: rustOrigin },
+        viteLog,
+      );
+    }
     await waitForHttp(frontendOrigin);
 
     let stopped = false;

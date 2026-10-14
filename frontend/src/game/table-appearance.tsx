@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LinearFilter, SRGBColorSpace, Texture } from "three";
 
 export interface LocalTableImage {
-  url: string;
-  image: HTMLImageElement;
+  image: ImageBitmap;
   dispose(): void;
 }
 export type TableImageTarget = "surface" | "surround";
@@ -20,50 +18,25 @@ export async function loadLocalTableImage(file: File, signal: AbortSignal): Prom
     : String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
   if (!valid) throw new Error("The image file could not be decoded.");
   if (signal.aborted) throw new DOMException("Image selection cancelled", "AbortError");
-  const url = URL.createObjectURL(file);
-  const image = new Image();
-  let disposed = false;
-  const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    image.src = "";
-    URL.revokeObjectURL(url);
-  };
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        image.onload = image.onerror = null;
-        signal.removeEventListener("abort", abort);
-      };
-      const abort = () => { cleanup(); reject(new DOMException("Image selection cancelled", "AbortError")); };
-      image.onload = () => { cleanup(); resolve(); };
-      image.onerror = () => { cleanup(); reject(new Error("The image file could not be decoded.")); };
-      signal.addEventListener("abort", abort, { once: true });
-      image.src = url;
+  // Blob decoding needs no blob: image request and preserves the existing self-only CSP.
+  const image = await new Promise<ImageBitmap>((resolve, reject) => {
+    const abort = () => reject(new DOMException("Image selection cancelled", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    void createImageBitmap(file, { imageOrientation: "flipY", premultiplyAlpha: "none", colorSpaceConversion: "none" }).then(bitmap => {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) { bitmap.close(); abort(); }
+      else resolve(bitmap);
+    }, () => {
+      signal.removeEventListener("abort", abort);
+      reject(new Error("The image file could not be decoded."));
     });
-    const pixels = image.naturalWidth * image.naturalHeight;
-    if (signal.aborted) throw new DOMException("Image selection cancelled", "AbortError");
-    if (!Number.isSafeInteger(pixels) || pixels <= 0 || pixels > 16_000_000) throw new Error("Choose an image up to 16 megapixels.");
-    return { url, image, dispose };
-  } catch (error) {
-    dispose();
-    throw error;
-  }
-}
-
-export function createTableImageTexture(local: LocalTableImage | null | undefined, aspect: number): Texture | null {
-  if (!local) return null;
-  const texture = new Texture(local.image);
-  const imageAspect = local.image.naturalWidth / local.image.naturalHeight;
-  const x = imageAspect > aspect ? aspect / imageAspect : 1;
-  const y = imageAspect > aspect ? 1 : imageAspect / aspect;
-  texture.repeat.set(x, y);
-  texture.offset.set((1 - x) / 2, (1 - y) / 2);
-  texture.colorSpace = SRGBColorSpace;
-  texture.generateMipmaps = false;
-  texture.minFilter = texture.magFilter = LinearFilter;
-  texture.needsUpdate = true;
-  return texture;
+  });
+  let disposed = false;
+  const dispose = () => { if (!disposed) { disposed = true; image.close(); } };
+  const pixels = image.width * image.height;
+  if (signal.aborted) { dispose(); throw new DOMException("Image selection cancelled", "AbortError"); }
+  if (!Number.isSafeInteger(pixels) || pixels <= 0 || pixels > 16_000_000) { dispose(); throw new Error("Choose an image up to 16 megapixels."); }
+  return { image, dispose };
 }
 
 export function useTableAppearance() {

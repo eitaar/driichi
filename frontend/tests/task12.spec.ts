@@ -149,13 +149,13 @@ async function expectRenderedTable(page: Page) {
     const canvas = node.querySelector("canvas");
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+    const quality = JSON.parse(node.querySelector<HTMLElement>(".three-table-renderer")!.dataset.rendererQuality!);
     return {
       clientWidth: rect.width,
       clientHeight: rect.height,
-      pixelWidth: canvas.width,
-      pixelHeight: canvas.height,
-      antialias: context?.getContextAttributes()?.antialias ?? false,
+      pixelWidth: quality.width,
+      pixelHeight: quality.height,
+      antialias: quality.antialias,
       viewportWidth: document.documentElement.clientWidth,
       viewportHeight: window.innerHeight,
     };
@@ -495,16 +495,15 @@ test("keeps a long participant name and missing icon actionable", async ({ page 
 
 test("keeps legal actions usable when WebGL creation fails", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
-  await page.addInitScript(() => {
-    const original = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function getContext(
-      this: HTMLCanvasElement,
-      contextId: string,
-      ...args: unknown[]
-    ) {
-      if (contextId === "webgl" || contextId === "webgl2") return null;
-      return Reflect.apply(original, this, [contextId, ...args]);
-    } as typeof original;
+  await page.route(url => url.pathname.includes("three-table-worker"), async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `
+      const original = OffscreenCanvas.prototype.getContext;
+      OffscreenCanvas.prototype.getContext = function (kind, ...args) {
+        if (kind === 'webgl' || kind === 'webgl2') return null;
+        return Reflect.apply(original, this, [kind, ...args]);
+      };
+      ${await response.text()}` });
   });
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
@@ -525,23 +524,9 @@ test("keeps legal actions usable when WebGL creation fails", async ({ page }) =>
   await expectNoAxeViolations(page, ".gameplay-main");
 });
 
-test("falls back when renderer creation fails after WebGL preflight", async ({ page }) => {
+test("falls back when the native renderer module cannot load", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
-  await page.addInitScript(() => {
-    const original = HTMLCanvasElement.prototype.getContext;
-    let webglRequests = 0;
-    HTMLCanvasElement.prototype.getContext = function getContext(
-      this: HTMLCanvasElement,
-      contextId: string,
-      ...args: unknown[]
-    ) {
-      if (contextId === "webgl" || contextId === "webgl2" || contextId === "experimental-webgl") {
-        webglRequests += 1;
-        if (webglRequests > 1) return null;
-      }
-      return Reflect.apply(original, this, [contextId, ...args]);
-    } as typeof original;
-  });
+  await page.route(url => url.pathname.includes("three-table-worker"), route => route.fulfill({ status: 404, body: "Renderer module unavailable" }));
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
@@ -554,14 +539,47 @@ test("falls back when renderer creation fails after WebGL preflight", async ({ p
   await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
 });
 
+async function installNativeContextLossControl(page: Page) {
+  await page.addInitScript(() => {
+    const original = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (...args: unknown[]) {
+      const message = args[0] as { type?: string; canvas?: unknown };
+      if (message?.type === "init" && message.canvas instanceof OffscreenCanvas) (window as unknown as { __renderer: Worker }).__renderer = this;
+      return Reflect.apply(original, this, args);
+    };
+  });
+  await page.route(url => url.pathname.includes("three-table-worker"), async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `
+      self.addEventListener('message', event => {
+        if (event.data?.canvas instanceof OffscreenCanvas) self.__ownedCanvas = event.data.canvas;
+        if (event.data?.type === 'test-native-context-loss') {
+          event.stopImmediatePropagation();
+          const extension = self.__ownedCanvas.getContext('webgl2').getExtension('WEBGL_lose_context');
+          if (!extension) throw new Error('Native context-loss control unavailable');
+          extension.loseContext();
+        }
+      });
+      ${await response.text()}` });
+  });
+}
+
 test("falls back accessibly after WebGL context loss", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
+  await installNativeContextLossControl(page);
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
   const table = await expectRenderedTable(page);
 
-  await table.locator("canvas").dispatchEvent("webglcontextlost");
+  const renderer = page.workers().find(worker => worker.url().includes("three-table-worker"))!;
+  await renderer.evaluate(() => {
+    const canvas = (self as unknown as { __ownedCanvas: OffscreenCanvas }).__ownedCanvas;
+    const context = canvas.getContext("webgl2")!;
+    const extension = context.getExtension("WEBGL_lose_context");
+    if (!extension) throw new Error("Native context-loss control unavailable");
+    extension.loseContext();
+  });
 
   await expect(table).toHaveAttribute("data-webgl-fallback", "true");
   await expect(table).toHaveAttribute("data-render-ready", "false");
@@ -599,6 +617,7 @@ for (const interruption of ["authoritative queue clearing", "transient reconnect
   test(`cancels interrupted motion on ${interruption}`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    if (interruption === "WebGL context loss") await installNativeContextLossControl(page);
     await installCharacterFixtures(page);
     await installSocket(page, "4p-red-east");
     await page.goto("/room/123456/lobby");
@@ -622,7 +641,7 @@ for (const interruption of ["authoritative queue clearing", "transient reconnect
         observer.disconnect();
         browser.__interrupted = true;
         if (interruption === "WebGL context loss") {
-          host.querySelector("canvas")!.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+          (window as unknown as { __renderer: Worker }).__renderer.postMessage({ type: "test-native-context-loss" });
         } else if (interruption === "transient reconnect") {
           browser.__socket.onclose?.({ code: 1006, reason: "" });
         } else {
@@ -735,7 +754,22 @@ test("captures the complete 4p scene during active motion at 1024x600", async ({
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
   const table = await expectRenderedTable(page);
-  await page.evaluate(() => {
+  // Observe the transient complete phase before emission; never extend/freeze motion for capture.
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const table = document.querySelector<HTMLElement>('[data-testid="three-table"]')!;
+    const observer = new MutationObserver(() => {
+      if (table.dataset.animationState === "active" && table.dataset.renderReady === "true"
+        && Number(table.dataset.renderedTileCount) > 0 && Number(table.dataset.renderedScenePrimitives) > 0) {
+        observer.disconnect();
+        window.clearTimeout(timeout);
+        resolve();
+      }
+    });
+    const timeout = window.setTimeout(() => {
+      observer.disconnect();
+      reject(new Error("No complete active scene within 5000ms"));
+    }, 5_000);
+    observer.observe(table, { attributes: true });
     const browser = window as unknown as {
       __socket: { emit: (value: unknown) => void };
       __state: Record<string, unknown>;
@@ -749,8 +783,8 @@ test("captures the complete 4p scene during active motion at 1024x600", async ({
       event: { type: "pon", actor: 0 },
       state,
     });
-  });
-  await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
+  }));
+  expect(await table.getAttribute("data-animation-state")).toBe("active");
   await expect(table).toHaveAttribute("data-player-frame-count", "4");
   await expect(table).toHaveAttribute("data-rendered-tile-count", /^[1-9]\d*$/);
   await expect(table).toHaveAttribute("data-rendered-scene-primitives", /^[1-9]\d*$/);
@@ -776,7 +810,22 @@ test("completes motion at fixed quality and reports renderer performance", async
     const table = await expectRenderedTable(page);
     await page.waitForTimeout(300);
     const emitMotion = async () => {
-      await page.evaluate(() => {
+      // Arm before emission: polling can miss a complete short-lived native motion.
+      await page.evaluate(() => new Promise<void>((resolve, reject) => {
+        const table = document.querySelector<HTMLElement>('[data-testid="three-table"]')!;
+        const observer = new MutationObserver(() => {
+          if (table.dataset.animationState === "active" && table.dataset.renderReady === "true"
+            && Number(table.dataset.renderedTileCount) > 0 && Number(table.dataset.renderedScenePrimitives) > 0) {
+            observer.disconnect();
+            window.clearTimeout(timeout);
+            resolve();
+          }
+        });
+        const timeout = window.setTimeout(() => {
+          observer.disconnect();
+          reject(new Error("No complete active scene within 5000ms"));
+        }, 5_000);
+        observer.observe(table, { attributes: true });
         const browser = window as unknown as {
           __socket: { emit: (value: unknown) => void };
           __state: Record<string, unknown>;
@@ -790,8 +839,8 @@ test("completes motion at fixed quality and reports renderer performance", async
           event: { type: "dahai", actor: 0, tile: 1 },
           state,
         });
-      });
-      await expect(table).toHaveAttribute("data-animation-state", "active", { timeout: 5_000 });
+      }));
+      expect(await table.getAttribute("data-animation-state")).toBe("active");
       const activeDpr = Number(await table.getAttribute("data-renderer-pixel-ratio"));
       expect(activeDpr).toBeGreaterThanOrEqual(1);
       expect(activeDpr).toBeLessThanOrEqual(2);
@@ -889,11 +938,12 @@ for (const { deviceScaleFactor, expectedPixelRatio } of [
       const drawingBuffer = await table.locator("canvas").evaluate((element) => {
         const canvas = element as HTMLCanvasElement;
         const rect = canvas.getBoundingClientRect();
+        const quality = JSON.parse(canvas.parentElement!.dataset.rendererQuality!);
         return {
           clientWidth: rect.width,
           clientHeight: rect.height,
-          pixelWidth: canvas.width,
-          pixelHeight: canvas.height,
+          pixelWidth: quality.width,
+          pixelHeight: quality.height,
         };
       });
       expect(Math.abs(

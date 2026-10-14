@@ -3572,10 +3572,8 @@ impl Actor {
             .state
             .match_machine
             .as_ref()
-            .and_then(MatchMachine::published_kyoku_results)
-            .map_or(0, |published| {
-                published.wins.len() + usize::from(published.settlement.is_some())
-            });
+            .and_then(MatchMachine::next_kyoku_step_index)
+            .ok_or_else(|| RoomError::Match("missing held Kyoku".into()))?;
         let content = if let Some(win) = record.wins.get(index) {
             KyokuEndContent::Win(win.clone())
         } else if record.wins.is_empty() {
@@ -3817,14 +3815,14 @@ impl Actor {
         &mut self,
         match_id: MatchId,
         events: Vec<GameEvent>,
-        record: Option<KyokuResultRecord>,
+        mut record: Option<KyokuResultRecord>,
     ) {
         for event in events {
             let end = matches!(event, GameEvent::EndKyoku);
-            self.send_append(match_id.clone(), vec![event]).await;
+            self.send_append(match_id.clone(), vec![event]);
             if end {
-                if let Some(record) = record.as_ref() {
-                    let _ = self.flush_kyoku(match_id.clone(), record.clone()).await;
+                if let Some(record) = record.take() {
+                    self.flush_kyoku(match_id.clone(), record).await;
                 } else if self.state.config.replay_save && self.state.replay_available {
                     self.fail_replay(
                         match_id.clone(),
@@ -3835,7 +3833,7 @@ impl Actor {
         }
     }
 
-    async fn send_append(&mut self, match_id: MatchId, events: Vec<GameEvent>) {
+    fn send_append(&mut self, match_id: MatchId, events: Vec<GameEvent>) {
         if !self.state.config.replay_save || !self.state.replay_available {
             return;
         }
@@ -3852,13 +3850,9 @@ impl Actor {
         }
     }
 
-    async fn flush_kyoku(
-        &mut self,
-        match_id: MatchId,
-        record: KyokuResultRecord,
-    ) -> Result<(), RoomError> {
+    async fn flush_kyoku(&mut self, match_id: MatchId, record: KyokuResultRecord) {
         if !self.state.config.replay_save || !self.state.replay_available {
-            return Ok(());
+            return;
         }
         let (completion, receiver) = oneshot::channel();
         let effect = RoomEffect::FlushKyoku {
@@ -3869,7 +3863,6 @@ impl Actor {
         if self.send_ack_effect(effect, receiver).await.is_err() {
             self.fail_replay(match_id, "replay flush failed".to_owned());
         }
-        Ok(())
     }
 
     async fn complete_match(&mut self, result: MatchResult) -> Result<(), RoomError> {

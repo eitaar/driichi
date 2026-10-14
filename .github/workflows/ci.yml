@@ -106,3 +106,19 @@ jobs:
         env:
           GIT_COMMIT: ${{ github.sha }}
         run: just test-all
+
+      - name: Verify built Dedicated Worker renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence=$(mktemp -d "$RUNNER_TEMP/driichi-native-worker.XXXXXXXX")
+          export DRIICHI_WORKER_PROBE_DIST="$evidence/dist"
+          echo "Native renderer evidence: $evidence"
+          trap 'sha256sum "$evidence"/*.log' EXIT
+          cd frontend
+          timeout --signal=TERM --kill-after=10s 180s npx --no-install vite build \
+            --config tests/support/renderer-worker-build.config.ts --outDir "$DRIICHI_WORKER_PROBE_DIST" \
+            2>&1 | tee "$evidence/build.log"
+          timeout --signal=TERM --kill-after=10s 720s npx --no-install playwright test \
+            --config=playwright.worker.config.ts --output "$evidence/test-results" \
+            2>&1 | tee "$evidence/browser.log"

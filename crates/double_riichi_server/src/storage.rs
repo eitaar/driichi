@@ -164,29 +164,27 @@ fn validate_result_bundle(
     if result.mode != mode || players.len() != mode.seat_count() {
         return Err(StorageError::ReplayCorrupt);
     }
-    let roster = players
-        .iter()
-        .enumerate()
-        .map(|(seat, player)| {
-            let outcome = &result.players[seat];
-            if player.seat != seat as i64
-                || player.participant_id != outcome.participant_id.as_str()
-                || player.display_name != outcome.display_name
-                || player.participant_kind != participant_kind_kind(outcome.kind)
-                || player.final_points != Some(i64::from(outcome.final_score))
+    for (seat, player) in players.iter().enumerate() {
+        let outcome = &result.players[seat];
+        if player.seat != seat as i64
+            || player.participant_id != outcome.participant_id.as_str()
+            || player.display_name != outcome.display_name
+            || player.participant_kind != participant_kind_kind(outcome.kind)
+            || player.final_points != Some(i64::from(outcome.final_score))
+        {
+            return Err(StorageError::ReplayCorrupt);
+        }
+    }
+    for record in records {
+        if record.mode != mode || record.settlement.changes.len() != players.len() {
+            return Err(StorageError::ReplayCorrupt);
+        }
+        for (seat, (change, player)) in record.settlement.changes.iter().zip(players).enumerate() {
+            if usize::from(change.seat.index()) != seat
+                || change.participant_id.as_str() != player.participant_id
             {
                 return Err(StorageError::ReplayCorrupt);
             }
-            Ok(Participant::new(
-                outcome.participant_id.clone(),
-                outcome.display_name.clone(),
-                outcome.kind,
-            ))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for record in records {
-        if record.mode != mode || record.validate(&roster).is_err() {
-            return Err(StorageError::ReplayCorrupt);
         }
     }
     if records.last().map(|record| {
@@ -1194,6 +1192,54 @@ impl Storage {
         })
     }
 
+    async fn load_kyoku_records(
+        &self,
+        match_id: &str,
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<Vec<KyokuResultRecord>, StorageError> {
+        let stats = sqlx::query("SELECT COUNT(*) AS n, COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0) AS bytes FROM match_kyoku_results WHERE match_id = ?")
+            .bind(match_id).fetch_one(&mut *connection).await.map_err(StorageError::Sqlx)?;
+        let count: i64 = stats.try_get("n").map_err(StorageError::Sqlx)?;
+        let bytes: i64 = stats.try_get("bytes").map_err(StorageError::Sqlx)?;
+        if count < 0
+            || count as u64 > MAX_REPLAY_EVENTS as u64
+            || bytes < 0
+            || bytes as u64 > MAX_DECOMPRESSED_REPLAY_BYTES as u64
+        {
+            return Err(StorageError::ReplayTooLarge);
+        }
+        let rows = sqlx::query("SELECT kyoku_sequence, version, end_event_index, payload_json FROM match_kyoku_results WHERE match_id = ? ORDER BY kyoku_sequence")
+            .bind(match_id).fetch_all(&mut *connection).await.map_err(StorageError::Sqlx)?;
+        if rows.len() > MAX_REPLAY_EVENTS {
+            return Err(StorageError::ReplayTooLarge);
+        }
+        let mut total = 0usize;
+        rows.iter()
+            .map(|row| {
+                let payload: String = row.try_get("payload_json").map_err(StorageError::Sqlx)?;
+                total = total
+                    .checked_add(payload.len())
+                    .ok_or(StorageError::ReplayTooLarge)?;
+                if total > MAX_DECOMPRESSED_REPLAY_BYTES {
+                    return Err(StorageError::ReplayTooLarge);
+                }
+                let record: KyokuResultRecord =
+                    serde_json::from_str(&payload).map_err(|_| StorageError::ReplayCorrupt)?;
+                let sequence: i64 = row.try_get("kyoku_sequence").map_err(StorageError::Sqlx)?;
+                let version: i64 = row.try_get("version").map_err(StorageError::Sqlx)?;
+                let index: i64 = row.try_get("end_event_index").map_err(StorageError::Sqlx)?;
+                if record.version != 1
+                    || version != 1
+                    || i64::try_from(record.kyoku_sequence).ok() != Some(sequence)
+                    || i64::try_from(record.end_event_index).ok() != Some(index)
+                {
+                    return Err(StorageError::ReplayCorrupt);
+                }
+                Ok(record)
+            })
+            .collect()
+    }
+
     async fn load_authoritative_result(
         &self,
         match_id: &str,
@@ -1213,46 +1259,15 @@ impl Storage {
         {
             return Err(StorageError::ReplayTooLarge);
         }
-        let stats = sqlx::query("SELECT COUNT(*) AS n, COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0) AS bytes FROM match_kyoku_results WHERE match_id = ?")
-            .bind(match_id).fetch_one(&mut *connection).await.map_err(StorageError::Sqlx)?;
-        let count: i64 = stats.try_get("n").map_err(StorageError::Sqlx)?;
-        let bytes: i64 = stats.try_get("bytes").map_err(StorageError::Sqlx)?;
-        if count < 0
-            || count as u64 > MAX_REPLAY_EVENTS as u64
-            || bytes < 0
-            || bytes as u64 > MAX_DECOMPRESSED_REPLAY_BYTES as u64
-        {
-            return Err(StorageError::ReplayTooLarge);
-        }
+        let records = self.load_kyoku_records(match_id, connection).await?;
         let payload: Option<String> = sqlx::query_scalar("SELECT authoritative_result_json FROM matches WHERE match_id = ? AND status = 'completed'")
             .bind(match_id).fetch_one(&mut *connection).await.map_err(StorageError::Sqlx)?;
-        if version.is_none() && payload.is_none() && count == 0 {
+        if version.is_none() && payload.is_none() && records.is_empty() {
             return Ok(None);
         }
         if version != Some(1) || payload.is_none() {
             return Err(StorageError::ReplayCorrupt);
         }
-        let rows = sqlx::query("SELECT kyoku_sequence, version, end_event_index, payload_json FROM match_kyoku_results WHERE match_id = ? ORDER BY kyoku_sequence")
-            .bind(match_id).fetch_all(&mut *connection).await.map_err(StorageError::Sqlx)?;
-        let records = rows
-            .iter()
-            .map(|row| {
-                let sequence: i64 = row.try_get("kyoku_sequence").map_err(StorageError::Sqlx)?;
-                let version: i64 = row.try_get("version").map_err(StorageError::Sqlx)?;
-                let index: i64 = row.try_get("end_event_index").map_err(StorageError::Sqlx)?;
-                let json: String = row.try_get("payload_json").map_err(StorageError::Sqlx)?;
-                let record: KyokuResultRecord =
-                    serde_json::from_str(&json).map_err(|_| StorageError::ReplayCorrupt)?;
-                if i64::try_from(record.kyoku_sequence).ok() != Some(sequence)
-                    || record.version != 1
-                    || version != 1
-                    || i64::try_from(record.end_event_index).ok() != Some(index)
-                {
-                    return Err(StorageError::ReplayCorrupt);
-                }
-                Ok(record)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         let result: MatchResult = serde_json::from_str(payload.as_ref().unwrap())
             .map_err(|_| StorageError::ReplayCorrupt)?;
         validate_result_bundle(game_mode, players, frames, &records, &result)?;
@@ -1829,51 +1844,7 @@ impl Storage {
             let room_records = if ranked_records.is_some() {
                 None
             } else {
-                let stats = sqlx::query("SELECT COUNT(*) AS n, COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0) AS bytes FROM match_kyoku_results WHERE match_id = ?")
-                    .bind(match_id).fetch_one(&mut *transaction).await.map_err(StorageError::Sqlx)?;
-                let count: i64 = stats.try_get("n").map_err(StorageError::Sqlx)?;
-                let bytes: i64 = stats.try_get("bytes").map_err(StorageError::Sqlx)?;
-                if count < 0
-                    || count as u64 > MAX_REPLAY_EVENTS as u64
-                    || bytes < 0
-                    || bytes as u64 > MAX_DECOMPRESSED_REPLAY_BYTES as u64
-                {
-                    return Err(StorageError::ReplayTooLarge);
-                }
-                let rows = sqlx::query("SELECT kyoku_sequence, version, end_event_index, payload_json FROM match_kyoku_results WHERE match_id = ? ORDER BY kyoku_sequence")
-                    .bind(match_id).fetch_all(&mut *transaction).await.map_err(StorageError::Sqlx)?;
-                if rows.len() > MAX_REPLAY_EVENTS {
-                    return Err(StorageError::ReplayTooLarge);
-                }
-                let mut total = 0usize;
-                rows.iter()
-                    .map(|row| {
-                        let payload: String =
-                            row.try_get("payload_json").map_err(StorageError::Sqlx)?;
-                        total = total
-                            .checked_add(payload.len())
-                            .ok_or(StorageError::ReplayTooLarge)?;
-                        if total > MAX_DECOMPRESSED_REPLAY_BYTES {
-                            return Err(StorageError::ReplayTooLarge);
-                        }
-                        let record: KyokuResultRecord = serde_json::from_str(&payload)
-                            .map_err(|_| StorageError::ReplayCorrupt)?;
-                        let sequence: i64 =
-                            row.try_get("kyoku_sequence").map_err(StorageError::Sqlx)?;
-                        let version: i64 = row.try_get("version").map_err(StorageError::Sqlx)?;
-                        let index: i64 =
-                            row.try_get("end_event_index").map_err(StorageError::Sqlx)?;
-                        if record.version != 1
-                            || version != 1
-                            || i64::try_from(record.kyoku_sequence).ok() != Some(sequence)
-                            || i64::try_from(record.end_event_index).ok() != Some(index)
-                        {
-                            return Err(StorageError::ReplayCorrupt);
-                        }
-                        Ok(record)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into()
+                Some(self.load_kyoku_records(match_id, &mut transaction).await?)
             };
             if ranked_records.is_some() && source != "ranked" {
                 return Err(StorageError::ReplayMetadata);
@@ -3018,139 +2989,181 @@ mod tests {
 
     #[tokio::test]
     async fn replay_view_keeps_summary_roster_auxiliary_and_results_in_one_snapshot() {
-        let root = test_root("whole-replay-snapshot");
-        let storage = Storage::connect(&root).await.unwrap();
-        let match_id = "whole-replay-snapshot";
-        let mode = GameMode::FourPlayerRedEast;
-        let (events, record, result, roster) = final_draw_capture(mode);
-        let mut writer = ReplayWriter::new(storage.replay_root(), match_id, mode).unwrap();
-        for event in &events {
-            writer.append(event.clone()).unwrap();
-        }
-        let artifact = writer.finalize().unwrap();
-        storage
-            .open_ranked_match(match_id, mode, 1, &artifact.relative_path_string(), &roster)
-            .await
-            .unwrap();
-        storage
-            .complete_ranked_match(
-                match_id,
-                &artifact,
-                &result,
-                2,
-                std::slice::from_ref(&record),
-            )
-            .await
-            .unwrap();
-        let prior = storage
-            .encode_replay_view(&storage.load_replay(match_id).await.unwrap())
-            .unwrap();
+        for delete in [false, true] {
+            let root = test_root(if delete {
+                "whole-replay-snapshot-delete"
+            } else {
+                "whole-replay-snapshot-update"
+            });
+            let storage = Storage::connect(&root).await.unwrap();
+            let match_id = "whole-replay-snapshot";
+            let mode = GameMode::FourPlayerRedEast;
+            let (events, record, result, roster) = final_draw_capture(mode);
+            let mut writer = ReplayWriter::new(storage.replay_root(), match_id, mode).unwrap();
+            for event in &events {
+                writer.append(event.clone()).unwrap();
+            }
+            let artifact = writer.finalize().unwrap();
+            storage
+                .open_ranked_match(match_id, mode, 1, &artifact.relative_path_string(), &roster)
+                .await
+                .unwrap();
+            storage
+                .complete_ranked_match(
+                    match_id,
+                    &artifact,
+                    &result,
+                    2,
+                    std::slice::from_ref(&record),
+                )
+                .await
+                .unwrap();
+            if delete {
+                let auxiliary = serde_json::to_string(&AuxiliaryEvent::Disconnected {
+                    seat: Seat::new(0).unwrap(),
+                })
+                .unwrap();
+                sqlx::query("INSERT INTO replay_auxiliary_events (match_id, line_index, phase, sequence, payload_json) VALUES (?, 0, 'before', 0, ?)")
+                    .bind(match_id).bind(auxiliary).execute(storage.pool()).await.unwrap();
+            }
+            let prior = storage
+                .encode_replay_view(&storage.load_replay(match_id).await.unwrap())
+                .unwrap();
 
-        let released = Arc::new(tokio::sync::Notify::new());
-        let resume = Arc::new(tokio::sync::Notify::new());
-        let first = Arc::new(AtomicBool::new(true));
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .after_release({
-                let released = released.clone();
-                let resume = resume.clone();
-                move |_, _| {
+            let released = Arc::new(tokio::sync::Notify::new());
+            let resume = Arc::new(tokio::sync::Notify::new());
+            let first = Arc::new(AtomicBool::new(true));
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .after_release({
                     let released = released.clone();
                     let resume = resume.clone();
-                    let first = first.clone();
-                    Box::pin(async move {
-                        if first.swap(false, Ordering::SeqCst) {
-                            released.notify_one();
-                            resume.notified().await;
-                        }
-                        Ok(true)
-                    })
+                    move |_, _| {
+                        let released = released.clone();
+                        let resume = resume.clone();
+                        let first = first.clone();
+                        Box::pin(async move {
+                            if first.swap(false, Ordering::SeqCst) {
+                                released.notify_one();
+                                resume.notified().await;
+                            }
+                            Ok(true)
+                        })
+                    }
+                })
+                .connect_with(
+                    SqliteConnectOptions::new()
+                        .filename(storage.database_path())
+                        .journal_mode(SqliteJournalMode::Wal),
+                )
+                .await
+                .unwrap();
+            let reader = Arc::new(Storage {
+                pool,
+                data_root: storage.data_root.clone(),
+                replay_root: storage.replay_root.clone(),
+                replay_degraded: AtomicBool::new(false),
+                max_connections: 1,
+            });
+            // Before the fix, the first connection release follows the summary
+            // query and precedes roster, auxiliary and authoritative result reads.
+            let mut read = tokio::spawn({
+                let reader = reader.clone();
+                async move {
+                    let view = reader.load_replay(match_id).await?;
+                    reader.encode_replay_view(&view)
+                }
+            });
+            let finished_before_commit = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    _ = released.notified() => None,
+                    outcome = &mut read => Some(outcome.unwrap()),
                 }
             })
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(storage.database_path())
-                    .journal_mode(SqliteJournalMode::Wal),
-            )
             .await
             .unwrap();
-        let reader = Arc::new(Storage {
-            pool,
-            data_root: storage.data_root.clone(),
-            replay_root: storage.replay_root.clone(),
-            replay_degraded: AtomicBool::new(false),
-            max_connections: 1,
-        });
-        // Before the fix, the first connection release follows the summary
-        // query and precedes roster, auxiliary and authoritative result reads.
-        let mut read = tokio::spawn({
-            let reader = reader.clone();
-            async move {
-                let view = reader.load_replay(match_id).await?;
-                reader.encode_replay_view(&view)
-            }
-        });
-        let finished_before_commit = tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::select! {
-                _ = released.notified() => None,
-                outcome = &mut read => Some(outcome.unwrap()),
-            }
-        })
-        .await
-        .unwrap();
-        let mut change = storage.pool().begin().await.unwrap();
-        sqlx::query("UPDATE matches SET room_name = 'next-room' WHERE match_id = ?")
-            .bind(match_id)
-            .execute(&mut *change)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE match_players SET character_id = 'next-character', display_name = 'Next Recorded 0' WHERE match_id = ? AND seat = 0")
+            let next = if delete {
+                sqlx::query("DELETE FROM matches WHERE match_id = ?")
+                    .bind(match_id)
+                    .execute(storage.pool())
+                    .await
+                    .unwrap();
+                for table in [
+                    "match_players",
+                    "match_kyoku_results",
+                    "replay_auxiliary_events",
+                ] {
+                    let count: i64 = sqlx::query_scalar(&format!(
+                        "SELECT count(*) FROM {table} WHERE match_id = ?"
+                    ))
+                    .bind(match_id)
+                    .fetch_one(storage.pool())
+                    .await
+                    .unwrap();
+                    assert_eq!(count, 0, "delete cascades {table}");
+                }
+                assert!(matches!(
+                    storage.load_replay(match_id).await,
+                    Err(StorageError::ReplayNotFound)
+                ));
+                None
+            } else {
+                let mut change = storage.pool().begin().await.unwrap();
+                sqlx::query("UPDATE matches SET room_name = 'next-room' WHERE match_id = ?")
+                    .bind(match_id)
+                    .execute(&mut *change)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE match_players SET character_id = 'next-character', display_name = 'Next Recorded 0' WHERE match_id = ? AND seat = 0")
             .bind(match_id).execute(&mut *change).await.unwrap();
-        let mut next_result = result.clone();
-        next_result.players[0].display_name = "Next Recorded 0".into();
-        sqlx::query("UPDATE matches SET authoritative_result_json = ? WHERE match_id = ?")
-            .bind(serde_json::to_string(&next_result).unwrap())
-            .bind(match_id)
-            .execute(&mut *change)
-            .await
-            .unwrap();
-        let auxiliary_json = serde_json::to_string(&AuxiliaryEvent::Disconnected {
-            seat: Seat::new(0).unwrap(),
-        })
-        .unwrap();
-        sqlx::query("INSERT INTO replay_auxiliary_events (match_id, line_index, phase, sequence, payload_json) VALUES (?, 0, 'before', 0, ?)")
+                let mut next_result = result.clone();
+                next_result.players[0].display_name = "Next Recorded 0".into();
+                sqlx::query("UPDATE matches SET authoritative_result_json = ? WHERE match_id = ?")
+                    .bind(serde_json::to_string(&next_result).unwrap())
+                    .bind(match_id)
+                    .execute(&mut *change)
+                    .await
+                    .unwrap();
+                let auxiliary_json = serde_json::to_string(&AuxiliaryEvent::Disconnected {
+                    seat: Seat::new(0).unwrap(),
+                })
+                .unwrap();
+                sqlx::query("INSERT INTO replay_auxiliary_events (match_id, line_index, phase, sequence, payload_json) VALUES (?, 0, 'before', 0, ?)")
             .bind(match_id).bind(auxiliary_json).execute(&mut *change).await.unwrap();
-        change.commit().await.unwrap();
-        let next = storage
-            .encode_replay_view(&storage.load_replay(match_id).await.unwrap())
-            .unwrap();
-        assert_ne!(prior, next, "the committed second view must differ");
-        resume.notify_one();
-        let completed_before_commit = finished_before_commit.is_some();
-        let read_result = match finished_before_commit {
-            Some(outcome) => outcome,
-            None => tokio::time::timeout(Duration::from_secs(5), read)
-                .await
-                .unwrap()
-                .unwrap(),
-        };
-        let observed = read_result.unwrap();
-        assert!(
-            observed == prior || observed == next,
-            "Replay view mixed summary/roster/auxiliary/results across the first connection release"
-        );
-        if completed_before_commit {
-            // A fixed read can finish before the concurrent commit; the
-            // barrier then witnesses release, not forced interleaving.
-            assert_eq!(observed, prior);
+                change.commit().await.unwrap();
+                let next = storage
+                    .encode_replay_view(&storage.load_replay(match_id).await.unwrap())
+                    .unwrap();
+                assert_ne!(prior, next, "the committed second view must differ");
+                Some(next)
+            };
+            resume.notify_one();
+            let completed_before_commit = finished_before_commit.is_some();
+            let read_result = match finished_before_commit {
+                Some(outcome) => outcome,
+                None => tokio::time::timeout(Duration::from_secs(5), read)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            };
+            let observed = read_result.unwrap();
+            assert!(
+                observed == prior || next.as_ref().is_some_and(|next| &observed == next),
+                "Replay view mixed summary/roster/auxiliary/results across the first connection release"
+            );
+            if completed_before_commit {
+                // A fixed read can finish before the concurrent commit; the
+                // barrier then witnesses release, not forced interleaving.
+                assert_eq!(observed, prior);
+            }
+            eprintln!(
+                "snapshot observation: completed_before_commit={completed_before_commit}, observed={}",
+                if observed == prior { "prior" } else { "next" }
+            );
+            reader.close().await;
+            storage.close().await;
+            let _ = fs::remove_dir_all(root);
         }
-        eprintln!(
-            "snapshot observation: completed_before_commit={completed_before_commit}, observed={}",
-            if observed == prior { "prior" } else { "next" }
-        );
-        reader.close().await;
-        storage.close().await;
-        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
@@ -3202,154 +3215,6 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].match_id, match_id);
         assert_eq!(listed[0].availability, "unavailable");
-        storage.close().await;
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn authoritative_read_keeps_metadata_and_rows_in_one_snapshot() {
-        let root = test_root("authoritative-read-snapshot");
-        let storage = Storage::connect(&root).await.unwrap();
-        let match_id = "authoritative-read-snapshot";
-        let mode = GameMode::FourPlayerRedEast;
-        let (events, record, result, roster) = final_draw_capture(mode);
-        let mut writer = ReplayWriter::new(storage.replay_root(), match_id, mode).unwrap();
-        for event in &events {
-            writer.append(event.clone()).unwrap();
-        }
-        let artifact = writer.finalize().unwrap();
-        storage
-            .open_ranked_match(match_id, mode, 1, &artifact.relative_path_string(), &roster)
-            .await
-            .unwrap();
-        storage
-            .complete_ranked_match(
-                match_id,
-                &artifact,
-                &result,
-                2,
-                std::slice::from_ref(&record),
-            )
-            .await
-            .unwrap();
-        let prior = storage.load_replay(match_id).await.unwrap();
-        assert_eq!(prior.result, Some(result.clone()));
-        assert_eq!(
-            prior.frames[record.end_event_index].settlement,
-            Some(record.settlement.clone())
-        );
-
-        let released = Arc::new(tokio::sync::Notify::new());
-        let resume = Arc::new(tokio::sync::Notify::new());
-        let first = Arc::new(AtomicBool::new(true));
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .after_release({
-                let released = released.clone();
-                let resume = resume.clone();
-                move |_, _| {
-                    let released = released.clone();
-                    let resume = resume.clone();
-                    let first = first.clone();
-                    Box::pin(async move {
-                        if first.swap(false, Ordering::SeqCst) {
-                            released.notify_one();
-                            resume.notified().await;
-                        }
-                        Ok(true)
-                    })
-                }
-            })
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(storage.database_path())
-                    .journal_mode(SqliteJournalMode::Wal),
-            )
-            .await
-            .unwrap();
-        let reader = Arc::new(Storage {
-            pool,
-            data_root: storage.data_root.clone(),
-            replay_root: storage.replay_root.clone(),
-            replay_degraded: AtomicBool::new(false),
-            max_connections: 1,
-        });
-        // This private entry point's first pool query selects version and final
-        // JSON. Without a transaction, the first release precedes row stats.
-        let mut read = tokio::spawn({
-            let reader = reader.clone();
-            let players = prior.players;
-            let mut frames = storage
-                .reconstruct_replay(
-                    mode.as_str(),
-                    &artifact.relative_path_string(),
-                    i64::try_from(artifact.file_size).unwrap(),
-                    &[],
-                )
-                .await
-                .unwrap();
-            assert!(frames[record.end_event_index].settlement.is_none());
-            async move {
-                let outcome = async {
-                    let mut transaction = reader.pool.begin().await.map_err(StorageError::Sqlx)?;
-                    reader
-                        .load_authoritative_result(
-                            match_id,
-                            mode.as_str(),
-                            &players,
-                            &mut frames,
-                            &mut transaction,
-                        )
-                        .await
-                }
-                .await;
-                (outcome, frames)
-            }
-        });
-        // A transaction may hold its connection until the read is complete.
-        // In that case the old snapshot finishes before deletion; otherwise
-        // the hook holds the first release while the delete commits.
-        let finished_before_delete = tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::select! {
-                _ = released.notified() => None,
-                outcome = &mut read => Some(outcome.unwrap()),
-            }
-        })
-        .await
-        .unwrap();
-        sqlx::query("DELETE FROM matches WHERE match_id = ?")
-            .bind(match_id)
-            .execute(storage.pool())
-            .await
-            .unwrap();
-        let remaining: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM match_kyoku_results WHERE match_id = ?")
-                .bind(match_id)
-                .fetch_one(storage.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            remaining, 0,
-            "completed-row deletion cascades result records"
-        );
-        resume.notify_one();
-        let (outcome, frames) = match finished_before_delete {
-            Some(value) => value,
-            None => tokio::time::timeout(Duration::from_secs(5), read)
-                .await
-                .unwrap()
-                .unwrap(),
-        };
-        assert_eq!(outcome.unwrap(), Some(result));
-        assert_eq!(
-            frames[record.end_event_index].settlement,
-            Some(record.settlement)
-        );
-        assert!(matches!(
-            storage.load_replay(match_id).await,
-            Err(StorageError::ReplayNotFound)
-        ));
-        reader.close().await;
         storage.close().await;
         let _ = fs::remove_dir_all(root);
     }
@@ -3638,7 +3503,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authoritative_replay_rejects_invalid_restored_tiles_as_corruption() {
+    async fn authoritative_replay_rejects_foreign_identity_and_short_settlement() {
         let root = test_root("restored-tile-domain");
         let storage = Storage::connect(&root).await.unwrap();
         let cases: serde_json::Value = serde_json::from_str(include_str!(
@@ -3696,57 +3561,42 @@ mod tests {
                 storage.load_replay(&match_id).await.unwrap().result,
                 Some(result)
             );
-            for id in [255, 4] {
-                if id == 4 && !record.mode.is_three_player() {
-                    continue;
+            for corruption in 0..5 {
+                let mut corrupt = record.clone();
+                match corruption {
+                    0 => {
+                        let winner = &mut corrupt.wins[0];
+                        winner.winner = "foreign-identity".into();
+                        corrupt.settlement.changes[usize::from(winner.seat.index())]
+                            .participant_id = winner.winner.clone();
+                    }
+                    1 => {
+                        corrupt.settlement.changes.pop();
+                    }
+                    2 => corrupt.settlement.changes.swap(0, 1),
+                    3 => {
+                        let double_riichi_core::WinEvaluation::Ordinary { limit, .. } =
+                            &mut corrupt.wins[1].evaluation
+                        else {
+                            panic!("ordinary fixture");
+                        };
+                        *limit = Some(double_riichi_core::ScoreLimit::CountedYakuman);
+                    }
+                    _ => corrupt.wins[0].winning_tile = serde_json::from_value(json!(255)).unwrap(),
                 }
-                let mut payload = case["record"].clone();
-                payload["wins"][0]["winning_tile"] = json!(id);
-                payload["wins"][0]["concealed"][record.wins[0].winning_tile_index] = json!(id);
+                let payload = serde_json::to_string(&corrupt).unwrap();
                 sqlx::query("UPDATE match_kyoku_results SET payload_json = ? WHERE match_id = ? AND kyoku_sequence = 1")
-                    .bind(payload.to_string()).bind(&match_id).execute(storage.pool()).await.unwrap();
-                let outcome = storage.load_replay(&match_id).await;
+                    .bind(&payload).bind(&match_id).execute(storage.pool()).await.unwrap();
                 assert!(
-                    matches!(outcome, Err(StorageError::ReplayCorrupt)),
-                    "modern tile {id} must be corrupt, not legacy/saved: {outcome:?}"
+                    matches!(
+                        storage.load_replay(&match_id).await,
+                        Err(StorageError::ReplayCorrupt)
+                    ),
+                    "identity/count/seat/limit/tile corruption {corruption}"
                 );
-                let version: Option<i64> = sqlx::query_scalar(
-                    "SELECT authoritative_results_version FROM matches WHERE match_id = ?",
-                )
-                .bind(&match_id)
-                .fetch_one(storage.pool())
-                .await
-                .unwrap();
-                assert_eq!(version, Some(1));
-            }
-            // An extra meld corrupts this complete hand even with an in-range/absent source.
-            let mut payload = case["record"].clone();
-            payload["wins"][0]["melds"] = json!([{
-                "kind": "Pon", "tiles": [0, 1, 2], "opened": true,
-                "from_who": 0, "called_tile": 0
-            }]);
-            for seat in [
-                json!(0),
-                serde_json::Value::Null,
-                json!(255),
-                json!(record.mode.seat_count()),
-            ] {
-                payload["wins"][0]["melds"][0]["from_who"] = seat;
-                sqlx::query("UPDATE match_kyoku_results SET payload_json = ? WHERE match_id = ? AND kyoku_sequence = 1")
-                    .bind(payload.to_string()).bind(&match_id).execute(storage.pool()).await.unwrap();
-                let outcome = storage.load_replay(&match_id).await;
-                assert!(
-                    matches!(outcome, Err(StorageError::ReplayCorrupt)),
-                    "extra meld must reject with any source, not legacy/saved: {outcome:?}"
-                );
-                let version: Option<i64> = sqlx::query_scalar(
-                    "SELECT authoritative_results_version FROM matches WHERE match_id = ?",
-                )
-                .bind(&match_id)
-                .fetch_one(storage.pool())
-                .await
-                .unwrap();
-                assert_eq!(version, Some(1));
+                let stored: String = sqlx::query_scalar("SELECT payload_json FROM match_kyoku_results WHERE match_id = ? AND kyoku_sequence = 1")
+                    .bind(&match_id).fetch_one(storage.pool()).await.unwrap();
+                assert_eq!(stored, payload, "read must not repair a corrupt record");
             }
         }
         storage.close().await;

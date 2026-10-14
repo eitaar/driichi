@@ -9,6 +9,7 @@ import { performance, monitorEventLoopDelay, type ELDHistogram, type EventLoopUt
 import { setTimeout as wait } from "node:timers/promises";
 import { prepareTask8Server, startRealServer, type RealServerHarness } from "./support/real-server";
 import { waitForGameplayReady } from "./support/gameplay-ready";
+import { captureRenderer, prepareRendererStall, armRendererStall, reconnectDuringRendererStall, type RendererStallEvent } from "./support/renderer-stall";
 
 const evidenceRoot = resolve(process.cwd(), "../.superpowers/sdd/2026-10-02-authoritative-kyoku-results/task-8-native1/completion-native1/browser");
 base.describe.configure({ mode: "serial", timeout: 240_000 });
@@ -16,8 +17,8 @@ base.describe.configure({ mode: "serial", timeout: 240_000 });
 base.use({ launchOptions: { args: [] } });
 
 type Snapshot = { type: string; room: { phase: string; roster: Array<{ participant_id: string; seat: number }>; kyoku_end: null | { id: { match_id: string; kyoku_sequence: number; step_index: number }; content: Record<string, unknown>; required: string[]; confirmed: string[]; published_at_ms: number; deadline_at_ms: number; remaining_ms: number }; result: unknown }; state: null | { viewer_seat: number; players: Array<{ seat: number; hand?: number[]; score: number }>; decision: null | { decision_id: string; actions: Array<{ action_id: string; action: unknown }> }; kyoku_results?: { wins: Array<{ event_index: number; seat: number; concealed: number[]; winning_tile: number; winning_tile_index: number; win_points: number; evaluation: unknown }>; settlement: unknown } } };
-type ObservedSnapshot = Snapshot & { socket_generation: number; socket_created_host_at_ms: number; received_at_ms: number; message_index: number; socket_snapshot_ordinal: number };
-type NativeMessageObservation = { document_token: string; socket_ordinal: number; snapshot_ordinal: number; time_origin_ms: number; entry_epoch_ms: number; entry_monotonic_ms: number; emitted_epoch_ms: number };
+type ObservedSnapshot = Snapshot & { socket_token: string | null; socket_generation: number; socket_created_host_at_ms: number; received_at_ms: number; message_index: number; socket_snapshot_ordinal: number };
+type NativeMessageObservation = { socket_token: string; document_token: string; socket_ordinal: number; snapshot_ordinal: number; time_origin_ms: number; entry_epoch_ms: number; entry_monotonic_ms: number; emitted_epoch_ms: number };
 type NativeConsoleObservation = NativeMessageObservation & { console_received_host_at_ms: number };
 type NativeObserver = { samples: NativeConsoleObservation[]; errors: number; overflow: number };
 type Human = { context: BrowserContext; page: Page; id: string; name: string; socketKey: string; messages: string[]; sent: string[]; sentAt: number[]; snapshots: ObservedSnapshot[]; nativeObserver?: NativeObserver };
@@ -70,15 +71,11 @@ function checkReconnectUiMatchesCurrentPublication() {
     { ...step0, step: { ...first, published_at_ms: 1001, deadline_at_ms: 6001 } },
     { ...step0, step: { ...first, required: ["own"] } },
     { ...step1, step: { ...step1.step!, required: ["other"] } },
-  ]) expect([bad, step1].every(valid), "later readiness cannot erase earlier invalid publication").toBe(false);
+  ]) {
+    expect([bad, step1].every(valid), "later readiness cannot erase earlier invalid publication").toBe(false);
+    expect(matches(bad)).toBe(false);
+  }
   for (const bad of [
-    { ...step0, step: { ...first, id: { ...first.id, match_id: "foreign" } } },
-    { ...step0, step: { ...first, id: { ...first.id, kyoku_sequence: 8 } } },
-    { ...step0, step: { ...first, id: { ...first.id, step_index: 2 } } },
-    { ...step1, step: { ...step1.step!, published_at_ms: 5999, deadline_at_ms: 10999 } },
-    { ...step0, step: { ...first, published_at_ms: 1001, deadline_at_ms: 6001 } },
-    { ...step0, step: { ...first, required: ["own"] } },
-    { ...step1, step: { ...step1.step!, required: ["other"] } },
     { ...step0, labels: ["Continue"] }, { ...step1, labels: ["Dismiss"] },
     { ...step0, epoch_ms: 6000 }, { ...step1, status: "disconnected" },
     { ...step2, labels: ["Continue"] }, { ...step2, epoch_ms: 16001 },
@@ -98,6 +95,14 @@ base("reconnect UI oracle permits an authoritative settlement after slow renderi
   checkReconnectUiMatchesCurrentPublication();
 });
 
+base("result helper self-checks", async () => {
+  checkFindFreshMatchStarted();
+  await checkObserveReconnectEvaluation();
+  checkReconnectSchedulingProjection();
+  checkBrowserTaskSample();
+  checkRetainResultGeometryBounds();
+});
+
 base("expired result confirmation needs no UI readiness", async ({ page, context }) => {
   const human: Human = { context, page, id: "own", name: "Own", socketKey: "", messages: [], sent: [], sentAt: [], snapshots: [] };
   const expired: ResultStep = { id: { match_id: "oracle-match", kyoku_sequence: 7, step_index: 0 }, content: {}, required: ["own"], confirmed: [], published_at_ms: 0, deadline_at_ms: 0, remaining_ms: 0 };
@@ -107,8 +112,9 @@ base("expired result confirmation needs no UI readiness", async ({ page, context
 base("native message diagnostic keeps duplicate sockets ambiguous and raw frames private", async ({ page }) => {
   // Synthetic public WebSocket boundary; this verifies the recorder, not native delivery timing.
   const raw = JSON.stringify({ type: "snapshot", room: {}, state: null, private_fixture: "not-for-stdout" });
-  await page.routeWebSocket("**/diagnostic", route => route.onMessage(() => route.send(raw)));
-  await page.goto("/");
+  await page.routeWebSocket("**/diagnostic*", route => route.onMessage(() => route.send(raw)));
+  await page.route("http://127.0.0.1/", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Socket diagnostic</title>" }));
+  await page.goto("http://127.0.0.1/");
   const key = "task8-diagnostic-control";
   const delivered: NativeConsoleObservation[] = [];
   page.on("console", message => {
@@ -128,6 +134,15 @@ base("native message diagnostic keeps duplicate sockets ambiguous and raw frames
   expect(sample).toMatchObject({ exact_frame_verdict: "UNSUPPORTED", correlation: "ambiguous", match_count: 2, overflow_count: 0, pending_count: 0 });
   expect(sample.matches.map(match => match.socket_ordinal)).toEqual([1, 2]);
   expect(sample.matches.every(match => match.snapshot_ordinal === 1 && match.console_received_host_at_ms !== null)).toBe(true);
+  const selected = delivered[0] as NativeConsoleObservation & { socket_token: string };
+  expect(selected.socket_token).toEqual(expect.any(String));
+  const bound = { socket_token: selected.socket_token, snapshot_ordinal: 1 };
+  const hostTarget = { ...bound, context: page.context(), self: null as unknown };
+  hostTarget.self = hostTarget;
+  expect(await nativePayloadCorrelation(page, key, raw, delivered, hostTarget)).toMatchObject({ exact_frame_verdict: "MATCH", match_count: 1 });
+  expect(await nativePayloadCorrelation(page, key, raw, delivered, { ...bound, snapshot_ordinal: 2 })).toMatchObject({ exact_frame_verdict: "MISMATCH", match_count: 0 });
+  expect(await nativePayloadCorrelation(page, key, "different-frame", delivered, bound)).toMatchObject({ exact_frame_verdict: "MISMATCH" });
+  expect(await nativePayloadCorrelation(page, key, raw, delivered, { ...bound, socket_token: "foreign-socket" })).toMatchObject({ exact_frame_verdict: "MISMATCH", match_count: 0 });
   expect(JSON.stringify(sample)).not.toContain("not-for-stdout");
   expect(await nativePayloadCorrelation(page, key, "absent", delivered)).toMatchObject({ correlation: "absent", match_count: 0 });
   await page.evaluate(() => {
@@ -281,6 +296,13 @@ function installHumanSocketObserver(key: string) {
   let socketOrdinal = 0;
   window.WebSocket = class extends NativeWebSocket {
     constructor(...args: ConstructorParameters<typeof WebSocket>) {
+      const socketToken = crypto.randomUUID();
+      const url = new URL(String(args[0]), location.href);
+      if (url.pathname.startsWith("/ws/v1/rooms/") && url.pathname.endsWith("/human") || url.pathname === "/diagnostic") {
+        // Test-only handshake identity binds native and host observations without changing frames.
+        url.searchParams.set("task8_socket", socketToken);
+        args[0] = url.href;
+      }
       super(...args);
       const ordinal = ++socketOrdinal;
       let snapshotOrdinal = 0;
@@ -294,7 +316,7 @@ function installHumanSocketObserver(key: string) {
             (window as unknown as Record<string, WebSocket>)[key] = this;
             ++snapshotOrdinal;
             if (observation.records.length >= 64) { ++observation.overflow; return; }
-            const sample: NativeMessageObservation = { document_token: documentToken, socket_ordinal: ordinal, snapshot_ordinal: snapshotOrdinal,
+            const sample: NativeMessageObservation = { socket_token: socketToken, document_token: documentToken, socket_ordinal: ordinal, snapshot_ordinal: snapshotOrdinal,
               time_origin_ms: performance.timeOrigin, entry_epoch_ms: entryEpoch, entry_monotonic_ms: entryMonotonic, emitted_epoch_ms: Date.now() };
             // Raw strings stay in bounded page memory; only scalar metadata crosses the console.
             observation.records.push({ ...sample, payload: event.data });
@@ -306,14 +328,18 @@ function installHumanSocketObserver(key: string) {
   };
 }
 
-async function nativePayloadCorrelation(page: Page, key: string, payload: string, delivered: NativeConsoleObservation[]) {
-  const captured = await page.evaluate(({ key, payload }) => {
+async function nativePayloadCorrelation(page: Page, key: string, payload: string, delivered: NativeConsoleObservation[], target?: { socket_token: string; snapshot_ordinal: number }) {
+  const captured = await page.evaluate(({ key, payload, target }) => {
     const observation = (window as unknown as Record<string, { records: Array<NativeMessageObservation & { payload: string }>; overflow: number }>)[`${key}:observations`];
     if (!observation) return null;
-    return { overflow: observation.overflow, matches: observation.records.filter(record => record.payload === payload).map(({ payload: _payload, ...sample }) => sample) };
-  }, { key, payload });
+    return { overflow: observation.overflow, matches: observation.records.filter(record => record.payload === payload
+      && (!target || record.socket_token === target.socket_token && record.snapshot_ordinal === target.snapshot_ordinal))
+      .map(({ payload: _payload, ...sample }) => sample) };
+  }, { key, payload, target: target && { socket_token: target.socket_token, snapshot_ordinal: target.snapshot_ordinal } });
   return {
-    exact_frame_verdict: "UNSUPPORTED", // Channel-local ordinals do not bind native sockets to Playwright sockets.
+    exact_frame_verdict: !target ? "UNSUPPORTED" : captured && !captured.overflow && captured.matches.length === 1
+      && delivered.some(value => value.document_token === captured.matches[0].document_token && value.socket_token === target.socket_token
+        && value.snapshot_ordinal === target.snapshot_ordinal) ? "MATCH" : "MISMATCH",
     correlation: !captured ? "unavailable" : captured.overflow ? "incomplete" : captured.matches.length === 1 ? "unique-document-payload" : captured.matches.length ? "ambiguous" : "absent",
     match_count: captured?.matches.length ?? 0, overflow_count: captured?.overflow ?? null, pending_count: 0, // Synchronous capture; no pending hashes.
     matches: (captured?.matches ?? []).map(sample => ({ socket_ordinal: sample.socket_ordinal, snapshot_ordinal: sample.snapshot_ordinal,
@@ -334,8 +360,9 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
     if (!message.text().startsWith(prefix)) return;
     try {
       const sample = JSON.parse(message.text().slice(prefix.length)) as NativeMessageObservation;
-      if (Object.keys(sample).sort().join() !== "document_token,emitted_epoch_ms,entry_epoch_ms,entry_monotonic_ms,snapshot_ordinal,socket_ordinal,time_origin_ms"
+      if (Object.keys(sample).sort().join() !== "document_token,emitted_epoch_ms,entry_epoch_ms,entry_monotonic_ms,snapshot_ordinal,socket_ordinal,socket_token,time_origin_ms"
         || typeof sample.document_token !== "string" || sample.document_token.length > 100
+        || typeof sample.socket_token !== "string" || !/^[a-f0-9-]{36}$/.test(sample.socket_token)
         || ![sample.emitted_epoch_ms, sample.entry_epoch_ms, sample.entry_monotonic_ms, sample.time_origin_ms].every(n => typeof n === "number" && Number.isFinite(n) && n >= 0)
         || ![sample.socket_ordinal, sample.snapshot_ordinal].every(n => Number.isInteger(n) && n > 0)) throw new Error("invalid native message metadata");
       if (nativeObserver.samples.length >= 256) { ++nativeObserver.overflow; return; }
@@ -349,6 +376,7 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   let socketGeneration = 0;
   page.on("websocket", socket => {
     const generation = ++socketGeneration;
+    const socketToken = new URL(socket.url()).searchParams.get("task8_socket");
     const socketCreatedHostAt = Date.now();
     let snapshotOrdinal = 0;
     socket.on("framesent", ({ payload }) => { sent.push(payload.toString()); sentAt.push(Date.now()); });
@@ -361,7 +389,7 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
     // HumanSocket client consumes room_update/game_update as well as snapshot.
     // Keep the raw bytes and join only fields actually supplied by the server.
     const room = value.room ?? snapshots.at(-1)?.room;
-    if (room && value.state !== undefined) snapshots.push({ type: value.type ?? "", room, state: value.state, socket_generation: generation, socket_created_host_at_ms: socketCreatedHostAt, received_at_ms: receivedAt, message_index: messages.length - 1, socket_snapshot_ordinal: snapshotOrdinal });
+    if (room && value.state !== undefined) snapshots.push({ type: value.type ?? "", room, state: value.state, socket_token: socketToken, socket_generation: generation, socket_created_host_at_ms: socketCreatedHostAt, received_at_ms: receivedAt, message_index: messages.length - 1, socket_snapshot_ordinal: snapshotOrdinal });
     });
   });
   await page.goto(`${harness.frontendOrigin}/room/${code}`);
@@ -394,6 +422,13 @@ async function choose(human: Human, predicate: (action: unknown) => boolean) {
   })).toBe(true);
 }
 
+function gameStoreModulePath(): string {
+  const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "dist/.vite/manifest.json"), "utf8"));
+  const entry = manifest["src/game/store.ts"];
+  if (!entry?.isEntry || typeof entry.file !== "string" || !/^assets\/[^/]+\.js$/.test(entry.file)) throw new Error("missing production game store entry");
+  return `/${entry.file}`;
+}
+
 async function confirmStep(humans: Human[], step: ResultStep): Promise<string[]> {
   const required = humans.filter(h => step.required.includes(h.id));
   // A server-expired publication cannot be confirmed, regardless of UI readiness.
@@ -411,7 +446,7 @@ async function confirmStep(humans: Human[], step: ResultStep): Promise<string[]>
     const sentBefore = baselines.get(human.id)!.sent;
     const snapshotsBefore = baselines.get(human.id)!.snapshots;
     const observe = `(async () => {
-      const { useGameStore } = await import('/src/game/store.ts');
+      const { useGameStore } = await import(${JSON.stringify(gameStoreModulePath())});
       const state = useGameStore.getState();
       const expected = ${JSON.stringify(step.id)};
       const current = state.room?.kyoku_end;
@@ -467,20 +502,17 @@ function retainResultGeometryBounds<T extends { width: number; height: number; d
 }
 
 function checkRetainResultGeometryBounds() {
-  for (const control of [{ elementMissing: false, elementConnectedAfterImport: true }, { elementMissing: true, elementConnectedAfterImport: false }, { elementMissing: false, elementConnectedAfterImport: false }]) {
-    const observations: unknown[] = [];
-    const bad = { ...control, width: 1920, height: 1080, dpr: 1, rect: { width: 0, height: 0 } };
-    expect(() => retainResultGeometryBounds(bad, observations, { width: 1920, height: 1080 }, 1)).toThrow();
-    expect(observations).toEqual([bad]);
-  }
+  const observations: unknown[] = [];
+  const bad = { width: 1920, height: 1080, dpr: 1, rect: { width: 0, height: 0 } };
+  expect(() => retainResultGeometryBounds(bad, observations, { width: 1920, height: 1080 }, 1)).toThrow();
+  expect(observations).toEqual([bad]);
 }
 
 async function resultGeometry(page: Page, surface: "win" | "standings", viewport: { width: number; height: number }, dpr: number, liveStep?: ResultStep, observations: unknown[] = [], liveHuman?: Human, humans: Human[] = []) {
   const selector = surface === "win" ? ".round-win-surface" : ".results-panel";
   await expect(page.locator(selector)).toBeVisible();
-  const measured = await page.evaluate(async ({ selector, liveStep }) => {
+  const measured = await page.evaluate(async ({ selector, liveStep, storePath }) => {
     const importStartedAtMs = Date.now();
-    const storePath = "/src/game/store.ts";
     const store = liveStep ? await import(storePath) : null;
     const importEndedAtMs = Date.now();
     const clock = store?.useGameStore.getState().room?.kyoku_end ?? null;
@@ -493,7 +525,7 @@ async function resultGeometry(page: Page, surface: "win" | "standings", viewport
       return { label: button.textContent, disabled: button.disabled, rect: rect(button), uncovered: hit === button || Boolean(hit && button.contains(hit)) };
     });
     return { selectedAtMs, selectedIdentity, elementMissing: false, elementConnectedBeforeImport: null, elementConnectedAfterImport: element.isConnected, importStartedAtMs, importEndedAtMs, initialStep: liveStep ?? null, pageUrl: location.href, selector, samplingPhases: ["store-import", "synchronous-store-element-buttons-and-rect"], epochMs: Date.now(), width: innerWidth, height: innerHeight, dpr: devicePixelRatio, rect: rect(element), text: element.textContent, winnerName: element.querySelector("#round-win-heading")?.textContent ?? null, label: element.getAttribute("aria-labelledby"), tiles: element.querySelectorAll(".round-win-tile-row img").length, standings: element.querySelectorAll(".results-list li").length, buttons, clock: clock ?? null, conflictingSurfaceCount: document.querySelectorAll(selector === ".round-win-surface" ? ".results-panel" : ".round-win-surface").length, fallbackLabels: [...element.querySelectorAll(".asset-fallback")].map(e => e.getAttribute("aria-label")) };
-  }, { selector, liveStep });
+  }, { selector, liveStep, storePath: gameStoreModulePath() });
   retainResultGeometryBounds(measured, observations, viewport, dpr);
   expect(measured.rect.left).toBeGreaterThanOrEqual(0); expect(measured.rect.top).toBeGreaterThanOrEqual(0);
   expect(measured.rect.right).toBeLessThanOrEqual(viewport.width); expect(measured.rect.bottom).toBeLessThanOrEqual(viewport.height);
@@ -534,6 +566,10 @@ for (const fixture of ["double-ron", "double-ron-final"] as const) {
       test.setTimeout(30_000);
       let harness = await createHarness();
       try {
+        expect(harness.frontendOrigin, "Task8 must exercise the embedded production frontend").toBe(harness.rustOrigin);
+        const entry = await request.get(harness.frontendOrigin);
+        expect(entry.status()).toBe(200);
+        expect(await entry.text()).toBe(readFileSync(resolve(process.cwd(), "dist/index.html"), "utf8"));
         const headers = { Origin: harness.frontendOrigin };
         const login = await request.post(`${harness.frontendOrigin}/api/v1/admin/login`, { headers, data: { username: harness.adminUsername, password: harness.adminPassword } });
         expect(login.status()).toBe(200);
@@ -555,13 +591,12 @@ for (const [mode, count, ordinaryAfter] of [
   ["3p-red-east", 3, [94400, 105000, 102600]],
   ["4p-red-east", 4, [94200, 105200, 102600, 100000]],
 ] as const) {
-  const cases = fixture === "double-ron-final" ? [
-    { width: 1024, height: 600, dpr: 1 }, { width: 1280, height: 720, dpr: 1 },
-    { width: 1600, height: 900, dpr: 1 }, { width: 1920, height: 1080, dpr: 1 },
-    { width: 1024, height: 600, dpr: 2 },
-  ] : [{ width: 1280, height: 720, dpr: 1 }];
+  const cases: Array<{ width: number; height: number; dpr: number; rendererStall?: true }> = [
+    { width: 1280, height: 720, dpr: 1 },
+    ...(fixture === "double-ron" && count === 4 ? [{ width: 1280, height: 720, dpr: 1, rendererStall: true as const }] : []),
+  ];
   for (const viewport of cases) {
-  test(`real_match_result_capture_publication_save_and_reconnect ${mode} double Ron ${viewport.width}x${viewport.height} DPR${viewport.dpr}`, async ({ browser, harness }, testInfo) => {
+  test(`real_match_result_capture_publication_save_and_reconnect ${mode} double Ron ${viewport.width}x${viewport.height} DPR${viewport.dpr}${viewport.rendererStall ? " renderer_stall" : ""}`,  async ({ browser, harness }, testInfo) => {
     const finalFixture = fixture === "double-ron-final";
     const beforeScores = Array<number>(count).fill(100000);
     if (finalFixture) beforeScores[0] = 1000;
@@ -569,11 +604,13 @@ for (const [mode, count, ordinaryAfter] of [
     if (finalFixture) after[0] = count === 3 ? -4600 : -4800;
     const admin = await browser.newContext({ viewport, deviceScaleFactor: viewport.dpr, extraHTTPHeaders: { Origin: harness.frontendOrigin } });
     const humans: Human[] = [];
-    let nativeTarget: { human: Human; payload: string; generation: number; snapshot_ordinal: number; message_index: number; host_observed_at_ms: number } | null = null;
+    let nativeTarget: { human: Human; payload: string; socket_token: string; deadline_at_ms: number; generation: number; snapshot_ordinal: number; message_index: number; host_observed_at_ms: number } | null = null;
     let nativeDiagnostic: unknown = { status: "not-selected", exact_frame_verdict: "UNSUPPORTED" };
     const geometry: unknown[] = [];
     const geometryObservations: unknown[] = [];
-    checkRetainResultGeometryBounds();
+    let rendererStall: RendererStallEvent[] | null = null;
+    let rendererViewportChange: Promise<void> | null = null;
+    const rendererStallKey = `task8-renderer-stall:${randomUUID()}:`;
     const reconnectUiSamples: ReconnectUiSample[] = [];
     const reconnectPhases: ReconnectPhase[] = [];
     const reconnectInFlight = new Set<number>();
@@ -602,16 +639,11 @@ for (const [mode, count, ordinaryAfter] of [
     };
     const reconnectPoll: { start_epoch_ms?: number; start_monotonic_ms?: number; end_epoch_ms?: number; end_monotonic_ms?: number; error?: unknown; in_flight_at_end?: number[] } = {};
     let faultCutoff: { epoch_ms: number; phases_count: number; samples_count: number; in_flight: number[] } | null = null;
-    checkReconnectUiMatchesCurrentPublication();
-    checkFindFreshMatchStarted();
     const rematchObservation: { requested_at_ms?: number; before_message_index?: number; response_at_ms?: number; response_status?: number; response_body?: string; authoritative_frame?: { message_index: number; match_id: string; received_at_ms: number; socket_generation: number; raw: string } } = {};
     const progress: Array<{ step: string; epoch_ms: number }> = [];
     const mark = (step: string) => { progress.push({ step, epoch_ms: Date.now() }); console.log(`Task8 ${mode}: ${step}`); };
     let failed = false;
     try {
-      checkReconnectSchedulingProjection();
-      await checkObserveReconnectEvaluation();
-      mark("recorder-path selfcheck PASS issue/start/completion/error/mismatch retained; synthetic recorder only");
       mark("admin login");
       const login = await admin.request.post(`${harness.frontendOrigin}/api/v1/admin/login`, { data: { username: harness.adminUsername, password: harness.adminPassword } });
       expect(login.status()).toBe(200);
@@ -630,6 +662,7 @@ for (const [mode, count, ordinaryAfter] of [
           },
         } }), harness, code, `Task8 ${seat}`);
         humans.push(human);
+        if (viewport.rendererStall) await captureRenderer(human.page, rendererStallKey);
         mark(`select Human ${seat}`);
         const selected = await admin.request.post(`${harness.frontendOrigin}/api/v1/admin/rooms/${code}/participants/${human.id}/select`);
         expect(selected.status()).toBe(200);
@@ -641,7 +674,6 @@ for (const [mode, count, ordinaryAfter] of [
         await human.page.getByRole("button", { name: /set ready/i }).click();
         await expect(human.page.getByText("Ready for the next Match", { exact: true })).toBeVisible();
       }
-      checkBrowserTaskSample();
       mark("start Match");
       const started = await admin.request.post(`${harness.frontendOrigin}/api/v1/admin/rooms/${code}/start`);
       expect(started.status()).toBe(200);
@@ -674,13 +706,23 @@ for (const [mode, count, ordinaryAfter] of [
       }, browserTaskPrefix);
       reconnectScheduling.browser_tasks.installed_before_result_at_ms = Date.now();
       // Gameplay readiness was checked before its shell; preload the store before finite clocks.
-      await Promise.all(bySeat.map(human => human.page.evaluate(`(async () => { await import('/src/game/store.ts'); })()`)));
+      await Promise.all(bySeat.map(human => human.page.evaluate(`(async () => { await import(${JSON.stringify(gameStoreModulePath())}); })()`)));
+      if (viewport.rendererStall) rendererStall = await prepareRendererStall(dealerPage, rendererStallKey);
       mark("offered dealer discard77");
       await choose(bySeat[0], action => typeof action === "object" && action != null && "discard" in action && (action as { discard: { tile: number } }).discard.tile === 77);
       await expect.poll(() => latest(bySeat[1]).state?.decision?.actions.some(a => typeof a.action === "object" && a.action != null && "Ron" in a.action)).toBe(true);
       mark("offered Ron seat1");
       await choose(bySeat[1], action => typeof action === "object" && action != null && "Ron" in action);
       mark("offered Ron seat2");
+      if (rendererStall) {
+        await armRendererStall(dealerPage, rendererStallKey);
+        // Do not await Window work before publication: that would drain the Window-stall control.
+        rendererViewportChange = dealerPage.setViewportSize({ width: viewport.width, height: viewport.height + 1 })
+          .then(() => dealerPage.setViewportSize(viewport));
+        void rendererViewportChange.catch(() => undefined);
+        await expect.poll(() => rendererStall!.some(event => event.phase === "start")).toBe(true);
+        expect(rendererStall.some(event => event.phase === "end")).toBe(false);
+      }
       let finalResponse = choose(bySeat[2], action => typeof action === "object" && action != null && "Ron" in action);
       if (count === 4) {
         finalResponse = finalResponse.then(() => latest(bySeat[3]).state?.decision ? choose(bySeat[3], action => action === "Pass") : undefined);
@@ -703,7 +745,10 @@ for (const [mode, count, ordinaryAfter] of [
       schedulingHistogram.enable(); schedulingHistogramEnabled = true; reconnectScheduling.enabled_at_ms = Date.now();
       schedulingSnapshot("beforeReload");
       const reconnectIssuedHostAt = Date.now();
-      if (finalFixture) {
+      if (viewport.rendererStall) {
+        await reconnectDuringRendererStall(dealerPage, bySeat[0].socketKey);
+        mark("prepared actual renderer armed; actual Human transport closed");
+      } else if (finalFixture) {
         await bySeat[0].page.evaluate(key => {
           const socket = (window as unknown as Record<string, WebSocket>)[key];
           if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("missing owned open Human socket");
@@ -718,7 +763,9 @@ for (const [mode, count, ordinaryAfter] of [
       const reconnectSnapshot = () => bySeat[0].snapshots.find(s => s.socket_generation > generation && s.type === "snapshot");
       await expect.poll(() => Boolean(reconnectSnapshot())).toBe(true);
       const reconnected = reconnectSnapshot()!;
-      nativeTarget = { human: bySeat[0], payload: bySeat[0].messages[reconnected.message_index], generation: reconnected.socket_generation,
+      expect(reconnected.socket_token, "first reconnect handshake identity").toEqual(expect.any(String));
+      nativeTarget = { human: bySeat[0], payload: bySeat[0].messages[reconnected.message_index], socket_token: reconnected.socket_token!,
+        deadline_at_ms: first.room.kyoku_end!.deadline_at_ms, generation: reconnected.socket_generation,
         snapshot_ordinal: reconnected.socket_snapshot_ordinal, message_index: reconnected.message_index, host_observed_at_ms: reconnected.received_at_ms };
       const publication = (index: number) => bySeat[0].snapshots.find(s => {
         const id = s.room.kyoku_end?.id;
@@ -727,7 +774,7 @@ for (const [mode, count, ordinaryAfter] of [
       const earliestFirst = publication(0);
       // Allowlisted scalars only; socket-created/received times are Node observations, not browser OPEN/receipt.
       mark(`reconnect clock observation ${JSON.stringify({
-        kind: finalFixture ? "transport" : "reload",
+        kind: finalFixture || viewport.rendererStall ? "transport" : "reload",
         issued_host_at_ms: reconnectIssuedHostAt, completed_host_at_ms: reconnectCompletedHostAt,
         original_win0: {
           step_index: first.room.kyoku_end!.id.step_index,
@@ -763,6 +810,17 @@ for (const [mode, count, ordinaryAfter] of [
       expect(reconnected.room.result).toBeNull();
       expect(reconnected.state!.kyoku_results!.wins).toEqual(first.state!.kyoku_results!.wins);
       expect(reconnected.state!.kyoku_results!.settlement).toBeNull();
+      if (rendererStall) {
+        await rendererViewportChange;
+        const measured = await resultGeometry(dealerPage, "win", viewport, viewport.dpr, first.room.kyoku_end!, geometryObservations, bySeat[0], humans);
+        expect(measured.clock!.id).toEqual(first.room.kyoku_end!.id);
+        expect(Date.now()).toBeLessThan(first.room.kyoku_end!.deadline_at_ms);
+        const sentBefore = bySeat[0].sent.length;
+        await expect(dealerPage.getByRole("button", { name: "Dismiss", exact: true })).toBeFocused();
+        await dealerPage.keyboard.press("Enter");
+        expect(bySeat[0].sent.slice(sentBefore).map(raw => JSON.parse(raw)).filter(message => message.type === "confirm_result")).toEqual([]);
+        expect(rendererStall!.some(event => event.phase === "end"), "Win0 UI must respond while rendering is stalled").toBe(false);
+      }
       if (finalFixture) {
         geometry.push({ surface: "Live WinOverlay", mode, viewport, measurement: await resultGeometry(bySeat[1].page, "win", viewport, viewport.dpr, first.room.kyoku_end!, geometryObservations, bySeat[1], humans) });
       }
@@ -784,8 +842,23 @@ for (const [mode, count, ordinaryAfter] of [
       expect(second.state!.decision).toBeNull();
       expect(second.room.result).toBeNull();
       expect(second.state!.kyoku_results!.wins[1]).toMatchObject({ seat: 2, winning_tile: 77, winning_tile_index: 13, win_points: 2600, evaluation: { Ordinary: { han: 2, fu: 40, limit: null } } });
+      if (rendererStall) {
+        const sentBefore = bySeat[0].sent.length;
+        await expect(dealerPage.getByRole("button", { name: "Continue", exact: true })).toBeFocused();
+        await dealerPage.keyboard.press("Enter");
+        await expect.poll(() => bySeat[0].sent.slice(sentBefore).map(raw => JSON.parse(raw)).filter(message => message.type === "confirm_result").map(message => message.step_id)).toEqual([second.room.kyoku_end!.id]);
+        await expect.poll(() => bySeat[0].snapshots.some(snapshot => {
+          const step = snapshot.room.kyoku_end;
+          return step && isDeepStrictEqual(step.id, second.room.kyoku_end!.id) && step.confirmed.includes(bySeat[0].id);
+        })).toBe(true);
+        expect(Date.now()).toBeLessThan(second.room.kyoku_end!.deadline_at_ms);
+        expect(rendererStall!.some(event => event.phase === "end"), "Win1 keyboard confirmation must not wait for rendering").toBe(false);
+        expect(rendererStall!.filter(event => event.phase === "start").map(event => event.realm)).toEqual(["worker"]);
+        mark("renderer isolation: actual Win0/new socket/current DOM and Win1 keyboard/server ack passed while Worker draw remained stalled");
+      }
       mark("confirm second winner");
-      mark(`second winner confirmations ${JSON.stringify(await confirmStep(bySeat, second.room.kyoku_end!))}`);
+      // The controlled case already proved this dealer's keyboard send and actual server ack.
+      mark(`second winner confirmations ${JSON.stringify(await confirmStep(rendererStall ? bySeat.filter(human => human !== bySeat[0]) : bySeat, second.room.kyoku_end!))}`);
       await expect.poll(() => Boolean(publication(2))).toBe(true);
       const settled = publication(2)!;
       expect(settled.room.kyoku_end!.deadline_at_ms - settled.room.kyoku_end!.published_at_ms).toBe(5000);
@@ -819,7 +892,7 @@ for (const [mode, count, ordinaryAfter] of [
             emit('browser_start');
             try {
               emit('browser_import_start');
-              const { useGameStore } = await import('/src/game/store.ts');
+              const { useGameStore } = await import(${JSON.stringify(gameStoreModulePath())});
               emit('browser_import_end');
               const state = useGameStore.getState();
               const visible = selector => { const node = document.querySelector(selector); const rect = node?.getBoundingClientRect(); return Boolean(rect?.width > 0 && rect?.height > 0 && getComputedStyle(node).visibility !== 'hidden'); };
@@ -851,6 +924,21 @@ for (const [mode, count, ordinaryAfter] of [
       const ui = reconnectUiSamples.at(-1)!;
       mark(`reconnect UI observed ${ui.phase}/${ui.step?.id.step_index ?? "no-publication"} latency${ui.epoch_ms - first.room.kyoku_end!.published_at_ms}ms`);
       await testInfo.attach("actual-human-websocket-transcript", { body: Buffer.from(JSON.stringify({ progress, reconnect_ui: ui, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, rematchObservation, humans: bySeat.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) })), contentType: "application/json" });
+      if (rendererStall) {
+        // Original finite UI/confirmation checks are over; use the existing actual-frame readiness bound.
+        const table = dealerPage.getByTestId("three-table");
+        await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+        expect(rendererStall.filter(event => event.phase === "end")).toHaveLength(1);
+        const start = rendererStall.find(event => event.phase === "start")!;
+        const end = rendererStall.find(event => event.phase === "end")!;
+        expect(end.realm).toBe("worker");
+        expect(end.timeOrigin).toBe(start.timeOrigin);
+        expect(end.now - start.now).toBeGreaterThanOrEqual(7500);
+        await expect(table).toHaveAttribute("data-webgl-fallback", "false");
+        await expect(table).toHaveAttribute("data-renderer-pixel-ratio", String(viewport.dpr));
+        expect(Number(await table.getAttribute("data-rendered-scene-primitives"))).toBeGreaterThan(0);
+        mark("renderer recovery: durable7500ms end and actual current scene ready at unchanged DPR");
+      }
       if (finalFixture) {
         const held = settled;
         const finalStep = held.room.kyoku_end!;
@@ -951,7 +1039,7 @@ for (const [mode, count, ordinaryAfter] of [
         expect(rematchObservation.authoritative_frame!.match_id).not.toBe(matchId);
         const oldMessages = bySeat[0].messages.length;
         await bySeat[0].page.evaluate(`(async () => {
-          const { useGameStore } = await import('/src/game/store.ts');
+          const { useGameStore } = await import(${JSON.stringify(gameStoreModulePath())});
           useGameStore.getState().transport(${JSON.stringify({ type: "confirm_result", step_id: finalStep.id })});
         })()`);
         await expect.poll(() => bySeat[0].messages.slice(oldMessages).some(t => JSON.parse(t).type === "snapshot")).toBe(true);
@@ -967,7 +1055,7 @@ for (const [mode, count, ordinaryAfter] of [
       const path = resolve(evidenceRoot, `failure-${mode}-${randomUUID()}.json`);
       const descriptor = openSync(path, "wx");
       try {
-        writeFileSync(descriptor, JSON.stringify({ geometry, geometryObservations, viewport, progress, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, faultCutoff, rematchObservation, primary_error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error), humans: humans.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) }), "utf8");
+        writeFileSync(descriptor, JSON.stringify({ geometry, geometryObservations, rendererStall, viewport, progress, reconnectUiSamples, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, faultCutoff, rematchObservation, primary_error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error), humans: humans.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) }), "utf8");
         fsyncSync(descriptor);
       } finally { closeSync(descriptor); }
       throw error;
@@ -978,7 +1066,7 @@ for (const [mode, count, ordinaryAfter] of [
         const target = nativeTarget;
         try {
           const correlated = await Promise.race([
-            nativePayloadCorrelation(target.human.page, target.human.socketKey, target.payload, target.human.nativeObserver?.samples ?? []),
+            nativePayloadCorrelation(target.human.page, target.human.socketKey, target.payload, target.human.nativeObserver?.samples ?? [], target),
             wait(2000).then(() => ({ correlation: "collection-timeout", exact_frame_verdict: "UNSUPPORTED" })),
           ]);
           nativeDiagnostic = { ...correlated, captured_after_timed_branch: true, collection_host_at_ms: Date.now(),
@@ -991,14 +1079,22 @@ for (const [mode, count, ordinaryAfter] of [
         try { await context.close(); }
         catch (error) { if (!failed) throw error; console.error("Task8 secondary context cleanup error", error); }
       }
+      if (rendererViewportChange) await rendererViewportChange.catch(() => undefined);
       schedulingLoggerOwned = false;
       const supplemental = openSync(resolve(evidenceRoot, `reconnect-phases-${mode}-${randomUUID()}.json`), "wx");
       try {
-        writeFileSync(supplemental, JSON.stringify({ mode, viewport, captured_at_ms: Date.now(), faultCutoff, supplemental_only_after_fault: failed, nativeDiagnostic, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, in_flight_at_capture: [...reconnectInFlight], reconnectUiSamples,
+        writeFileSync(supplemental, JSON.stringify({ mode, viewport, rendererStall, captured_at_ms: Date.now(), faultCutoff, supplemental_only_after_fault: failed, nativeDiagnostic, reconnectPhases, reconnectPoll, reconnectObserverErrors, reconnectScheduling, in_flight_at_capture: [...reconnectInFlight], reconnectUiSamples,
           raw_scope: "all handler-observed Human frames through natural context cleanup; no outbound FIFO/network-drain claim",
           humans: humans.map(h => ({ participant_id: h.id, messages: h.messages, sent: h.sent, sentAt: h.sentAt, observations: h.snapshots.map(s => ({ socket_generation: s.socket_generation, received_at_ms: s.received_at_ms, message_index: s.message_index })) })) }), "utf8");
         fsyncSync(supplemental);
       } finally { closeSync(supplemental); }
+      if (!failed && nativeTarget) {
+        expect(nativeDiagnostic, "exact first reconnect frame, not a later matching publication").toMatchObject({ exact_frame_verdict: "MATCH",
+          match_count: 1, console_errors: 0, console_overflow: 0 });
+        const sample = (nativeDiagnostic as { matches: NativeMessageObservation[] }).matches[0];
+        expect(sample.snapshot_ordinal).toBe(1);
+        expect(sample.entry_epoch_ms).toBeLessThan(nativeTarget.deadline_at_ms);
+      }
     }
   });
   }

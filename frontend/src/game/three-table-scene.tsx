@@ -17,6 +17,7 @@ import {
   PerspectiveCamera,
   Quaternion,
   Scene,
+  type Texture,
   Vector3,
 } from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
@@ -28,7 +29,6 @@ import {
 } from "./tile-atlas";
 import { isDora } from "./dora";
 import type { DoraSheenClock } from "./dora-sheen";
-import { createTableImageTexture, type LocalTableImage, type TableAppearance } from "./table-appearance";
 import { TableCenter } from "./table-center";
 import { tableSeatGeometry } from "./table-geometry";
 import { dockLocalCalls } from "./three-table-dock";
@@ -64,7 +64,9 @@ interface MatchTableSceneProps {
   projection: ProjectedState;
   atlas: TileAtlas;
   sheen: DoraSheenClock;
-  appearance?: TableAppearance;
+  centerTexture: Texture | null;
+  appearanceTextures: { surface: Texture | null; surround: Texture | null };
+  frameRevision?: number;
   motion: SceneMotion | null;
   onMotionComplete(itemId: number): void;
   onMotionFrame(now: number, pixelRatio: number): void;
@@ -472,8 +474,9 @@ function projectedTableRatios(
 
 function SceneReadiness({
   layout,
+  frameRevision,
   onRenderReady,
-}: Pick<MatchTableSceneProps, "layout" | "onRenderReady">) {
+}: Pick<MatchTableSceneProps, "layout" | "frameRevision" | "onRenderReady">) {
   const invalidate = useThree((state) => state.invalidate);
   const scene = useThree((state) => state.scene);
   const gl = useThree((state) => state.gl);
@@ -485,7 +488,7 @@ function SceneReadiness({
     scheduled.current = false;
     reported.current = false;
     invalidate();
-  }, [gl, invalidate, layout]);
+  }, [gl, invalidate, layout, frameRevision]);
 
   useFrame(() => {
     if (scheduled.current || reported.current) return;
@@ -520,7 +523,7 @@ function SceneReadiness({
   return null;
 }
 
-function DockedTiles({ layout, atlas, projection, sheen, motion, onMotionComplete, onMotionFrame }: Omit<MatchTableSceneProps, "onRenderReady">) {
+function DockedTiles({ layout, atlas, projection, sheen, motion, onMotionComplete, onMotionFrame }: Pick<MatchTableSceneProps, "layout" | "atlas" | "projection" | "sheen" | "motion" | "onMotionComplete" | "onMotionFrame">) {
   const camera = useThree((state) => state.camera) as PerspectiveCamera;
   const size = useThree((state) => state.size);
   const [docked, setDocked] = useState(layout);
@@ -551,15 +554,10 @@ export function createTableFrameGeometry(width: number, depth: number, innerWidt
   return geometry;
 }
 
-function ProceduralTable({
-  projection, wallCount, surface,
-}: {
-  projection: ProjectedState;
-  wallCount: number;
-  surface?: LocalTableImage | null;
+function ProceduralTable({ centerTexture, surfaceTexture }: {
+  centerTexture: Texture | null;
+  surfaceTexture: Texture | null;
 }) {
-  const surfaceTexture = useMemo(() => createTableImageTexture(surface, 13.2 * TABLE_WIDTH_STRETCH / 11.8), [surface]);
-  useEffect(() => () => surfaceTexture?.dispose(), [surfaceTexture]);
   const resources = useMemo(() => {
     const width = 13.2 * TABLE_WIDTH_STRETCH, depth = 11.8;
     return {
@@ -580,7 +578,7 @@ function ProceduralTable({
         <meshPhongMaterial color="#344959" specular="#7c94a4" shininess={28} />
       </mesh>
       <mesh name="table-felt" geometry={resources.felt} position={[0, 0.085, 0]} receiveShadow>
-        <meshPhongMaterial color={surfaceTexture ? "#ffffff" : "#647f96"} map={surfaceTexture} specular="#182a3b" shininess={8} />
+        <meshPhongMaterial color={surfaceTexture ? "#ffffff" : "#647f96"} map={surfaceTexture} specular="#182a3b" shininess={8} onUpdate={material => { material.needsUpdate = true; }} />
       </mesh>
       <mesh name="center-housing" geometry={resources.console} position={[0, 0.285, 0]} castShadow>
         <meshPhongMaterial color="#263947" specular="#637887" shininess={24} />
@@ -588,7 +586,7 @@ function ProceduralTable({
       <mesh name="center-bezel" geometry={resources.bezel} position={[0, 0.435, 0]}>
         <meshPhongMaterial color="#8ea7be" specular="#8ea7be" shininess={16} />
       </mesh>
-      <TableCenter projection={projection} wallCount={wallCount} />
+      <TableCenter texture={centerTexture} />
     </group>
   );
 }
@@ -597,16 +595,16 @@ export function MatchTableScene({
   projection,
   atlas,
   sheen,
-  appearance,
+  centerTexture,
+  appearanceTextures,
+  frameRevision,
   motion,
   onMotionComplete,
   onMotionFrame,
   onRenderReady,
 }: MatchTableSceneProps) {
   const gl = useThree((state) => state.gl);
-  const size = useThree((state) => state.size);
-  const surroundTexture = useMemo(() => createTableImageTexture(appearance?.surround, Math.max(1, size.width) / Math.max(1, size.height)), [appearance?.surround, size.width, size.height]);
-  useEffect(() => () => surroundTexture?.dispose(), [surroundTexture]);
+  const surroundTexture = appearanceTextures.surround;
   useLayoutEffect(() => {
     gl.shadowMap.enabled = true;
     gl.shadowMap.needsUpdate = true;
@@ -619,7 +617,7 @@ export function MatchTableScene({
       <directionalLight position={[-4, 9, 5]} color="#fafbfc" intensity={2.7} castShadow shadow-mapSize={[2048, 2048]} shadow-camera-left={-9} shadow-camera-right={9} shadow-camera-top={9} shadow-camera-bottom={-9} shadow-normalBias={0.02} />
       <FixedCamera />
       <group position={TABLE_RENDER_OFFSET}>
-        <ProceduralTable projection={projection} wallCount={layout.wallCount} surface={appearance?.surface} />
+        <ProceduralTable centerTexture={centerTexture} surfaceTexture={appearanceTextures.surface} />
         {tableSeatGeometry(projection.mode, projection.viewer_seat).filter(({ seat }) => projection.players?.some((player) => player.seat === seat && player.riichi)).map(({ seat, position }) => {
           const yaw = { bottom: 0, right: Math.PI / 2, top: Math.PI, left: -Math.PI / 2 }[position];
           const x = position === "right" ? 1.55 : position === "left" ? -1.55 : 0;
@@ -633,6 +631,7 @@ export function MatchTableScene({
       </group>
       <SceneReadiness
         layout={layout}
+        frameRevision={frameRevision}
         onRenderReady={onRenderReady}
       />
     </>

@@ -8,7 +8,7 @@ import { WarningCircle } from "@phosphor-icons/react/dist/csr/WarningCircle";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, problemFrom, type ProblemDetails, type ReplayFrame, type ReplaySummary, type ReplayView } from "./api";
 import { AudioManager } from "./game/audio";
-import { RoundWinSurface, ResultsPanel, ScoreTransfer, winEffectFromResult, preloadRosterAssets, voiceEvents } from "./game/gameplay";
+import { RoundWinSurface, ResultsPanel, ScoreTransfer, preloadRosterAssets, voiceEvents } from "./game/gameplay";
 import { decodeWinResult, decodeSettlement } from "./game/results";
 import { ThreeTable } from "./game/three-table";
 import { TableAppearanceSettings, useTableAppearance } from "./game/table-appearance";
@@ -346,8 +346,6 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
   const rounds = useMemo(() => roundDestinations(frames), [frames]);
   useReplayAudio(frame, room, position, !genericPresentation && rate <= 2);
   const win = frame ? decodeWinResult(frame.result, replay.game_mode) : null;
-  const winEffect = win && win.event_index === frame?.event_index ? winEffectFromResult(win, room) : null;
-  const portraitEffect = !genericPresentation ? winEffect : null;
   const settlement = decodeSettlement(frame?.settlement, replay.game_mode);
   const assets = Object.fromEntries(replay.players.flatMap((player) => player.character_id ? [[player.character_id, !genericPresentation]] : []));
   const finalFrame = frame && /^end_?game$/i.test(eventKind(frame.visible_event));
@@ -375,8 +373,8 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
       >
         <div className="replay-table-stage gameplay-shell">
           <div className="gameplay-controls"><details className="audio-settings"><summary>Settings</summary><div className="audio-settings-body"><TableAppearanceSettings settings={appearance} /></div></details></div>
-          <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} portraitEffect={rate > 2 ? null : portraitEffect} surface="replay" appearance={appearance.appearance} /></div>
-          {winEffect && <div className="round-win-overlay"><RoundWinSurface key={frame.event_index} effect={winEffect} assets={assets} reducedMotion={reducedMotion || rate > 2} /></div>}
+          <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} surface="replay" appearance={appearance.appearance} /></div>
+          {win && win.event_index === frame.event_index && <div className="round-win-overlay"><RoundWinSurface key={frame.event_index} result={win} room={room} assets={assets} reducedMotion={reducedMotion || rate > 2} /></div>}
           {settlement && <div className="round-win-overlay"><ScoreTransfer settlement={settlement} room={room} /></div>}
           {finalFrame && replay.result != null && <div className="results-overlay"><ResultsPanel room={{ ...room, result: replay.result }} assets={assets} /></div>}
           <div className="replay-status-toast" role="status" aria-live="polite">
@@ -408,7 +406,7 @@ function ReplayDetail({ matchId }: { matchId: string }) {
   if (query.isLoading) return <main id="replay-main" className="replay-main"><section className="replay-loading" role="status" aria-busy="true" aria-live="polite"><span className="state-label">Loading Replay…</span></section></main>;
   if (query.isError) return <main id="replay-main" className="replay-main"><ProblemMessage problem={problemFrom(query.error)} /></main>;
   if (!query.data) return <main id="replay-main" className="replay-main"><ProblemMessage problem={{ code: "replay_unavailable", detail: "The Replay could not be loaded." }} /></main>;
-  return <main id="replay-main" className="replay-main replay-detail-main"><ReplayViewer replay={query.data} /><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
+  return <main id="replay-main" className="replay-main replay-detail-main"><ReplayViewer key={matchId} replay={query.data} /><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
 }
 
 export function ReplayWorkspace({ matchId }: { matchId?: string }) {

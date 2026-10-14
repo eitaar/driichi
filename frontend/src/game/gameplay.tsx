@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   actionCandidates,
   actionGroupLabel,
@@ -9,7 +9,7 @@ import {
 } from "./actions";
 import { AudioManager, type AudioSettings, type VoiceKind } from "./audio";
 import { decodeCharacterAsset } from "./assets";
-import { ThreeTable, type PortraitEffect } from "./three-table";
+import "./live-table.css";
 import { isDora } from "./dora";
 import { TableAppearanceSettings, useTableAppearance } from "./table-appearance";
 import { seatPositionFor, seatPositions } from "./orientation";
@@ -30,10 +30,20 @@ import {
   resultStepKey,
   type KyokuEndStep,
   type KyokuSettlement,
-  type ResultMeld,
   type WinResult,
 } from "./results";
 import "./result.css";
+
+const ThreeTable = lazy(() => import("./three-table").then(module => ({ default: module.ThreeTable })));
+
+class TableLoader extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (this.state.failed) return <div className="three-table" role="status">3D table unavailable.</div>;
+    return <Suspense fallback={<div className="three-table" role="status" aria-label="3D table loading">Preparing 3D table</div>}>{this.props.children}</Suspense>;
+  }
+}
 
 export interface GameplayProps {
   room: RoomSnapshot | null;
@@ -141,51 +151,6 @@ function eventKind(event: unknown): string | undefined {
   const object = event as Record<string, unknown>;
   if (typeof object.type === "string") return object.type.toLowerCase();
   return Object.keys(object)[0]?.toLowerCase();
-}
-
-export interface RoundWinYaku {
-  name: string;
-  han?: number;
-  yakuman_multiplier?: number;
-}
-
-export interface RoundWinEffect extends PortraitEffect {
-  /** The physical winning tile, explicit position, and completed concealed hand from the server result. */
-  winningTile?: number;
-  winningTileIndex?: number;
-  hand?: number[];
-  melds?: ResultMeld[];
-  yaku?: RoundWinYaku[];
-  yakumanMultiplier?: number;
-}
-
-/** Convert only a validated WinResult and the recorded roster into display data. */
-export function winEffectFromResult(
-  result: WinResult,
-  room: RoomSnapshot | null,
-): RoundWinEffect | null {
-  const winner = resultRoster(room)?.find(
-    (player) => player.participant_id === result.winner && player.seat === result.seat,
-  );
-  if (!winner) return null;
-  return {
-    characterId: winner.character_id ?? "",
-    displayName: winner.display_name,
-    result: result.tsumo ? "Tsumo" : "Ron",
-    winningTile: result.winning_tile,
-    winningTileIndex: result.winning_tile_index,
-    hand: result.concealed,
-    melds: result.melds,
-    yaku: result.yaku.map((value) => ({
-      name: value.name,
-      ...(value.han === undefined ? {} : { han: value.han }),
-      ...(value.yakuman_multiplier === undefined ? {} : { yakuman_multiplier: value.yakuman_multiplier }),
-    })),
-    points: result.win_points,
-    ...( "Ordinary" in result.evaluation
-      ? { han: result.evaluation.Ordinary.han, fu: result.evaluation.Ordinary.fu, ...(result.evaluation.Ordinary.limit ? { limit: result.evaluation.Ordinary.limit } : {}) }
-      : { yakumanMultiplier: result.evaluation.Yakuman.multiplier }),
-  };
 }
 
 function voiceEvents(
@@ -766,44 +731,20 @@ function yakuLabel(name: string): string {
     .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 }
 
-function roundPoints(value: number | undefined): string {
-  return value === undefined ? "—" : value.toLocaleString();
-}
-
-function RoundWinTiles({
-  hand,
-  melds,
-  winningTile,
-  winningTileIndex,
-}: {
-  hand?: number[];
-  melds?: ResultMeld[];
-  winningTile?: number;
-  winningTileIndex?: number;
-}) {
-  if (!hand?.length && !melds?.length && winningTile === undefined) return null;
+function RoundWinTiles({ result }: { result: WinResult }) {
   return (
     <div className="round-win-hand" role="group" aria-label="Winning hand">
-      {hand && hand.length > 0 && (
-        <div
-          className="round-win-tile-row"
-          role="group"
-          aria-label={`${hand.length} visible winning hand tiles`}
-        >
-          {hand.map((tile, index) => (
-            <span
-              className={`round-win-tile${winningTileIndex === index ? " is-winning" : ""}`}
-              data-testid={winningTileIndex === index ? "winning-tile" : undefined}
-              key={`${tile}-${index}`}
-            >
-              <img src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
-            </span>
-          ))}
-        </div>
-      )}
-      {melds && melds.length > 0 && (
+      <div className="round-win-tile-row" role="group" aria-label={`${result.concealed.length} visible winning hand tiles`}>
+        {result.concealed.map((tile, index) => (
+          <span className={`round-win-tile${result.winning_tile_index === index ? " is-winning" : ""}`}
+            data-testid={result.winning_tile_index === index ? "winning-tile" : undefined} key={`${tile}-${index}`}>
+            <img src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
+          </span>
+        ))}
+      </div>
+      {result.melds.length > 0 && (
         <div className="round-win-melds" role="group" aria-label="Visible melds">
-          {melds.map((meld, meldIndex) => (
+          {result.melds.map((meld, meldIndex) => (
             <span className="round-win-meld" key={`meld-${meldIndex}`} role="group" aria-label={`${meld.opened ? "Open" : "Closed"} ${meld.kind}`}>
               {meld.tiles.map((tile, tileIndex) => (
                 <img key={`${tile}-${tileIndex}`} src={!meld.opened && meld.kind === "Ankan" && (tileIndex === 0 || tileIndex === meld.tiles.length - 1)
@@ -814,56 +755,41 @@ function RoundWinTiles({
           ))}
         </div>
       )}
-      {!hand?.length && winningTile !== undefined && (
-        <span className="round-win-hand-note">Winning tile: {tileLabel(winningTile)}</span>
-      )}
     </div>
   );
 }
 
-export function RoundWinSurface({
-  effect,
-  assets,
-  reducedMotion = false,
-}: {
-  effect: RoundWinEffect;
+export function RoundWinSurface({ result, room, assets, reducedMotion = false }: {
+  result: WinResult;
+  room: RoomSnapshot | null;
   assets: AssetState;
   reducedMotion?: boolean;
 }) {
-  const yaku = effect.yaku ?? [];
+  const winner = resultRoster(room)?.find((player) => player.participant_id === result.winner && player.seat === result.seat);
+  if (!winner) return null;
+  const ordinary = "Ordinary" in result.evaluation ? result.evaluation.Ordinary : null;
   return (
-    <section
-      className="round-win-surface"
-      data-testid="round-win-surface"
-      data-motion={reducedMotion ? "static" : "cinematic"}
-      aria-labelledby="round-win-heading"
-      role="status"
-      aria-live="polite"
-    >
+    <section className="round-win-surface" data-testid="round-win-surface" data-motion={reducedMotion ? "static" : "cinematic"}
+      aria-labelledby="round-win-heading" role="status" aria-live="polite">
       <div className="round-win-identity">
-        <ResultPortrait
-          characterId={effect.characterId}
-          name={effect.displayName}
-          available={effect.characterId ? assets[effect.characterId] !== false : false}
-          className="round-win-portrait"
-        />
-        <h2 id="round-win-heading">{effect.displayName}</h2>
+        <ResultPortrait characterId={winner.character_id ?? ""} name={winner.display_name}
+          available={winner.character_id ? assets[winner.character_id] !== false : false} className="round-win-portrait" />
+        <h2 id="round-win-heading">{winner.display_name}</h2>
       </div>
-      <div className="round-win-details" aria-label={`${effect.result} win details`}>
-        <RoundWinTiles hand={effect.hand} melds={effect.melds} winningTile={effect.winningTile} winningTileIndex={effect.winningTileIndex} />
-        {yaku.length > 0 && (
+      <div className="round-win-details" aria-label={`${result.tsumo ? "Tsumo" : "Ron"} win details`}>
+        <RoundWinTiles result={result} />
+        {result.yaku.length > 0 && (
           <dl className="round-win-yaku" aria-label="Authoritative yaku">
-            {yaku.map((entry, index) => (
+            {result.yaku.map((entry, index) => (
               <div key={`${entry.name}-${index}`}><dt>{yakuLabel(entry.name)}</dt><dd>{entry.han !== undefined ? `${entry.han} han` : entry.yakuman_multiplier !== undefined ? `${entry.yakuman_multiplier}× yakuman` : ""}</dd></div>
             ))}
           </dl>
         )}
-        {(effect.han !== undefined || effect.fu !== undefined || effect.limit || effect.yakumanMultiplier !== undefined || effect.points !== undefined) && (
-          <div className="round-win-total">
-            <p>{effect.yakumanMultiplier !== undefined ? `${effect.yakumanMultiplier}× yakuman` : <>{effect.han !== undefined && `${effect.han} han`}{effect.fu !== undefined && ` · ${effect.fu} fu`}{effect.limit && ` · ${effect.limit}`}</>}</p>
-            {effect.points !== undefined && <strong>{roundPoints(effect.points)} <small>points</small></strong>}
-          </div>
-        )}
+        <div className="round-win-total">
+          <p>{ordinary ? <>{ordinary.han} han · {ordinary.fu} fu{ordinary.limit && ` · ${ordinary.limit}`}</>
+            : "Yakuman" in result.evaluation && `${result.evaluation.Yakuman.multiplier}× yakuman`}</p>
+          <strong>{result.win_points.toLocaleString()} <small>points</small></strong>
+        </div>
       </div>
     </section>
   );
@@ -1083,9 +1009,7 @@ export function GameplaySurface({
   useEffect(() => {
     if (supported && (!canConfirm || confirmationReady)) confirmRef.current?.focus();
   }, [stepKey, confirmationReady, canConfirm, supported]);
-  const portraitEffect = step && "Win" in step.content
-    ? winEffectFromResult(step.content.Win, room)
-    : null;
+  const win = step && "Win" in step.content ? step.content.Win : null;
   const settlement = step && !("Win" in step.content)
     ? ("Settlement" in step.content ? step.content.Settlement : step.content.Draw)
     : null;
@@ -1182,12 +1106,11 @@ export function GameplaySurface({
                 <span>The table will synchronize when the host sends the next snapshot.</span>
               </div>
             )}
-            <ThreeTable
+            <TableLoader><ThreeTable
               projection={projection}
               room={room}
               animations={animations}
               reducedMotion={reducedMotion}
-              portraitEffect={portraitEffect}
               onAnimationConsumed={(id: number) =>
                 useGameStore.getState().consumeAnimations([id])
               }
@@ -1197,7 +1120,7 @@ export function GameplaySurface({
               surface="live"
               sheenHost={tableSheenRef}
               appearance={appearance.appearance}
-            />
+            /></TableLoader>
             <TileHitLayer
               hand={ownPlayer?.hand ?? []}
               actions={legalDiscardActions}
@@ -1220,7 +1143,7 @@ export function GameplaySurface({
             )}
             {step && dismissedStep !== stepKey && room?.phase !== "post_match" && (
               <div className="round-win-overlay">
-                {portraitEffect && <RoundWinSurface key={stepKey} effect={portraitEffect} assets={assets} reducedMotion={reducedMotion} />}
+                {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
                 {settlement && <SettlementPresentation key={resultStepKey(step.id)} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} />}
                 <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining">{formatSeconds(resultRemaining)}s</span>
                 <div className="round-win-actions">

@@ -93,7 +93,6 @@ struct HeldKyoku {
     table: TableState,
     record: KyokuResultRecord,
     next_step: usize,
-    settlement_published: bool,
     terminal_events: Vec<GameEvent>,
     future_events: Vec<GameEvent>,
     final_result: Option<MatchResult>,
@@ -105,7 +104,7 @@ pub struct MatchMachine {
     engine: EngineAdapter,
     status: MatchStatus,
     events: Vec<GameEvent>,
-    results: Vec<KyokuResultRecord>,
+    last_settlement_scores: Option<Vec<i32>>,
     held: Option<HeldKyoku>,
     journal_event_count: usize,
     persistence_events: Vec<GameEvent>,
@@ -214,9 +213,8 @@ impl MatchMachine {
         &self.events
     }
 
-    #[allow(dead_code)] // Task 4/6 persistence consumes the complete private record.
-    pub(crate) fn kyoku_results(&self) -> &[KyokuResultRecord] {
-        &self.results
+    pub(crate) fn next_kyoku_step_index(&self) -> Option<usize> {
+        self.held.as_ref().map(|hold| hold.next_step)
     }
 
     pub fn held_kyoku(&self) -> Option<&KyokuResultRecord> {
@@ -228,13 +226,11 @@ impl MatchMachine {
         (hold.next_step > 0).then(|| PublishedKyokuResults {
             kyoku_sequence: hold.record.kyoku_sequence,
             wins: hold.record.wins[..hold.next_step.min(hold.record.wins.len())].to_vec(),
-            settlement: hold
-                .settlement_published
+            settlement: (hold.next_step > hold.record.wins.len())
                 .then(|| hold.record.settlement.clone()),
         })
     }
 
-    #[allow(dead_code)] // Task 4 connects the private persistence effect consumer.
     pub(crate) fn take_persistence_events(&mut self) -> Vec<GameEvent> {
         std::mem::take(&mut self.persistence_events)
     }
@@ -246,7 +242,6 @@ impl MatchMachine {
         }
         hold.next_step += 1;
         if step_index == hold.record.wins.len() {
-            hold.settlement_published = true;
             let after = hold
                 .record
                 .settlement
@@ -270,7 +265,7 @@ impl MatchMachine {
         if !self
             .held
             .as_ref()
-            .is_some_and(|hold| hold.settlement_published)
+            .is_some_and(|hold| hold.next_step > hold.record.wins.len())
         {
             return Err(MatchError::ResultsPending);
         }
@@ -682,7 +677,14 @@ impl MatchMachine {
                     "terminal follows EndKyoku".into(),
                 )));
             }
-            self.results.push(record.clone());
+            self.last_settlement_scores = Some(
+                record
+                    .settlement
+                    .changes
+                    .iter()
+                    .map(|change| change.after)
+                    .collect(),
+            );
             let public = outcome.events[..terminal_start].to_vec();
             self.journal_event_count += outcome.events.len();
             self.persistence_events
@@ -693,7 +695,6 @@ impl MatchMachine {
                 table,
                 record,
                 next_step: 0,
-                settlement_published: false,
                 terminal_events: outcome.events[terminal_start..end].to_vec(),
                 future_events: outcome.events[end..].to_vec(),
                 final_result,
@@ -712,14 +713,8 @@ impl MatchMachine {
             result
                 .validate()
                 .map_err(|error| self.abort_for_engine(EngineError::Divergence(error)))?;
-            if let Some(last) = self.results.last()
-                && last
-                    .settlement
-                    .changes
-                    .iter()
-                    .map(|change| change.after)
-                    .collect::<Vec<_>>()
-                    != result.final_scores
+            if let Some(last) = &self.last_settlement_scores
+                && *last != result.final_scores
             {
                 return Err(self.abort_for_engine(EngineError::Divergence(
                     "final scores differ from settlement".into(),
@@ -796,7 +791,7 @@ impl MatchMachine {
             status: MatchStatus::Running,
             journal_event_count: events.len(),
             events,
-            results: Vec::new(),
+            last_settlement_scores: None,
             held: None,
             persistence_events: Vec::new(),
             time_control: TimeControl::Casual,
@@ -994,6 +989,40 @@ mod tests {
             machine.apply(seat, action).unwrap();
         }
         panic!("no ended kyoku");
+    }
+
+    #[test]
+    fn next_kyoku_step_index_tracks_publication_and_release() {
+        for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+            let mut machine = first_held(mode);
+            let steps = machine.held_kyoku().unwrap().wins.len();
+            assert_eq!(machine.next_kyoku_step_index(), Some(0));
+            for index in 0..=steps {
+                assert!(matches!(
+                    machine.release_kyoku(),
+                    Err(MatchError::ResultsPending)
+                ));
+                machine.publish_kyoku_step(index).unwrap();
+                assert_eq!(machine.next_kyoku_step_index(), Some(index + 1));
+            }
+            machine.release_kyoku().unwrap();
+            assert_eq!(machine.next_kyoku_step_index(), None);
+            assert!(matches!(
+                machine.release_kyoku(),
+                Err(MatchError::ResultsPending)
+            ));
+        }
+    }
+
+    #[test]
+    fn final_score_mismatch_still_aborts() {
+        let mut machine = complete(GameMode::ThreePlayerRedEast);
+        machine.last_settlement_scores.as_mut().unwrap()[0] += 1;
+        assert!(matches!(
+            machine.record_events(Vec::new()),
+            Err(MatchError::Aborted(_))
+        ));
+        assert!(machine.result().is_none());
     }
 
     #[cfg(feature = "task8-test-support")]

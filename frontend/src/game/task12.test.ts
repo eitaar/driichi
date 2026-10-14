@@ -6,8 +6,6 @@ import { preloadRosterAssets } from "./gameplay";
 import { seatPositions } from "./orientation";
 import { useGameStore } from "./store";
 import { tileAssetUrl, tileFileName, tileLabel } from "./tiles";
-import { winEffectFromResult } from "./gameplay";
-import { decodeWinResult } from "./results";
 import { wallTileCount } from "./table-geometry";
 
 beforeEach(() => {
@@ -214,18 +212,6 @@ describe("Task 12 table invariants", () => {
     expect(wallTileCount([1, 2, 3])).toBe(3);
     expect(wallTileCount(Number.POSITIVE_INFINITY)).toBe(0);
     expect(wallTileCount(Number.NaN)).toBe(0);
-  });
-
-  it("keeps result facts authoritative instead of deriving a limit from han", () => {
-    const room = { game_mode: "4p-red-east", roster: [0, 1, 2, 3].map((seat) => ({ seat, participant_id: `p${seat + 1}`, display_name: seat === 0 ? "Mika" : `Seat ${seat}`, kind: "human", character_id: "player-red", controller: "interactive" })) } as never;
-    const win = decodeWinResult({ event_index: 4, winner: "p1", seat: 0, target: 1, tsumo: false,
-      concealed: [16, 17, 0, 4, 8, 36, 40, 44, 48, 52, 56, 60, 64, 68], melds: [], winning_tile: 16, winning_tile_index: 0,
-      evaluation: { Ordinary: { han: 5, fu: 30, limit: null } },
-      yaku: [{ id: 31, name: "dora", han: 5, yakuman_multiplier: null }], win_points: 8000,
-    }, "4p-red-east");
-    const result = winEffectFromResult(win!, room);
-    expect(result).toMatchObject({ displayName: "Mika", result: "Ron", han: 5, fu: 30, points: 8000, yaku: [{ name: "dora", han: 5 }] });
-    expect(result).not.toHaveProperty("limit");
   });
 
   it("advances the voice queue when playback throws synchronously", () => {

@@ -47,7 +47,7 @@ const CELL_BY_FILE = new Map<string, readonly [number, number]>(
 const FALLBACK_CELL = CELL_BY_FILE.get(tileFileName(FALLBACK_TILE))!;
 
 export interface TileAtlas {
-  readonly texture: CanvasTexture;
+  readonly texture: CanvasTexture<HTMLCanvasElement | ImageBitmap>;
   readonly columns: number;
   readonly rows: number;
   cellFor(tile: number): readonly [number, number];

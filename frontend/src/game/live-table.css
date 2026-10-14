@@ -1,4 +1,5 @@
 /* Shared Live/Replay table presentation; controls remain DOM and server-driven. */
+.three-table-renderer{position:absolute;inset:0;pointer-events:none}
 .gameplay-shell{font-family:"Segoe UI",system-ui,sans-serif;background:#eef0f2;color:#283342}
 .gameplay-shell .gameplay-main{height:100dvh;min-height:600px;padding:0;display:block}
 .gameplay-main .table-letterbox{width:100%;height:100%;max-height:none;aspect-ratio:auto;border:0;box-shadow:none;background:#eef0f2}

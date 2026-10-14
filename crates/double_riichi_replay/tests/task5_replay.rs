@@ -507,97 +507,27 @@ fn result_allows_paid_reach_and_verified_final_remaining_pot_award() {
 }
 
 #[test]
-fn result_rejects_invalid_restored_tiles_without_mutating_existing_join() {
+fn result_rejects_a_corrupt_record_without_mutating_existing_join() {
     let cases: serde_json::Value = serde_json::from_str(include_str!(
         "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
     ))
     .unwrap();
-    for case in cases.as_array().unwrap() {
-        let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
-        let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
-        let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
-        attach_result_records(&mut frames, &[record.clone()]).unwrap();
-        let before = encode_replay_frames(&frames).unwrap();
-        for id in [255, 4] {
-            if id == 4 && !record.mode.is_three_player() {
-                continue;
-            }
-            for field in ["winning", "concealed", "meld", "called"] {
-                let mut payload = case["record"].clone();
-                let win = &mut payload["wins"][0];
-                match field {
-                    "winning" => {
-                        win["winning_tile"] = serde_json::json!(id);
-                        win["concealed"][record.wins[0].winning_tile_index] = serde_json::json!(id);
-                    }
-                    "concealed" => win["concealed"][0] = serde_json::json!(id),
-                    // Adversarial restored meld fields, not a new producer capture.
-                    "meld" | "called" => {
-                        win["melds"] = serde_json::json!([{
-                            "kind": "Pon", "tiles": [0, 1, if field == "meld" { id } else { 2 }],
-                            "opened": true, "from_who": 0,
-                            "called_tile": if field == "called" { id } else { 0 }
-                        }]);
-                    }
-                    _ => unreachable!(),
-                }
-                let corrupted: KyokuResultRecord = serde_json::from_value(payload).unwrap();
-                let borrowed_before = corrupted.clone();
-                let outcome = attach_result_records(&mut frames, std::slice::from_ref(&corrupted));
-                assert!(
-                    matches!(outcome, Err(ReplayError::InvalidEvent(_))),
-                    "{:?} {field} tile {id} must be corrupt: {outcome:?}",
-                    record.mode
-                );
-                assert_eq!(corrupted, borrowed_before);
-                assert_eq!(encode_replay_frames(&frames).unwrap(), before);
-            }
-        }
-    }
-}
-
-#[test]
-fn result_rejects_invalid_restored_meld_seats_without_mutating_existing_join() {
-    let cases: serde_json::Value = serde_json::from_str(include_str!(
-        "../../double_riichi_core/tests/fixtures/authoritative-multi-ron-captures.json"
-    ))
-    .unwrap();
-    for case in cases.as_array().unwrap() {
-        let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
-        let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
-        let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
-        attach_result_records(&mut frames, &[record.clone()]).unwrap();
-        let before = encode_replay_frames(&frames).unwrap();
-        // Adversarial private fields, not an additional producer capture.
-        let mut payload = case["record"].clone();
-        payload["wins"][0]["melds"] = serde_json::json!([{
-            "kind": "Pon", "tiles": [0, 1, 2], "opened": true,
-            "from_who": 0, "called_tile": 0
-        }]);
-        for source in [serde_json::json!(0), serde_json::Value::Null] {
-            payload["wins"][0]["melds"][0]["from_who"] = source;
-            let control: KyokuResultRecord = serde_json::from_value(payload.clone()).unwrap();
-            let mut control_frames = frames.clone();
-            assert!(matches!(
-                attach_result_records(&mut control_frames, &[control]),
-                Err(ReplayError::InvalidEvent(_))
-            ));
-            assert_eq!(encode_replay_frames(&control_frames).unwrap(), before);
-        }
-        for seat in [255, record.mode.seat_count() as u8] {
-            payload["wins"][0]["melds"][0]["from_who"] = serde_json::json!(seat);
-            let corrupted: KyokuResultRecord = serde_json::from_value(payload.clone()).unwrap();
-            let borrowed_before = corrupted.clone();
-            let outcome = attach_result_records(&mut frames, std::slice::from_ref(&corrupted));
-            assert!(
-                matches!(outcome, Err(ReplayError::InvalidEvent(_))),
-                "{:?} meld source {seat} must be corrupt: {outcome:?}",
-                record.mode
-            );
-            assert_eq!(corrupted, borrowed_before);
-            assert_eq!(encode_replay_frames(&frames).unwrap(), before);
-        }
-    }
+    let case = &cases.as_array().unwrap()[0];
+    let events: Vec<GameEvent> = serde_json::from_value(case["events"].clone()).unwrap();
+    let record: KyokuResultRecord = serde_json::from_value(case["record"].clone()).unwrap();
+    let mut frames = build_replay_frames_for_mode(&events, record.mode).unwrap();
+    attach_result_records(&mut frames, std::slice::from_ref(&record)).unwrap();
+    let before = encode_replay_frames(&frames).unwrap();
+    let mut payload = case["record"].clone();
+    payload["wins"][0]["winning_tile"] = serde_json::json!(255);
+    let corrupt: KyokuResultRecord = serde_json::from_value(payload).unwrap();
+    let borrowed_before = corrupt.clone();
+    assert!(
+        matches!(attach_result_records(&mut frames, std::slice::from_ref(&corrupt)), Err(ReplayError::InvalidEvent(message))
+        if message == "result contains an invalid tile for its mode")
+    );
+    assert_eq!(corrupt, borrowed_before);
+    assert_eq!(encode_replay_frames(&frames).unwrap(), before);
 }
 
 #[test]

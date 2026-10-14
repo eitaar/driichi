@@ -39,7 +39,7 @@ async function installAssets(page: Page, refuse = false) {
   });
 }
 
-async function installSocket(page: Page) {
+async function installSocket(page: Page, mode = "4p-red-east") {
   await page.addInitScript(({ room, state }) => {
     const browser = window as unknown as {
       __room: Record<string, unknown>; __state: Record<string, unknown>; __sent: unknown[];
@@ -66,7 +66,7 @@ async function installSocket(page: Page) {
       return url.includes("/ws/v1/rooms/") ? new GameplaySocket() : new NativeSocket(url, protocols);
     }, { OPEN: 1 }) });
     sessionStorage.setItem("driichi:participant:123456", "P1");
-  }, { room: fixtures.room_envelopes["4p-red-east"], state: fixtures.projections["4p-red-east"] });
+  }, { room: fixtures.room_envelopes[mode], state: fixtures.projections[mode] });
 }
 
 async function showRoundWin(page: Page, currentStep = step) {
@@ -75,7 +75,7 @@ async function showRoundWin(page: Page, currentStep = step) {
     browser.__room = { ...browser.__room, revision: 13, kyoku_end: step };
     browser.__state = { ...browser.__state, decision: null };
     browser.__socket.emit({ type: "game_update", room: browser.__room, state: browser.__state,
-      event: { type: "action_resolved", events: [{ hora: { actor: 0, target: 1, delta: [99999, -99999, 0, 0] } }] } });
+      event: { type: "action_resolved", events: [{ hora: { actor: 0, target: 1, delta: (browser.__state.players as unknown[]).map((_, seat) => seat === 0 ? 99999 : seat === 1 ? -99999 : 0) } }] } });
   }, currentStep);
   await expect(page.getByTestId("round-win-surface")).toBeVisible();
   await expect(page.getByTestId("winning-tile")).toHaveCount(1);
@@ -84,27 +84,118 @@ async function showRoundWin(page: Page, currentStep = step) {
   await expect(page.getByRole("group", { name: "Closed Ankan" }).locator('img[src$="/Back.svg"]')).toHaveCount(2);
 }
 
-async function showStandings(page: Page) {
+async function showStandings(page: Page, result = standings) {
   await page.evaluate((result) => {
     const browser = window as unknown as { __room: Record<string, unknown>; __state: unknown; __socket: { emit: (value: unknown) => void } };
     browser.__socket.emit({ type: "room_update", room: { ...browser.__room, phase: "post_match", kyoku_end: null, result }, state: browser.__state });
-  }, standings);
+  }, result);
   await expect(page.getByTestId("results-panel")).toBeVisible();
-  await expect(page.getByRole("list", { name: "Final standings" }).getByRole("listitem")).toHaveCount(4);
+  await expect(page.getByRole("list", { name: "Final standings" }).getByRole("listitem")).toHaveCount(result.players.length);
+}
+
+function standingsFor(mode: string) {
+  const count = mode.startsWith("3p") ? 3 : 4;
+  const scores = count === 3 ? [45000, 35000, 25000] : standings.final_scores;
+  return { ...standings, mode: count === 3 ? "ThreePlayerRedEast" : "FourPlayerRedEast", final_scores: scores,
+    players: standings.players.slice(0, count).map((player, seat) => ({ ...player, final_score: scores[seat] })) };
+}
+
+// Synthetic layout fixtures, not saved EngineAdapter or full-Match evidence.
+function savedReplay(mode: string) {
+  const projection = { ...fixtures.projections[mode], audience: "replay_admin", decision: null };
+  const result = standingsFor(mode);
+  const players: Array<Record<string, unknown>> = (fixtures.room_envelopes[mode].roster as Array<Record<string, unknown>>)
+    .map((player, seat) => ({ ...player, participant_kind: player.kind, final_points: result.final_scores[seat] }));
+  const score = mode.startsWith("3p") ? 35000 : 25000;
+  return { match_id: "MATCH", source: "room", room_name: "Night Market", game_mode: mode,
+    started_at: "2026-09-16T00:00:00Z", completed_at: "2026-09-16T00:10:00Z", file_size: 512,
+    availability: "available", replay_available: true, players, result,
+    frames: [0, 1, 2, 3].map((index) => ({ event_index: index,
+      visible_event: { type: ["start_kyoku", "hora", "end_kyoku", "end_game"][index] }, visible_state: projection,
+      auxiliary_events: [], result: index === 1 ? win : null,
+      settlement: index === 2 ? { changes: players.map((player, seat) => ({ participant_id: player.participant_id,
+        seat, before: score, delta: 0, after: score })), pot_before: 0, pot_after: 0, draw_reason: "suucha_riichi" } : null })) };
 }
 
 test.describe("authoritative result surfaces", () => {
-  for (const viewport of [{ width: 1024, height: 600 }, { width: 1600, height: 900 }]) {
-    test(`captures round win and final standings at ${viewport.width}px`, async ({ page }) => {
-      await page.setViewportSize(viewport);
-      await installAssets(page); await installSocket(page);
-      await page.goto("/room/123456/lobby");
-      await expect(page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20000 });
-      await showRoundWin(page);
-      await page.screenshot({ path: `test-results/result-surfaces/round-win-${viewport.width}.png`, fullPage: false });
-      await showStandings(page);
-      await page.screenshot({ path: `test-results/result-surfaces/final-standings-${viewport.width}.png`, fullPage: false });
+  for (const delivery of ["held", "refused"] as const) {
+  test(`keeps result confirmation usable while the 3D module is ${delivery}`, async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let requested = false;
+    await page.route("**/src/game/three-table.tsx*", async route => {
+      requested = true;
+      if (delivery === "refused") { await route.abort("failed"); return; }
+      await held;
+      await route.continue();
     });
+    await installAssets(page, true); await installSocket(page);
+    try {
+      await page.goto("/room/123456/lobby", { waitUntil: "commit" });
+      await expect.poll(() => requested).toBe(true);
+      await showRoundWin(page);
+      const confirm = page.getByRole("button", { name: "Continue", exact: true });
+      await expect(confirm).toBeEnabled();
+      await expect(confirm).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(page.getByRole("button", { name: "Waiting for players" })).toBeDisabled();
+      expect(await page.evaluate(() => (window as unknown as { __sent: unknown[] }).__sent)).toEqual([{ type: "confirm_result", step_id: step.id }]);
+      await expect(page.locator(".table-letterbox canvas")).toHaveCount(0);
+      if (delivery === "refused") await expect(page.getByRole("status").filter({ hasText: "3D table unavailable." })).toBeVisible();
+    } finally { release(); }
+  });
+  }
+  for (const viewport of [{ width: 1024, height: 600 }, { width: 1280, height: 720 }, { width: 1600, height: 900 }, { width: 1920, height: 1080 }]) {
+    for (const mode of ["3p-red-east", "4p-red-east"]) {
+      for (const surface of ["Live", "Replay"]) {
+        test(`layout ${surface} ${mode} win and standings at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+          await page.setViewportSize(viewport);
+          await page.emulateMedia({ reducedMotion: "reduce" });
+          await installAssets(page);
+          const requests: string[] = [];
+          page.on("request", request => { if (request.url().includes("/api/")) requests.push(request.method()); });
+          if (surface === "Live") {
+            await installSocket(page, mode);
+            await page.goto("/room/123456/lobby");
+            await showRoundWin(page);
+            await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeFocused();
+            await page.keyboard.press("Enter");
+            await expect(page.getByRole("button", { name: "Waiting for players" })).toBeDisabled();
+          } else {
+            const saved = savedReplay(mode);
+            await page.route("**/api/v1/admin/**", route => route.fulfill({ json: route.request().url().endsWith("/replays/MATCH") ? saved : [] }));
+            await page.goto("/admin/replays/MATCH");
+            await page.getByRole("button", { name: "Next Event" }).click();
+            await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
+          }
+          await expect(page.getByTestId("winning-tile")).toHaveCount(1);
+          await expect(page.getByLabel("Ron win details")).toContainText("1,000");
+          await expect(page.getByRole("group", { name: "Closed Ankan" }).locator('img[src$="/Back.svg"]')).toHaveCount(2);
+          const winBox = await page.getByTestId("round-win-surface").boundingBox();
+          expect(winBox).not.toBeNull();
+          expect([winBox!.x, winBox!.y, winBox!.width, winBox!.height].every(Number.isFinite)).toBe(true);
+          expect(winBox!.width).toBeGreaterThan(0); expect(winBox!.height).toBeGreaterThan(0);
+          expect(winBox!.x).toBeGreaterThanOrEqual(0); expect(winBox!.y).toBeGreaterThanOrEqual(0);
+          expect(winBox!.x + winBox!.width).toBeLessThanOrEqual(viewport.width);
+          expect(winBox!.y + winBox!.height).toBeLessThanOrEqual(viewport.height);
+          await page.screenshot({ path: test.info().outputPath("round-win.png"), fullPage: false });
+          if (surface === "Live") await showStandings(page, standingsFor(mode));
+          else { await page.getByRole("button", { name: "Next Event" }).click(); await page.getByRole("button", { name: "Next Event" }).click(); }
+          const panel = page.getByTestId("results-panel");
+          await expect(panel).toBeVisible();
+          await expect(page.getByRole("list", { name: "Final standings" }).getByRole("listitem")).toHaveCount(mode.startsWith("3p") ? 3 : 4);
+          const box = await panel.boundingBox();
+          expect(box).not.toBeNull();
+          expect([box!.x, box!.y, box!.width, box!.height].every(Number.isFinite)).toBe(true);
+          expect(box!.width).toBeGreaterThan(0); expect(box!.height).toBeGreaterThan(0);
+          expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.y).toBeGreaterThanOrEqual(0);
+          expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+          expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
+          expect(requests.every(method => method === "GET")).toBe(true);
+          await page.screenshot({ path: test.info().outputPath("final-standings.png"), fullPage: false });
+        });
+      }
+    }
   }
 
   test("keyboard confirmation survives reduced motion, refused assets, audio and WebGL", async ({ page }) => {
@@ -160,7 +251,7 @@ test.describe("authoritative result surfaces", () => {
     await expect(page.getByLabel("Score transfer").getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
     await expect(page.getByLabel("Score transfer")).toContainText("+0");
     await expect(page.getByTestId("round-win-surface")).toHaveCount(0);
-    await page.screenshot({ path: "test-results/result-surfaces/draw-1280.png" });
+    await page.screenshot({ path: test.info().outputPath("draw-1280.png") });
   });
 
   for (const mode of ["3p-red-east", "4p-red-east"]) {
@@ -168,15 +259,7 @@ test.describe("authoritative result surfaces", () => {
       await page.setViewportSize({ width: 1280, height: 720 });
       await installAssets(page, true);
       const count = mode.startsWith("3p") ? 3 : 4;
-      const projection = { ...fixtures.projections[mode], audience: "replay_admin", decision: null };
-      const players: Array<Record<string, unknown>> = (fixtures.room_envelopes[mode].roster as Array<Record<string, unknown>>).map((player) => ({ ...player, participant_kind: player.kind, final_points: null }));
-      const saved = { match_id: "MATCH", source: "room", room_name: "Night Market", game_mode: mode,
-        started_at: "2026-09-16T00:00:00Z", completed_at: "2026-09-16T00:10:00Z", file_size: 512,
-        availability: "available", replay_available: true, players,
-        result: { ...standings, mode: count === 3 ? "ThreePlayerRedEast" : "FourPlayerRedEast", players: standings.players.slice(0, count), final_scores: standings.final_scores.slice(0, count) },
-        frames: [0, 1, 2, 3].map((index) => ({ event_index: index, visible_event: { type: ["start_kyoku", "hora", "end_kyoku", "end_game"][index] }, visible_state: projection, auxiliary_events: [], result: index === 1 ? win : null,
-          settlement: index === 2 ? { changes: players.map((player, seat) => ({ participant_id: player.participant_id, seat, before: 25000, delta: 0, after: 25000 })), pot_before: 0, pot_after: 0, draw_reason: "suucha_riichi" } : null })),
-      };
+      const saved = savedReplay(mode);
       const requests: string[] = [];
       page.on("request", (request) => { if (request.url().includes("/api/")) requests.push(request.method()); });
       await page.route("**/api/v1/admin/**", (route) => route.fulfill({ json: route.request().url().endsWith("/replays/MATCH") ? saved : [] }));

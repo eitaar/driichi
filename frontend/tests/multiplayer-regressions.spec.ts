@@ -207,7 +207,9 @@ test("keeps Human startup and updates independent of a held renderer module", as
     const baseline = await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; });
     await emitRoomUpdate(page, room, state);
     await expect.poll(() => Boolean(held)).toBe(true);
-    await expect(page.getByRole("status")).toHaveText("Loading Match");
+    await expect(page.getByRole("status", { name: "3D table loading" })).toHaveText("Preparing 3D table");
+    await expect(page.getByTestId("gameplay-shell")).toBeVisible();
+    await expect(page.getByTestId("action-deck")).toBeVisible();
     const updated = structuredClone(state);
     updated.players[0].display_name = "Updated while loading";
     await emitRoomUpdate(page, room, updated);
@@ -257,13 +259,14 @@ test("keeps Human ownership on chunk failure and reloads only by explicit link",
   const lobby = { ...room, phase: "lobby", participants: room.participants.map((participant: Record<string, any>) => ({ ...participant, ready: participant.participant_id !== "P1" })) };
   await installCharacterFixtures(page);
   await installSocket(page, state, lobby);
-  let allowRenderer = false;
+  let allowGameplay = false;
   let moduleRequests = 0;
   let navigations = 0;
   page.on("framenavigated", frame => { if (frame === page.mainFrame()) ++navigations; });
-  await page.route("**/src/game/three-table.tsx*", async route => {
+  // The Match boundary now owns gameplay; optional 3D failures have their own DOM-action controls.
+  await page.route("**/src/game/gameplay.tsx*", async route => {
     ++moduleRequests;
-    if (allowRenderer) await route.continue(); else await route.abort("failed");
+    if (allowGameplay) await route.continue(); else await route.abort("failed");
   });
   await page.goto("/room/123456/lobby");
   await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
@@ -285,7 +288,7 @@ test("keeps Human ownership on chunk failure and reloads only by explicit link",
   // Re-enter the failed surface; only the user's plain link should restart navigation/transport.
   await emitRoomUpdate(page, room, state);
   await expect(page.getByRole("link", { name: "Reload page" })).toBeVisible();
-  allowRenderer = true;
+  allowGameplay = true;
   await page.getByRole("link", { name: "Reload page" }).click();
   await expect.poll(() => navigations).toBe(initialNavigations + 1);
   await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();

@@ -461,6 +461,69 @@ mod tests {
         assert!(record.validate(&participants).is_err());
     }
 
+    fn valid_meld_result(mode: GameMode) -> (KyokuResultRecord, Vec<Participant>) {
+        let roster = (0..mode.seat_count())
+            .map(|seat| Participant::new(format!("seat{seat}"), "seat", ParticipantKind::Human))
+            .collect::<Vec<_>>();
+        let changes = roster.iter().enumerate().map(|(seat, player)| {
+            let delta = match seat { 0 => -1000, 1 => 1000, _ => 0 };
+            serde_json::json!({"participant_id": player.id, "seat": seat, "before": 25000, "delta": delta, "after": 25000 + delta})
+        }).collect::<Vec<_>>();
+        // Synthetic validation fixture, not an EngineAdapter capture.
+        let record = serde_json::from_value(serde_json::json!({
+            "version": 1, "kyoku_sequence": 1, "mode": mode, "end_event_index": 4,
+            "wins": [{"event_index": 3, "winner": "seat1", "seat": 1, "target": 0, "tsumo": false,
+                "concealed": [36,40,44,48,52,56,60,64,68,112,113],
+                "melds": [{"kind": "Pon", "tiles": [108,109,110], "opened": true, "from_who": 0, "called_tile": 108}],
+                "winning_tile": 113, "winning_tile_index": 10,
+                "yaku": [{"id": 11, "name": "場風牌", "han": 1, "yakuman_multiplier": null}],
+                "evaluation": {"Ordinary": {"han": 1, "fu": 30, "limit": null}}, "win_points": 1000}],
+            "settlement": {"changes": changes, "pot_before": 0, "pot_after": 0, "draw_reason": null},
+            "draw_event_delta_adjustment": null
+        })).unwrap();
+        (record, roster)
+    }
+
+    #[test]
+    fn restored_meld_result_rejects_tile_and_source_at_the_intended_guard() {
+        for mode in [GameMode::ThreePlayerRedEast, GameMode::FourPlayerRedEast] {
+            let (record, roster) = valid_meld_result(mode);
+            record.validate(&roster).unwrap();
+            let original = serde_json::to_value(&record).unwrap();
+            for id in [136, 255, 4] {
+                if id == 4 && !mode.is_three_player() {
+                    continue;
+                }
+                for field in ["winning", "concealed", "meld", "called"] {
+                    let mut payload = original.clone();
+                    let win = &mut payload["wins"][0];
+                    match field {
+                        "winning" => win["winning_tile"] = serde_json::json!(id),
+                        "concealed" => win["concealed"][0] = serde_json::json!(id),
+                        "meld" => win["melds"][0]["tiles"][0] = serde_json::json!(id),
+                        "called" => win["melds"][0]["called_tile"] = serde_json::json!(id),
+                        _ => unreachable!(),
+                    }
+                    let corrupt: KyokuResultRecord = serde_json::from_value(payload).unwrap();
+                    assert_eq!(
+                        corrupt.validate(&roster).unwrap_err(),
+                        "result contains an invalid tile for its mode",
+                        "{mode:?} {field} {id}"
+                    );
+                }
+            }
+            for seat in [mode.seat_count(), 255] {
+                let mut payload = original.clone();
+                payload["wins"][0]["melds"][0]["from_who"] = serde_json::json!(seat);
+                let corrupt: KyokuResultRecord = serde_json::from_value(payload).unwrap();
+                assert_eq!(
+                    corrupt.validate(&roster).unwrap_err(),
+                    "result contains an invalid meld source seat for its mode"
+                );
+            }
+        }
+    }
+
     #[test]
     fn restored_result_rejects_contradictory_limit_metadata() {
         let captures: serde_json::Value = serde_json::from_str(include_str!(

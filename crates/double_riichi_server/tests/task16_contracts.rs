@@ -845,6 +845,38 @@ mod task8_http_human {
     use std::time::Duration;
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+    // Fixture selection is process-global; isolate only tests that require a deal.
+    fn run_in_fixture_process(fixture: &str) -> bool {
+        if std::env::var("DRIICHI_TASK8_FIXTURE").as_deref() == Ok(fixture) {
+            return false;
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("named test thread")
+            .to_owned();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--test-threads=1"])
+            .env("DRIICHI_TASK8_FIXTURE", fixture)
+            .output()
+            .expect("fixture test process");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            output.status.success(),
+            "fixture {fixture} failed: {}
+{stdout}
+{stderr}",
+            output.status
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line == format!("test {name} ... ok")),
+            "fixture test was not executed: {stdout}"
+        );
+        true
+    }
+
     struct ReceiveDiagnostic {
         started: std::time::Instant,
         path: PathBuf,
@@ -1749,6 +1781,9 @@ mod task8_http_human {
 
     #[tokio::test]
     async fn actual_final_draw_tied_pot_holds_then_saves_once_and_readies_rematch_in_both_modes() {
+        if run_in_fixture_process("final-draw") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "final-draw"
@@ -2216,6 +2251,9 @@ mod task8_http_human {
 
     #[tokio::test]
     async fn actual_missed_tick_republishes_each_final_double_ron_step_with_fresh_clock() {
+        if run_in_fixture_process("double-ron-final") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "double-ron-final"
@@ -2476,6 +2514,9 @@ mod task8_http_human {
 
     #[tokio::test]
     async fn actual_dealer_tenhou_first_release_keeps_old_step_out_of_natural_renchan_decision() {
+        if run_in_fixture_process("dealer-tenhou") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "dealer-tenhou"
@@ -3141,6 +3182,9 @@ mod task8_http_human {
 
     #[tokio::test]
     async fn live_foreign_match_confirmation_keeps_double_ron_publication_bound_to_its_match() {
+        if run_in_fixture_process("double-ron") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "double-ron"
@@ -3458,6 +3502,9 @@ mod task8_http_human {
     #[tokio::test]
     async fn actual_double_ron_http_and_human_complete_boundaries_keep_future_win_and_decision_private()
      {
+        if run_in_fixture_process("double-ron") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "double-ron"
@@ -3826,6 +3873,9 @@ mod task8_http_human {
 
     #[tokio::test]
     async fn unpublished_double_ron_mcp_get_wait_resources_and_history_follow_publication() {
+        if run_in_fixture_process("double-ron") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "double-ron"
@@ -4791,6 +4841,9 @@ mod task8_http_human {
     }
 
     async fn actual_room_mjai_double_ron(probe_fifo: bool) {
+        if run_in_fixture_process("double-ron") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "double-ron"
@@ -5572,6 +5625,9 @@ mod task8_http_human {
     async fn standalone_ranked_half_four_mjai_final_double_ron_preserves_wire_and_saved_authority()
     {
         use sqlx::Row;
+        if run_in_fixture_process("double-ron-final") {
+            return;
+        }
         assert_eq!(
             std::env::var("DRIICHI_TASK8_FIXTURE").unwrap(),
             "double-ron-final"
