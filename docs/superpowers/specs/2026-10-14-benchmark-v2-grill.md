@@ -124,11 +124,13 @@ Defer run limits, concurrency, storage quotas, pairing failure semantics, exact 
 
 **Current code evidence:** `frontend/src/game/table-center-pixels.ts` paints per-seat score and round facts into a 2048px Canvas; `three-table-renderer.tsx` memoizes these pixels by score and table facts and forwards a center bitmap to a dedicated Worker; `three-table-worker.tsx` loads the bitmap; `three-table.tsx` separately supplies an accessible score list. `three-table.test.tsx` checks that score changes trigger canvas paint (e.g. 25,000 to 27,600), but that unit test does not prove correct position/orientation or final output pixels on the live GPU.
 
-**Unknown:** Whether the visible symptom was incorrect score value, wrong seat association, missing/blank display, overlap/orientation, clipping, or a stale value; which mode (3p/4p, live/replay/Admin); how often it happened; whether the current build still reproduces it.
+**User clarification (2026-10-14):** Symptom category **B — the score display's position and/or orientation was wrong**, rather than a confirmed numeric score-calculation problem. The exact visible geometry fault has not yet been specified.
+
+**Unknown:** Whether the score appeared beside the wrong player's seat, its digits were rotated incorrectly, or the numbers were shifted/overlapping; which mode (3p/4p, live/replay/Admin); how often it happened; whether the current build still reproduces it.
 
 **Required verification before accepting an Admin-focus UI:** Reproduce or explicitly mark unreproduced on the current build. Compare score and player association to authoritative Match/Room state for every seat in 3p/4p; verify updates through hands and Match completion; check actual rendered pixels/readability at intended viewports and GPU/Worker paths; assert consistency when Admin Observation Focus changes. Maintain read-only Admin privileges. A passing CI result alone is not a visual-fix claim.
 
-**Question for user:** What was the observed symptom? Ask for symptom and context; do not assume a particular root cause. Do not change product code during the design interview.
+**Next clarification:** Determine whether the score was attached to the wrong Seat, rotated/flipped incorrectly, or physically offset/overlapping the display. Do not infer root cause from the symptom alone. Do not change product code during the design interview.
 
 ## Decision discipline
 
