@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview in progress — Rounds 1–2 decided; Round 3 unanswered**
+Status: **Design interview in progress — Rounds 1–3 decided; Round 4 unanswered**
 Owner: eitaar
 Scope: research-oriented improvements to driichi's Benchmark Mode, not implementation approval.
 
@@ -21,13 +21,13 @@ Keep v1's currently shipped behavior as the compatibility baseline. A design ide
 
 **Choice:** Research and experimentation platform.
 
-The goal is broader than ranking bots by playing strength. The platform should support rigorous AI-related experiments and the evaluation of changes to software participants. The specific metrics, evidence standards, and experiment lifecycle are **not decided**.
+The goal is broader than ranking bots by playing strength. The platform should support rigorous AI-related experiments and the evaluation of changes to software participants. The broad evidence categories and Experiment purpose have now been selected in Rounds 2–3; exact statistical methods, data contracts, and Experiment state transitions remain open.
 
 ### D2. Compatibility strategy — DECIDED
 
 **Choice:** Extend existing Benchmark Mode with backward compatibility.
 
-Preserve the semantics of existing v1 Benchmark Runs and existing API consumers. Additive versioned capabilities are preferable to silently changing v1's contract. Round 2 selected an additive `Experiment` concept grouping Benchmark Runs. Its precise lifecycle and comparison rules are still to be decided.
+Preserve the semantics of existing v1 Benchmark Runs and existing API consumers. Additive versioned capabilities are preferable to silently changing v1's contract. Round 2 selected an additive `Experiment` concept grouping Benchmark Runs. Round 3 approved both attaching historic Runs and creating new Runs under an Experiment; matching/compatibility rules and exact lifecycle remain open.
 
 ### D3. Primary deployment — DECIDED
 
@@ -39,19 +39,19 @@ Prioritize one operator controlling a self-hosted instance, rather than building
 
 ### D4. Experiment groups Benchmark Runs — DECIDED (Q4: B)
 
-Introduce **Experiment** as a research-level concept for organizing and comparing multiple existing Benchmark Runs. Preserve Run identity, fixed-roster semantics, recorded Match data, and existing v1 API behavior. Whether an Experiment schedules new Runs, attaches completed Runs, or does both remains open; do not assume this is an automated pipeline.
+Introduce **Experiment** as a research-level concept for organizing and comparing multiple existing Benchmark Runs. Preserve Run identity, fixed-roster semantics, recorded Match data, and existing v1 API behavior. Round 3 decided that an Experiment supports both adding previously completed Runs and creating/running new Runs through the Admin interface. This does not authorize a general workflow pipeline.
 
 ### D5. Paired Evaluation — DECIDED IN PRINCIPLE (Q5: C)
 
-Support comparisons using controlled shared random conditions to reduce the effect of chance. This selects **paired evaluation**, not a specific seeding algorithm. Exact tile-wall equivalence, seat-balance schedule, RNG ownership, and how different bot decisions cause trajectories to diverge remain open. A common seed alone does not establish equivalent observed game states.
+Support comparisons using controlled shared random conditions to reduce the effect of chance. This selects **paired evaluation**, not a specific seeding algorithm. Round 3 requires recorded fixed seeds and equitable rotation of Seats. The exact seed derivation/pair identification, RNG ownership, and interpretation of diverging bot decisions remain open. A common seed alone does not establish equivalent observed game states.
 
 ### D6. Outcome + reliability + statistical evidence — DECIDED (Q6: B)
 
-Report and assess game outcomes, runtime/reliability evidence, and statistical uncertainty. The exact measurement point for latency, treatment of timeouts/disconnects, sampling granularity, confidence-interval method, and collection overhead/retention remain open. This does not select full decision-level trace collection for the initial v2 release.
+Report and assess game outcomes, runtime/reliability evidence, and statistical uncertainty. Round 3 requires Match-level summary data and optional diagnostic logs. The exact measurement point for latency, treatment of timeouts/disconnects, confidence-interval method, and log retention remain open. This does not select full decision-level trace collection for the initial v2 release.
 
 ### D7. Recovery at Match boundaries — DECIDED IN PRINCIPLE (Q7: B)
 
-Support resuming eligible interrupted v2 experiments/runs **only at a verified Match boundary**, preserving already-durable outcomes. No replay-based mid-Match continuation is authorized. Startup behavior, manual vs automatic resumption, seed/retry handling for an incomplete attempt, and idempotency conditions remain open. Keep v1's existing fail-closed interrupted-Run behavior unchanged.
+Support resuming eligible interrupted v2 experiments/runs **only at a verified Match boundary**, preserving already-durable outcomes. No replay-based mid-Match continuation is authorized. Round 3 requires an explicit Admin action to resume after interruption (no automatic resume). Eligibility checks, the seed/retry handling of an incomplete Match, and idempotency conditions remain open. Keep v1's existing fail-closed interrupted-Run behavior unchanged.
 
 ### D8. Web UI is the primary interface — DECIDED (Q8: A)
 
@@ -61,7 +61,29 @@ Make the Admin Web UI the primary mechanism for configuring, observing, and comp
 
 During a running Benchmark, authenticated Admins can inspect **all bots' concealed hands** and switch which player's hand is the observation focus. Focus changes are strictly read-only: they neither impersonate a Participant nor alter a seat, Controller, legal-action visibility, RNG state, or Run progress.
 
-**Existing implementation:** `Audience::BenchmarkAdmin` already exposes all current hands to an authorized Admin. `frontend/src/benchmark.tsx` currently polls the Admin live endpoint at one-second intervals and renders `ThreeTable` with `surface="replay"`; there is no explicit focus selector in the inspected implementation. The design choice still open is how visual focus behaves (hand panel, camera orientation, or both) and how live updates should be transported.
+**Existing implementation:** `Audience::BenchmarkAdmin` already exposes all current hands to an authorized Admin. `frontend/src/benchmark.tsx` currently polls the Admin live endpoint at one-second intervals and renders `ThreeTable` with `surface="replay"`; there is no explicit focus selector in the inspected implementation. Round 3 decided that selecting a bot both changes the 3D table's viewing perspective and enlarges that bot's hand. The intended choice is a read-only presentation transformation (no privileged Player View impersonation). Focus identity across Match seat rotations, view defaults, and live-update transport remain open.
+
+## Decisions — Round 3 (2026-10-14)
+
+### D10. Existing and newly created Runs in an Experiment — DECIDED (Q9: C)
+
+Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Whether old Runs missing seed/provenance can participate in *paired* comparisons, and whether linking is reversible, are open decisions.
+
+### D11. Fixed random seed and balanced seats — DECIDED (Q10: B)
+
+For paired comparisons, record/fix the random seed used for evaluation and **rotate the seats evenly** among Participants across the comparison schedule. Preserve exact pairing metadata; equal seed identifiers are not sufficient proof of equivalent draw trajectories once decisions diverge. The RNG stream protocol, seed schedule and the definition of valid pairing are not yet chosen.
+
+### D12. Match-level reliability evidence with optional diagnostics — DECIDED (Q11: B)
+
+Store outcome and reliability measurements at **Match granularity** by default; expose **detailed logs only when needed**. Diagnostic logging must be controllable and must not be assumed on by default. Latency semantics, log limits and retention, collection overhead, and statistical estimators remain undecided.
+
+### D13. Admin-initiated Match-boundary recovery — DECIDED (Q12: A)
+
+Resumption of eligible interrupted v2 work requires the **Admin to choose Resume** in the UI. Already committed Matches remain valid; an incomplete Match cannot be marked completed and there is no mid-Match restoration. Confirming that the roster, model implementations, and run configuration remain sufficiently compatible, and deciding how an interrupted scheduled pairing is retried, remain open. The legacy v1 interruption policy is unchanged.
+
+### D14. Focused 3D spectator view plus enlarged hand — DECIDED (Q13: C)
+
+For a running Benchmark, Admin may select a bot to **rotate the 3D viewpoint toward that bot** and **enlarge/show that bot's current concealed hand**. Switching observation focus changes presentation only, not projection authorization, who is acting, game state, legal actions, or private information available to bots. The display must maintain correct Player/Seat/score correspondence in 3p/4p while focusing or rotating; the reported normal-Match center-score association defect remains unverified as fixed. Selection persistence and live synchronization are open.
 
 ## Verified v1 baseline (not v2 decisions)
 
@@ -84,39 +106,43 @@ These remain candidates, not implementation mandates:
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Decision tree — Round 3 frontier
+## Decision tree — Round 4 frontier
 
 ```text
 Benchmark v2
-├── D1 Research platform                         [DECIDED]
-├── D2 Additive, v1 backward compatibility       [DECIDED]
-├── D3 Self-hosted first                          [DECIDED]
-├── D4 Experiment groups multiple Runs           [DECIDED]
-│   └── Q9 Experiment composition / comparison   [FRONTIER]
-│       └── Later: Run immutability, lifecycle, model identity, schemas
-├── D5 Paired evaluation                          [DECIDED IN PRINCIPLE]
-│   └── Q10 What conditions are paired?          [FRONTIER]
-│       └── Later: RNG architecture, shuffle streams, seat balance, fairness tests
-├── D6 Outcome + reliability + statistical data  [DECIDED]
-│   └── Q11 Evidence granularity and retention   [FRONTIER]
-│       └── Later: precise metrics, clocks, inferential method, exports
-├── D7 Resume only at verified Match boundaries  [DECIDED IN PRINCIPLE]
-│   └── Q12 Who initiates verified resumption?   [FRONTIER]
-│       └── Later: transaction proofs, failed attempt semantics, limits
-└── D8 Admin Web UI primary + D9 view focus       [DECIDED]
-    └── Q13 What does switching focus change?    [FRONTIER]
-        └── Later: polling vs push, navigation, focus reset, rendering tests
+├── D1–D3 Research, additive compatibility, self-hosted          [DECIDED]
+├── D4 & D10 Experiment grouping + historic/new Runs             [DECIDED]
+│   └── Q14 Historic Run comparability and evidence labels      [FRONTIER]
+│       └── Later: model provenance, immutable snapshots, linking rules, migration
+├── D5 & D11 Paired evaluation with fixed seed + seat rotation   [DECIDED]
+│   └── Q15 Seed ownership and reproducible schedule            [FRONTIER]
+│       └── Later: RNG streams, block generation, paired estimators, verification
+├── D6 & D12 Outcomes/reliability + Match data, optional logs    [DECIDED]
+│   └── Q16 Definition/source of decision latency               [FRONTIER]
+│       └── Later: timeout categories, sample statistics, trace quotas/retention
+├── D7 & D13 Boundary-only, Admin-triggered recovery            [DECIDED]
+│   └── Q17 Failed scheduled Match recovery policy              [FRONTIER]
+│       └── Later: transactional integrity, attempt ID, bounded retry, resume gates
+├── D8–D9 & D14 Admin UI, focus rotation and enlarged hand       [DECIDED]
+│   └── Q18 Which identity does viewer focus track?             [FRONTIER]
+│       └── Later: presentation transform, score orientation tests, live transport
+└── D3 & D10 Self-hosted execution of multiple Runs             [DECIDED]
+    └── Q19 Concurrency of active Runs                          [FRONTIER]
+        └── Later: limits, scheduling, backpressure, CPU/GPU resource isolation
 ```
 
-### Round 3 questions — awaiting owner
+### Round 4 questions — awaiting owner
 
-- **Q9, Experiment composition:** Are Runs manually attached for retrospective comparison, created/scheduled as a new Experiment, or both? Recommendation: both, while retaining independently usable v1 Runs. Clarify which Runs can be paired before designing identifiers.
-- **Q10, pairing semantics:** Pair whole Matches by precommitted seed/deal conditions plus complete seat balancing; attempt a stronger decision-independent RNG deal model; or pair offline observations (without claiming match-level counterfactual fairness)? Recommendation: seeded Match blocks and full seat balance first, with recorded divergence limitations.
-- **Q11, reliability evidence:** Save only per-Run summary counters; persist per-Match aggregates; or persist detailed per-action timing/error events with controlled retention? Recommendation: per-Match metrics with optional bounded diagnostic traces; distinguish server-observed latency from inference-only time.
-- **Q12, boundary resume:** Require explicit Admin approval to restart at a verified boundary; safely auto-resume after restart; or allow a configurable choice? Recommendation: explicit Admin-triggered resume by default.
-- **Q13, Admin observation focus:** Switch only a foreground hand/info panel; rotate the virtual camera to the selected seat; or both? Recommendation: both as selectable controls while retaining a read-only all-hands overview.
+- **Q14, retrospective compatibility and comparability:** A — allow all old Runs and treat comparisons as equivalent; B — allow all old Runs but clearly distinguish paired, unpaired and incompatible comparisons according to verified provenance; C — only accept fully verifiable paired Runs. **Recommendation B:** preserve exploratory analysis without misrepresenting scientific comparability.
+- **Q15, seed authority:** A — Admin enters a single raw seed manually; B — server pre-generates and persists a fixed sequence of per-block seeds; C — allow manual root seed or generated root seed, both expanded into a recorded immutable schedule. **Recommendation C:** reproducibility plus approachable Admin UI; exact RNG stream ownership is a later design question.
+- **Q16, latency definition and source:** A — server-observed request-to-response latency only; B — server-observed latency always, optional bot-supplied inference timing recorded separately; C — rely on bot-reported inference time. **Recommendation B:** compare transport/protocol latency fairly while preserving optional profiling data.
+- **Q17, interrupted scheduled Match:** A — keep an incomplete attempt as failure evidence and reissue the scheduled Match with the same seed and roster, a new Match ID and explicit Admin confirmation; B — skip its planned seed/block as invalid and continue; C — let Admin select retry/skip at each resumption. **Recommendation A:** retained pairing plan plus auditable failed attempts; exact eligibility and retry bounds are deferred.
+- **Q18, observation-focus persistence:** A — track a chosen **Participant ID** across seat rotations; B — track the numbered Seat even when another bot occupies it; C — reset focus every Match. **Recommendation A:** a named bot remains selected even as its Seat changes, with the visual score labels bound to actual seats.
+- **Q19, Run execution concurrency:** A — only one active Run at a time on the self-hosted instance; B — allow multiple active Runs subject to explicit resource limits; C — unconstrained parallel Runs. **Recommendation A initially:** simpler reproducible operations and fewer bot resource conflicts; v2 can later add controlled concurrency without changing the Experiment model.
 
-Defer run limits, concurrency, storage quotas, pairing failure semantics, exact statistics, transport (existing 1 s polling vs SSE), and schema versioning until the decisions above settle their prerequisites.
+### Deferred decisions
+
+Once the Round 4 choices are settled, clarify: model/version identity and engine compatibility, what counts as a valid paired sample, complete fairness treatment of bot-dependent draws, recovery eligibility and idempotent transactions, detailed statistical methods and confidence intervals, storage quotas and retention, polling versus SSE/WebSocket for Admin observation, UI fallback and camera transitions, experiment/Run lifetime and caps, schema/API versioning, and precise visual acceptance tests.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 

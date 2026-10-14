@@ -77,7 +77,7 @@ A bot-only Room mode for controlled evaluation of software Participants across M
 _Avoid_: Ranked mode, bot replacement
 
 **Experiment**:
-A research comparison that groups Benchmark Runs under declared evaluation conditions. Each Run retains its own participant identities, results, and history.
+A research comparison that groups existing Benchmark Runs and may arrange new Benchmark Runs under declared evaluation conditions. Each Run retains its own participant identities, results, and history.
 _Avoid_: Benchmark Run, Match
 
 **Benchmark Run**:
@@ -88,8 +88,12 @@ _Avoid_: Rematch, Replay
 An authenticated Admin observing a live Benchmark Match with access to every player's concealed information. Ordinary Spectators remain limited to the Public View.
 _Avoid_: Spectator, Replay View
 
+**Paired Evaluation**:
+A comparison of software Participants under recorded common random-seed conditions and balanced seat assignments. Matched seeds do not imply identical game trajectories when Participants make different decisions.
+_Avoid_: Identical replay, same match outcome
+
 **Observation Focus**:
-The player whose concealed hand or viewing perspective is emphasized for a Benchmark Admin Observer. Switching focus does not change any Player's identity, Seat, Controller, or game state.
+The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Switching focus does not change any Participant's identity, Seat, Controller, or game state.
 _Avoid_: Controller, Player View
 
 **Kyoku**:
