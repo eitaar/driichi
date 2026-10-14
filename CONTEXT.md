@@ -73,7 +73,7 @@ A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby,
 _Avoid_: Hidden room, ranked room
 
 **Benchmark Mode**:
-A bot-only Room mode for controlled evaluation of software Participants across Matches, including comparison of playing strength and research experiments. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play, but missing players are never automatically supplied.
+A bot-only Room mode for controlled evaluation of software Participants across Matches, including comparison of playing strength and research experiments. A Benchmark uses its selected three-player **or** four-player game mode exclusively; starting either does not automatically execute the other. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play subject to game-mode restrictions, but missing players are never automatically supplied.
 _Avoid_: Ranked mode, bot replacement
 
 **Experiment**:
@@ -109,7 +109,7 @@ The declared conditions defining which Benchmark Runs may be compared in an Expe
 _Avoid_: Annotation, Admin display preferences
 
 **Diagnostic Log**:
-Optional detailed evidence collected during a Benchmark, governed by storage and retention limits. Missing detail is acknowledged separately from durable Match statistics.
+Optional detailed evidence collected during a Benchmark, governed by storage and retention limits. Bodies whose secrets cannot safely be redacted are omitted and marked as such. Missing detail is acknowledged separately from durable Match statistics.
 _Avoid_: Benchmark result, Replay
 
 **Trusted Bot Declaration**:
@@ -117,15 +117,23 @@ Code/build or checkpoint identity claimed for one software Participant by an aut
 _Avoid_: Runtime attestation, measured binary
 
 **Paired Block**:
-A scheduled group of three-player or four-player Matches balancing Seat assignments and common seed conditions across candidate model comparisons. Only completely recorded comparison blocks contribute to paired effect statistics.
+A complete A/B comparison under one chosen game mode and matched seed conditions: in 3p, three Matches for A and three for B (six total); in 4p, four for A and four for B (eight total). Each Candidate Model occupies every Seat once against the fixed reference roster. Only fully recorded A/B blocks contribute to paired effect statistics.
 _Avoid_: Kyoku, single Match
 
 **Descriptive-only Run**:
-A verified Benchmark Run attached to an Experiment whose results do not meet the Experiment's paired fixture conditions. It remains visible as descriptive evidence but is excluded from paired effect and paired uncertainty calculations.
+A verified Benchmark Run attached to an Experiment whose results do not meet the Experiment's paired fixture conditions. It appears separately from paired statistics and is excluded from paired effect and paired uncertainty calculations.
 _Avoid_: Unverified Run, Paired Block
 
+**Blocked Experiment**:
+An Experiment awaiting a potentially recoverable prerequisite, which an Admin may resolve before explicit resumption.
+_Avoid_: Terminal failure, Cancelled Experiment
+
+**Failed Experiment**:
+An Experiment terminated by exhausted Match retries or an unrecoverable integrity error; existing results and failure evidence remain accessible.
+_Avoid_: Blocked Experiment, Cancelled Experiment
+
 **Paired Effect**:
-The measured difference between two Candidate Models across complete matched Paired Blocks. Mean placement is the primary playing-strength measure, with relative score and first-place rate as additional measures.
+The measured difference between two Candidate Models across complete matched Paired Blocks of one game mode. Mean placement is the primary playing-strength measure, with relative score and first-place rate as additional measures; uncertainty uses block-level bootstrap intervals.
 _Avoid_: Single-Match ranking, guaranteed model superiority
 
 **Reference Bot**:
@@ -137,7 +145,7 @@ One of two software implementations, A or B, evaluated in the same candidate Sea
 _Avoid_: Participant identity, Bot Token
 
 **Match Reset Acknowledgement**:
-A trusted, authenticated software Participant's explicit declaration that it has returned to a clean initial Match state under its recorded build/checkpoint identity.
+A trusted, authenticated external software Participant's explicit declaration that it has returned to a clean initial Match state under its recorded build/checkpoint identity. For Built-in Bots, the server records its own reset operation.
 _Avoid_: Reconnection, process restart proof
 
 **Observation Focus**:
