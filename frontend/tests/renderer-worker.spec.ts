@@ -10,6 +10,7 @@ test.use({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
 
 test("local surface image renders and clears in the actual product Worker under unchanged CSP", async ({ page }) => {
   const uploaded: string[] = [];
+  page.on("console", message => { if (message.text().startsWith("[native-clear-material]")) console.info(message.text()); });
   page.on("request", request => { if (request.method() !== "GET") uploaded.push(request.url()); });
   await page.addInitScript(() => {
     const trace: unknown[] = [];

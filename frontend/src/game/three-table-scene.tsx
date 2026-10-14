@@ -508,6 +508,11 @@ function SceneReadiness({
         return;
       }
       reported.current = true;
+      const felt = scene.getObjectByName("table-felt") as unknown as { material: MeshPhongMaterial } | undefined;
+      if (felt) {
+        const material = felt.material;
+        console.info("[native-clear-material]", JSON.stringify({ revision: frameRevision, frame: gl.info.render.frame, map: Boolean(material.map), color: material.color.getHexString(), version: material.version }));
+      }
       const tableRatios = projectedTableRatios(scene, camera);
       onRenderReady({
         tileCount,
