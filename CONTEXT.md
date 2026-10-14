@@ -104,8 +104,16 @@ _Avoid_: Bot Token, A/B candidate, runtime attestation
 The refusal of a Bot Participant to enter a Benchmark because its advertised capability/protocol version is incompatible with the required Benchmark version. It is an admission failure, not evidence that the Bot played or failed a Match.
 _Avoid_: Disconnect during Match, invalid Game Action
 
+**Benchmark Fixture**:
+An immutable planned assignment of a Benchmark Match's exact rules, Bot Participants, Seats and deterministic seed/stream identity. A Fixture is a plan and may have more than one failed Attempt, but at most one successfully committed Match outcome.
+_Avoid_: Match Attempt, Replay, scheduled Run
+
+**Benchmark Protocol Preflight**:
+A non-mutating assessment of a Bot Participant's declared compatibility with the required Benchmark protocol, which can be Compatible, Incompatible or Unknown when evidence cannot be obtained.
+_Avoid_: Runtime attestation, connection health, completed Match
+
 **Paired Evaluation**:
-A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched planned seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
+A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
 _Avoid_: Identical replay, same match outcome
 
 **Benchmark Match Attempt**:
