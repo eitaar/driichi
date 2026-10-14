@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview in progress — Rounds 1–5 decided; Round 6 unanswered**
+Status: **Design interview in progress — Rounds 1–6 decided; Round 7 unanswered**
 Owner: eitaar
 Scope: research-oriented improvements to driichi's Benchmark Mode, not implementation approval.
 
@@ -67,7 +67,7 @@ During a running Benchmark, authenticated Admins can inspect **all bots' conceal
 
 ### D10. Existing and newly created Runs in an Experiment — DECIDED (Q9: C)
 
-Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. Round 5 requires trustworthy code/build and checkpoint provenance alongside verified game conditions; how to attest the actual running artifact and whether linking is reversible remain open.
+Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. Round 6 adopts token-authenticated Bot self-declarations as sufficient artifact identity under the owner's trust policy. The binding/lifecycle of declarations and linking reversibility remain open.
 
 ### D11. Fixed random seed and balanced seats — DECIDED (Q10: B)
 
@@ -89,7 +89,7 @@ For a running Benchmark, Admin may select a bot to **rotate the 3D viewpoint tow
 
 ### D15. Strict Experiment registration — DECIDED (Q14: C)
 
-Only a Benchmark Run whose **relevant experiment conditions are fully verifiable** can be admitted to an Experiment, whether it was created by that Experiment or previously completed. In particular, missing or merely invented seed/agent provenance must never be backfilled and presented as verified. Existing v1 history is **preserved and still accessible outside Experiment**, regardless of eligibility. Verifiability is a product eligibility gate, not a claim of mathematical equality of different bot trajectories. What evidence counts as sufficient verification is the next decision.
+Only a Benchmark Run whose **relevant experiment conditions are fully verifiable** can be admitted to an Experiment, whether it was created by that Experiment or previously completed. In particular, missing seed/agent provenance must not be fabricated or backfilled. Authenticated Bot self-declarations are accepted within the selected trust model, but are not independently measured execution evidence. Existing v1 history is **preserved and still accessible outside Experiment**, regardless of eligibility. Verifiability is a product eligibility gate, not a claim of mathematical equality of different bot trajectories. What evidence counts as sufficient verification is the next decision.
 
 **Code constraint:** Current v1 `BenchmarkRunRecord` captures roster/seat/results, status and game mode but does not itself contain a recorded random seed or immutable bot/checkpoint and engine provenance; therefore existing stored v1 Runs do not automatically satisfy this gate.
 
@@ -117,11 +117,11 @@ Within each Experiment, at most **one Experiment-managed Benchmark Run** is acti
 
 ## Decisions — Round 5 (2026-10-14)
 
-### D21. Verified agent build and model artifact evidence — DECIDED (Q20: B)
+### D21. Trusted agent build and model artifact declarations — DECIDED (Q20: B, refined by Q27: C)
 
-A Run is eligible for strict Experiment membership only if **both** its game conditions (rules/mode, effective seeds, engine identity/version and time control) **and** each participating agent's executable/build identity and, when applicable, exact model checkpoint identity have trustworthy recorded evidence. A Participant ID, display name, Bot Token, user-typed hash, or unauthenticated model metadata alone is insufficient. Existing v1 Runs with absent evidence remain accessible as v1 history but do not gain a fabricated verification status.
+Experiment eligibility requires recorded game conditions, engine revision, effective seed, and an identity declaration for each Bot executable/build and model checkpoint. Under the operator's full-trust Bot Token policy selected in Round 6, **an authenticated Bot's own declared hashes are sufficient**. A Participant ID, display name, or token alone is not a checkpoint identity. Do not fabricate missing legacy evidence.
 
-**Unresolved verification boundary:** An external MJAI/MCP process can report a hash without actually running that artifact. How the operator establishes the identity of the executable/checkpoint that actually served a response is **not yet decided**. Do not treat self-declared strings as independently verified proof.
+The server records the issuer of the claim and the claimed hash. **A trusted declaration does not independently prove that the claimed executable actually ran.** Do not add independent remote attestation, measured local launchers, binary signatures, or other heavyweight proof requirements. This resolves the previously undecided artifact-attestation boundary.
 
 ### D22. Deterministic per-Match seeds and independent RNG streams — DECIDED (Q21: B)
 
@@ -149,6 +149,40 @@ When the Experiment's **first Match starts**, freeze its comparability-defining 
 
 Detailed diagnostic logs have **Admin-configurable retention time and capacity quotas** with conservative self-hosted defaults. Durable Match-level outcome and reliability summaries and failure/Attempt records survive expiry or quota enforcement. The precise quota scope, quota-exceeded behavior, redaction and export/archival policy remain open.
 
+## Decisions — Round 6 (2026-10-14)
+
+### D28. Admin-issued Bot Token implies trusted artifact declarations — DECIDED (Q27: C)
+
+The operator issues Bot Tokens only to trusted parties. An authenticated MJAI/MCP Bot's self-declared code/build hash and checkpoint hash are **sufficient for Experiment admission** under this chosen local trust policy. Do not create a remote attestation or mandatory launcher layer. Because one Token may authenticate several Participants, the declared metadata must still identify the corresponding Participant. **This is a claim from a trusted operator, not independent proof of which model was executed.** The phrase "Verified Benchmark Run" means *accepted under the operator's trust policy and complete recorded conditions*, not independently measured binaries.
+
+### D29. Balanced seed/seat comparison blocks — DECIDED (Q28: B)
+
+Use blocks of 3 Matches in 3p and 4 Matches in 4p, balancing Seat assignments for the relevant Participants and recording the distinct planned Match seeds. Reuse the identical block seed/Seat plan when comparing candidate versions. Divergent Bot decisions still prevent claims of identical full game trajectories. The candidate/reference roster and missing-block statistics remain open.
+
+### D30. Valid-response timing and failures are separate — DECIDED (Q29: B)
+
+Summarize only actual observed first responses and accepted legal actions in timing distributions. Separately show invalid-action rate, timeout rate, missing-response rate and disconnection rate, with explicit denominators and missingness; never convert failed decisions into fictional successful timing observations.
+
+### D31. Strict Match reset gate before retries — DECIDED (Q30: A)
+
+Before Admin resumes an interrupted scheduled Match, check the same declared Bot build/checkpoint identities and confirm a **fresh, clean Match-level Bot state**. Reconnection alone is not clean-reset evidence. A light token-authenticated reset acknowledgement consistent with D28 is a candidate, not yet approved; the exact reset mechanism is the next frontier. Existing maximum of 3 Attempts remains.
+
+### D32. SSE current-state snapshots — DECIDED (Q31: B)
+
+An authenticated Admin receives a complete current snapshot on SSE connect or reconnect. Later updates contain bounded/coalesced **latest-state snapshots** with revisions, rather than an assumption that the viewer receives every intermediate action or must reconstruct all state from deltas. Polling is retained as a fallback. Admin authorization, revocation and private hand safety remain mandatory.
+
+### D33. Pause/Cancel after persisted current Match — DECIDED (Q32: A)
+
+Allow the active Match to finish and save its result before fulfilling an Experiment Pause or Cancel. Never abort a Match simply because the Admin presses these controls. Pausing, cancellation terminality, incomplete blocks, and the queued Run lifecycle remain to be defined.
+
+### D34. Quota exhaustion truncates optional diagnostics — DECIDED (Q33: B)
+
+When optional detailed diagnostic storage reaches its quota, stop collecting **only optional details**, keep durable Match statistics and failure/Attempt evidence, and display that diagnostic data is incomplete. Do not silently drop durable results or stop scoring merely for optional log exhaustion.
+
+### D35. Smooth Admin focus and reduced-motion handling — DECIDED (Q34: B)
+
+Selecting a different Bot animates a short smooth 3D perspective change while showing that Bot's enlarged hand. Honor Reduced Motion by switching without animation. Observation Focus follows the **Participant identity** across rotated Seats. The center scoreboard must continue to map each score to the correct Seat throughout the transition; the reported normal-Match wrong-seat visual defect is still unverified as fixed.
+
 ## Verified v1 baseline (not v2 decisions)
 
 - A Benchmark Run has a fixed participant roster, rotating seats, and 1–1,000 completed and durably recorded Matches.
@@ -170,49 +204,47 @@ These remain candidates, not implementation mandates:
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Decision tree — Round 6 frontier
+## Decision tree — Round 7 frontier
 
 ```text
 Benchmark v2
-├── D1–D3 Research, additive v1, self-hosted                          [DECIDED]
-├── D4,D10,D15,D21 Strict verified Runs, historic + new              [DECIDED]
-│   └── Q27 Attestation of actual Bot executable/checkpoint         [FRONTIER]
-│       └── Later: schema/evidence chain, eligibility test, legacy migration
-├── D5,D11,D16,D22 Paired seeds, balanced seats, split RNG          [DECIDED]
-│   └── Q28 Pairing block and shared fixture schedule                [FRONTIER]
-│       └── Later: statistical sample units, derivation contract, RNG tests
-├── D6,D12,D17,D23 Dual timing metrics + reliability evidence       [DECIDED]
-│   └── Q29 Treatment of invalid/missing actions in stats            [FRONTIER]
-│       └── Later: estimators, event clocks, statistical confidence
-├── D7,D13,D18,D24 Admin Resume, 3 Attempts, same seed/roster       [DECIDED]
-│   └── Q30 If clean Bot reset cannot be verified                   [FRONTIER]
-│       └── Later: reset mechanism, transactions, exhausted status
-├── D8,D9,D14,D19,D25 Admin SSE view, bot-focused 3D + hand         [DECIDED]
-│   ├── Q31 SSE snapshot vs delta update policy                     [FRONTIER]
-│   │   └── Later: authorization, slow clients, bounded revisions
-│   └── Q34 Focus transition and accessibility                      [FRONTIER]
-│       └── Later: scoreboard Seat correspondence, visual regression tests
-└── D10,D20,D26,D27 Sequential frozen Experiment, log quotas       [DECIDED]
-    ├── Q32 Pausing/canceling active Experiment                      [FRONTIER]
-    │   └── Later: durable queue transitions and Run status model
-    └── Q33 Quota exhaustion behavior                                [FRONTIER]
-        └── Later: retention policy defaults, export rules
+├── D28 trusted Bot Token declarations                   [DECIDED]
+│   └── Q35 declaration identity and lifecycle           [FRONTIER]
+│       └── Later: schema, hash consistency/revocation
+├── D29 seeded and Seat-balanced blocks                  [DECIDED]
+│   ├── Q36 candidate vs reference comparison roster     [FRONTIER]
+│   │   └── Later: paired statistical estimators
+│   ├── Q37 incomplete paired blocks                     [FRONTIER]
+│   └── Q38 RNG derivation versioning                    [FRONTIER]
+├── D30 separate reliability failure metrics             [DECIDED]
+│   └── Q39 server timing clock boundary                 [FRONTIER]
+├── D31 verified clean Bot reset; 3 Attempt cap           [DECIDED]
+│   ├── Q40 lightweight reset evidence                   [FRONTIER]
+│   └── Q41 exhausted retry policy                       [FRONTIER]
+├── D32 SSE latest snapshots; D35 animated focus         [DECIDED]
+│   └── Q42 update rate and coalescing                    [FRONTIER]
+├── D33 persisted Match boundary Pause/Cancel            [DECIDED]
+│   └── Q43 queued Run / partial block disposition        [FRONTIER]
+└── D34 durable summaries on diagnostic quota            [DECIDED]
+    └── Q44 diagnostic quota scope                       [FRONTIER]
 ```
 
-### Round 6 questions — awaiting owner
+### Round 7 questions — awaiting owner
 
-- **Q27, trust boundary for Bot artifact verification:** A — allow only Bots under a locally managed runner that can verify the executable/checkpoint used; B — support those local runners plus external MJAI/MCP agents **only if** trusted attestation of the actually running artifact is available; C — accept externally supplied hashes as verified. **Recommendation B** as a compatibility goal, but reject external Bots until a real trust chain is present; signed self-assertion alone is not independent verification.
-- **Q28, unit of Paired Evaluation:** A — repeat a single shared Match seed and rotate the Seats; B — use a seat-balanced 3/4-Match *block* with a fixed set of distinct derived Match seeds, repeating the same plan across compared versions; C — permit arbitrary Matches under a shared root seed. **Recommendation B:** a verifiable comparison block without assuming identical bot-dependent draws.
-- **Q29, failures in response statistics:** A — replace timeouts/invalid actions with a penalty duration inside an average; B — report latency distributions for observed responses/accepted actions and **separate** invalid action, timeout, missing-response and disconnect rates with explicit denominators; C — discard failures from statistics. **Recommendation B:** do not imply an unsuccessful decision had a legal-action latency.
-- **Q30, insufficient Bot reset evidence before retry:** A — block resumption until matching builds/checkpoints and a clean Match-level reset are verified; B — allow an Admin override but mark the result unpaired/noncomparable; C — trust reconnection as proof of reset. **Recommendation A:** preserve strict Experiment evidence without depending on guesswork.
-- **Q31, SSE update semantics:** A — full private snapshot for every revision; B — snapshot on connect/reconnect plus bounded coalesced latest-state snapshots with revision IDs and polling fallback; C — incremental deltas requiring client reconstruction. **Recommendation B:** fewer staleness and backpressure problems, plus explicit authorization before sensitive sends.
-- **Q32, Pause/Cancel boundary:** A — apply pause/cancel only **after the current Match is durably finalized**; B — abort immediately; C — wait until the current entire Run finishes. **Recommendation A:** preserves Match result integrity and avoids modifying v1 lifecycle.
-- **Q33, optional diagnostic log quota exceeded:** A — stop the Experiment to preserve complete traces; B — stop optional detail collection, retain mandatory Match summaries and failure evidence, and visibly mark diagnostics truncated; C — silently discard the oldest details. **Recommendation B:** mandatory results remain durable even when optional detail storage fills.
-- **Q34, Admin observation transition:** A — instantly switch the selected bot's table orientation; B — short smooth transition with reduced-motion support, maintaining authoritative Seat/score association; C — automatically cycle between Bots. **Recommendation B:** user-friendly without compromising accessibility or correct score-to-Seat labels.
+- **Q35, trusted Bot hash declaration lifecycle:** A — one declaration per Bot Token, independent of Participants; B — each Participant provides its own build/checkpoint declaration when a Run is admitted, stored with issuer identity and checked unchanged at resume; C — require a signed claim for every action. **Recommendation B**: multiple bots may share a token; do not add per-action proof machinery.
+- **Q36, which versions are compared:** A — compare candidate A vs candidate B with the same other 2/3 reference Bots and the same seed/Seat block; B — allow all bot positions to vary as a *roster-level* study; C — compare arbitrary rosters without controls. **Recommendation A**, the clearest default causal contrast.
+- **Q37, incomplete paired blocks:** A — include only complete paired blocks in paired-effect statistics while preserving completed Match summaries and missingness indicators; B — statistical weighting of incomplete blocks; C — swap in new seeds without disclosure. **Recommendation A**, protect pair integrity.
+- **Q38, reproducible seed algorithm:** A — record only Root Seed and assume future engine upgrades reproduce the stream; B — save a versioned seed derivation contract, stream labels and engine/RNG version; C — record only Git SHA without a specific derivation contract. **Recommendation B**.
+- **Q39, server timing start:** A — clock starts on dispatch to the Bot Controller, ends separately at first response and at accepted legal Game Action, with transport overhead explicitly included; B — start when the Decision is created (includes queue delays); C — Bot inference timestamps only. **Recommendation A**.
+- **Q40, clean Match reset assurance:** A — explicit authenticated Bot declaration that it reset to its initial Match state for the same declared checkpoint; B — process restart/launcher verification; C — reconnect is reset evidence. **Recommendation A**, consistent with owner-trusted Tokens and no new attestation service.
+- **Q41, after 3 failed Attempts:** A — mark the planned Match and Experiment blocked/failed and halt the queue, requiring a separate Experiment for changed conditions; B — leave an explicit missing fixture and continue later blocks with incomplete-pairing status; C — silently skip. **Recommendation A**.
+- **Q42, SSE observation rate:** A — send every change; B — configurable bounded snapshot refresh, coalescing intermediate revisions but always delivering final/terminal state; C — one-second refresh only. **Recommendation B**.
+- **Q43, paused and canceled Experiments:** A — Pause preserves queued Runs and can be resumed by Admin; Cancel is terminal while retaining results and labeling incomplete blocks; B — Pause deletes queued Runs; C — Cancel deletes all results. **Recommendation A**.
+- **Q44, diagnostic quota jurisdiction:** A — per-Experiment limit only; B — self-host-wide cap with optional per-Experiment caps; C — no global limit. **Recommendation B**.
 
 ### Deferred decisions
 
-After Round 6, define artifact attestation and model-reset proof; exact RNG and seed-derivation versioning; paired statistical unit, 3p-vs-4p comparability and confidence intervals; accepted-action timing denominators; retry idempotency and terminal status; SSE auth/revisions/slow viewer behavior; Experiment linking/removal, queue status and UI; diagnostics limits/redaction/export; API/schema upgrades and runtime compatibility; and actual pixel-level acceptance checks for the already reported ordinary-Match score-to-Seat misassignment.
+After Round 7: statistics/uncertainty and A/B effect sizes once comparison roles are settled; seed/RNG implementation and engine-version compatibility; Bot metadata and reset acknowledgement contract; retry/queue transactions and idempotency; SSE authorization, slow clients and reconnection; export/retention/redaction details; migration/API compatibility; camera-score correctness visual tests. Do not represent trusted Bot self-declarations as independent measurements.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 

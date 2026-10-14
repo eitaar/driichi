@@ -81,8 +81,8 @@ A research comparison of eligible verified Benchmark Runs, which may include pre
 _Avoid_: Benchmark Run, Match
 
 **Verified Benchmark Run**:
-A Benchmark Run whose game conditions and each participating Bot's build or model checkpoint can be checked against trustworthy evidence, rather than inferred from display names, self-declarations, or incomplete history.
-_Avoid_: All historical Runs, manually asserted compatibility
+A Benchmark Run with complete recorded game conditions and trusted Bot Token-authenticated build/checkpoint declarations. Identity is accepted under the operator's trust policy rather than independently measured at runtime.
+_Avoid_: All historical Runs, independent binary attestation
 
 **Benchmark Run**:
 A fixed roster's series of one or more completed and recorded Matches, with seats rotated between Matches. Aborted or unrecorded Matches do not count toward its target; results belong to each Participant rather than the Bot Token it uses.
@@ -93,7 +93,7 @@ An authenticated Admin observing a live Benchmark Match with access to every pla
 _Avoid_: Spectator, Replay View
 
 **Paired Evaluation**:
-A comparison of software Participants under recorded common random-seed conditions and balanced seat assignments. Its root seed defines planned Match randomness across separate domains; matched seeds do not imply identical trajectories when Participants make different decisions.
+A comparison of software Participants using recorded, Seat-balanced blocks of Matches with matched planned seed conditions. Equal seed schedules do not mean equal trajectories when Bot decisions differ.
 _Avoid_: Identical replay, same match outcome
 
 **Benchmark Match Attempt**:
@@ -109,8 +109,16 @@ The defined conditions governing which Benchmark Runs can be compared in an Expe
 _Avoid_: Annotation, Admin display preferences
 
 **Diagnostic Log**:
-Optional detailed diagnostic evidence collected during a Benchmark, subject to capacity and retention limits. It is distinct from durable Match results and failure records.
+Optional detailed evidence collected during a Benchmark, governed by storage and retention limits. Missing detail is acknowledged separately from durable Match statistics.
 _Avoid_: Benchmark result, Replay
+
+**Trusted Bot Declaration**:
+Code/build or checkpoint identity claimed by a software Participant authenticated with an Admin-issued Bot Token. It is trusted by the operator but not independently proven to be the running executable.
+_Avoid_: Runtime attestation, measured binary
+
+**Paired Block**:
+A scheduled group of three-player or four-player Matches balancing Seat assignments and shared seed conditions for comparison.
+_Avoid_: Kyoku, single Match
 
 **Observation Focus**:
 The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Focus follows that Participant when Seats rotate between Matches; it never changes the Participant's identity, Seat, Controller, or game state.
