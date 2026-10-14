@@ -1,10 +1,10 @@
 # driichi UI/UX — Grill with Docs (Rounds UI-1–UI-5; final design review)
 
 Date: 2026-10-14
-Status: **All five UI rounds Q237–Q300 (64 UX decisions) recorded and consistency-reviewed; interview closed; awaiting explicit final owner DESIGN signoff. No product implementation authorized.**
+Status: **All five UI rounds Q237–Q300 (64 decisions) plus the owner's subsequent normal-game action placement override UI-D65 are documented; UI interview closed; updated design pending final owner DESIGN signoff. No product implementation authorized.**
 Scope: shadcn/ui (Base UI) + Tailwind-based English-only redesign for **all** public/admin pages, starting with Run-first Benchmark Dashboard. One public all-pages cutover; no planned old-UI rollback. Dedicated existing Three.js/Pixi Mahjong renderer remains.
 
-**Read first:** binding UI-D1–UI-D64 decisions and final consistency audit below override any later **historical/archived question options**, particularly the rejected original UI-3 A/B/C definitions. Old "pending/frontier" text in archived proposal sections is not a new open decision.
+**Read first:** latest owner **UI-D65 overrides only the normal-game action-button PLACEMENT clauses** of UI-D31 (Q267 B), UI-D48 (Q284 B), and UI-D61 (Q297 A). The original 64 question choices are retained as historical design decisions and all their *unrelated* requirements remain active. The latest authority map and consistency audit below supersede any older archived options, particularly the rejected original UI-3 A/B/C definitions. Old "pending/frontier" text in archived proposal sections is not a new open decision.
 
 ## Dependencies and explicit cancellations
 
@@ -204,9 +204,9 @@ After Room lookup, **Step 1** presents Room information and name entry; **Step 2
 
 Present **Seat, Participant name, connection/readiness state** in a clear list rather than a centerpiece Seat diagram. Show current Room code and the next allowed action; never synthesize Ready from mere connection or automatically fill a missing Seat. **Q283 B** chooses large Character/Participant cards, with **Q296 A** stable Seat order.
 
-### UI-D31. Responsive normal Match action panel — DECIDED (revised Q267 B)
+### UI-D31. Responsive normal Match action panel — PLACEMENT SUPERSEDED BY UI-D65 (historical revised Q267 B)
 
-Keep the real live 3D Mahjong table primary. **Desktop:** legal action panel adjacent to the table. **Mobile:** action buttons in a reachable bottom Dock. Display current legal actions, timing, winds and correct Participant/Seat/score semantics without leaking Admin all-hands view to guests. **Q284 B/Q297 A** specify action-only expansion into a reserved side region, without resizing the game table.
+**Historical placement, now withdrawn:** desktop side Action Panel and mobile bottom Dock are NOT active requirements. **Latest owner UI-D65** returns to the shipped/Mahjong Soul-style pattern: **only when a Decision needs a button, display the relevant legal action buttons directly above the player's concealed hand on BOTH desktop and mobile.** Continue using the real 3D table, server-authoritative allowed actions, Decision timer, winds/scores, accessible keyboard/touch controls and player vs Admin hand privacy. Ordinary clickable tiles for valid discard choices remain. No extra always-visible side control region.
 
 ### UI-D32. Replay is navigated by Kyoku — DECIDED (revised Q268 B)
 
@@ -240,7 +240,7 @@ Desktop priority: **large real 3D table and compact Leaderboard first**. Analyti
 
 - Main desktop: one real table + Leaderboard, below it **4 default-visible** genuine-result charts in a primary+secondary hierarchy and Drawer-based results/Replay history.
 - Mobile: default **chart-focused**, grouped expanded Performance/Consistency sections; **no inline live table**. Explicit tap `Open Live Table` opens one real fullscreen overlay; close restores context. Keep User/Q244 C and Q256 B both operative.
-- Public Home: two-column functional Join + existing game/character visuals; join is a **two-step** name then Character flow; Lobby uses a **Participant list**; normal 3D gameplay has **side control rail on desktop, bottom Dock on mobile**.
+- Public Home: two-column functional Join + existing game/character visuals; join is a **two-step** name then Character flow; Lobby uses a **Participant list**; normal 3D gameplay keeps **the 3D tabletop, clickable hand and action buttons appearing only when required just above the concealed hand on desktop AND mobile** (latest UI-D65 supersedes former side rail/Dock).
 - Replay: **Kyoku-first**; Admin Rooms **Master–Detail**. App-shell & peripheral HUD respond to System/Light/Dark, assets are not recolored. **Toast + inline errors** by persistence.
 - Breaking Benchmark Bot Protocol v2 and all A/B Experiment features remain **canceled**. Real unchanged MJAI/MCP/Built-in contracts, SQLite and existing Run semantics prevail.
 - No implementation or UI source changes have been approved. **Q275–Q300 are all decided**; no new owner questionnaire is pending. Final owner design signoff is distinct from implementation permission.
@@ -285,9 +285,9 @@ Under the existing Room Join path, use local **Step 1: Room confirmation/name** 
 
 Show Seat, Participant name, actual presence/readiness and larger existing Character art in an easy-to-scan **vertical card list**; do not use a central Seat-map-only page. Each Seat identity remains visible; **Q296 A** requires fixed East/South/West/North Seat ordering, with state changes inside cards.
 
-### UI-D48. Gameplay action panel is contextual only — DECIDED (Q284 B)
+### UI-D48. Gameplay action panel is contextual only — PLACEMENT SUPERSEDED BY UI-D65 (historical Q284 B)
 
-Desktop legal-action side panel appears **only when there is an actionable Decision**; outside that period, show small table-level status/timer cues and preserve more space for the real Mahjong renderer. On mobile the approved bottom action Dock is likewise contextual. Any legal action must remain reachable by keyboard/touch and distinguish expired/blocked choices; **Q297 A** reserves a right side region for a contextual slide-in action panel without resizing the real table. Do not block gameplay or show Admin concealed information to guests.
+**Still binding:** controls appear only for relevant, server-authorized actionable Decisions, remain reachable by keyboard/touch, distinguish expired/blocked choices, and must never leak Admin concealed information. **Superseded placement:** no desktop right side panel, no mobile separate bottom Dock and no reserved right-hand slide-in margin. **UI-D65** uses one contextual action-button strip immediately **above the local hand** at all supported viewport sizes, modeled on current gameplay placement and Mahjong Soul's general interaction pattern, not on copying its proprietary visual assets. Idle shows no row of action buttons; subtle timing/connection cues may remain.
 
 ### UI-D49. Replay navigation is vertical Kyoku chapters on desktop, dropdown on mobile — DECIDED (Q285 B)
 
@@ -350,8 +350,10 @@ Home desktop: Join + existing character/game art split.
 Home mobile: Join FIRST → character visuals below.
 Room Join: same URL, Step 1 name/Room, Step 2 Character, explicit Back.
 Lobby: vertical LARGE Character/Participant cards with Seat/presence/ready.
-Normal Match: existing 3D table, action panel only when Decision pending;
-              desktop side, mobile bottom Dock. HUD semitransparent themed frame.
+Normal Match: existing 3D table and clickable hand;
+              ONLY relevant action buttons above player's concealed hand (PC + phone);
+              no side panel, reserved right region or separate mobile bottom Dock.
+              HUD semitransparent themed frame.
 Replay: desktop vertical Kyoku chapter list; mobile Kyoku dropdown;
         event controls within selected Kyoku.
 Admin Rooms: desktop Master–Detail, mobile List → Room Detail/Back.
@@ -381,9 +383,9 @@ Click/tap/keyboard activation on a chart datapoint representing a specific persi
 
 Large Character/Participant cards remain in **East → South → West → North** order where actual game Seats exist. Readiness and connection changes update each card's content and accessible announcement without reordering. In 3p use only legitimate seats, not a fake fourth slot. Seat is distinct from permanent Participant identity.
 
-### UI-D61. Contextual action panel slides into reserved side region — DECIDED (Q297 A)
+### UI-D61. Contextual action panel slides into reserved side region — SUPERSEDED BY UI-D65 (historical Q297 A)
 
-On desktop, reserve sufficient side space to show the **legal-Decision-only** contextual Action Panel when it appears; panel slides in/out without unexpectedly resizing or shifting the real 3D table during critical actions. When idle, it is hidden while small timer/status cues can remain. Mobile keeps the approved contextual bottom Action Dock. Preserve legal action reachability, timeout behavior, focus and disabled/offline truth.
+**Historical implementation proposal withdrawn by latest owner UI-D65.** Do **not** reserve side space or slide a side Action Panel in; the owner wants the **current gameplay / Mahjong Soul-like action row** immediately **above the local concealed hand**, visible only for relevant authorized Decisions. Mobile is the same spatial relationship (hand + above-hand actions), not a separately anchored bottom Dock. Preserve timer, legal action focus/disabled/offline truth, adequate target sizes and unobscured tiles/score; keep the 3D table geometry stable when controls appear. No new Bot protocol or game decision semantics.
 
 ### UI-D62. Kyoku jump preserves playback state — DECIDED (Q298 B)
 
@@ -397,15 +399,34 @@ Two-step Room Join stays **one URL**. Its visible in-app `Back` from Character s
 
 A mobile Run-detail screen continues to display the recognizable `Open Live Table` action **disabled** whenever no active live Match exists. Label the reason (e.g., `Waiting for next Match`, `Run Stopped`, `Run Completed`, `Run Interrupted`), distinguish transient between-Match periods from terminal Runs, and link `Watch latest Replay` **only if persisted Replay evidence exists**. Do not synthesize a live frame from stale/recorded results. When live and Admin authorized, explicit action opens the same one real fullscreen responsive overlay; closing returns to charts and removes private-hand viewer.
 
+## Latest owner UI/UX override — AFTER Q300 (2026-10-14)
+
+### UI-D65. Normal gameplay: context-sensitive action buttons ABOVE the concealed hand — DECIDED (latest explicit owner instruction)
+
+**Owner wording:** `今の状態/ジャン魂の状態の、必要時にのみ手牌の上にアクションボタンを表示する形式に戻して` (minor input typo normalized in this record).
+
+This is a **later and more specific owner directive**, overriding earlier layout decisions UI-D31 (Q267 B), UI-D48 (Q284 B), UI-D61 (Q297 A) **only to the extent they specified a separate right-side action panel, reserved side space, desktop slide-in animation or independent mobile bottom Dock**. Their requirements that actions be server-legal, only appear when needed, and retain responsive, keyboard/touch-accessible inputs remain active.
+
+**Binding behavior on desktop and mobile normal Room gameplay:**
+- Render available, authoritative **action buttons** such as `Ron`, `Tsumo`, `Chi`, `Pon`, `Kan`, `Riichi`, `Pass` (only when offered by the existing decision action list) in a **contextual row immediately above the local concealed hand**, close to where the user chooses tiles, never in an independent right-side or bottom-edge Dock.
+- **Hide that contextual action row when there is no relevant action to choose**; do not display disabled placeholders for nonexistent operations. A server-authorized discard-only decision remains a **clickable/tappable local concealed hand**; it does not require rendering a redundant `Discard` button just to meet the layout rule.
+- **Retain current candidate selection UX** for variants (Chi / Riichi discard / Kan), legal tile hit targets, deadline/decision timing, pending action feedback, rejection states and pointer/keyboard/touch accessibility. Adapt spacing/wrapping/scroll within the *above-hand* action area on smaller screens so buttons are usable and cannot cover the tiles, without assuming the currently shipped >=1024×600 viewport constraint remains forever.
+- Render the existing Three.js Mahjong table, hands, discards, score, names, character portraits, result overlays and actual game logic as before. Surrounding frame can still use approved restrained semi-transparent Light/Dark HUD; do not clone Mahjong Soul's owned artwork, button graphics, sound, fonts or visual identity. **The influence is limited to the familiar contextual control placement and when it appears.**
+- Do not introduce a persistent action panel, reserved right-hand vertical slot, mobile fixed bottom Dock, extra engine/renderer, or additional Bot protocol messages.
+- This change applies to **interactive ordinary game play**. It does not make the Benchmark Admin read-only table interactive; desktop Benchmark remains large table + leaderboard, and mobile Benchmark remains charts-first with manual fullscreen viewing only.
+- **No code has been changed yet.** Current `frontend/src/game/gameplay.tsx` already conditionally renders `ActionDeck` based on `decision` and `frontend/src/game/live-table.css` positions `.action-deck` above the hand; implementation should reuse and adjust these existing pieces rather than rebuild the action system. The old landscape >=1024×600 gate remains present in current implementation and is not silently claimed fixed.
+
+**Consistency ruling:** This latest explicit directive is binding despite the Q237–Q300 interview being closed. The 64 historical answer records are preserved, but **UI-D65 is the authoritative normal gameplay control placement**. No new grilling round or final design signoff is implied. PR #23 remains Draft/docs-only.
+
 ## Final authority map and consistency audit (2026-10-14)
 
-**UI/UX interview is CLOSED.** The owner answered every choice in **Q237–Q300**, creating **UI-D1–UI-D64**. The main Benchmark architecture D1–D239 remains an audit trail, NOT a requirement to reinstate withdrawn Experiment or mandatory Bot-protocol migrations. After this consistency review there are **no new owner-level UI design questions waiting**. An **explicit final owner *design* signoff is still pending**, and it does **not** by itself authorize implementing, running CI, deploying or merging PR #23.
+**UI/UX interview is CLOSED.** The owner answered every choice in **Q237–Q300**, creating **64 original UI decisions**, and subsequently issued an explicit **normal gameplay placement override UI-D65**. Only this later override supersedes the older Q267/Q284/Q297 side-panel/Dock arrangement. The main Benchmark architecture D1–D239 remains an audit trail, NOT a requirement to reinstate withdrawn Experiment or mandatory Bot-protocol migrations. After this consistency review there are **no new owner-level UI design questions waiting**. An **explicit final owner *design* signoff is still pending**, and it does **not** by itself authorize implementing, running CI, deploying or merging PR #23.
 
 ### Authority precedence
 
 1. **Latest owner cancellation:** Breaking Benchmark Bot Protocol v2 is withdrawn entirely; shipped MJAI/MCP/Built-in Bot auth/actions continue unchanged. No mandatory Bot capability handshake, required checkpoint attestation, Reset Ack, v1-v2 drain/migration phase, incompatible-protocol gates, or Experiment-dependent data.
 2. **Previous owner cancellation Q234 C:** All research A/B Experiment functionality and its paired trials/seed/CI/bootstrap/research export remain completely out of scope. No dormant Experiment features.
-3. **All five UI rounds, Q237–Q300:** Binding UX decisions, with the owner's **revised realistic-choice Q259–Q274** overriding the earlier biased draft. Q252 B replaces the old Q241 single-chart limit; Q244 C remains mobile chart-first with Q256 B / revised Q263 A defining only opt-in full-screen live observation.
+3. **All five UI rounds Q237–Q300 AND latest UI-D65:** Binding UX decisions, with the revised realistic-choice Q259–Q274 overriding the earlier biased draft. **The newest owner's UI-D65 overrides the former normal game controls at the side/mobile Dock only**, preserving the original conditional legal-action behavior. Q252 B replaces the old Q241 single-chart limit; Q244 C remains **Benchmark-mobile** chart-first with Q256 B / revised Q263 A defining only opt-in full-screen observation.
 4. **Technical reality:** Game/Room/Replay/Rust/SQLite and existing authenticated Bot contracts are authoritative. New UI decisions must be implemented *without* presuming they were already shipped; any actual unimplemented data routing (e.g. list search/filter or Replay chapter view) needs an ordinary implementation design and verification, not a new owner questionnaire.
 5. **No code authorization:** This Draft PR is only design documentation; no product changes, CI dispatch, deployment or merge.
 
@@ -420,7 +441,7 @@ A mobile Run-detail screen continues to display the recognizable `Open Live Tabl
 | Provisional data vs persistence | Q261 C provisional analysis from real completed records; Q278 B one clear Analytics-wide `Early data · N completed Matches` banner, including sample count/readable caveat. No fabricated missing results or statistical certainty. | **Consistent**: sample thresholds/legends are implementer-level UX and must distinguish small N from missing/no results. |
 | Mobile charts vs live 3D | Q244 C/Q262 B/Q279 B: default mobile Run detail displays chart categories (both initially expanded, jump menu) and no inline or background table. Q256 B/Q263 A/Q280 A: **only** explicit `Open Live Table` mounts the **one real authorized** portrait/landscape responsive fullscreen overlay, across Match boundaries, with close restoring chart scroll/focus and releasing confidential viewer state. Q300 B: when no live Match is available, show disabled `Open Live Table` with honest reason (e.g. `Waiting for next Match`, `Run Stopped`) and latest Replay link when persisted. | **Consistent**: no default invisible 3D renderer, second table, leaked hands or stale frame falsely labeled live. A brief between-Match transition must be differentiated from terminal Stopped/Completed. |
 | Lobby Participant ordering | Q266 B/Q283 B: larger character cards in a Seat-labeled **list**. Q296 A: **stable East → South → West → North ordering** with Ready/Connected state updating inside cards. 3p has only its actual Seats, no dummy fourth. | **Consistent**: cards do not jump on readiness. |
-| Game control availability | Q267 B/Q284 B: desktop side legal-action panel and mobile bottom Dock appear **only for a legal pending Decision**. Q297 A uses a reserved side region for the desktop slide-in panel, retaining table geometry during action prompts; idle view may show minor status/timer cues. | **Consistent**: reserved geometry is not a permanently open action panel. Mobile legal actions must remain reachable and timely. |
+| Game control availability | **LATEST UI-D65** supersedes Q267 B/Q284 B/Q297 A **placement only**: legal action buttons appear **immediately above the local concealed hand on both PC and phone when relevant**, matching the existing gameplay arrangement / familiar Mahjong Soul interaction. No reserved desktop side panel or separate mobile bottom Dock; the hand itself remains a valid discard target. Decision clocks, pending/rejections, accessibility and privacy still apply. | **Consistent after explicit supersession**: one local, contextual control strip with no extraneous action panel; preserve actual table/score visibility and do not equate normal interactive gameplay with Benchmark read-only viewing. |
 | Replay chapters | Q268 B/Q285 B: Kyoku-first replay (desktop vertical chapter list, phone dropdown). Q298 B: jumping to a Kyoku start **preserves play/pause**: playing continues, paused stays paused. Playback controls operate inside selected Kyoku. | **Consistent**: one Replay engine/rendering path. |
 | Two-step Join browser Back | Q265 B/Q282 A: same URL, name then Character, explicit in-app Back preserving input. Q299 A: **browser Back navigates away as a normal same-URL page**; it is not intercepted or promoted to step Back. | **Consistent**: document distinction clearly in UX acceptance, avoid phantom history entries. |
 | Stop/Resume vs legacy Bots | Stop after current Match needs confirmation and only server-acknowledged pending feedback. Safe manual Resume for Interrupted only, not Stopped, **without new Bot v2 protocol** or invisible reset assumptions. | **Needs verified implementation path**: design settled; actual crash reconstruction/reconnect correctness is a release blocker if unsafe, not a new owner preference question. |
@@ -433,13 +454,13 @@ A mobile Run-detail screen continues to display the recognizable `Open Live Tabl
 - **Run/SQLite/Replay durability and reconnect**: completed Match count advances only with fully persisted result + Replay; exactly once, stable per-Participant scores. Crash/Interrupted Resume must reconcile stored current vs in-flight Match and verify connected roster under **existing** protocol; if safety uncertain, explicitly block instead of auto-retrying an unsafe Attempt.
 - **Observation privacy & truthfulness**: Admin-only all concealed hands, role-gated deep links, revoked auth hides cached confidential projections; `Live` vs `Reconnecting` vs `Stale` vs between Matches are accurate. Existing live frontend currently polls HTTP ~1s; SSE remains optional, neither a live guarantee nor new Bot protocol.
 - **Data-backed dashboard**: all four charts derived from persisted per-Match rank/score/Participant metadata; correct 3p/4p denominators, absolute cumulative totals in recent-50, visible all-run window, per-Match Drawer/Replay navigation, keyboard/touch accessibility and zero-result states.
-- **All-page experience**: Home responsive Join, one-URL two-step form navigation, stable Seat-order Lobby cards, contextual responsive legal action UI, Kyoku Replay playback semantics, Admin Rooms Master–Detail/mobile list→detail, theme/contrast, protected Toast/inline errors, mobile one-table on-demand rendering and teardown.
+- **All-page experience**: Home responsive Join, one-URL two-step form navigation, stable Seat-order Lobby cards, **UI-D65 action buttons above concealed hand when relevant at every gameplay viewport (not desktop side panel/mobile Dock), without tile occlusion**; Kyoku Replay playback semantics, Admin Rooms Master–Detail/mobile list→detail, theme/contrast, protected Toast/inline errors, mobile one-table on-demand rendering and teardown.
 - **Release gate**: cross-route manual/automated acceptance where separately authorized; no prepared rollback means stronger prelaunch evidence and scoped forward fixes/maintenance. This is NOT evidence such tests already ran.
 - **Non-goals**: no A/B Experiment or breaking Bot Protocol v2 can be hidden in an implementation milestone. No distributed server, independent Mahjong engine/renderer or speculative research instrumentation.
 
 ### Outcome / handoff
 
-**No material unsolved UX/product preference remained after Q300.** The only required further owner action is **explicit final DESIGN SCOPE SIGNOFF**, not another grilling round. If signed off, plan work under separately requested authorization; keep PR #23 Draft, docs-only, no CI/deployment/merge. Implementation details such as pixel breakpoints, format of React state, exact chart library, API naming, simple provisional count threshold and test fixture plumbing belong to implementing engineers within these invariants. The per-Run crash recovery safety check and known score/Seat visual bug are real **verification blockers**, not open-ended owner decision questionnaires.
+**No material unsolved UX/product preference remains after Q300 and the latest UI-D65 owner placement correction.** The only required further owner action is **explicit final DESIGN SCOPE SIGNOFF**, not another grilling round. If signed off, plan work under separately requested authorization; keep PR #23 Draft, docs-only, no CI/deployment/merge. Implementation details such as pixel breakpoints, format of React state, exact chart library, API naming, simple provisional count threshold and test fixture plumbing belong to implementing engineers within these invariants. The per-Run crash recovery safety check and known score/Seat visual bug are real **verification blockers**, not open-ended owner decision questionnaires.
 
 ## Historical decision tree — Round UI-2 (ARCHIVE ONLY; owner choices recorded above)
 
