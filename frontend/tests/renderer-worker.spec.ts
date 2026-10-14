@@ -45,7 +45,8 @@ test("local surface image renders and clears in the actual product Worker under 
   expect(colors.blue).toBeGreaterThan(colors.total / 20);
   await page.getByRole("button", { name: "Clear surface image", exact: true }).click();
   await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
-  expect(await table.locator("canvas").screenshot()).toEqual(baseline);
+  // Avoid an unbounded byte-array diff when an exact PNG comparison fails.
+  expect((await table.locator("canvas").screenshot()).equals(baseline)).toBe(true);
   expect(uploaded).toEqual([]);
 });
 
