@@ -73,7 +73,7 @@ A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby,
 _Avoid_: Hidden room, ranked room
 
 **Benchmark Mode**:
-A bot-only Room mode for comparing playing strength across matches. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play, but missing players are never automatically supplied.
+A bot-only Room mode for controlled evaluation of software Participants across Matches, including comparison of playing strength and research experiments. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play, but missing players are never automatically supplied.
 _Avoid_: Ranked mode, bot replacement
 
 **Benchmark Run**:
