@@ -76,6 +76,10 @@ _Avoid_: Hidden room, ranked room
 A bot-only Room mode for controlled evaluation of software Participants across Matches, including comparison of playing strength and research experiments. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play, but missing players are never automatically supplied.
 _Avoid_: Ranked mode, bot replacement
 
+**Experiment**:
+A research comparison that groups Benchmark Runs under declared evaluation conditions. Each Run retains its own participant identities, results, and history.
+_Avoid_: Benchmark Run, Match
+
 **Benchmark Run**:
 A fixed roster's series of one or more completed and recorded Matches, with seats rotated between Matches. Aborted or unrecorded Matches do not count toward its target; results belong to each Participant rather than the Bot Token it uses.
 _Avoid_: Rematch, Replay
@@ -83,6 +87,10 @@ _Avoid_: Rematch, Replay
 **Benchmark Admin Observer**:
 An authenticated Admin observing a live Benchmark Match with access to every player's concealed information. Ordinary Spectators remain limited to the Public View.
 _Avoid_: Spectator, Replay View
+
+**Observation Focus**:
+The player whose concealed hand or viewing perspective is emphasized for a Benchmark Admin Observer. Switching focus does not change any Player's identity, Seat, Controller, or game state.
+_Avoid_: Controller, Player View
 
 **Kyoku**:
 One dealt hand within a match, such as East 1.
