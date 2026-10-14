@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview in progress — Rounds 1–15 decided; Round 16 unanswered**
+Status: **Design interview in progress — Rounds 1–16 decided; Round 17 unanswered**
 Owner: eitaar
 Scope: research-oriented improvements to driichi's Benchmark Mode, not implementation approval.
 
@@ -25,11 +25,17 @@ The user confirmed that **3p Benchmark runs only 3p and 4p Benchmark runs only 4
 
 ## New UI design requirement and Q99 migration conflict — OWNER NOTES (2026-10-14)
 
-**Requested:** Remove obscure/unnecessary pseudo-poetic and marketing UI copy ("謎ポエム") and redesign the user interface using a modern component library (e.g., shadcn/ui). The exact library and extent of the copy audit have **not yet been selected**. Keep functional instructions, security/privacy/accessibility text and errors. The existing React 19 + Vite 8 + TypeScript frontend uses bespoke CSS and has no Tailwind/shadcn dependency in its inspected package manifest; its Admin/Benchmark views embed a Three.js table that need not be rewritten. Official Vite integration guidance: https://ui.shadcn.com/docs/installation/vite .
+**Confirmed across Rounds 13–16:** Replace the app's obscure decorative/poetic marketing copy with short functional **English-language** UI text, using **shadcn/ui with Base UI primitives, Tailwind and design tokens**. **Q170 B intentionally supersedes the prior D157 all-locales audit:** redesigned UI labels/text are English-only and may be hard-coded in the new pages. The handling/removal of any existing non-English UI translations or language selector remains an explicit Round 17 decision; do not silently claim multi-locale parity. Keep functional instructions, security/privacy/accessibility text and errors. The existing React 19 + Vite 8 + TypeScript frontend uses bespoke CSS and has no Tailwind/shadcn dependency in its inspected package manifest; its Admin/Benchmark views embed a Three.js table that need not be rewritten. Official Vite integration guidance: https://ui.shadcn.com/docs/installation/vite .
 
 **Owner-approved UI sequencing (Rounds 13–15):** Develop the shadcn/ui + Tailwind shared foundation and the current Run-first Benchmark dashboard, then every other app page in internally reviewable stages; publish the entire restyled app **in one user-visible release before the later v2 feature release**. Q144 C explicitly forbids a planned return-to-old-UI rollback artifact/path; testing and forward-only postrelease contingency remain distinct requirements. No frontend code changes are authorized here.
 
 **Q99 B and Q110 B supersede the previous v2 adapter opt-in and old Benchmark admission compatibility assumptions:** Every MJAI/MCP/Built-in participant in **any** Benchmark v2 Run must support v2 capability, even without an Experiment. The **future deliberately breaking Benchmark Bot cutover** is selected, with old v1 Runs drained and historical results retained; no existing deployed protocol has actually been changed during this design interview. Unrelated ordinary Room/MJAI/MCP APIs are not automatically changed. No independent runtime binary attestation is introduced.
+
+## Round 16 decision impact / supersession ledger (2026-10-14)
+
+- **Q170 B overrides D157/Q154 A:** the redesigned UI is **English-only hard-coded**, not a full cross-locale translation maintenance project. Existing non-English UI support (if any) needs an explicit disposition; do not invent whether it exists. Functional English guidance, security/privacy messages and accessible labels remain required.
+- **Q172 A** selects **Base UI**, rather than Radix, as the shadcn underlying primitive family for new frontend components; do not mix without an approved explicit exception.
+- **Q160 A + Q167 A** preserve Q144 C: **no prepared prior-UI rollback**. A severe UI incident gets restricted/maintenance mode and forward-fix, while an evidence-backed operator Go/No-Go gates release. Do not silently add rollback infrastructure.
 
 ## Round 13 decision impact / supersession ledger (2026-10-14)
 
@@ -729,13 +735,85 @@ Measure existing application startup, JS size, interactions, memory and live 3D 
 
 Retain accurate streaming valid-sample Count and Mean; upon bounded raw-sample overflow report `distribution_complete=false`, and show **Median and p95 as Unavailable** for the complete Match rather than presenting a subset estimate as exact. Invalid/missing/timeout denominators remain separate. Numeric default cap is open.
 
-### D157. Cross-locale functional copy audit — DECIDED (Q154: A)
+### D157. Cross-locale functional copy audit — SUPERSEDED by Q170: B (Round 16)
 
-Review and remove unnecessary vague/pseudo-poetic marketing/decorative copy **across all languages already supported by the app**, maintaining meaningful translated controls, errors, accessibility messages and necessary help. Do not leave foreign-locale stale branding or delete explanatory text by indiscriminate search/replace. Current supported-locale inventory must be established from source before an implementation plan.
+**Original Q154 A:** audit decorative copy across all supported locales and preserve functional translations.
+
+**Later explicit owner override Q170 B:** the **redesigned UI uses English-only hard-coded strings**, not a requirement to maintain translations of all redesigned UI copy. Do not claim the earlier multi-language parity requirement still applies to the new UI. Keep functional, safety/privacy, accessible text **in English**. Before implementation identify whether any existing non-English UI locale functionality is present and explicitly decide how to handle old locale keys/selectors/data (Q175). Language of mahjong game assets/protocol values is separate from UI copy and not automatically changed.
 
 ### D158. Pinned actual-rendered fullscreen/theme/Seat screenshot baselines — DECIDED (Q155: A)
 
 Visual regression acceptance requires pinned browser/render versions and viewport fixtures, light/dark/fullscreen states, **distinctive per-Seat scores and authoritative Participant ID-to-Seat-to-score verification**, across ordinary normal-live Match, Benchmark live, Replay and Admin focus with main-thread/Worker paths. Store reviewable screenshot baselines and pixel-diff tolerances; do not assert the reported score-to-wrong-Seat bug is repaired until proven by actual rendered tests. No tests or product code were authorized during the interview.
+
+## Decisions — Round 16 (2026-10-14)
+
+### D159. Compact hideable fullscreen live overlays — DECIDED (Q156: A)
+
+When the **one current 3D Mahjong table** is fullscreen, show a compact, read-only overlay for current Kyoku/Match progress, focused Participant/Seat, current scores, SSE connection freshness, and Exit. Let the Admin toggle nonessential overlay visibility without hiding the necessary Exit/accessibility affordance. Live overlay data obeys the Admin-only concealed-hand permission boundary; no extra Match, active control or 3-table feature is created. Exact overlay geometry/auto-hide is a later frontier.
+
+### D160. Explicit System/Light/Dark theme choice precedence — DECIDED (Q157: A)
+
+Offer exactly understandable **System**, Light and Dark selection. System follows OS/browser preference changes; an explicitly selected Light or Dark overrides those changes until System is chosen again. Keep the previously chosen per-device local persistence and initial anti-flash requirements; no Room-scoped appearance setting.
+
+### D161. Accessible fullscreen keyboard/focus restoration — DECIDED (Q158: A)
+
+Use labeled controls and Escape/Exit to leave fullscreen, restoring keyboard focus to the invoking control after dismissal. Do not swallow unrelated gameplay/chat text input or trap focus permanently in the 3D Canvas. The user may still navigate the page via keyboard/screen reader when not fullscreen; exact browser-specific Fullscreen API behavior remains an implementation detail.
+
+### D162. Preserve authorized deep links through login — DECIDED (Q159: A)
+
+Remember a safe same-origin target deep link through the authentication transition and resume the originally requested valid destination after successful authentication. If unauthorized, present an understandable explicit **403/Access denied** state, not an infinite redirect or silent Home navigation. Every backend resource enforces access, independent of navigation visibility. Validate returned paths to avoid open-redirect abuse.
+
+### D163. Forward-only incident recovery with no old-UI rollback — DECIDED (Q160: A)
+
+**Preserve Q144 C's explicit no-rollback choice.** If the one-release app-wide UI cutover causes a major incident, isolate broken/unsafe flows in restricted or maintenance mode where appropriate, protect durable data, document operator severity/decision and deploy a **new forward corrective patch**, **not a prior-UI restoration artifact**. This does not guarantee instant recovery; absent rollback increases outage/repair risk. Exact incident severity triggers, scope and maintenance UX remain open.
+
+### D164. Stable structured v2-only Benchmark protocol mismatch — DECIDED (Q161: A)
+
+Use the typed `unsupported_benchmark_protocol` contract containing required/supported version information and a stable migration-document reference, with safe transport-specific HTTP/WebSocket/MCP envelope. Do not expose secrets, fake a Bot build/reset acknowledgement or silently accept v1-only Benchmark clients. Exact protocol schema, error codes and retryability mapping remain open.
+
+### D165. Read-only pre-cutover v2 Bot capability preflight — DECIDED (Q162: A)
+
+Provide an Admin-readable, **non-mutating** compatibility preflight of registered Benchmark Bot Participants against the required v2 handshake so incompatible adapters are identifiable **before** the deliberately breaking release. Report missing/unreachable/unsupported distinctly rather than claiming unreachable Bots are incompatible or deploying a silent upgrade. The check is not independent runtime attestation and does not authorize actual v1 cutover. Preflight timing, reachability method and stable output status taxonomy remain open.
+
+### D166. Bounded grace for an unresponsive active v1 Match — DECIDED (Q163: A)
+
+At planned legacy Benchmark drain, stop scheduling new Matches, allow an in-flight valid Match a configured finite grace to reach durable Replay/final results, and then record an unfinished/interrupted outcome if not safely complete. Preserve all earlier durable history and never fabricate a completed Match. A numerical grace timeout and user-visible maintenance scheduling contract remain open.
+
+### D167. Structured authoritative SQLite revision conflict — DECIDED (Q164: A)
+
+For stale Admin actions, use a documented conflict response, for HTTP **409 Conflict** where appropriate, including safe current Experiment/Run state, authoritative revision and identifiable progress without triggering a duplicate Resume/Cancel. Client presents Refresh/retry as an explicit new action. Response field names, idempotency key schema and non-HTTP transport mapping remain open.
+
+### D168. Bounded SSE reconnect with capped delays and Polling — DECIDED (Q165: A)
+
+Start Admin SSE reconnect at approximately **1 second**, use exponential delays with **jitter** capped around **30 seconds**, then switch to authenticated polling following a bounded fixed count of failures. Never run uncontrolled overlapping streams/polling loops or display stale frames as live. Re-establish SSE only with fresh authorization and complete current snapshot; precise failure threshold/poll interval remain open.
+
+### D169. Stop private archive bytes when Admin authorization revoked — DECIDED (Q166: A)
+
+Revalidate authorized Admin/ticket/session during archive stream delivery as supported by the delivery mechanism, and **stop emitting additional private bytes on known expiry/revocation**. Already downloaded bytes cannot be recalled: do not pretend otherwise. Access-controlled Replay IDs remain separately checked, and no Bot Tokens/reusable secrets are embedded. Delivery and cleanup semantics remain open.
+
+### D170. Recorded operator Go/No-Go without an old-UI rollback — DECIDED (Q167: A)
+
+Before the **single coordinated whole-app UI release with no prepared rollback** (Q144 C), require an explicit recorded operator **Go/No-Go decision** backed by all-route desktop/mobile E2E, accessibility, real-rendered 3D screenshot score/Seat validation and reviewed performance budgets, plus a forward-only incident response plan. A failed mandatory gate prevents release; no product code, UI deployment or CI execution is authorized by this design agreement.
+
+### D171. Quantitative desktop/mobile UI performance budgets from measured baselines — DECIDED (Q168: A)
+
+After recording the existing app's actual route startup, JS/bundle, interaction, memory and 3D FPS baselines on pinned representative desktop/mobile devices, set **numeric acceptable deltas** and require explicit owner/operator review for exceptions. Do not invent absolute performance measurements ahead of code/test execution. Specific threshold policy is a next-frontier decision.
+
+### D172. Default 10,000 bounded raw Decision-time samples per metric — DECIDED (Q169: A)
+
+Initial **per-Match, per-metric cap of about 10,000 raw valid Decision latency samples**, configurable within host resource constraints. Count and streaming mean remain accurate for every genuinely observed valid sample even if retained raw sample buffers overflow; both **Median and p95 become Unavailable/Incomplete** after overflow (D156). Failures/timeouts have separate denominators. The exact two-clock memory accounting and operator cap range remain open.
+
+### D173. English-only hard-coded UI text — DECIDED (Q170: B; SUPERSEDES D157/Q154 A)
+
+The owner **did not select the recommended multi-locale catalog**; Q170 B specifically selects **hard-coding only English strings throughout redesigned UI pages**. This **reverses** the Round 15 D157 expectation of maintaining full translation coverage of every supported locale during UI modernization. Do not silently retain a "all locales updated" acceptance requirement. Preserve **functional English** warnings, accessible names, role/security/private-view guidance and meaningful error text. The current UI locale code/selector (if any) still needs source inspection and explicit migration decisions so users do not face nonworking language choices; this does not license changing mahjong rules, API values, or Japanese-language assets.
+
+### D174. Human-approved actual-rendered screenshot baselines — DECIDED (Q171: A)
+
+Require identifiable reviewer approval of screenshot pixel differences, asserting that authoritative Participant→Seat→score mapping remains correct, before accepting a new baseline. Never auto-update failing goldens or erase visual checks to get a green result. Cover normal Room live table, standalone Benchmark, Replay, Admin focus, light/dark, single-table fullscreen and the actual main-thread/Worker render paths. The previously reported live center-score wrong-Seat bug is **not verified fixed**. No UI code/test execution is approved here.
+
+### D175. Standardize shadcn component primitives on Base UI — DECIDED (Q172: A)
+
+Choose **Base UI** as the uniform underlying primitive library for new shadcn/ui components introduced in the full-app React/Vite/Tailwind redesign, with pinned tool/registry configuration and documented exceptions only by explicit further choice. Do not casually mix Radix primitives across redesigned components, though unrelated existing third-party code can continue until deliberately migrated. The 3D Mahjong renderer remains separate. This design choice alone installs no dependencies or changes frontend source.
 
 ## Verified v1 baseline (not v2 decisions)
 
@@ -758,62 +836,68 @@ These remain candidates, not implementation mandates:
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Decision tree — Round 16 frontier
+## Decision tree — Round 17 frontier
 
 ```text
-Benchmark v2 + coordinated no-rollback UI release
-├── D143,D145 one fullscreen live 3D table                  [DECIDED]
-│   ├── Q156 Fullscreen information overlays               [FRONTIER]
-│   └── Q158 Focus/keyboard handling for fullscreen        [FRONTIER]
-├── D144,D146,D154,D157 themes/nav/locales                  [DECIDED]
-│   ├── Q157 System-vs-manual theme precedence              [FRONTIER]
-│   ├── Q159 Protected deep-link auth return                [FRONTIER]
-│   └── Q170 Translation inventory/source of truth         [FRONTIER]
-├── D147 deliberately NO old-UI rollback                    [DECIDED]
-│   ├── Q160 Severe incident response without rollback      [FRONTIER]
-│   └── Q167 Operator go/no-go UI signoff                   [FRONTIER]
-├── D148–D150 v2-only Benchmark Bot admission               [DECIDED]
-│   ├── Q161 Protocol version mismatch fields               [FRONTIER]
-│   ├── Q162 Pre-cutover Bot compatibility preflight        [FRONTIER]
-│   └── Q163 Drain timeout for nonresponsive Matches         [FRONTIER]
-├── D151 authoritative SQLite conflict response            [DECIDED]
-│   └── Q164 HTTP/API conflict semantics                     [FRONTIER]
-├── D152 bounded SSE recovery                              [DECIDED]
-│   └── Q165 Default backoff and polling switch             [FRONTIER]
-├── D153 safe research export                              [DECIDED]
-│   └── Q166 Revocation during archive delivery             [FRONTIER]
-├── D155,D158 app-wide visual+performance gates             [DECIDED]
-│   ├── Q168 Relative performance budget convention         [FRONTIER]
-│   └── Q171 Screenshot baseline approval changes           [FRONTIER]
-├── D156 incomplete latency distribution                   [DECIDED]
-│   └── Q169 Raw Decision timing sample cap                 [FRONTIER]
-└── D116 chosen shadcn/ui component system                 [DECIDED]
-    └── Q172 Underlying UI primitive family                 [FRONTIER]
+Benchmark v2 plus English-only whole-app UI release
+├── D159–D162 table fullscreen / theme / navigation     [DECIDED]
+│   ├── Q173 Fullscreen overlay default/auto-hide        [FRONTIER]
+│   ├── Q174 Theme local-storage failure behavior        [FRONTIER]
+│   └── Q176 Safe redirect target expiry                [FRONTIER]
+├── D173 English-only hard-coded redesign              [DECIDED; OVERRIDES D157]
+│   └── Q175 Existing translation/locale control fate  [FRONTIER]
+├── D163,D170 no-rollback release with forward fixes   [DECIDED]
+│   ├── Q177 Maintenance gate and emergency patch UX   [FRONTIER]
+│   └── Q178 Operator release evidence signoff record   [FRONTIER]
+├── D164–D166 strict-v2 Bot protocol and drain         [DECIDED]
+│   ├── Q179 Offline/unreachable preflight results     [FRONTIER]
+│   ├── Q180 Pre-cutover grace duration                [FRONTIER]
+│   └── Q181 HTTP/WS/MCP version mismatch mapping     [FRONTIER]
+├── D167 durable SQLite CAS                            [DECIDED]
+│   └── Q182 Idempotency key for Admin mutations       [FRONTIER]
+├── D168 SSE reconnect and polling                      [DECIDED]
+│   └── Q183 Number of failures / poll rate             [FRONTIER]
+├── D169 authenticated archive delivery                [DECIDED]
+│   └── Q184 Streaming/temp archive cleanup            [FRONTIER]
+├── D171 tested performance budget                     [DECIDED]
+│   └── Q185 Threshold evaluation policy               [FRONTIER]
+├── D172 per-metric timing sample cap                  [DECIDED]
+│   └── Q186 Two clocks raw buffer budgeting           [FRONTIER]
+├── D174 reviewer-approved screenshots                 [DECIDED]
+│   └── Q187 Golden storage / independent reviewers    [FRONTIER]
+├── D175 Base UI and shadcn                           [DECIDED]
+│   └── Q188 Design tokens + component ownership       [FRONTIER]
+└── Earlier independently unlocked research details  [OPEN]
+    ├── Q189 Fixture stream/hash golden contract      [FRONTIER]
+    ├── Q190 Protocol reset acknowledgement envelope  [FRONTIER]
+    └── Q191 Replay staging orphan cleanup grace      [FRONTIER]
 ```
 
-### Round 16 questions — awaiting owner (answer in plain text Q156: A etc.)
+### Round 17 questions — awaiting owner (plain text Q173: A etc.)
 
-- **Q156, live overlay content while one 3D table is fullscreen:** A — show a compact non-editable Match progress/round, focused Participant/Seat, current scores, connection freshness and Exit, with hide/show controls; B — fullscreen hides every status even if the stream is disconnected; C — reproduce the entire dashboard sidebar on top of the table. **Recommendation A:** readable full-table view with enough situational information.
-- **Q157, manual theme choice versus later system-theme changes:** A — `System` is a selectable option; manual Light/Dark overrides persist until the user selects System again; B — OS changes always override a manual choice; C — change to light whenever a Match starts. **Recommendation A:** predictable local preferences.
-- **Q158, keyboard focus during fullscreen entry/exit:** A — provide Escape/close, labeled keyboard controls, correct focus restoration to the launching button and no hijacking gameplay/Chat input; B — let focus vanish into the rendered Canvas; C — trap all keyboard input permanently. **Recommendation A:** accessible full-screen behavior.
-- **Q159, protected deep-link navigation after authentication:** A — restore the original permitted route after authentication and show a clear 403/no-access state without loops for rejected users; B — lose original route and always show Home; C — let anyone open private routes if they know the URL. **Recommendation A:** role-aware shell without silently weakening authorization.
-- **Q160, production incident after no-rollback all-app UI release:** A — **no restoration of the prior UI**; use restricted/maintenance mode for affected flows, preserve data and prepare a **forward-only corrective patch**, with a documented operator incident decision; B — leave a security-critical broken interface live indefinitely; C — secretly prepare/deploy an old-UI rollback artifact (contradicts Q144 C). **Recommendation A:** an actionable contingency without overriding the no-rollback choice.
-- **Q161, Benchmark protocol mismatch payload:** A — define a typed `unsupported_benchmark_protocol` contract with server-required/supported versions and stable migration-doc identifier, privacy-safe protocol-specific framing; B — generic HTTP 500 only; C — silently accept unsupported Bots. **Recommendation A:** clear migration debugging across HTTP/WS/MCP.
-- **Q162, old-Bot compatibility validation before strict cutover:** A — offer a **read-only preflight check** of registered Benchmark Bots against the required v2 handshake so Admin can identify which Bot adapters need upgrades before the announced release; B — discover incompatible Bots only after cutover; C — manufacture claims for unsupported Bots. **Recommendation A:** reduces downtime without keeping old v1 admissions.
-- **Q163, legacy v1 Match that does not finish by drain deadline:** A — stop scheduling new Matches, wait a configurable bounded grace period for the active Match, then record honest interrupted/incomplete status, keeping completed records; B — block maintenance indefinitely; C — mark incomplete Match completed to finish drain. **Recommendation A:** deterministic deployment operation without false results.
-- **Q164, SQLite CAS conflict as Admin API response:** A — use a structured conflict response (e.g. HTTP 409 for HTTP) with current revision, state, safe progress identifiers, and no mutation; B — always return successful Resume on stale revision; C — silently overwrite newer data. **Recommendation A:** usable and idempotent error behavior.
-- **Q165, initial SSE reconnect/fallback default:** A — start around 1 s exponential retry with jitter, cap delays (e.g. 30 s), switch to authorized polling after a small fixed failure threshold, and restore one SSE stream upon success; B — retry as fast as possible without limits; C — do not attempt recovery. **Recommendation A:** bounded traffic and responsive recovery; exact numerical defaults can be made configurable.
-- **Q166, revoked Admin during an archive download:** A — tie stream/ticket access to Admin authorization and expiry, abort future private data delivery on known revocation; B — download links remain accessible to anyone forever; C — grant the Bot Token export rights. **Recommendation A:** consistent confidentiality over the entire archive lifecycle.
-- **Q167, final no-rollback UI release signoff:** A — require a recorded operator go/no-go approval with **all-route E2E/a11y/visual/performance evidence** and a forward-fix incident plan before the single cutover; B — automatically launch even if known severe accessibility/score issues remain; C — treat compilation alone as sufficient. **Recommendation A:** important because the owner explicitly declined rollback.
-- **Q168, performance budget policy after measuring real baselines:** A — establish numeric regression limits per pinned desktop/mobile profile (including route timings, 3D FPS/memory) and require explicit approval for any threshold exception; B — no quantitative budget at all; C — use only CSS size as the metric. **Recommendation A:** avoid inventing measurements before baseline collection.
-- **Q169, default raw Decision-time sample memory limit:** A — set a documented per-Match cap (for example **10,000 timing samples per metric**, configurable within host limits), preserve online Count/Mean beyond overflow and mark median/p95 Unavailable; B — use unbounded allocation for exact percentiles; C — drop samples without flagging incomplete distributions. **Recommendation A:** predictable resource use and honest reporting.
-- **Q170, translations while removing decorative copy:** A — maintain a canonical inventory of translation keys/messages across all currently supported locales, with coverage checks before the full-app release; B — hardcode only English strings throughout redesigned pages; C — keep unused/outdated translated slogans. **Recommendation A:** a scalable all-page copy audit.
-- **Q171, approving screenshot baseline changes:** A — accept/rebaseline genuine image changes only after identifiable reviewer inspection of Seat/score correctness across variants, never automatically update goldens just to pass; B — overwrite baseline images on every failing test automatically; C — remove baseline verification. **Recommendation A:** avoids accidentally blessing the known orientation bug.
-- **Q172, choose shadcn/ui primitive library:** A — standardize on **Base UI** for newly introduced shadcn components (the current upstream default), pin registry/base choice and avoid casual mixing; B — standardize on fully supported **Radix UI** instead; C — freely mix Base/Radix primitives without documenting the choice. **Recommendation A:** upstream made Base UI the default in July 2026 while continuing Radix support; choose before wholesale app redesign. Source: https://ui.shadcn.com/docs/changelog/2026-07-base-ui-default .
+- **Q173, default fullscreen overlay presentation:** A — retain compact critical Match/score/connectivity+Exit controls visible initially, fade nonessential overlays with an obvious Show control while keeping exit discoverable; B — auto-hide every element including Exit with no recovery affordance; C — permanently show the whole desktop dashboard on top of the table. **Recommendation A**, compatible with D159 and accessible fullscreen.
+- **Q174, local theme preference storage unavailable:** A — fall back to the current session/system theme without breaking navigation or private views; indicate persistence is unavailable only when relevant; B — block the entire app until local storage works; C — silently reset to one hardcoded theme and ignore current OS preference. **Recommendation A**, respecting System/Light/Dark.
+- **Q175, existing translated UI / language selector during English-only redesign:** A — make new UI intentionally English-only and disable/remove legacy language selectors and stale translation UI *if source inspection finds them*, preserving unrelated Japanese game assets and protocol data; B — visibly offer unsupported locales that show partially untranslated UI; C — secretly maintain full translation parity (contradicts Q170 B). **Recommendation A**. No claim that non-English locales exist until source audit.
+- **Q176, persisted post-auth navigation target:** A — only return to an allowlisted same-origin path and expire the pending destination after the auth handoff; show clear denied/not-found states; B — accept arbitrary redirect URLs supplied by untrusted clients; C — always forget destination. **Recommendation A**.
+- **Q177, severe post-launch failure without any old-UI rollback:** A — provide restricted/maintenance mode for unsafe routes, a clear user-facing incident banner (English), preserve data, and deploy a new forward patch after operator decision; B — keep unsafe flows enabled indefinitely; C — secretly restore an earlier UI artifact. **Recommendation A**; never treat maintenance as a hidden rollback.
+- **Q178, release operator Go/No-Go evidence:** A — a versioned checklist keyed by release commit including E2E/a11y/screenshot/perf evidence and explicit approval identity/time; B — a purely informal verbal go-ahead; C — publication without a decision record. **Recommendation A**; the owner did not authorize running tests/CI yet.
+- **Q179, compatibility preflight for an offline Bot:** A — classify separately as `compatible`, `incompatible`, or `unknown/unreachable`; never claim unavailable Bot verified; B — assume offline Bots are compatible; C — forbid preflight entirely. **Recommendation A**.
+- **Q180, drain grace for active v1 Match:** A — expose an operator-configurable finite grace deadline with a documented default (e.g. 10 minutes) after halting new Matches, then persist interruption if still incomplete; B — keep waiting indefinitely; C — immediately erase running Match data. **Recommendation A**; exact default may differ from Match time control.
+- **Q181, version mismatch across HTTP/WS/MCP:** A — use a single semantic typed error contract with protocol-specific HTTP/WS/MCP status and close framing, ensuring the version/migration fields survive transport; B — return arbitrary strings with no stable error type; C — force every transport to pretend it is HTTP. **Recommendation A**.
+- **Q182, Admin mutation idempotency across retry after network loss:** A — require an idempotency/request key in addition to SQLite current revision, so duplicate client retries return the original committed outcome rather than rescheduling fixtures; B — assume retries never happen; C — rely only on a browser timestamp. **Recommendation A**, building on D151/D167.
+- **Q183, live viewer reconnect/polling initial defaults:** A — after e.g. **three failed SSE reconnect attempts**, fall back to authenticated polling around every 5 seconds, probing SSE at a bounded lower frequency and stopping duplicate watchers when recovered; B — poll every millisecond and reconnect continuously; C — show disconnected forever. **Recommendation A**.
+- **Q184, streamed export archive failure/revocation:** A — abort further private delivery, securely clean temporary partial archives on expiry/cancel/revocation while leaving committed Run/Replay unchanged; B — keep partial secret archives publicly accessible; C — delete experiment data when an export fails. **Recommendation A**.
+- **Q185, UI performance thresholds when benchmarks vary:** A — pinned environment, repeatable multiple measurements and quantile/variance-aware comparison, with numeric budgets and explicit owner exception approval; B — reject based on a single unstable sample; C — stop measuring FPS and memory. **Recommendation A**.
+- **Q186, latency sample cap for two clocks:** A — enforce an **independent 10,000-valid-sample cap for first-response and accepted-action metrics per Match**, with independent completeness flags and online Count/Mean; B — silently pool clocks so one can displace the other's samples without labels; C — unbounded allocation. **Recommendation A**.
+- **Q187, screenshot baselines and review audit:** A — version baseline images alongside tests with reviewed diffs, named approval, and an explicit Seat/score semantic assertion separate from pixel tolerance; B — auto-regenerate unreviewed goldens; C — skip score identity assertions if screenshot pixels match. **Recommendation A**.
+- **Q188, shared shadcn/Base UI component ownership:** A — pin a single project-owned `ui` component layer/tokens; app pages consume it instead of independently modifying copied primitives; B — each route vendors subtly different components without review; C — rewrite specialized 3D table with generic form widgets. **Recommendation A**.
+- **Q189, deterministic fixture PRNG/derivation contract:** A — version/hash exact mode, engine, rules, ordered Participant IDs, seat map, root seed and named independent RNG streams into a canonical fixture representation with published golden vectors; B — depend on unversioned host-language RNG defaults; C — seed only one Candidate A leg and leave B uncontrolled. **Recommendation A**, needed for reproducible Paired Blocks.
+- **Q190, authenticated Match reset envelope:** A — versioned per-Participant reset request and one-time ID scoped to Experiment/Run/Fixture/Attempt and checkpoint declaration, accept one matching authenticated acknowledgement or fail/retry safely; B — generic unauthenticated `reset=true`; C — treat reconnect as successful reset. **Recommendation A**.
+- **Q191, staged Replay orphan collection policy:** A — only garbage-collect proven unreferenced staging objects after reconciliation and a configurable grace window, with audit marker and no deletion of durable Replay/results; B — delete every staged Replay on restart regardless of reference; C — never collect unreferenced staging files. **Recommendation A**.
 
-### Deferred decisions
+### Deferred until after Round 17
 
-Following Round 16: fullscreen route/state and reduced-motion transition contract; finalized design tokens, layout and translated copy inventory; exact Benchmark Bot protocol version fields, drain preflight and maintenance error examples; SQLite transition/state schema and recovery wire responses; engine seed split-stream algorithm/golden vectors; SSE reconnect budget, quota and concurrency tests; export manifest/download expiry and audit; performance baseline measured budgets and screenshot review; raw-sample cap and optional approximation semantics. Q144 C remains **no rollback** unless the owner explicitly revisits it. No code, CI or merge authorized.
+Depending on Q175, inspect exact existing localized UI usages and choose migration message behavior without inventing translations. Flesh out fullscreen overlay, system-theme persistence and role-aware routing; English-only copy acceptance; no-rollback forward incident mode; minimum Bot migration/preflight/drain API contracts; SQLite idempotency and fixture-stream versioned seed derivation; per-metric response clocks; SSE/export retention; complete screenshot/performance test matrix. **No code, UI deployment, CI, or PR merge is approved by this interview.**
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 
