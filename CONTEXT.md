@@ -81,7 +81,7 @@ A research comparison of eligible verified Benchmark Runs, which may include pre
 _Avoid_: Benchmark Run, Match
 
 **Verified Benchmark Run**:
-A Benchmark Run whose conditions relevant to a proposed Experiment can be independently checked against recorded evidence, rather than inferred from names or incomplete history.
+A Benchmark Run whose game conditions and each participating Bot's build or model checkpoint can be checked against trustworthy evidence, rather than inferred from display names, self-declarations, or incomplete history.
 _Avoid_: All historical Runs, manually asserted compatibility
 
 **Benchmark Run**:
@@ -93,16 +93,24 @@ An authenticated Admin observing a live Benchmark Match with access to every pla
 _Avoid_: Spectator, Replay View
 
 **Paired Evaluation**:
-A comparison of software Participants under recorded common random-seed conditions and balanced seat assignments. Matched seeds do not imply identical game trajectories when Participants make different decisions.
+A comparison of software Participants under recorded common random-seed conditions and balanced seat assignments. Its root seed defines planned Match randomness across separate domains; matched seeds do not imply identical trajectories when Participants make different decisions.
 _Avoid_: Identical replay, same match outcome
 
 **Benchmark Match Attempt**:
-A single attempt to execute a scheduled Benchmark Match. An incomplete attempt may be recorded as failed; retrying the same scheduled Match is a distinct Attempt and does not turn earlier failures into completed results.
+A single attempt to execute a scheduled Benchmark Match. Incomplete attempts remain separately recorded as failed; a retry is a new Attempt of the same planned Match and never changes the result of previous attempts.
 _Avoid_: Completed Match, Rematch
 
 **Server-observed Latency**:
-Elapsed response time observed at the game server, as distinct from a Bot's optionally reported internal inference time.
+Response timing observed by the game server, distinguished into time to first response and time until a legal Game Action is accepted. It is different from optional Bot-reported inference time.
 _Avoid_: Inference time, guaranteed model compute time
+
+**Experiment Configuration**:
+The defined conditions governing which Benchmark Runs can be compared in an Experiment. Those conditions are fixed once its first Match begins.
+_Avoid_: Annotation, Admin display preferences
+
+**Diagnostic Log**:
+Optional detailed diagnostic evidence collected during a Benchmark, subject to capacity and retention limits. It is distinct from durable Match results and failure records.
+_Avoid_: Benchmark result, Replay
 
 **Observation Focus**:
 The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Focus follows that Participant when Seats rotate between Matches; it never changes the Participant's identity, Seat, Controller, or game state.

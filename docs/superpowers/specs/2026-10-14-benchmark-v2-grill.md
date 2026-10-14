@@ -1,7 +1,7 @@
 # Benchmark Mode v2 — Grill with Docs (working design)
 
 Date: 2026-10-14
-Status: **Design interview in progress — Rounds 1–4 decided; Round 5 unanswered**
+Status: **Design interview in progress — Rounds 1–5 decided; Round 6 unanswered**
 Owner: eitaar
 Scope: research-oriented improvements to driichi's Benchmark Mode, not implementation approval.
 
@@ -47,11 +47,11 @@ Support comparisons using controlled shared random conditions to reduce the effe
 
 ### D6. Outcome + reliability + statistical evidence — DECIDED (Q6: B)
 
-Report and assess game outcomes, runtime/reliability evidence, and statistical uncertainty. Round 3 requires Match-level summary data and optional diagnostic logs. Round 4 requires server-observed latency for all eligible bot decisions and optionally collects agent-reported inference time **separately**. The exact server timing boundaries, reliability categories, confidence-interval method, and log retention remain open. This does not select full decision-level trace collection for the initial v2 release.
+Report and assess game outcomes, runtime/reliability evidence, and statistical uncertainty. Round 3 requires Match-level summary data and optional diagnostic logs. Round 4 requires server-observed latency for all eligible bot decisions and optionally collects agent-reported inference time **separately**. Round 5 selected both first-response and accepted-legal-action latency, separate invalid/timeout evidence, and quota/expiry-managed diagnostics. Exact clock/framing semantics, failure denominators, and confidence-interval methods remain open. This does not select full decision-level trace collection for the initial v2 release.
 
 ### D7. Recovery at Match boundaries — DECIDED IN PRINCIPLE (Q7: B)
 
-Support resuming eligible interrupted v2 experiments/runs **only at a verified Match boundary**, preserving already-durable outcomes. No replay-based mid-Match continuation is authorized. Round 3 requires an explicit Admin action to resume after interruption (no automatic resume). Round 4 requires recording failed attempts separately and allowing a new Match attempt with the original planned seed and fixed roster after Admin Resume. Eligibility checks, retry limits, bot state reset, and idempotency conditions remain open. Keep v1's existing fail-closed interrupted-Run behavior unchanged.
+Support resuming eligible interrupted v2 experiments/runs **only at a verified Match boundary**, preserving already-durable outcomes. No replay-based mid-Match continuation is authorized. Round 3 requires an explicit Admin action to resume after interruption (no automatic resume). Round 4 requires recording failed attempts separately and allowing a new Match attempt with the original planned seed and fixed roster after Admin Resume. Round 5 bounds each scheduled Match to three Attempts including the original (two retries); eligibility checks, Bot state reset verification, and idempotency conditions remain open. Keep v1's existing fail-closed interrupted-Run behavior unchanged.
 
 ### D8. Web UI is the primary interface — DECIDED (Q8: A)
 
@@ -61,25 +61,25 @@ Make the Admin Web UI the primary mechanism for configuring, observing, and comp
 
 During a running Benchmark, authenticated Admins can inspect **all bots' concealed hands** and switch which player's hand is the observation focus. Focus changes are strictly read-only: they neither impersonate a Participant nor alter a seat, Controller, legal-action visibility, RNG state, or Run progress.
 
-**Existing implementation:** `Audience::BenchmarkAdmin` already exposes all current hands to an authorized Admin. `frontend/src/benchmark.tsx` currently polls the Admin live endpoint at one-second intervals and renders `ThreeTable` with `surface="replay"`; there is no explicit focus selector in the inspected implementation. Round 3 decided that selecting a bot both changes the 3D table's viewing perspective and enlarges that bot's hand. The intended choice is a read-only presentation transformation (no privileged Player View impersonation). Round 4 requires selecting the Participant identity, not the seat, so the view tracks that bot across seat rotations. View defaults, transitions, and live-update transport remain open.
+**Existing implementation:** `Audience::BenchmarkAdmin` already exposes all current hands to an authorized Admin. `frontend/src/benchmark.tsx` currently polls the Admin live endpoint at one-second intervals and renders `ThreeTable` with `surface="replay"`; there is no explicit focus selector in the inspected implementation. Round 3 decided that selecting a bot both changes the 3D table's viewing perspective and enlarges that bot's hand. The intended choice is a read-only presentation transformation (no privileged Player View impersonation). Round 4 requires selecting the Participant identity, not the seat, so the view tracks that bot across seat rotations. Round 5 selected authenticated SSE updates with reconnect snapshots and ongoing authorization checks plus a polling fallback; view defaults, camera transitions and event granularity remain open.
 
 ## Decisions — Round 3 (2026-10-14)
 
 ### D10. Existing and newly created Runs in an Experiment — DECIDED (Q9: C)
 
-Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. The exact verifiability criteria and whether linking is reversible are open decisions.
+Experiment supports **both** attaching previously completed Benchmark Runs for retrospective comparison and creating/running new Benchmark Runs from its Admin Web UI. A Run remains independently addressable and its committed Match results must not be silently rewritten when linked. Round 4 restricts admission to Runs whose relevant experiment conditions can be verified; historical Runs without sufficient evidence are not retroactively treated as reproducible or admitted. Round 5 requires trustworthy code/build and checkpoint provenance alongside verified game conditions; how to attest the actual running artifact and whether linking is reversible remain open.
 
 ### D11. Fixed random seed and balanced seats — DECIDED (Q10: B)
 
-For paired comparisons, record/fix the random seed used for evaluation and **rotate the seats evenly** among Participants across the comparison schedule. Preserve exact pairing metadata; equal seed identifiers are not sufficient proof of equivalent draw trajectories once decisions diverge. Round 4 allows either an Admin-supplied or server-generated seed, and requires preserving the actual seed. The RNG stream protocol, seed expansion, and the definition of valid pairing are not yet chosen.
+For paired comparisons, record/fix the random seed used for evaluation and **rotate the seats evenly** among Participants across the comparison schedule. Preserve exact pairing metadata; equal seed identifiers are not sufficient proof of equivalent draw trajectories once decisions diverge. Round 4 allows either an Admin-supplied or server-generated seed, and requires preserving the actual seed. Round 5 selected deterministic per-Match seed derivation with separately labeled RNG streams. The derivation/stream protocol and unit of a paired comparison remain to be specified.
 
 ### D12. Match-level reliability evidence with optional diagnostics — DECIDED (Q11: B)
 
-Store outcome and reliability measurements at **Match granularity** by default; expose **detailed logs only when needed**. Diagnostic logging must be controllable and must not be assumed on by default. Server-observed latency is required while optional bot-reported inference time is recorded separately and clearly labeled; timing boundaries, log limits and retention, collection overhead, and statistical estimators remain undecided.
+Store outcome and reliability measurements at **Match granularity** by default; expose **detailed logs only when needed**. Diagnostic logging must be controllable and must not be assumed on by default. Server-observed latency is required while optional bot-reported inference time is recorded separately and clearly labeled; first-response and accepted-legal-action timing boundaries, quota/expiry-managed diagnostics, collection overhead, and statistical estimators still require precise technical contracts.
 
 ### D13. Admin-initiated Match-boundary recovery — DECIDED (Q12: A)
 
-Resumption of eligible interrupted v2 work requires the **Admin to choose Resume** in the UI. Already committed Matches remain valid; an incomplete Match cannot be marked completed and there is no mid-Match restoration. Round 4 requires retaining a failed attempt record and restarting its scheduled Match from the beginning with the **same seed and roster** using a **new Match ID** following Admin Resume. The original failed attempt stays excluded from result statistics. Proving environment/model compatibility, resetting state correctly, bounding retries, and atomic/idempotent accounting remain open. The legacy v1 interruption policy is unchanged.
+Resumption of eligible interrupted v2 work requires the **Admin to choose Resume** in the UI. Already committed Matches remain valid; an incomplete Match cannot be marked completed and there is no mid-Match restoration. Round 4 requires retaining a failed attempt record and restarting its scheduled Match from the beginning with the **same seed and roster** using a **new Match ID** following Admin Resume. The original failed attempt stays excluded from result statistics. Round 5 permits at most two retries per scheduled Match; proving environment/model compatibility, resetting state correctly, and atomic/idempotent accounting remain open. The legacy v1 interruption policy is unchanged.
 
 ### D14. Focused 3D spectator view plus enlarged hand — DECIDED (Q13: C)
 
@@ -103,7 +103,7 @@ The server **must record its own observed response-latency measurements**; instr
 
 ### D18. Retry interrupted Match from start — DECIDED (Q17: A)
 
-After Admin-triggered Resume, preserve the failed attempt and retry its originally scheduled Match **from the start** using the same recorded seed and Participant roster, with a **new Match ID**. Never count an incomplete attempt as a successfully completed Match; never mutate previous committed results. The replay/Match/attempt identity model, reset/verification checks, and retry budget remain open.
+After Admin-triggered Resume, preserve the failed attempt and retry its originally scheduled Match **from the start** using the same recorded seed and Participant roster, with a **new Match ID**. Never count an incomplete attempt as a successfully completed Match; never mutate previous committed results. The replay/Match/attempt identity model and reset/verification checks remain open. The retry budget is one original Attempt plus two retries.
 
 **Safety edge case:** A connected Bot may retain in-memory state across attempts or be replaced with a different checkpoint. The same seed and Participant ID are insufficient to guarantee equivalence. Resumption must not silently claim valid pairing until this is addressed.
 
@@ -113,7 +113,41 @@ The Admin's Observation Focus is anchored to the selected software **Participant
 
 ### D20. Sequential Runs per Experiment — DECIDED (Q19: A)
 
-Within each Experiment, at most **one Experiment-managed Benchmark Run** is active at once; its planned Runs execute in sequence. **Do not restrict independent legacy v1 Runs** because of this v2 rule. Exactly how the queue starts, pauses, advances and completes remains open.
+Within each Experiment, at most **one Experiment-managed Benchmark Run** is active at once; its planned Runs execute in sequence. **Do not restrict independent legacy v1 Runs** because of this v2 rule. Round 5 requires freezing comparison-defining conditions at the first Match start; exactly how the Run queue starts, pauses, advances and completes remains open.
+
+## Decisions — Round 5 (2026-10-14)
+
+### D21. Verified agent build and model artifact evidence — DECIDED (Q20: B)
+
+A Run is eligible for strict Experiment membership only if **both** its game conditions (rules/mode, effective seeds, engine identity/version and time control) **and** each participating agent's executable/build identity and, when applicable, exact model checkpoint identity have trustworthy recorded evidence. A Participant ID, display name, Bot Token, user-typed hash, or unauthenticated model metadata alone is insufficient. Existing v1 Runs with absent evidence remain accessible as v1 history but do not gain a fabricated verification status.
+
+**Unresolved verification boundary:** An external MJAI/MCP process can report a hash without actually running that artifact. How the operator establishes the identity of the executable/checkpoint that actually served a response is **not yet decided**. Do not treat self-declared strings as independently verified proof.
+
+### D22. Deterministic per-Match seeds and independent RNG streams — DECIDED (Q21: B)
+
+Persist an Admin-supplied or server-generated **Root Seed**, derive per-Match seeds deterministically, and use separately labeled RNG streams for logically independent randomness domains. This reduces accidental dependence on unrelated control-flow changes. Exact derivation algorithm, stream labels, per-Kyoku behavior, engine revision constraints and the unit of a paired sample are still open.
+
+Equal seeds do **not** imply identical game trajectories after bots make different choices. Replaying a failed scheduled Match must reuse its assigned seed/schedule rather than drawing a new fixture.
+
+### D23. Two server-observed latency measures — DECIDED (Q22: C)
+
+Measure **first response arrival latency** and **accepted legal action latency** separately. Record malformed/invalid actions, timeout and missing-response evidence separately rather than inventing a valid-action time. Optional bot-supplied inference time remains self-reported and non-equivalent to either server-observed metric. Clock start points, protocol framing for MJAI/MCP/Built-in Bots and aggregate estimators remain open.
+
+### D24. Maximum three Match Attempts — DECIDED (Q23: B)
+
+For each planned Match there may be **one original Attempt and at most two retries**. Each retry needs Admin-initiated Resume, preserves the previous failed Attempt, uses the same planned seed/roster and creates a new Match ID. Once all three Attempts fail, no further retry is permitted under that plan. The terminal/blocked state and remediation remain open. Do not claim comparability if the Bot build/checkpoint or reset state cannot be trusted.
+
+### D25. SSE-powered Admin live observation — DECIDED (Q24: B)
+
+Admin live observation uses an **authenticated SSE stream** with initial/reconnect snapshots, revision consistency and revocation/expiry enforcement; **polling remains a fallback**. Do not leak concealed hands to other audiences, future wall order, or opponents' private legal-action menus. Bounded event/update policy, slow-client handling and connection limits remain open.
+
+### D26. Freeze Experiment comparability configuration on start — DECIDED (Q25: B)
+
+When the Experiment's **first Match starts**, freeze its comparability-defining conditions (roster/builds, rules, seeds/derivation, seat/fixture plan). Changes to notes/annotations and administrative pause/cancel are still permitted. Do not silently edit prior results or combine differently defined experimental cohorts. Precise pause/cancel lifecycle remains open.
+
+### D27. Quota/expiry-controlled optional diagnostics — DECIDED (Q26: B)
+
+Detailed diagnostic logs have **Admin-configurable retention time and capacity quotas** with conservative self-hosted defaults. Durable Match-level outcome and reliability summaries and failure/Attempt records survive expiry or quota enforcement. The precise quota scope, quota-exceeded behavior, redaction and export/archival policy remain open.
 
 ## Verified v1 baseline (not v2 decisions)
 
@@ -128,54 +162,57 @@ Within each Experiment, at most **one Experiment-managed Benchmark Run** is acti
 
 These remain candidates, not implementation mandates:
 
-1. An optional central model registry UI (immutable provenance needed for strict Experiment admission is no longer optional, but its storage representation and verification rules remain open).
-2. Exact deterministic replay and RNG stream design, beyond the agreed Paired Evaluation goal.
+1. An optional central model registry UI (verified agent artifact identity is required for Experiment eligibility; a registry product UI is not).
+2. Pre-generated wall/deal fixtures and bit-for-bit replay checks beyond the selected derived-seed/split-stream approach.
 3. Model regression thresholds, rankings, and publication of evidence reports.
 4. Offline decision evaluation and detailed per-decision traces, which are not selected for initial v2.
 5. Dataset/replay export and reproducible experiment manifests; Web UI is the selected primary interface.
 6. Parallel workload scheduling and resource quotas beyond the existing self-hosted architecture.
 7. A generalized automatic recovery engine, beyond the agreed *boundary-only* resumption capability.
 
-## Decision tree — Round 5 frontier
+## Decision tree — Round 6 frontier
 
-```text
+\`\`\`text
 Benchmark v2
-├── D1–D3 Research / additive v1 compatibility / self-hosted       [DECIDED]
-├── D4,D10,D15 Verified Experiment Runs, historic + new           [DECIDED]
-│   └── Q20 Minimum evidence for verifiable Run                  [FRONTIER]
-│       └── Later: signature/identity checks, linking/removal, migrations
-├── D5,D11,D16 Paired comparison, balanced seats, input/auto seed [DECIDED]
-│   └── Q21 Seed-expansion/reproducible randomness boundaries     [FRONTIER]
-│       └── Later: deterministic verification, exact paired sample unit
-├── D6,D12,D17 Match stats + server latency + optional bot time  [DECIDED]
-│   ├── Q22 Which response latency boundary?                     [FRONTIER]
-│   │   └── Later: per-Match aggregation, invalid/timeout categories
-│   └── Q26 Detailed diagnostic log retention                    [FRONTIER]
-│       └── Later: log format, quotas, archival/export controls
-├── D7,D13,D18 Admin Resume; retry same schedule/seed/roster      [DECIDED]
-│   └── Q23 Retry limit and blocked state                         [FRONTIER]
-│       └── Later: model reset/provenance match, transaction/idempotency checks
-├── D8,D9,D14,D19 Focused Admin view follows Participant         [DECIDED]
-│   └── Q24 Live observer update transport                        [FRONTIER]
-│       └── Later: stream auth, throttling, reorientation animation
-└── D10,D20 Sequential Experiment-managed Runs                   [DECIDED]
-    └── Q25 Experiment configuration freeze/lifecycle           [FRONTIER]
-        └── Later: queue state transitions, pause/cancel, retention/caps
-```
+├── D1–D3 Research, additive v1, self-hosted                          [DECIDED]
+├── D4,D10,D15,D21 Strict verified Runs, historic + new              [DECIDED]
+│   └── Q27 Attestation of actual Bot executable/checkpoint         [FRONTIER]
+│       └── Later: schema/evidence chain, eligibility test, legacy migration
+├── D5,D11,D16,D22 Paired seeds, balanced seats, split RNG          [DECIDED]
+│   └── Q28 Pairing block and shared fixture schedule                [FRONTIER]
+│       └── Later: statistical sample units, derivation contract, RNG tests
+├── D6,D12,D17,D23 Dual timing metrics + reliability evidence       [DECIDED]
+│   └── Q29 Treatment of invalid/missing actions in stats            [FRONTIER]
+│       └── Later: estimators, event clocks, statistical confidence
+├── D7,D13,D18,D24 Admin Resume, 3 Attempts, same seed/roster       [DECIDED]
+│   └── Q30 If clean Bot reset cannot be verified                   [FRONTIER]
+│       └── Later: reset mechanism, transactions, exhausted status
+├── D8,D9,D14,D19,D25 Admin SSE view, bot-focused 3D + hand         [DECIDED]
+│   ├── Q31 SSE snapshot vs delta update policy                     [FRONTIER]
+│   │   └── Later: authorization, slow clients, bounded revisions
+│   └── Q34 Focus transition and accessibility                      [FRONTIER]
+│       └── Later: scoreboard Seat correspondence, visual regression tests
+└── D10,D20,D26,D27 Sequential frozen Experiment, log quotas       [DECIDED]
+    ├── Q32 Pausing/canceling active Experiment                      [FRONTIER]
+    │   └── Later: durable queue transitions and Run status model
+    └── Q33 Quota exhaustion behavior                                [FRONTIER]
+        └── Later: retention policy defaults, export rules
+\`\`\`
 
-### Round 5 questions — awaiting owner
+### Round 6 questions — awaiting owner
 
-- **Q20, minimum verification evidence:** A — verified match setup (rules/mode, seed, engine revision, time control) without attesting agent build; B — A plus reproducible/verifiable bot artifact or model-checkpoint identity, rejecting unverified agents; C — B plus an integrity-checked signed runtime environment for all bots. **Recommendation B:** strict scientific admission requires more than a display name or Bot Token. Later define how self-hosted MJAI/MCP bots supply genuinely verifiable artifact identity without trusting a mere typed name.
-- **Q21, seed expansion:** A — one seeded mutable RNG shared by all gameplay events; B — a recorded root seed deterministically expands into per-Match seeds with separate labeled RNG streams to reduce action-order coupling; C — a pre-generated immutable full wall/deal script for every Kyoku irrespective of branching. **Recommendation B:** reproducibility without claiming divergent agent choices share an identical observed trace.
-- **Q22, server latency boundary:** A — first response byte/frame, regardless of validity; B — elapsed time until a complete valid legal action is accepted; C — record both first response and valid action latency, with errors separately. **Recommendation C:** distinguishes transport responsiveness from usable decisions, if implementable consistently across MJAI/MCP/built-in bot actions.
-- **Q23, repeated retry budget:** A — one retry total then terminal failure; B — up to two retries (three attempts including original) with explicit Admin action at each resumption; C — unlimited Admin-triggered retries. **Recommendation B:** retain bounded evidence and avoid trapping a self-hosted instance in repeated failed trials.
-- **Q24, Admin live update transport:** A — keep the existing 1-second polling; B — authenticated SSE projection updates with snapshot/reconnect and revocation checks, keeping polling fallback; C — dedicated WebSocket. **Recommendation B:** responsive read-only spectatorship without replacing the existing table renderer or relaxing Admin permissions.
-- **Q25, Experiment configuration edit policy:** A — freely edit planned Runs/seed/roster after results exist; B — freeze comparability-defining settings once the first Match starts, allowing only annotations and administrative pause/cancel; C — version configurations in-place while separating result cohorts. **Recommendation B:** simple immutable comparison conditions, preserving interpretability and replayable schedules.
-- **Q26, diagnostic log retention:** A — retain every detailed event indefinitely; B — configurable quota/expiry with conservative self-hosted defaults, while durable per-Match summaries remain; C — diagnostics are ephemeral and vanish after completion. **Recommendation B:** avoid surprise disk growth without losing authoritative outcomes or failure evidence.
+- **Q27, trust boundary for Bot artifact verification:** A — allow only Bots under a locally managed runner that can verify the executable/checkpoint used; B — support those local runners plus external MJAI/MCP agents **only if** trusted attestation of the actually running artifact is available; C — accept externally supplied hashes as verified. **Recommendation B** as a compatibility goal, but reject external Bots until a real trust chain is present; signed self-assertion alone is not independent verification.
+- **Q28, unit of Paired Evaluation:** A — repeat a single shared Match seed and rotate the Seats; B — use a seat-balanced 3/4-Match *block* with a fixed set of distinct derived Match seeds, repeating the same plan across compared versions; C — permit arbitrary Matches under a shared root seed. **Recommendation B:** a verifiable comparison block without assuming identical bot-dependent draws.
+- **Q29, failures in response statistics:** A — replace timeouts/invalid actions with a penalty duration inside an average; B — report latency distributions for observed responses/accepted actions and **separate** invalid action, timeout, missing-response and disconnect rates with explicit denominators; C — discard failures from statistics. **Recommendation B:** do not imply an unsuccessful decision had a legal-action latency.
+- **Q30, insufficient Bot reset evidence before retry:** A — block resumption until matching builds/checkpoints and a clean Match-level reset are verified; B — allow an Admin override but mark the result unpaired/noncomparable; C — trust reconnection as proof of reset. **Recommendation A:** preserve strict Experiment evidence without depending on guesswork.
+- **Q31, SSE update semantics:** A — full private snapshot for every revision; B — snapshot on connect/reconnect plus bounded coalesced latest-state snapshots with revision IDs and polling fallback; C — incremental deltas requiring client reconstruction. **Recommendation B:** fewer staleness and backpressure problems, plus explicit authorization before sensitive sends.
+- **Q32, Pause/Cancel boundary:** A — apply pause/cancel only **after the current Match is durably finalized**; B — abort immediately; C — wait until the current entire Run finishes. **Recommendation A:** preserves Match result integrity and avoids modifying v1 lifecycle.
+- **Q33, optional diagnostic log quota exceeded:** A — stop the Experiment to preserve complete traces; B — stop optional detail collection, retain mandatory Match summaries and failure evidence, and visibly mark diagnostics truncated; C — silently discard the oldest details. **Recommendation B:** mandatory results remain durable even when optional detail storage fills.
+- **Q34, Admin observation transition:** A — instantly switch the selected bot's table orientation; B — short smooth transition with reduced-motion support, maintaining authoritative Seat/score association; C — automatically cycle between Bots. **Recommendation B:** user-friendly without compromising accessibility or correct score-to-Seat labels.
 
 ### Deferred decisions
 
-After this frontier is resolved, consider: verifiable agent/engine artifact ownership and compatible version checks; deterministic RNG seed format/streams; paired block and sample construction; seat-balanced statistical estimators and uncertainty; per-Match latency aggregation and invalid/timeouts; reset semantics and transactional resume idempotency; observing future wall privacy limits; Admin UI defaults and 3D focus animations; lifecycle of planned Runs when canceled; maximum scheduled Runs/matches and disk quota boundaries; API/schema migrations; automated visual acceptance tests for the reported center-score/Seat mismatch.
+After Round 6, define artifact attestation and model-reset proof; exact RNG and seed-derivation versioning; paired statistical unit, 3p-vs-4p comparability and confidence intervals; accepted-action timing denominators; retry idempotency and terminal status; SSE auth/revisions/slow viewer behavior; Experiment linking/removal, queue status and UI; diagnostics limits/redaction/export; API/schema upgrades and runtime compatibility; and actual pixel-level acceptance checks for the already reported ordinary-Match score-to-Seat misassignment.
 
 ## Reported visual defect — status UNVERIFIED (2026-10-14)
 
