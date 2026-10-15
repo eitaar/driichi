@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { BenchmarkObserver as Observer } from "./benchmark-observer";
 import { clearAdminSession } from "./admin-session";
+import { deriveRunAnalytics, type RunAnalytics } from "./benchmark-analytics";
+
+const emptyAnalytics = deriveRunAnalytics({ game_mode: "4p-red-east", completed: 0, matches: [], roster: Array.from({ length: 4 }, (_, initial_seat) => ({ participant_id: `p${initial_seat}`, display_name: `Bot ${initial_seat}`, initial_seat, participant_kind: "built_in_bot", character_id: null })) });
 
 const progress = { run_id: "run-1", target: 3, completed: 0, stop_requested: false, status: "running" };
 const snapshot = (revision = 7) => ({ revision, benchmark: progress, projection: {
@@ -12,9 +15,9 @@ const snapshot = (revision = 7) => ({ revision, benchmark: progress, projection:
 function response(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }); }
 async function flush() { await act(async () => { vi.advanceTimersByTime(0); for (let i = 0; i < 10; i++) await Promise.resolve(); }); }
 async function advance(ms: number) { await act(async () => { vi.advanceTimersByTime(ms); }); await flush(); }
-function mount() {
+function mount(analytics: RunAnalytics = emptyAnalytics) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(<QueryClientProvider client={client}><Observer runId="run-1" roomCode="123456" /></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={client}><Observer runId="run-1" roomCode="123456" analytics={analytics} /></QueryClientProvider>);
   fireEvent.click(screen.getByText("Live table — all current hands"));
   return { ...view, client };
 }
@@ -24,7 +27,29 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it("coalesces refresh intents without overlapping private reads and reports Polling, never Live", async () => {
+it.each([emptyAnalytics, { kind: "invalid", reason: "Invalid persisted records." } as const])("never derives Run standings from live hands when persisted analytics are $kind", async analytics => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot())));
+  mount(analytics); await flush();
+  const leaderboard = screen.getByRole("region", { name: "Run leaderboard" });
+  expect(leaderboard).toHaveTextContent(analytics.kind === "invalid" ? "Invalid persisted records." : "No completed Matches yet.");
+  expect(within(leaderboard).queryByRole("list")).not.toBeInTheDocument();
+});
+
+it("orders persisted Run standings by average rank then stable ID, not current Match scores", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot())));
+  if (emptyAnalytics.kind !== "ready") throw new Error("Invalid fixture");
+  const participants = emptyAnalytics.participants.map((p, i) => ({ ...p, averageRank: i < 2 ? 1.5 : 3.5, firstPlaceRate: i < 2 ? 0.5 : 0, cumulativeNet: i < 2 ? 1500 : -1500 }));
+  mount({ kind: "ready", completed: 2, provisional: true, participants: participants.reverse() }); await flush();
+  const rows = within(screen.getByRole("region", { name: "Run leaderboard" })).getAllByRole("listitem");
+  expect(rows[0]).toHaveTextContent("Bot 0 (p0)");
+  expect(rows[1]).toHaveTextContent("Bot 1 (p1)");
+  expect(rows[0]).toHaveTextContent("Mean rank: 1.50");
+  expect(rows[0]).toHaveTextContent("First-place rate: 50.0%");
+  expect(rows[0]).toHaveTextContent("Net score: 1,500");
+  expect(screen.queryByRole("region", { name: "Current Match scores" })).not.toBeInTheDocument();
+});
+
+it("coalesces refresh intents without overlapping private reads and reports Polling, never Live",  async () => {
   let release!: (response: Response) => void;
   vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { release = resolve; })));
   mount(); await flush();
@@ -111,7 +136,7 @@ it("ignores an old Run/Room response after a new observer lifetime starts", asyn
   const releases: Array<(response: Response) => void> = [];
   vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { releases.push(resolve); })));
   const { rerender, client } = mount(); await flush();
-  rerender(<QueryClientProvider client={client}><Observer runId="run-2" roomCode="654321" /></QueryClientProvider>);
+  rerender(<QueryClientProvider client={client}><Observer runId="run-2" roomCode="654321" analytics={emptyAnalytics} /></QueryClientProvider>);
   await flush();
   expect(vi.mocked(fetch).mock.calls[0][1]?.signal?.aborted).toBe(true);
   await act(async () => releases[0](response(snapshot()))); await flush();

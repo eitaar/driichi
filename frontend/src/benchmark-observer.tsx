@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiProblem, problemFrom, type BenchmarkLive } from "./api";
 import { clearAdminSession } from "./admin-session";
+import type { RunAnalytics } from "./benchmark-analytics";
 import { Button } from "./components/ui/button";
 import { Field, FieldGroup, FieldLabel } from "./components/ui/field";
 import { ThreeTable } from "./game/three-table";
@@ -31,7 +32,7 @@ type Observation = {
 };
 const empty = (lifetime: string): Observation => ({ lifetime, snapshot: null, lastSnapshotAt: null, failed: false, reading: false, error: null });
 
-export function BenchmarkObserver({ runId, roomCode }: { runId: string; roomCode: string }) {
+export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: string; roomCode: string; analytics: RunAnalytics }) {
   const client = useQueryClient();
   const lifetime = JSON.stringify([runId, roomCode]);
   const [open, setOpen] = useState(false);
@@ -173,8 +174,18 @@ export function BenchmarkObserver({ runId, roomCode }: { runId: string; roomCode
           <p>{focused ? `Focused: ${focused.display_name} · Seat ${focused.seat + 1}` : "Default view · No focused current Seat"}</p>
           <div ref={tableVisual} className="benchmark-live replay-table-wrap"><ThreeTable projection={projection} viewSeat={seat} room={null} surface="replay" reducedMotion /></div>
         </div>
-        <section aria-label="Current Match scores"><h2>Current Match scores</h2>
-          {projection ? <ol>{[...(projection.players ?? [])].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).map(player => <li key={player.participant_id}>{player.display_name} ({player.participant_id}) · Seat {player.seat + 1}: {player.score?.toLocaleString() ?? "Unavailable"}</li>)}</ol> : <p>No current scores.</p>}
+        <section aria-label="Run leaderboard"><h2>Run leaderboard</h2>
+          {analytics.kind === "invalid" ? <p>Standings unavailable: {analytics.reason}</p>
+            : analytics.completed === 0 ? <p>No completed Matches yet.</p> : <>
+              <p>{analytics.provisional ? "Provisional · " : ""}{analytics.completed} completed Matches · Persisted results only</p>
+              <ol>{[...analytics.participants].sort((a, b) => (a.averageRank ?? Infinity) - (b.averageRank ?? Infinity)
+                || (a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0)).map(player => <li key={player.participantId}>
+                  <strong>{player.displayName} ({player.participantId})</strong>
+                  <div>Mean rank: {player.averageRank?.toFixed(2) ?? "Unavailable"}</div>
+                  <div>First-place rate: {player.firstPlaceRate === null ? "Unavailable" : `${(player.firstPlaceRate * 100).toFixed(1)}%`}</div>
+                  <div>Net score: {player.cumulativeNet.toLocaleString()}</div>
+                </li>)}</ol>
+            </>}
         </section>
       </div>
       {projection && <details><summary>Current hands as text</summary><ul>{projection.players?.map(player => <li key={player.participant_id}>{player.display_name} ({player.participant_id}): {player.hand?.map(tileLabel).join(", ")}</li>)}</ul></details>}

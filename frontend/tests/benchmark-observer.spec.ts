@@ -1,11 +1,10 @@
 import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import tableFixtures from "./fixtures/task12-projection.json" with { type: "json" };
 
 const roster = Array.from({ length: 4 }, (_, initial_seat) => ({ participant_id: `p${initial_seat}`, display_name: `Bot ${initial_seat}`, initial_seat, participant_kind: "built_in_bot", character_id: null }));
 const run = { run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "running", reason: null, failed_match_id: null, roster, matches: [] };
-const projection = JSON.parse(readFileSync(resolve("tests/fixtures/task12-projection.json"), "utf8")).projections["4p-red-east"];
+const projection = tableFixtures.projections["4p-red-east"];
 function snapshot(revision = 7, rotation = 0) {
   return { revision, benchmark: { run_id: "run-1", target: 3, completed: 0, stop_requested: false, status: "running" }, projection: {
     ...projection, audience: "benchmark_admin", players: projection.players.map((player: object, seat: number) => ({ ...player,
@@ -75,20 +74,64 @@ test("authorized GET focus, rotation, fullscreen and revocation use one current 
   expect(commands).toEqual([]);
 });
 
-test("denied fullscreen expands the same host, reduced-motion focus snaps and Escape restores focus", async ({ page }) => {
-  await page.setViewportSize({ width: 1100, height: 800 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.addInitScript(() => { HTMLElement.prototype.requestFullscreen = () => Promise.reject(new Error("Denied")); });
-  await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: run }));
+test("adjacent Run leaderboard uses persisted results rather than the current Match leader", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const persistedRun = { ...run, completed: 1, matches: [{ sequence: 1, match_id: "persisted-1", results: roster.map((p, seat) => ({ participant_id: p.participant_id, seat, rank: seat + 1, final_score: 40000 - seat * 10000 })) }] };
+  await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: persistedRun }));
   await page.route("**/api/v1/admin/rooms/123456", route => route.fulfill({ json: { join_code: "123456", benchmark: snapshot().benchmark } }));
   await page.route("**/api/v1/admin/benchmark/rooms/123456/live", route => route.fulfill({ json: snapshot() }));
   await page.goto("/admin/benchmark/runs/run-1");
   await page.getByText("Live table — all current hands").click();
-  await page.getByLabel("Focus Participant").selectOption("p1");
-  expect(await page.locator(".benchmark-live").evaluate(node => node.getAnimations().length)).toBe(0);
-  await page.getByRole("button", { name: "Fullscreen table" }).click();
-  await expect(page.getByText(/Browser fullscreen unavailable/)).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Fullscreen table" })).toBeFocused();
-  await expect(page.getByRole("group", { name: "3D mahjong table" })).toHaveCount(1);
+  await expect(page.getByText(/Polling · Fresh/)).toBeVisible();
+  const leaderboard = page.getByRole("region", { name: "Run leaderboard" });
+  const leader = leaderboard.getByRole("listitem").first();
+  await expect(leader).toContainText("Bot 0 (p0)");
+  await expect(leader).toContainText("Mean rank: 1.00");
+  await expect(leader).toContainText("First-place rate: 100.0%");
+  await expect(leader).toContainText("Net score: 15,000");
+  const currentScores = page.getByRole("list", { name: "Table scores" });
+  await expect(currentScores).toContainText("Bot 3: 28,000");
+  await expect(currentScores).toContainText("Bot 0: 25,000");
+  const tableBox = await page.locator(".benchmark-live").boundingBox();
+  const leaderboardBox = await leaderboard.boundingBox();
+  expect(leaderboardBox!.x).toBeGreaterThan(tableBox!.x + tableBox!.width);
+  expect((await new AxeBuilder({ page }).include(".benchmark-observer").analyze()).violations).toEqual([]);
 });
+
+for (const height of [600, 800, 900]) {
+  test(`denied fullscreen keeps Exit and status visible while scrolling at ${height}px`, async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.addInitScript(() => { HTMLElement.prototype.requestFullscreen = () => Promise.reject(new Error("Denied")); });
+    await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: run }));
+    await page.route("**/api/v1/admin/rooms/123456", route => route.fulfill({ json: { join_code: "123456", benchmark: snapshot().benchmark } }));
+    await page.route("**/api/v1/admin/benchmark/rooms/123456/live", route => route.fulfill({ json: snapshot() }));
+    await page.goto("/admin/benchmark/runs/run-1");
+    await page.getByText("Live table — all current hands").click();
+    const leaderboard = page.getByRole("region", { name: "Run leaderboard" });
+    await expect(leaderboard).toContainText("No completed Matches yet.");
+    await expect(leaderboard.getByRole("list")).toHaveCount(0);
+    const tableBox = await page.locator(".benchmark-live").boundingBox();
+    const leaderboardBox = await leaderboard.boundingBox();
+    expect(leaderboardBox!.y).toBeGreaterThan(tableBox!.y + tableBox!.height);
+    await page.getByLabel("Focus Participant").selectOption("p1");
+    expect(await page.locator(".benchmark-live").evaluate(node => node.getAnimations().length)).toBe(0);
+    await page.getByRole("button", { name: "Fullscreen table" }).click();
+    await expect(page.getByText(/Browser fullscreen unavailable/)).toBeVisible();
+    await page.locator(".benchmark-live").evaluate(node => {
+      const table = node.getBoundingClientRect();
+      window.scrollBy(0, table.top + table.height / 2);
+    });
+    await expect.poll(() => page.locator(".benchmark-live").evaluate(node => node.getBoundingClientRect().top)).toBeLessThan(0);
+    for (const control of [page.getByRole("button", { name: "Exit fullscreen" }), page.getByText(/Polling · Fresh/)]) {
+      await expect(control).toBeInViewport({ ratio: 1 });
+      expect(await control.evaluate(node => {
+        const rect = node.getBoundingClientRect();
+        return node.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+      })).toBe(true);
+    }
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Fullscreen table" })).toBeFocused();
+    await expect(page.getByRole("group", { name: "3D mahjong table" })).toHaveCount(1);
+  });
+}

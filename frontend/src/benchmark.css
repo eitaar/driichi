@@ -40,7 +40,7 @@
 .benchmark-observer .benchmark-live { height: auto; aspect-ratio: 16 / 9; }
 .benchmark-observer[data-expanded="true"] .benchmark-live { height: 75vh; aspect-ratio: auto; }
 .benchmark-observer:fullscreen { width: 100%; height: 100%; padding: 16px; overflow: auto; }
-.benchmark-observer:fullscreen .benchmark-observer-toolbar { position: sticky; top: 0; background: var(--background); z-index: 1; }
+.benchmark-observer[data-expanded="true"] .benchmark-observer-toolbar { position: sticky; top: 0; background: var(--background); z-index: 1; }
 @media (min-width: 1280px) {
   .benchmark-observer-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
 }

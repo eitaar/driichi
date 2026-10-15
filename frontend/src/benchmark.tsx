@@ -179,7 +179,7 @@ function RunDetail({ runId }: { runId: string }) {
       <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />
       <Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link>
     </>}
-    <DesktopTableBoundary fallback={null}><LiveObserver runId={runId} roomCode={run.room_code} /></DesktopTableBoundary>
+    <DesktopTableBoundary fallback={null}><LiveObserver runId={runId} roomCode={run.room_code} analytics={analytics} /></DesktopTableBoundary>
     {analytics.kind === "invalid" ? <Alert variant="destructive"><AlertTitle>Invalid Match evidence</AlertTitle><AlertDescription>{analytics.reason}</AlertDescription><Button variant="outline" onClick={() => { void refresh(); }}>Retry</Button></Alert>
       : analytics.completed === 0 ? <section><h2>Statistics</h2><p>No completed Matches yet.</p></section>
       : <Suspense fallback={<p role="status">Loading charts…</p>}><BenchmarkCharts analytics={analytics} onOpenMatch={setSelectedMatchId} /></Suspense>}
