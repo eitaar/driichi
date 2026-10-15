@@ -1,8 +1,8 @@
 # driichi UI/UX — Grill with Docs (UI-1–UI-7 complete; pending design signoff)
 
 Date: 2026-10-14
-Status: **All UI-1–UI-7 questions Q237–Q314 and targeted owner overrides UI-D65–D67 recorded; UI-7 Q310–Q314 decided as UI-D77–UI-D81. Final design consistency reviewed; explicit owner DESIGN signoff still pending. UI/UX documentation belongs to its dedicated Draft PR; Benchmark architecture is independently documented in Draft PR #23. No product code/CI/deployment/merge authorized.**
-Scope: shadcn/ui (Base UI) + Tailwind-based English-only redesign for **all** public/admin pages, starting with Run-first Benchmark Dashboard. One public all-pages cutover; no planned old-UI rollback. Dedicated existing Three.js/Pixi Mahjong renderer remains.
+Status: **All original Q237–Q314/UI-D1–D81 are historically retained; latest owner implementation-alignment decisions UI-D82–D91 supersede narrowly conflicting platform/UI clauses. Only 3D-table functionality is PC-only; other mobile routes (Home, Join, Lobby, Admin, Benchmark charts/history) remain responsive. Explicit final owner DESIGN signoff pending. Draft documentation only; no code/CI/deploy/merge authorized.**
+Scope: English-only shadcn/ui (Base UI) + Tailwind whole-app shell redesign; existing Three.js/Pixi Mahjong 3D-table **PC-only** for live normal games, 3D Replay playback and Benchmark observation. Non-3D mobile pages and data views remain supported. One coordinated public UI cutover, no prepared old-UI rollback.
 
 **Read first:** all nine results UI-6 Q301–Q309 and all five UI-7 Q310–Q314 owner choices have now been recorded; outcome UI-D68–D81 are authoritative. Latest explicit split: this UI specification is OWNED by a dedicated UI-only Draft PR; the separate Benchmark architecture/Run design remains in Draft PR #23. The previous pending UI-7 questionnaire is retained below for history and is NO LONGER OPEN. Previous no-pending-questions audit predates the new explicit owner request. Earlier owner **UI-D66** selects subtly slanted portrait character cards with prominent avatar/name and very few SVG status/own-player icons instead of repetitive Ready/You text badges. UI-D66 supersedes the *vertical-only visual layout* of older UI-D30/UI-D47 but preserves stable participant collection semantics. Current code demonstrates **normal-room Seat assignment occurs at Start Match, NOT in the pre-Match Lobby**. The correction below supersedes the unimplementable Q296 A East/South/West/North prestart order **while preserving its intent: stable participant cards that do not jump on readiness**. Latest owner **UI-D65 overrides only the normal-game action-button PLACEMENT clauses** of UI-D31 (Q267 B), UI-D48 (Q284 B), and UI-D61 (Q297 A). The original 64 question choices are retained as historical design decisions and all their *unrelated* requirements remain active. The latest authority map and consistency audit below supersede any older archived options, particularly the rejected original UI-3 A/B/C definitions. Old "pending/frontier" text in archived proposal sections is not a new open decision.
 
@@ -47,7 +47,7 @@ Run header holds unobtrusive **Stop after current Match** with a confirmation an
 
 Select a Participant with a compact labeled focus control, accessible by pointer/touch/keyboard, not a cycling camera. Follow Participant ID as Seat rotates; protect private all-hand Admin data. An in-game camera rotation is not an identity switch.
 
-### UI-D8. **Mobile Run detail is chart-first; hide live 3D table** — DECIDED (Q244 **C**, overrides A suggestion)
+### UI-D8. **Mobile Run detail charts only, NO 3D at all** — STRENGTHENED BY UI-D82 (Q244 C)
 
 **On small-screen Run detail, the live 3D Mahjong table must NOT be displayed by default.** The content focuses on performance charts/Run statistics rather than an automatic/shrunken table. Essential Run progress, valid Admin operations, status and accessibility remain available; hiding a table may **not** hide required Stop/Resume or show a fake Live indicator. This is the owner's intentional deviation from the previous proposed mobile-table-first fallback. UI-2 **Q256 B** creates an explicit opt-in exception: mobile detail remains chart-first and inline-table-free, but a user can choose **Open Live Table** to view that same single table fullscreen or via accessible in-page fallback. No autoplay, background renderer or unsolicited private-hand fetch. Return and transition behavior is decided in **revised Q263 A**; live/no-live affordance is decided in **Q300 B**. Desktop/large-screen live 3D remains mandatory.
 
@@ -115,9 +115,9 @@ Confirm "**Finish current Match, then stop**". After an authenticated server acc
 
 Place accessible Bot-name + current Seat focus chips/dropdown near the real 3D table, available in fullscreen. Preserve underlying `participant_id` across Seat rotation, retain keyboard selection and focus restore, never mutate game identity/state to "change camera". Admin concealed-hand access remains protected.
 
-### UI-D20. Mobile chart-first, optional manually opened *single* fullscreen table — DECIDED (Q256 **B**; refines Q244 C)
+### UI-D20. Historical mobile manual fullscreen table — SUPERSEDED BY UI-D82 (Q256 B)
 
-**Mobile Run detail stays chart-first and has no default inline, autoplay or background-rendered 3D table**, per Q244 C. Display an explicit `Open Live Table` action. Only on user activation open **the same one actual Three.js table** fullscreen (or accessible in-page fallback), with valid Admin authorization and no second Match/table. When closed, return to the stats/graph context. Details of restoration and inter-Match behavior depend on Q264. Neither blanket ban (Q256 A) nor default 3D inline display (Q256 C) is active.
+**HISTORICAL PRE-UI-D82 text:** Mobile Run detail stayed chart-first yet proposed an opt-in mobile 3D viewer. **That `Open Live Table` exception is withdrawn**; the latest binding mobile view is charts/status/history and no 3D even on demand. Only on user activation open **the same one actual Three.js table** fullscreen (or accessible in-page fallback), with valid Admin authorization and no second Match/table. When closed, return to the stats/graph context. Details of restoration and inter-Match behavior depend on Q264. Neither blanket ban (Q256 A) nor default 3D inline display (Q256 C) is active.
 
 ### UI-D21. Clearly stale snapshot and recovery time — DECIDED (Q257 A)
 
@@ -188,9 +188,9 @@ Render honestly computable chart values even for a few recorded Matches, but **l
 
 On narrow screens, the default Run detail remains **chart-first** with multiple visible graphs grouped into explicitly labeled default-expanded sections such as **Performance** and **Consistency**, with optional collapse. Run progress and valid controls remain easy to reach; history follows. No inline or background-rendered 3D table. The manually opened live viewer remains separately allowed under Q256 B.
 
-### UI-D27. On-demand mobile fullscreen overlay with restored context — DECIDED (revised Q263 A)
+### UI-D27. Historical mobile fullscreen table — SUPERSEDED BY UI-D82 (Q263 A)
 
-An explicit `Open Live Table` opens the **same single authorized real 3D table** above the Run-detail screen, fullscreen (or accessible in-page equivalent if native fullscreen fails). It can persist across automatically starting Matches. Closing returns to the **same Run-detail scroll position and keyboard focus**, and unmounts/stops rendering confidential hand projections from the viewer. No navigation to a new tab per Match.
+**HISTORICAL, superseded by UI-D82:** This proposed mobile 3D opener is canceled. No phone 3D table is mounted or displayed; chart scroll/focus remains normal for non-3D drawers/sheets. It can persist across automatically starting Matches. Closing returns to the **same Run-detail scroll position and keyboard focus**, and unmounts/stops rendering confidential hand projections from the viewer. No navigation to a new tab per Match.
 
 ### UI-D28. Home two-column function + character art — DECIDED (revised Q264 B)
 
@@ -269,9 +269,9 @@ When completed observations are too few to support stable interpretation, show a
 
 Group four charts into **Performance** and **Consistency** sections with headings and an accessible compact jump menu on mobile. **Both categories are expanded by default**; owner may collapse them independently. No default 3D table inline, even when categories fold; Q244 C remains operative.
 
-### UI-D44. Portrait and landscape both supported for opt-in live overlay — DECIDED (Q280 A)
+### UI-D44. Historical mobile 3D overlay orientation — SUPERSEDED BY UI-D82 (Q280 A)
 
-Explicit `Open Live Table` renders the same authorized single 3D table in an accessible fullscreen overlay on phone; controls reflow in portrait and landscape. No forced device rotation or landscape-only viewer. Manual exit returns to charts and restores scroll/focus as UI-D27 requires.
+**HISTORICAL, superseded by UI-D82:** No opt-in mobile 3D observation or portrait/landscape 3D rendering requirement. Mobile non-3D Run dashboard remains responsive. No forced device rotation or landscape-only viewer. Manual exit returns to charts and restores scroll/focus as UI-D27 requires.
 
 ### UI-D45. Mobile Home shows Join first, character artwork below — DECIDED (Q281 A)
 
@@ -395,19 +395,19 @@ Selecting a Kyoku in desktop chapter list/mobile dropdown jumps playback to its 
 
 Two-step Room Join stays **one URL**. Its visible in-app `Back` from Character selection to Room/name step preserves entered name and valid choices. The browser/system Back acts as normal navigation **out of the Join page**, not an internal step Back; no synthetic same-URL history entries or Back interception. Preserve accessible labels, warning about validation errors and return navigation as applicable without surprising state persistence claims.
 
-### UI-D64. Disabled mobile live action with reason and Replay when inactive — DECIDED (Q300 B)
+### UI-D64. Historical disabled mobile 3D opener — SUPERSEDED BY UI-D82 (Q300 B)
 
-A mobile Run-detail screen continues to display the recognizable `Open Live Table` action **disabled** whenever no active live Match exists. Label the reason (e.g., `Waiting for next Match`, `Run Stopped`, `Run Completed`, `Run Interrupted`), distinguish transient between-Match periods from terminal Runs, and link `Watch latest Replay` **only if persisted Replay evidence exists**. Do not synthesize a live frame from stale/recorded results. When live and Admin authorized, explicit action opens the same one real fullscreen responsive overlay; closing returns to charts and removes private-hand viewer.
+**HISTORICAL, superseded by UI-D82:** No mobile `Open Live Table` control exists, neither enabled nor disabled. Mobile displays accurate Run freshness/status/Replay metadata and non-3D controls. Label the reason (e.g., `Waiting for next Match`, `Run Stopped`, `Run Completed`, `Run Interrupted`), distinguish transient between-Match periods from terminal Runs, and link `Watch latest Replay` **only if persisted Replay evidence exists**. Do not synthesize a live frame from stale/recorded results. When live and Admin authorized, explicit action opens the same one real fullscreen responsive overlay; closing returns to charts and removes private-hand viewer.
 
 ## Latest owner UI/UX override — AFTER Q300 (2026-10-14)
 
-### UI-D65. Normal gameplay: context-sensitive action buttons ABOVE the concealed hand — DECIDED (latest explicit owner instruction)
+### UI-D65. Desktop 3D gameplay actions above hand — MOBILE 3D PORTION SUPERSEDED BY UI-D82
 
 **Owner wording:** `今の状態/ジャン魂の状態の、必要時にのみ手牌の上にアクションボタンを表示する形式に戻して` (minor input typo normalized in this record).
 
 This is a **later and more specific owner directive**, overriding earlier layout decisions UI-D31 (Q267 B), UI-D48 (Q284 B), UI-D61 (Q297 A) **only to the extent they specified a separate right-side action panel, reserved side space, desktop slide-in animation or independent mobile bottom Dock**. Their requirements that actions be server-legal, only appear when needed, and retain responsive, keyboard/touch-accessible inputs remain active.
 
-**Binding behavior on desktop and mobile normal Room gameplay:**
+**Binding behavior on PC/desktop 3D normal Room gameplay only (UI-D82 supersedes earlier phone 3D requirement):**
 - Render available, authoritative **action buttons** such as `Ron`, `Tsumo`, `Chi`, `Pon`, `Kan`, `Riichi`, `Pass` (only when offered by the existing decision action list) in a **contextual row immediately above the local concealed hand**, close to where the user chooses tiles, never in an independent right-side or bottom-edge Dock.
 - **Hide that contextual action row when there is no relevant action to choose**; do not display disabled placeholders for nonexistent operations. A server-authorized discard-only decision remains a **clickable/tappable local concealed hand**; it does not require rendering a redundant `Discard` button just to meet the layout rule.
 - **Retain current candidate selection UX** for variants (Chi / Riichi discard / Kan), legal tile hit targets, deadline/decision timing, pending action feedback, rejection states and pointer/keyboard/touch accessibility. Adapt spacing/wrapping/scroll within the *above-hand* action area on smaller screens so buttons are usable and cannot cover the tiles, without assuming the currently shipped >=1024×600 viewport constraint remains forever.
@@ -420,16 +420,16 @@ This is a **later and more specific owner directive**, overriding earlier layout
 
 ## Latest owner Lobby visual refinement — after UI-D65 (2026-10-14)
 
-### UI-D66. Slanted avatar cards with minimum SVG state markers — DECIDED
+### UI-D66. Slanted avatar cards — DEFAULT STATUS ICONS SUPERSEDED BY UI-D89
 
 **Owner's image/reference decision:** Each normal pre-Match Lobby Participant appears in a **slightly slanted portrait box** containing a **large existing Character avatar and a clear display name**. The supplied reference is **structural only**: do not copy its art style, medals, titles, VS, branding, decorative motifs or exact visual assets.
 
-**Latest follow-up:** `Readyとかyouとかの無駄なテキストを使うぐらいならsvgアイコンを使って ただし最低限に`.
+**Earlier follow-up (superseded in card status placement by UI-D89):** `Readyとかyouとかの無駄なテキストを使うぐらいならsvgアイコンを使って ただし最低限に`. Latest owner chooses **no default status indicators on the cards; a Lobby header summary and accessible drill-down instead**.
 
 **Binding visual/data behavior**
 - **Desktop:** up to the actual 3 or 4 Participants are shown as an elegant horizontal group of **gently skewed portrait cards** rather than the old exclusively vertical list. **Mobile:** responsive compact two-column grid or readable stack if needed, mild/removed skew when space is too tight; no compressed/overlapping names, avatars or controls. Preserve stable Participant-ID order, not fictitious prestart East/South/West/North.
 - The only default text *inside a Participant card* should be the **display name**. Large character illustration is the focus. Omit passive word badges such as `Ready`, `Not Ready`, `You`, `Connected`, `Selected` unless an exceptional explanatory error is necessary. Do not add ranks, titles, badges, additional graphic labels or VS text.
-- Use **minimal inline SVG glyphs**, **maximum two per card** in a discreet corner: **one** mutually exclusive meaningful server-state indicator (`check-circle` for Ready; small hollow circle/clock for not ready; `wifi-off` instead for a disconnected Participant), and **one optional** subtle person marker only on the local Participant's card. Do not show separate glyphs for every state simultaneously. Real connected/selected/Ready data still governs legitimate `Set Ready` and Host/Admin actions.
+- **HISTORICAL, overridden by UI-D89:** The previous design permitted up to two inline SVG glyphs per card. The latest design moves routine status to a Lobby-level summary, with drill-down per Participant. Former glyph proposal: **one** mutually exclusive meaningful server-state indicator (`check-circle` for Ready; small hollow circle/clock for not ready; `wifi-off` instead for a disconnected Participant), and **one optional** subtle person marker only on the local Participant's card. Do not show separate glyphs for every state simultaneously. Real connected/selected/Ready data still governs legitimate `Set Ready` and Host/Admin actions.
 - Each icon-only state needs a concise accessible name (`Ready`, `Not ready`, `Disconnected`, `Your participant`) in card semantics and hover/focus help where appropriate. SVG is decorative within a semantic labeled element; no color-only signaling, no extra decorative cluster. Accessible state changes should be announced appropriately without duplicated labels.
 - **Skew card frame only**: avatar, display name, state icon and keyboard/touch focus targets stay straight. Preserve reasonable image cropping, responsive hit targets and reduced-motion semantics. Card art follows existing driichi character assets and the established neutral/shadcn/Base UI shell, not reference styling.
 - **Preserve a readable `Set Ready` action label, errors and the Room code**, since those are actual actions/context, not redundant passive participant badges. Room rules and Player Seat lifecycle remain unchanged: no Seat before normal Match start; normal Start performs random assignment; post-Match previous Seat may be labeled only as previous.
@@ -555,7 +555,7 @@ Only one post-Match navigation action: `Return to Room`, where authorized. Repla
 ### UI-D75. Restrained motion — DECIDED Q308 A
 Use brief restrained fades/transitions/score count with reduced-motion instant values. Never couple visuals to server timers or acknowledgements.
 
-### UI-D76. Mobile expandable outcome Bottom Sheet — DECIDED Q309 B
+### UI-D76. Mobile non-3D result Bottom Sheet — REFINED BY UI-D82 (Q309 B)
 Responsive Bottom Sheet keeps actual 3D table behind, summary first, with expandable hand/Yaku/score or full final ranks and reachable Continue. Existing `1024×600` landscape gameplay gate still needs separately authorized implementation work; UI design is not shipped. Q312 decides initially shown summary.
 
 ### Conflict and scope audit
@@ -613,7 +613,7 @@ Use **ONE existing 3D table**, dark semi-transparent scrim and **one result pres
 
 Use the same result stage and dark scrim as Win, but in the **LEFT hero region** render the **actual Draw reason in large, clear typography** and a restrained motif from existing Mahjong tile assets. The **RIGHT** holds only genuine authorized Draw/settlement details. **No invented winner, Character victor portrait, exposed opponent hands or assumed tenpai**. Zero score movement is displayed truthfully where the backend reports it.
 
-### UI-D79. Collapsed mobile Bottom Sheet = Character, name, awarded points + Continue — DECIDED (Q312 A)
+### UI-D79. Collapsed mobile non-3D result Sheet — REFINED BY UI-D82 (Q312 A)
 
 In the initial compact state, show **winner Character avatar/portrait, display name and real awarded points**, plus **immediately reachable server-authorized Continue / Waiting** (or spectator Dismiss when applicable), with an obvious Expand action. **Hand, Yaku, fu and complete scoreboard must remain accessible after expanding the same sheet**. The collapsed Draw variant uses the true Draw reason, never a fictional winner; the Post-Match variant shows a genuine first-place/rank summary and only the authorized Return to Room action. A tiny phone viewport must not clip the action footer. This is a *future responsive design*: current minimum 1024×600 landscape gameplay gate is not yet solved in code.
 
@@ -642,6 +642,64 @@ The compact Review affordance (UI-D72) opens an **accessible secondary detail sh
 **Outstanding engineering checks, not missing UX choices:** previous reported wrong Seat/score visual mapping, complete React/mobile live-table layout below the old 1024×600 gate, reliable `KyokuEndStep` progression/authorization/privacy on reconnect and under timer expiry, safe UI accessibility/reduced-motion/focus, benchmark data integrity and resume, 3p MJAI restriction and release visual/performance regressions. None of these is permission to implement now.
 
 **Interview disposition:** All owner-level outcomes UX choices through Q314 are resolved; **no further grilling round** is warranted for merely cosmetic implementation constants. Owner **final DESIGN signoff remains pending** and would authorize *only design finalization*, never implementation/CI/deployment/merging either PR.
+
+## Owner-approved implementation-alignment overrides — 2026-10-15 (MOST RECENT AUTHORITY)
+
+**Source:** the owner selected the P0/P1/P2 conflict remedies, then clarified that **P1-01 C means strictly "3D卓機能のみPC専用"**, NOT the older option text's mobile fullscreen game/table mode. The former "スマホは捨てる" is explicitly narrowed by this latest clarification: **do not abandon non-3D mobile routes**. These newer choices are binding narrow supersessions of historical Q237–Q314/UI-D1–UI-D81 only on named subjects. All unrelated properties survive. **No additional grilling or automatic code change authorized.**
+
+### UI-D82. Desktop-only 3D Mahjong table feature; non-3D mobile stays supported — DECIDED (P1-01 C, latest owner clarification)
+
+- **PC/desktop (large supported viewport) only:** real Three.js/Pixi **3D Mahjong table and everything that intrinsically needs it** — active interactive normal Match 3D gameplay, 3D Replay playback/table view, and Benchmark Admin real 3D observer (inline or fullscreen, selected Bot focus, private hand projection). The existing `>=1024×600` landscape live-game viewport gate may remain a legitimate desktop requirement; it is **not** an instruction to make the mobile 3D table responsive.
+- **Mobile remains supported for non-3D experiences:** Home, same-URL Join, angled-card Lobby, Room/Ready/connection/status and management, Admin Room list/detail and authorized operations, Benchmark Run setup/Run status/Stop/conditional Resume, four analytics charts, leaderboard, Match result metadata/history/links, and non-3D result summaries **when server-authorized**. Never promise a mobile 3D Replay or live Match merely because a route/link exists.
+- On mobile where a 3D-dependent route/component would otherwise open, use a concise accessible **"3D table available on desktop"** limitation state with safe navigation to available non-3D content. Do not create a second dummy Canvas, 2D replacement table, clandestine background renderer, native mobile fullscreen fallback, or a phone bypass to the viewport gate. If a 3D-only deep link is followed, show a real unavailable state rather than a broken blank panel; Admin auth and secret-hand visibility rules continue to apply.
+- A compact **mobile result/standings Bottom Sheet may remain as a non-3D, authorized data presentation** (UI-D76/UI-D79), **but not a sheet floating above a mobile 3D live table** or evidence of supported mobile gameplay. Only show result data legitimately available for that room/user/phase; never manufacture live progress or opponent hands.
+- **Exact mobile-3D supersession:** UI-D20/Q256 B (manual `Open Live Table`), UI-D27/Q263 A (phone fullscreen overlay/focus restoration), UI-D44/Q280 A (phone portrait/landscape fullscreen observer), UI-D64/Q300 B (disabled `Open Live Table` on phone), and all related mobile 3D portions of UI-D8/Q244 C, UI-D31/Q267, UI-D48/Q284, UI-D49/Q285, UI-D61/Q297, UI-D65, UI-D76/Q309 and UI-D79/Q312 are overridden **only insofar as they require/render a 3D table on mobile**. UI-D8/Q244 C's chart-first and **no mobile inline table** is strengthened to **no mobile 3D table even on demand**. Keep desktop table/fullscreen/focus and all non-3D mobile decisions. UI-D20/D27/D44/D64 mobile `Open Live Table` affordance is **removed, not disabled**.
+- **Preserved explicitly:** mobile Join-first UI-D45, Admin list/detail UI-D50, Benchmark chart groups UI-D26/D43, mobile Match metadata Drawer/Sheet UI-D52/UI-D59, role-aware mobile shell, Lobby card accessibility, and safe non-3D Replay metadata. Desktop Replay navigation remains Kyoku-first with play/pause preservation. Fullscreen/Seat/score tests for 3D now apply to **desktop**; mobile E2E/a11y and performance gates continue for supported **non-3D** routes.
+- Related Benchmark **D132/Q129**, **D145/Q142**, previous mobile viewport-filling fallback, and mobile portions of fullscreen/E2E/performance acceptance are superseded **in mobile 3D requirements only** by this newer owner choice. Desktop fullscreen, privacy, and current scoring/Room lifecycle remain binding. See the authoritative Benchmark architecture companion [Draft PR #23](https://github.com/eitaar/driichi/pull/23).
+
+### UI-D83. Draw and Score Transfer within ONE server Draw step — DECIDED (P0-01 B)
+
+Source-verified `RoomActor::start_result_step()` emits **Win→Settlement** steps for winning Kyoku, but on a **Draw** publishes `KyokuEndContent::Draw(record.settlement)` in **one step**; there is no separate subsequent server Settlement for Draw. **UI-D77/Q310 A's server-driven stage switch remains for Win**, while for Draw the SAME authoritative step may show a **short purely cosmetic internal Draw-reason→Before/±Delta/After display transition**, with an immediate, keyboard-reachable option to inspect either authorized view. Countdown remains the original five-second `KyokuEndStep` (or its authoritative remaining time), **no new ack, new result step, timer extension, backend schema, animation-gated advance or fabricated settlement**. A Draw with no score delta is truthful.
+
+### UI-D84. Kyoku chapter jump alone preserves Play/Pause — DECIDED (P1-02 A)
+
+`ReplayViewer.selectPosition()` on current main forces `setPlaying(false)`. Correct **Kyoku chapter navigation** to seek the selected Kyoku while preserving the prior Playing/Paused state per UI-D62/Q298 B. **Ordinary event Prev/Next, slider or event-log seeking still pauses** as before; do not silently expand preservation to every seek. The desktop 3D Replay uses the existing renderer; the mobile non-3D Replay metadata/chapter listing need not imply 3D playback.
+
+### UI-D85. Review Detail Sheet retains immediately operable Continue — DECIDED (P1-06 A)
+
+UI-D81/Q314 B's accessible secondary Detail Sheet retains **one visible authorized Continue or Waiting control and current step countdown** without pausing the server. The control dispatches the same idempotent `confirm_result(step.id)` action, never duplicate independent confirmations. When step expires/changes or session loses access, dismiss stale Detail Sheet, restore focus safely, announce new server state and prevent outdated result data leakage. On PC 3D result overlay still dims tabletop; on mobile any legally available non-3D results remain read-only.
+
+### UI-D86. Shared result presentation, separate live/replay controllers — DECIDED (P1-07 A)
+
+Reuse **pure visual** `WinResult`/`Draw`/`ScoreTransfer`/`FinalStandings` UI components and typed view models. Keep **live** `KyokuEndStep` deadline, required Confirm/Continue/Waiting, permission and reconnect logic separate from **Replay** event timeline, Play/Pause/seek and persisted data. Never create a Replay Continue action or fake a live step; preserve source-specific authorization and hand visibility.
+
+### UI-D87. Automated Participant→Seat→position→score consistency tests — DECIDED (P1-08 A)
+
+Add fixed 3p/4p, each viewer Seat, real rendered main-thread and Worker/bitmap, normal-live/Replay/Admin focus tests with clearly distinct authoritative Participant IDs, wind/Seat, names and scores. Pair semantic mapping assertions with reviewed screenshot/pixel baselines. **Existing score-at-wrong-Seat report remains UNVERIFIED**, not fixed or definitively reproduced. 3D target browser/viewport is PC-only, while non-3D mobile shell/a11y testing continues.
+
+### UI-D88. Reuse persisted Match data for all four graphs — DECIDED (P1-09 A)
+
+Compute exactly the agreed **four** ordinary-Run visual series on the client from **persisted authoritative Match results** with stable IDs: absolute cumulative table-relative net score, moving average rank, 100%-stacked per-Bot rank distribution, and selected-Bot Match-relative score-change bars. Retain 50/All range, leader default, real sample sizes and provisional banner. Do not infer unrecorded matches, fabricate events or revive A/B experiments. Backend should expose paginated/detail persisted evidence efficiently (companion Benchmark decision), with **bounded frontend fetching/memoization** for up to 1,000 Matches; never use only the Run summary to claim complete charts.
+
+### UI-D89. No default status glyphs inside Lobby cards — DECIDED (P2-02 C; narrow override of UI-D66)
+
+Retain **large slightly slanted Character portrait cards, unskewed avatar/name, stable Participant-ID order, no prestart East/South/West/North**. **NEW choice supersedes UI-D66's default max-two Ready/You SVG glyphs inside cards**: cards show **portrait + display name only** by default; a restrained **Lobby-level summary/header** displays authoritative selected/ready/connected counts. Specific Participant ready/presence/selection/own identity remain accessible through keyboard/touch/focusable card details, accessible names and a clear non-color-only status view; users and admins must be able to identify which Participant is blocking Ready/Start without guessing or relying on hover. Keep `Set Ready`, errors, Room code and Admin actions labeled. Do not conflate selected/ready/connected or hide blockers in a screen-reader-inaccessible tooltip. Status changes never shuffle cards.
+
+### UI-D90. Shared shadcn/Base UI + Tailwind foundation before screen migration — DECIDED (P2-03 A)
+
+Implement shared theme/tokens, accessible Button, Dialog, Sheet, Card, Toast and layout primitives using the chosen **Base UI** variant; migrate pages internally in steps but **publish one coordinated app-wide UI cutover** as previously chosen. Preserve specialized Three.js/Pixi table code on PC, document genuine HUD exceptions rather than overriding scene CSS or forking primitives. No mixed Radix/Base UI ad hoc duplicates; system/light/dark, English-only semantics continue.
+
+### UI-D91. Cross-PR docs references without overlapping changed files — DECIDED (P2-04 A)
+
+UI spec belongs to Draft PR #24; Benchmark core/spec/glossary belong to Draft PR #23. During review cross-reference PR URLs rather than assuming an unmerged file in `main`; validate relative Markdown references when merging is **separately authorized**. Do not automatically merge, change PR titles, create an additional integration PR, or treat PR #23's historical title as conflicting ownership.
+
+### Cross-PR implementation choices owned by Benchmark (not new UI questions)
+
+P1-03 **B**: explicit safe `Interrupted` Resume at a persisted Match boundary with unchanged Bot protocols; refuse if cannot reconcile same Run ID/completed/roster or reacquire eligible Bots. P1-04 **B**: Admin-authenticated **SSE as invalidation signal + fresh snapshot fetch**, not a guarantee of rendering every ultra-fast Bot game frame, with revocation/reconnect/fallback. P1-05 **A**: lightweight paginated Run list vs detailed persisted Match statistics/history API. P2-01 **B**: change the **existing PC Three.js camera/view** to selected Bot's current Seat, driven by stable Participant ID; no second renderer or mobile 3D.
+
+### Supersession + verification discipline
+
+All previous Q237–Q314 answers remain on record for provenance. **The newest selected P-corrections override only their named clauses, not entire UI features or game rules.** Requirements to **render or support a live/Replay/Benchmark 3D table on mobile** are withdrawn. Non-3D mobile navigation, Rooms, Lobby, charts, history, result data when authorized and Admin controls remain. The 3D viewport restriction is a **deliberate platform scope**, not now a mobile-3D "bug to fix". Preserve every pre-existing rule/privacy/score invariant. No code/CI/deploy/merge; **final owner design signoff remains pending**.
 
 ## Final authority map and consistency audit (2026-10-14)
 
