@@ -67,6 +67,40 @@ describe("result surfaces", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("preserves Draw Scores across Review and Close, but resets on access loss and a new step", async () => {
+    useGameStore.getState().reset();
+    const room = liveRoom({ Draw: resultSettlement });
+    const view = render(<GameplaySurface {...liveProps} room={room} />);
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const review = await screen.findByRole("dialog");
+    expect(within(review).getByRole("button", { name: "Scores" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(review).getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("button", { name: "Scores" })).toHaveAttribute("aria-pressed", "true");
+    view.rerender(<GameplaySurface {...liveProps} room={room} status="reconnecting" />);
+    view.rerender(<GameplaySurface {...liveProps} room={room} />);
+    expect(screen.getByRole("button", { name: "Result" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
+    view.rerender(<GameplaySurface {...liveProps} room={liveRoom({ Draw: resultSettlement }, 5000, 1)} />);
+    expect(screen.getByRole("button", { name: "Result" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("preserves settlement Pause and Skip across Review without pausing the deadline", async () => {
+    useGameStore.getState().reset();
+    render(<GameplaySurface {...liveProps} room={liveRoom({ Settlement: resultSettlement }, 4000)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Pause for review" }));
+    const pausedText = screen.getByLabelText("Score transfer").textContent;
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const review = await screen.findByRole("dialog");
+    expect(within(review).getByRole("button", { name: "Resume" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(review).getByLabelText("Score transfer").textContent).toBe(pausedText);
+    fireEvent.click(within(review).getByRole("button", { name: "Skip animation" }));
+    fireEvent.click(within(review).getByRole("button", { name: "Close" }));
+    expect(screen.getByLabelText("Score transfer")).toHaveTextContent("+6,000");
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(within(await screen.findByRole("dialog")).getByLabelText("Score transfer")).toHaveTextContent("+6,000");
+  });
+
   it("keeps Draw reason and scores immediately reachable in one server step", () => {
     render(<GameplaySurface {...liveProps} room={liveRoom({ Draw: { ...resultSettlement, draw_reason: "suucha_riichi" } })} />);
     expect(screen.getByRole("heading", { name: "suucha_riichi" })).toBeVisible();

@@ -259,6 +259,44 @@ test.describe("authoritative result surfaces", () => {
     expect(await page.evaluate(() => (window as unknown as { __sent: unknown[] }).__sent)).toEqual([]);
   });
 
+  for (const content of ["win", "scores", "final"] as const) {
+    test(`short phone ${content} details scroll to the end with reachable Close`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 320 });
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await installAssets(page, true); await installSocket(page);
+      await page.goto("/room/123456/lobby");
+      await page.evaluate(({ step, standings, content }) => {
+        const browser = window as unknown as { __room: Record<string, unknown>; __state: unknown; __socket: { emit: (value: unknown) => void } };
+        const settlement = { changes: [0, 1, 2, 3].map(seat => ({ participant_id: `P${seat + 1}`, seat, before: 25000, delta: 0, after: 25000 })), pot_before: 0, pot_after: 0, draw_reason: null };
+        browser.__socket.emit({ type: "room_update", state: browser.__state, room: { ...browser.__room,
+          phase: content === "final" ? "post_match" : "playing", result: content === "final" ? standings : null,
+          kyoku_end: content === "final" ? null : { ...step, content: content === "win" ? { Win: { ...step.content.Win,
+            yaku: Array.from({ length: 16 }, (_, id) => ({ id, name: `detail_${id}`, han: 1, yakuman_multiplier: null })),
+            evaluation: { Ordinary: { han: 16, fu: 30, limit: null } } } } : { Settlement: settlement } },
+        } });
+      }, { step, standings, content });
+      await page.getByRole("button", { name: "Expand", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      const scroll = dialog.getByRole("region", { name: "Result details", exact: true });
+      await expect(scroll).toBeVisible();
+      expect(await scroll.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+      const close = dialog.getByRole("button", { name: "Close", exact: true });
+      await expect(close).toBeInViewport();
+      await scroll.focus();
+      await page.keyboard.press("Control+End");
+      await expect.poll(() => scroll.evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThan(2);
+      const last = content === "win" ? dialog.locator(".round-win-total") : content === "final" ? dialog.getByRole("listitem").last() : dialog.getByLabel("After 25,000").last();
+      await expect(last).toBeInViewport();
+      await page.keyboard.press("Tab");
+      await expect(close).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Expand", exact: true })).toBeFocused();
+      await expect(page.locator("canvas")).toHaveCount(0);
+      expect(await page.evaluate(() => (window as unknown as { __sent: unknown[] }).__sent)).toEqual([]);
+    });
+  }
+
   test("keyboard confirmation survives reduced motion, refused assets, audio and WebGL", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.emulateMedia({ reducedMotion: "reduce" });

@@ -61,8 +61,12 @@ export function ScoreTransfer({ settlement, room, progress = 1 }: { settlement: 
   </section>;
 }
 
-export function DrawResult({ settlement, room }: { settlement: KyokuSettlement; room: RoomSnapshot | null }) {
-  const [view, setView] = useState("result");
+export function DrawResult({ settlement, room, view: selectedView, onViewChange }: {
+  settlement: KyokuSettlement; room: RoomSnapshot | null; view?: string; onViewChange?: (view: string) => void;
+}) {
+  const [localView, setLocalView] = useState("result");
+  const view = selectedView ?? localView;
+  const setView = onViewChange ?? setLocalView;
   return <section className="draw-result" aria-label="Draw result">
     <ToggleGroup aria-label="Draw view" value={[view]} onValueChange={values => { if (values.length) setView(values[0]); }}><ToggleGroupItem value="result">Result</ToggleGroupItem><ToggleGroupItem value="scores">Scores</ToggleGroupItem></ToggleGroup>
     {view === "result" ? <div className="draw-reason"><h2>{settlement.draw_reason ?? "Draw"}</h2><img src={new URL("../assets/tiles/Regular/Back.svg", import.meta.url).href} alt="" /></div> : <ScoreTransfer settlement={settlement} room={room} />}
@@ -95,9 +99,12 @@ export function MobileResultSummary({ room, onReturn }: { room: RoomSnapshot; on
     {final && <ol aria-label="Final standings">{final.players.slice().sort((a, b) => a.rank - b.rank).map(player => <li className="flex gap-4" key={player.participant_id}><span aria-label={`Rank ${player.rank}`}>{player.rank}</span><span>{player.display_name}</span><span>{player.final_score.toLocaleString()}</span></li>)}</ol>}
     <Drawer key={final ? "final" : step ? resultStepKey(step.id) : "none"}>
       <DrawerTrigger render={<Button variant="outline" />}>Expand</DrawerTrigger>
-      <DrawerContent className="overflow-y-auto"><DrawerTitle>{title}</DrawerTitle><DrawerDescription>Authoritative result details. Live confirmation is available on desktop only.</DrawerDescription>
-        <div className="result-details">{final ? <ResultsPanel room={room} assets={{}} /> : win ? <RoundWinSurface result={win} room={room} assets={{}} reducedMotion /> : settlement && <ScoreTransfer settlement={settlement} room={room} />}</div>
-        <DrawerClose render={<Button variant="outline" />}>Close</DrawerClose>
+      <DrawerContent>
+        <div className="min-h-0 flex-1 overflow-y-auto" role="region" aria-label="Result details" tabIndex={0}>
+          <DrawerTitle>{title}</DrawerTitle><DrawerDescription>Authoritative result details. Live confirmation is available on desktop only.</DrawerDescription>
+          <div className="result-details">{final ? <ResultsPanel room={room} assets={{}} /> : win ? <RoundWinSurface result={win} room={room} assets={{}} reducedMotion /> : settlement && <ScoreTransfer settlement={settlement} room={room} />}</div>
+        </div>
+        <DrawerClose render={<Button variant="outline" className="shrink-0" />}>Close</DrawerClose>
       </DrawerContent>
     </Drawer>
     {onReturn && <Button variant="outline" onClick={onReturn}>Return to Room</Button>}

@@ -694,11 +694,10 @@ function useResultRemaining(step: KyokuEndStep | null, receivedDeadline: number 
   return remaining;
 }
 
-function SettlementPresentation({ settlement, room, remaining, reducedMotion }: {
+function SettlementPresentation({ settlement, room, remaining, reducedMotion, paused, setPaused, skipped, setSkipped }: {
   settlement: KyokuSettlement; room: RoomSnapshot | null; remaining: number; reducedMotion: boolean;
+  paused: number | null; setPaused: (value: number | null) => void; skipped: boolean; setSkipped: (value: boolean) => void;
 }) {
-  const [paused, setPaused] = useState<number | null>(null);
-  const [skipped, setSkipped] = useState(false);
   const progress = reducedMotion || skipped ? 1 : Math.min(1, (5000 - remaining) / 3000);
   return <>
     <ScoreTransfer settlement={settlement} room={room} progress={reducedMotion || skipped ? 1 : paused ?? progress} />
@@ -802,6 +801,14 @@ export function GameplaySurface({
   const [reviewKey, setReviewKey] = useState("");
   const reviewAllowed = supported && canConfirm && status === "connected" && resultRemaining > 0;
   const reviewOpen = reviewAllowed && reviewKey === stepKey;
+  const [drawView, setDrawView] = useState("result");
+  const [settlementPaused, setSettlementPaused] = useState<number | null>(null);
+  const [settlementSkipped, setSettlementSkipped] = useState(false);
+  useEffect(() => {
+    setDrawView("result");
+    setSettlementPaused(null);
+    setSettlementSkipped(false);
+  }, [stepKey, reviewAllowed]);
   useEffect(() => {
     if (!reviewAllowed || reviewKey !== stepKey) setReviewKey("");
   }, [reviewAllowed, stepKey, reviewKey]);
@@ -851,7 +858,7 @@ export function GameplaySurface({
     || actionResultHistory.some((result) => result.decision_id === decision.decision_id && result.status === "accepted");
   const resultView = step && <>
     {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
-    {settlement && ("Draw" in step.content ? <DrawResult key={stepKey} settlement={settlement} room={room} /> : <SettlementPresentation key={stepKey} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} />)}
+    {settlement && ("Draw" in step.content ? <DrawResult key={stepKey} settlement={settlement} room={room} view={drawView} onViewChange={setDrawView} /> : <SettlementPresentation key={stepKey} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} paused={settlementPaused} setPaused={setSettlementPaused} skipped={settlementSkipped} setSkipped={setSettlementSkipped} />)}
   </>;
   const resultAction = step && (canConfirm ? <Button ref={confirmRef} className="round-win-continue" disabled={!confirmationReady} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : "Continue"}</Button>
     : <Button ref={confirmRef} variant="outline" onClick={() => setDismissedStep(stepKey)}>Dismiss</Button>);
