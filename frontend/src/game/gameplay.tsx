@@ -814,14 +814,12 @@ export function GameplaySurface({
       {closeMessage ? (
         <main className="gameplay-main gameplay-blocking-main">
           <section className="gameplay-blocking-state" role="alert">
-            <p className="eyebrow">TABLE UNAVAILABLE</p>
             <h1>Live table paused</h1>
             <p>{closeMessage}</p>
           </section>
         </main>
       ) : !supported ? (
         <main className="gameplay-guidance">
-          <p className="eyebrow">DESKTOP TABLE REQUIRED</p>
           <h2>Widen this window to play.</h2>
           <p>
             Gameplay needs a landscape window at least 1024 × 600. The table
@@ -833,7 +831,6 @@ export function GameplaySurface({
           <div className="table-letterbox">
             {!projection && (
               <div className="gameplay-sync-state" role="status" aria-live="polite">
-                <p className="eyebrow">TABLE SYNC</p>
                 <strong>Waiting for an authoritative projection</strong>
                 <span>The table will synchronize when the host sends the next snapshot.</span>
               </div>

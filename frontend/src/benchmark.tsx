@@ -59,13 +59,13 @@ function StopRun({ runId, code, stopRequested, snapshotVersion, refresh }: {
   const pending = accepted || stopRequested === true;
   const unknown = !pending && (uncertain || stopRequested === null);
   const disabled = stop.isPending || pending || unknown;
-  return <div className="flex flex-col gap-2">
+  return <div className="flex min-w-0 max-w-full flex-col gap-2">
     {pending && <p role="status">Stopping after current Match</p>}
     {unknown && <p role="status">Stop state unknown. Refresh authoritative Room detail before another Stop.</p>}
     {stop.isError && <ErrorMessage error={stop.error} />}
     {stop.error instanceof ApiProblem && stop.error.status === 409 && <p role="alert">Run changed. Review refreshed state and confirm a new Stop intent.</p>}
     <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger render={<Button variant="outline" disabled={disabled} />}>Stop after current Match</AlertDialogTrigger>
+      <AlertDialogTrigger render={<Button variant="outline" className="h-auto min-h-10 whitespace-normal" disabled={disabled} />}>Stop after current Match</AlertDialogTrigger>
       <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Finish current Match, then stop</AlertDialogTitle><AlertDialogDescription>The current Match may finish and be recorded. No further Matches will be scheduled after the server accepts Stop.</AlertDialogDescription></AlertDialogHeader>
         <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={disabled} onClick={() => {
           if (inFlight.current || disabled || stopRequested !== false) return;
@@ -174,9 +174,9 @@ function RunDetail({ runId }: { runId: string }) {
   const matchEvidence = selectedMatch ? { ...selectedMatch, replay_availability: metadata.isError ? "unknown" as const : replayAvailability(selectedMatch.match_id, metadata.data) } : null;
   return <>
     <header className="flex flex-wrap items-start justify-between gap-4">
-      <div className="flex min-w-0 flex-col gap-2"><h1>Benchmark Run</h1><p className="break-all font-mono text-sm">{run.run_id}</p>
+      <div className="flex min-w-0 flex-col gap-2"><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">Benchmark Run</h1><p className="break-all font-mono text-sm">{run.run_id}</p>
         <p role="status">{run.status} · {run.completed} / {run.target} completed Matches</p></div>
-      <div className="flex flex-wrap items-start gap-3">
+      <div className="flex min-w-0 max-w-full flex-wrap items-start gap-3">
         <Button variant="outline" disabled={query.isFetching} onClick={() => { void refresh(); }}>Refresh Run</Button>
         {run.status === "running" && <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />}
       </div>

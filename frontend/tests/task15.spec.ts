@@ -352,7 +352,7 @@ for (const viewport of [
   test(`covers URL pagination, retry, later-page deletion, and playback destinations at ${viewport.label}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     let deletedLaterPage = false;
-    let failNextList = false;
+    let failList = false;
     await page.route("**/assets/characters/ordinary-pack/**", async (route) => {
       const fileName = new URL(route.request().url()).pathname.endsWith("/icon.webp")
         ? "icon.webp"
@@ -379,8 +379,7 @@ for (const viewport of [
         await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...replay, match_id: "RANKED15", source: "ranked", room_name: null }) });
         return;
       }
-      if (failNextList) {
-        failNextList = false;
+      if (failList) {
         await route.fulfill({ status: 503, contentType: "application/problem+json", body: JSON.stringify({ code: "replay_storage_unavailable", detail: "Temporary Replay storage failure." }) });
         return;
       }
@@ -407,9 +406,10 @@ for (const viewport of [
     await expect(page).toHaveURL(/\/admin\/replays$/);
     await expect(page.getByText("Night Market")).toBeVisible();
 
-    failNextList = true;
+    failList = true;
     await page.goto("/admin/replays");
     await expect(page.getByRole("heading", { name: /replay library unavailable/i })).toBeVisible();
+    failList = false;
     await page.getByRole("button", { name: /^retry$/i }).click();
     await expect(page.getByText("Night Market")).toBeVisible();
 

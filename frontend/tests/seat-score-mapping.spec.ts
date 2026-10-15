@@ -61,8 +61,10 @@ for (const entry of oracle.cases) {
         await page.route("**/api/v1/admin/benchmark/rooms/123456/live", route => route.fulfill({ json: { revision: current === initial ? 1 : 2, benchmark, projection: current } }));
         const initial = current;
         await page.goto("/admin/benchmark/runs/seat-score");
-        await page.getByText("Live table — all current hands").click();
-        await page.getByLabel("Focus Participant").selectOption(participants[entry.viewer].participant_id);
+        await expect(page.getByText(/Polling · Fresh/)).toBeVisible();
+        await page.getByLabel("Focus Participant").click();
+        const focused = participants[entry.viewer];
+        await page.getByRole("option", { name: `${focused.display_name} (${focused.participant_id}) · Seat ${focused.seat + 1}`, exact: true }).click();
       }
       const table = page.getByTestId("three-table");
       const check = async (updated: boolean) => {

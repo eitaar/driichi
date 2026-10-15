@@ -57,7 +57,6 @@ function ProblemMessage({ problem, title = "Replay unavailable", onRetry, retryi
   return (
     <section className="replay-state" role="alert">
       <WarningCircle aria-hidden="true" weight="regular" />
-      <p className="eyebrow">REQUEST STATUS</p>
       <h2>{title}</h2>
       <p>{problem.detail ?? problem.title ?? "The host could not load this Replay."}</p>
       {problem.request_id && <code className="request-id">Request ID {problem.request_id}</code>}
@@ -111,7 +110,7 @@ function ReplayList() {
     <main id="replay-main" className="replay-main">
       <ReplayHeader />
       {data.total === 0 ? (
-        <section className="replay-empty"><p className="eyebrow">ARCHIVE</p><h2>No Replays yet.</h2><p>Completed Replays will appear here when Replay saving is enabled.</p></section>
+        <section className="replay-empty"><h2>No Replays yet.</h2><p>Completed Replays will appear here when Replay saving is enabled.</p></section>
       ) : (
         <>
           <section className="replay-list" aria-label="Saved Replays">
@@ -132,7 +131,7 @@ function ReplayList() {
 }
 
 function ReplayHeader() {
-  return <header className="replay-heading"><div><p className="eyebrow">ADMIN / ARCHIVE</p><h1>Replay library</h1><p>Review complete Matches without exposing canonical MJSON to the browser.</p></div><span className="state-label">NEWEST FIRST</span></header>;
+  return <header className="replay-heading"><div><h1>Replay library</h1><p>Review complete Matches without exposing canonical MJSON to the browser.</p></div><span className="state-label">NEWEST FIRST</span></header>;
 }
 
 function ReplayLoading() {
@@ -176,7 +175,7 @@ function ReplayDeleteDialog({ replay, pending, error, onCancel, onConfirm }: { r
       if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus();
     };
   }, []);
-  return <dialog ref={dialogRef} className="confirm-dialog replay-delete-dialog" aria-labelledby="replay-delete-heading"><div className="dialog-top"><p className="eyebrow">DESTRUCTIVE ACTION</p><button className="icon-button" aria-label="Close dialog" onClick={onCancel}>×</button></div><h2 id="replay-delete-heading">Delete this Replay?</h2><p>Delete the saved timeline for <strong>{replay.room_name ?? "Ranked Match"}</strong>? This cannot be undone.</p>{error != null && <p className="form-error" role="alert">{problemFrom(error).detail ?? "The Replay could not be deleted."}</p>}<div className="dialog-actions"><button className="button button-secondary" onClick={onCancel} disabled={pending}>Cancel</button><button className="button button-primary" onClick={onConfirm} disabled={pending}>{pending ? "Deleting Replay" : "Confirm delete"}</button></div></dialog>;
+  return <dialog ref={dialogRef} className="confirm-dialog replay-delete-dialog" aria-labelledby="replay-delete-heading"><div className="dialog-top"><button className="icon-button" aria-label="Close dialog" onClick={onCancel}>×</button></div><h2 id="replay-delete-heading">Delete this Replay?</h2><p>Delete the saved timeline for <strong>{replay.room_name ?? "Ranked Match"}</strong>? This cannot be undone.</p>{error != null && <p className="form-error" role="alert">{problemFrom(error).detail ?? "The Replay could not be deleted."}</p>}<div className="dialog-actions"><button className="button button-secondary" onClick={onCancel} disabled={pending}>Cancel</button><button className="button button-primary" onClick={onConfirm} disabled={pending}>{pending ? "Deleting Replay" : "Confirm delete"}</button></div></dialog>;
 }
 
 function eventKind(event: unknown): string {
@@ -368,7 +367,7 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
     }, 900 / rate);
     return () => window.clearTimeout(timer);
   }, [frames.length, playing, position, rate]);
-  if (!frame) return <section className="replay-state"><h2>Replay has no frames.</h2><p>The saved timeline is empty.</p></section>;
+  if (!frame) return <section className="replay-state"><h2>Replay has no frames.</h2></section>;
   const statusText = frameLog(frame).join(" / ");
   const presentationLabel = replay.source === "ranked" || assetStatus === "missing" ? "GENERIC / SILENT" : assetStatus === "checking" ? "CHECKING ASSETS…" : "ROOM ASSETS";
   const selectKyoku = (next: number) => { setPosition(Math.max(0, Math.min(frames.length - 1, next))); };
@@ -406,7 +405,7 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
           <ReplayLink className="replay-library-link" href="/admin/replays">Replay library</ReplayLink>
         </div>
       </section></div>
-      <section className="replay-event-log" role="log" aria-label="Replay event log" aria-live="off"><div className="section-heading"><div><p className="eyebrow">TIMELINE</p><h3>Event log</h3></div><span className="state-label">SERVER FRAMES</span></div><ol>{frames.map((entry, index) => <li key={entry.event_index} className={index === position ? "is-current" : ""}><button type="button" onClick={() => selectPosition(index)}><span>{String(index + 1).padStart(3, "0")}</span><span>{frameLog(entry).join(" / ")}</span></button></li>)}</ol></section>
+      <section className="replay-event-log" role="log" aria-label="Replay event log" aria-live="off"><div className="section-heading"><div><h3>Event log</h3></div><span className="state-label">SERVER FRAMES</span></div><ol>{frames.map((entry, index) => <li key={entry.event_index} className={index === position ? "is-current" : ""}><button type="button" onClick={() => selectPosition(index)}><span>{String(index + 1).padStart(3, "0")}</span><span>{frameLog(entry).join(" / ")}</span></button></li>)}</ol></section>
     </>
   );
 }
@@ -416,7 +415,7 @@ function ReplayDetail({ matchId }: { matchId: string }) {
   if (query.isLoading) return <main id="replay-main" className="replay-main"><section className="replay-loading" role="status" aria-busy="true" aria-live="polite"><span className="state-label">Loading Replay…</span></section></main>;
   if (query.isError) return <main id="replay-main" className="replay-main"><ProblemMessage problem={problemFrom(query.error)} /></main>;
   if (!query.data) return <main id="replay-main" className="replay-main"><ProblemMessage problem={{ code: "replay_unavailable", detail: "The Replay could not be loaded." }} /></main>;
-  return <main id="replay-main" className="replay-main replay-detail-main"><DesktopTableBoundary fallback={<><DesktopTableFallback backHref="/admin/replays" /><ReplayMobileMetadata key={matchId} replay={query.data} /></>}><ReplayViewer key={matchId} replay={query.data} /></DesktopTableBoundary><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
+  return <main id="replay-main" className="replay-main replay-detail-main"><DesktopTableBoundary fallback={<><DesktopTableFallback backHref="/admin/replays" /><ReplayMobileMetadata key={matchId} replay={query.data} /></>}><ReplayViewer key={matchId} replay={query.data} /></DesktopTableBoundary><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
 }
 
 export function ReplayWorkspace({ matchId }: { matchId?: string }) {

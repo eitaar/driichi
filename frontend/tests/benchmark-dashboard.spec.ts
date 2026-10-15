@@ -29,6 +29,7 @@ for (const mobile of [false, true]) test(`${mobile ? "touch Drawer" : "desktop S
   await expect(page.getByText("All completed Matches: n = 60; denominator per Participant.")).toBeVisible();
   await expect(page.getByRole("table", { name: "Participant statistics" })).toContainText("600,000");
   const surface = page.getByRole("region", { name: "Cumulative net score", exact: true }).locator(".recharts-surface");
+  await page.mouse.move(0, 0);
   await surface.focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.locator(".recharts-tooltip-wrapper").filter({ visible: true }).first()).toContainText("Match 12");

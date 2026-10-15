@@ -101,7 +101,7 @@ export function BenchmarkCharts({ analytics, onOpenMatch }: { analytics: Ready; 
   const selected = points.find(point => point.sequence === sequence);
   return <section className="benchmark-dashboard mt-6 flex min-w-0 flex-col gap-6" aria-label="Benchmark analytics">
     {analytics.provisional && <Alert><AlertTitle>Provisional results</AlertTitle><AlertDescription>Sample n = {analytics.completed} completed Matches. Small samples do not establish playing strength.</AlertDescription></Alert>}
-    <nav aria-label="Analytics jump menu"><a href="#benchmark-performance">Performance</a> · <a href="#benchmark-consistency">Consistency</a> · <a href="#benchmark-numeric">Match history</a></nav>
+    <nav className="flex-wrap gap-2 whitespace-normal" aria-label="Analytics jump menu"><a href="#benchmark-performance">Performance</a> · <a href="#benchmark-consistency">Consistency</a> · <a href="#benchmark-numeric">Match history</a></nav>
     <h2>Performance and consistency</h2>
     <Accordion multiple value={desktop ? ["performance", "consistency"] : mobileSections} onValueChange={value => { if (!desktop) setMobileSections(value); }} className="benchmark-chart-groups lg:grid lg:grid-cols-2 lg:gap-4 lg:[&>[data-slot=accordion-item]]:contents lg:[&_[data-slot=accordion-content]]:contents lg:[&_[data-slot=accordion-content]>div]:contents lg:[&_[data-slot=accordion-item]>h3]:hidden">
       <AccordionItem value="performance" id="benchmark-performance"><AccordionTrigger>Performance</AccordionTrigger><AccordionContent><div className="grid min-w-0 grid-cols-1 gap-4 lg:contents">
@@ -119,7 +119,7 @@ export function BenchmarkCharts({ analytics, onOpenMatch }: { analytics: Ready; 
     </TableBody></Table>
     <section id="benchmark-numeric"><h2>Match history and numeric chart equivalent</h2>
       <FieldGroup><Field><FieldLabel htmlFor="benchmark-sequence">Selected Match sequence</FieldLabel><Input id="benchmark-sequence" className="max-w-48" type="number" min={1} max={Math.max(1, points.length)} value={sequence} onChange={e => setSequence(Number(e.target.value))} /></Field></FieldGroup>
-      <Button variant="outline" disabled={!selected} onClick={() => { if (selected) onOpenMatch(selected.matchId); }}>View Match details</Button>
+      <Button variant="outline" className="h-auto min-h-10 max-w-full whitespace-normal" disabled={!selected} onClick={() => { if (selected) onOpenMatch(selected.matchId); }}>View Match details</Button>
       <p>Recent-first, 25 Matches per page. Net / full-run cumulative / trailing mean rank (sample n).</p>
       <Table aria-label="Per-Match numeric results"><TableHeader><TableRow><TableHead>Match</TableHead>{participants.map(p => <TableHead key={p.participantId}>{p.displayName} ({p.participantId})</TableHead>)}</TableRow></TableHeader><TableBody>{rows.map(point => <TableRow key={point.matchId}><TableCell><Button variant="outline" onClick={() => onOpenMatch(point.matchId)}>View Match {point.sequence} details</Button></TableCell>{participants.map(p => {
         const value = p.points[point.sequence - 1];
