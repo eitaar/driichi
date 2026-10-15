@@ -6,6 +6,85 @@ test.beforeEach(async({page})=>{
  await page.route('**/api/v1/rooms/123456',route=>route.fulfill({json:{room_name:'Night Market',game_mode:'4p-red-east',phase:'Lobby',join_allowed:true,participant_count:1,participant_limit:4}}));
 });
 
+test('homeUsesApprovedHierarchyWithoutChangingEntry',async({page})=>{
+ // A miniature art column, art-first phone layout or broken real navigation fails this contract.
+ await page.route('**/assets/characters/*/portrait.webp',route=>{
+  const id=new URL(route.request().url()).pathname.split('/').at(-2)!;
+  return route.fulfill({path:`tests/fixtures/task12-characters/${id}/portrait.webp`});
+ });
+ await page.goto('/');
+ for(const theme of ['light','dark']){
+  await page.evaluate(theme=>localStorage.setItem('driichi-theme',theme),theme);
+  for(const width of [1440,1024,390,320]){
+   await page.setViewportSize({width,height:width===1440?960:844});
+   await page.goto('/');
+   const input=page.getByLabel('Room code'),action=page.getByRole('button',{name:'Open room'});
+   await expect(page.getByRole('heading',{name:'Join a room'})).toBeVisible();
+   await expect(page.locator('.entry-cast img')).toHaveCount(2);
+   await expect(page.locator('html')).toHaveClass(theme==='dark'?'dark':'');
+   await expect.poll(()=>page.locator('.entry-cast img').evaluateAll(images=>images.every(image=>(image as HTMLImageElement).complete&&(image as HTMLImageElement).naturalWidth>0))).toBe(true);
+   const form=await page.locator('.entry-copy').boundingBox(),art=await page.locator('.entry-welcome').boundingBox();
+   expect((await input.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+   expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(48);
+   expect(await input.evaluate(element=>parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
+   if(width>=1024){
+    expect(form!.x+form!.width).toBeLessThanOrEqual(art!.x);
+    if(width===1440){
+     expect(art!.height).toBeGreaterThanOrEqual(600);
+     expect(await page.locator('h1').evaluate(element=>parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(36);
+    }
+   }else{
+    expect(form!.y+form!.height).toBeLessThanOrEqual(art!.y);
+    await expect(action).toBeInViewport();
+    await page.addStyleTag({content:'html {font-size:200%}'});
+    const enlargedForm=await page.locator('.entry-copy').boundingBox(),enlargedArt=await page.locator('.entry-welcome').boundingBox();
+    expect(enlargedForm!.y+enlargedForm!.height).toBeLessThanOrEqual(enlargedArt!.y);
+    const enlargedInput=await input.boundingBox(),enlargedAction=await action.boundingBox();
+    expect(enlargedInput!.y+enlargedInput!.height).toBeLessThanOrEqual(enlargedAction!.y);
+    expect(enlargedAction!.x).toBeGreaterThanOrEqual(enlargedForm!.x);
+    expect(enlargedAction!.x+enlargedAction!.width).toBeLessThanOrEqual(enlargedForm!.x+enlargedForm!.width);
+    await action.scrollIntoViewIfNeeded();
+    await expect(action).toBeVisible();
+    await expect(action).toBeInViewport();
+   }
+   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+   await input.fill('12a34');
+   await expect(input).toHaveValue('1234');
+   await action.click();
+   await expect(page).toHaveURL(/\/$/);
+   await expect(input).toHaveAttribute('aria-invalid','true');
+   await page.getByLabel('Room code').fill('123456');
+   await page.getByRole('button',{name:'Open room'}).click();
+   await expect(page).toHaveURL(/\/room\/123456$/);
+   await expect(page.getByLabel('Display name')).toBeVisible();
+  }
+ }
+});
+
+test('Home keeps entry usable with failed registration or missing registered art',async({page})=>{
+ await page.route('**/assets/characters/*/portrait.webp',route=>route.fulfill({status:404,body:'missing test asset'}));
+ await page.goto('/');
+ await expect(page.locator('.entry-cast .asset-fallback')).toHaveCount(2);
+ await page.getByLabel('Room code').fill('123456');
+ await page.getByRole('button',{name:'Open room'}).click();
+ await expect(page.getByLabel('Display name')).toBeVisible();
+ await page.route('**/api/v1/characters/human',route=>route.fulfill({status:503,json:{detail:'Character registration unavailable'}}));
+ await page.goto('/');
+ await expect(page.getByLabel('Room code')).toBeFocused();
+ await page.getByLabel('Room code').fill('123456');
+ await page.getByRole('button',{name:'Open room'}).click();
+ await expect(page.getByLabel('Display name')).toBeVisible();
+});
+
+test('Home follows system theme preference without moving the form',async({page})=>{
+ await page.emulateMedia({colorScheme:'dark'});
+ await page.goto('/');
+ await expect(page.locator('html')).toHaveClass('dark');
+ await page.emulateMedia({colorScheme:'light'});
+ await expect(page.locator('html')).not.toHaveClass('dark');
+ await expect(page.getByLabel('Room code')).toBeFocused();
+});
+
 test('missing registered portrait and voice keep the selection and join action usable',async({page})=>{
  await page.route('**/assets/characters/player-red/portrait.webp',route=>route.fulfill({status:404,body:'missing test asset'}));
  await page.route('**/assets/characters/player-red/voices/riichi.ogg',route=>route.fulfill({status:404,body:'missing test asset'}));
@@ -105,6 +184,7 @@ for(const width of [390,320]){
   await page.route('**/api/v1/rooms/123456',route=>route.fulfill({json:{room_name:'LongRoomNameWithoutSpaces'.repeat(3),game_mode:'4p-red-east',phase:'Lobby',join_allowed:true,participant_count:1,participant_limit:4}}));
   await page.goto('/');
   await page.addStyleTag({content:'html {font-size:200%}'});
+  await page.getByRole('button',{name:'Open room'}).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button',{name:'Open room'})).toBeInViewport();
   const join=await page.locator('.entry-copy').boundingBox();
   const art=await page.locator('.entry-welcome').boundingBox();

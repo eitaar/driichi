@@ -28,7 +28,10 @@ for (const viewport of [
       expect(navHeight).toBeLessThanOrEqual(80);
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
       expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(viewport.height);
-      await expect(page.locator("footer")).toBeVisible();
+      await expect(page.getByText("No account required.")).toHaveCount(0);
+      await expect(page.getByText("Enter the room code from your host.")).toHaveCount(0);
+      await expect(page.getByText("Use the code shared by your host.")).toHaveCount(0);
+      await expect(page.locator("footer")).toHaveCount(0);
       expect(consoleErrors).toEqual([]);
       expect(failedRequests).toEqual([]);
       await page.screenshot({ path: `test-results/task-10/entry-${viewport.label}.png`, fullPage: false });
@@ -43,7 +46,7 @@ test("mobile Home reads and focuses Join before decorative art", async ({ page }
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Open room" })).toBeFocused();
   const sections = page.locator("main > section");
-  await expect(sections.first()).toHaveClass("entry-copy");
+  await expect(sections.first()).toHaveClass(/\bentry-copy\b/);
   const join = await sections.first().boundingBox();
   const art = await page.locator(".entry-welcome").boundingBox();
   expect(join!.y + join!.height).toBeLessThanOrEqual(art!.y);
@@ -159,7 +162,7 @@ for (const viewport of [
     await page.screenshot({ path: `test-results/task-11/admin-${viewport.label}.png`, fullPage: false });
   });
 
-  test(`captures Lobby at ${viewport.label}`, async ({ page }) => {
+  test(`captures Lobby at ${viewport.label}`, async ({ page }, info) => {
     test.setTimeout(30_000);
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.addInitScript(() => {
@@ -204,6 +207,7 @@ for (const viewport of [
       // Also exercise wider fallback metrics without depending on the host OS font.
       const override = fontFamily ? await page.addStyleTag({ content: `.lobby-shell { font-family: ${fontFamily}; }` }) : null;
       const readyButton = await page.getByRole("button", { name: /set ready/i }).boundingBox();
+      await info.attach(`Ready geometry ${fontFamily || 'Geist'}`, { body: JSON.stringify(readyButton), contentType: 'application/json' });
       expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
       await override?.evaluate((element) => element.parentNode?.removeChild(element));
     }

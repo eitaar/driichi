@@ -101,23 +101,22 @@ function EntryShell() {
   function openRoom(event: React.FormEvent<HTMLFormElement>) { event.preventDefault(); const normalized = code.trim(); if (!/^\d{6}$/.test(normalized)) { setError("Enter the six-digit room code."); return; } setError(""); navigate(`/room/${normalized}`); }
   return <div className="app-shell entry-shell" data-testid="entry-shell" data-motion="static">
     <AppShell variant="public">{null}</AppShell>
-    <main className="entry-main">
-      <section className="entry-copy" aria-labelledby="entry-heading">
-        <h1 id="entry-heading">Join a room</h1><p className="entry-lede">Enter the room code from your host.</p>
-        <form className="lookup-form" onSubmit={openRoom} noValidate>
+    <main className="entry-main mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 items-center gap-8 px-6 py-8 md:grid-cols-2 md:gap-12 md:px-12 md:py-10">
+      <section className="entry-copy min-w-0 md:max-w-md" aria-labelledby="entry-heading">
+        <h1 id="entry-heading" className="mb-8 text-3xl font-semibold tracking-tight md:text-4xl">Join a room</h1>
+        <form onSubmit={openRoom} noValidate>
           <FieldGroup>
             <Field data-invalid={Boolean(error)}>
               <FieldLabel htmlFor="room-code">Room code</FieldLabel>
-              <Input ref={codeInputRef} id="room-code" name="room-code" value={code} onChange={(event) => { setCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} inputMode="numeric" autoComplete="off" maxLength={6} placeholder="000000" required aria-invalid={Boolean(error)} aria-describedby={error ? "room-code-error" : "room-code-hint"} />
-              <FieldDescription id="room-code-hint">Use the code shared by your host.</FieldDescription>
+              <Input className="h-14" ref={codeInputRef} id="room-code" name="room-code" value={code} onChange={(event) => { setCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} inputMode="numeric" autoComplete="off" maxLength={6} placeholder="000000" required aria-invalid={Boolean(error)} aria-describedby={error ? "room-code-error" : undefined} />
               {error && <FieldError id="room-code-error">{error}</FieldError>}
             </Field>
             <Button type="submit" size="lg">Open room <ArrowRight data-icon="inline-end" aria-hidden="true" /></Button>
           </FieldGroup>
         </form>
       </section>
-      <section className="entry-welcome" aria-hidden="true"><div className="entry-cast">{characters.map(character => <CharacterImage key={character.id} character={character} kind="portrait" />)}</div><p className="entry-title">Double Riichi</p><p>Your next game starts here.</p></section>
-    </main><footer className="site-footer"><span>No account required.</span></footer>
+      <section className="entry-welcome min-w-0" aria-hidden="true"><div className="entry-cast relative h-96 md:h-[min(74vh,48rem)] [&>.character-asset-portrait]:absolute [&>.character-asset-portrait]:right-0 [&>.character-asset-portrait]:bottom-0 [&>.character-asset-portrait]:h-full [&>.character-asset-portrait]:w-[85%] [&>.character-asset-portrait]:border-0 [&>.character-asset-portrait]:bg-transparent [&>.character-asset-portrait]:object-contain [&>.character-asset-portrait:first-child]:-left-1/4 [&>.character-asset-portrait:first-child]:z-10 [&>.character-asset-portrait:first-child]:h-[95%]">{characters.map(character => <CharacterImage key={character.id} character={character} kind="portrait" />)}</div></section>
+    </main>
   </div>;
 }
 
