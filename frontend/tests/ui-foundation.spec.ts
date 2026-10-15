@@ -25,6 +25,51 @@ test("semantic consumers follow theme without inheriting legacy input styles", a
   await expect(card).not.toHaveCSS("background-color", dark);
 });
 
+test("filled Input has readable semantic foreground in both themes", async ({ page }) => {
+  const input = page.getByLabel("Name", { exact: true });
+  await input.fill("Readable participant name");
+  for (const theme of ["Light", "Dark"]) {
+    await page.getByRole("button", { name: theme, exact: true }).click();
+    await expect(input).toHaveValue("Readable participant name");
+    await expect(input).toHaveCSS("color", await page.locator('[data-slot="card"]').evaluate(element => getComputedStyle(element).color));
+    const contrast = await input.evaluate(element => {
+      const context = document.createElement("canvas").getContext("2d")!;
+      const luminance = () => {
+        const channels = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(value => {
+          const channel = value / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        });
+        return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+      };
+      // Canvas resolves CSS color spaces and composites the translucent Input over its Card.
+      for (const color of [getComputedStyle(element.closest('[data-slot="card"]')!).backgroundColor, getComputedStyle(element).backgroundColor]) {
+        context.fillStyle = color;
+        context.fillRect(0, 0, 1, 1);
+      }
+      const background = luminance();
+      context.fillStyle = getComputedStyle(element).color;
+      context.fillRect(0, 0, 1, 1);
+      const foreground = luminance();
+      return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+    });
+    expect(contrast, `${theme} filled Input contrast`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test("vertical ToggleGroup navigates with ArrowDown and ArrowUp", async ({ page }) => {
+  const group = page.getByRole("group", { name: "Text alignment" });
+  const left = group.getByRole("button", { name: "Align left" });
+  const center = group.getByRole("button", { name: "Align center" });
+  await left.click();
+  await expect(left).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("ArrowDown");
+  await expect(center).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(center).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("ArrowUp");
+  await expect(left).toBeFocused();
+});
+
 test("Base render dialog has a title, traps focus and restores its trigger", async ({ page }) => {
   const trigger = page.getByRole("button", { name: "Open dialog" });
   await trigger.click();
