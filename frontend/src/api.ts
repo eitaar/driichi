@@ -252,7 +252,7 @@ export const api = {
   stopBenchmarkRun(joinCode: string) { return requestJson<AdminRoomDetail>(`${benchmarkRoomPath(joinCode)}/stop`, { method: "POST" }); },
   listBenchmarkRuns(signal?: AbortSignal) { return requestJson<BenchmarkRun[]>("/api/v1/admin/benchmark/runs", { signal }); },
   getBenchmarkRun(runId: string, signal?: AbortSignal) { return requestJson<BenchmarkRun>(`/api/v1/admin/benchmark/runs/${encodeURIComponent(runId)}`, { signal }); },
-  getBenchmarkLive(joinCode: string) { return requestJson<BenchmarkLive>(`${benchmarkRoomPath(joinCode)}/live`); },
+  getBenchmarkLive(joinCode: string, signal?: AbortSignal) { return requestJson<BenchmarkLive>(`${benchmarkRoomPath(joinCode)}/live`, { signal }); },
   lookupRoom(joinCode: string) { return requestJson<RoomLookup>(roomPath(joinCode)); },
   listHumanCharacters() { return requestJson<HumanCharacter[]>("/api/v1/characters/human"); },
   joinHuman(joinCode: string, nickname: string, characterId: string) {

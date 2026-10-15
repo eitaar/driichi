@@ -38,7 +38,7 @@ test("phone Benchmark deep link omits private observer but preserves status and 
   await page.setViewportSize({ width: 390, height: 844 });
   const privateReads: string[] = [];
   page.on("request", request => { if (request.url().endsWith("/live")) privateReads.push(request.url()); });
-  await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: { run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "running", reason: null, failed_match_id: null, roster: [], matches: [], statistics: [] } }));
+  await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: { run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "running", reason: null, failed_match_id: null, roster: Array.from({ length: 4 }, (_, initial_seat) => ({ participant_id: `p${initial_seat}`, display_name: `Bot ${initial_seat}`, initial_seat, participant_kind: "built_in_bot", character_id: null })), matches: [], statistics: [] } }));
   await page.goto("/admin/benchmark/runs/run-1");
   await expect(page.getByRole("heading", { name: "Benchmark Run", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Room controls" })).toBeVisible();

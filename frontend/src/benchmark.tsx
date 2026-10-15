@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, ApiProblem, problemFrom, type AdminRoomDetail, type GameMode, type TimeControl } from "./api";
 import { AppShell } from "./components/app-shell";
 import { DesktopTableBoundary } from "./components/desktop-table-boundary";
-const LiveObserver = lazy(() => import("./benchmark-live-observer").then(module => ({ default: module.BenchmarkLiveObserver })));
+const LiveObserver = lazy(() => import("./benchmark-observer").then(module => ({ default: module.BenchmarkObserver })));
 import { navigate } from "./routes";
 import { validateLoadedRuns, benchmarkReadiness, filterLoadedRuns, matchingStopRequested, replayAvailability, useBenchmarkEvidence } from "./benchmark-data";
 import { BenchmarkMatchDetail } from "./benchmark-match-detail";
@@ -177,8 +177,9 @@ function RunDetail({ runId }: { runId: string }) {
     {run.status === "interrupted" && <><Button disabled aria-describedby="resume-unavailable">Resume unavailable</Button><p id="resume-unavailable">The server does not publish safe Resume eligibility, roster/revision checks, or an accepted Resume operation. This Run remains Interrupted.</p></>}
     {run.status === "running" && <>
       <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />
-      <Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link><DesktopTableBoundary fallback={null}><LiveObserver code={run.room_code} /></DesktopTableBoundary>
+      <Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link>
     </>}
+    <DesktopTableBoundary fallback={null}><LiveObserver runId={runId} roomCode={run.room_code} /></DesktopTableBoundary>
     {analytics.kind === "invalid" ? <Alert variant="destructive"><AlertTitle>Invalid Match evidence</AlertTitle><AlertDescription>{analytics.reason}</AlertDescription><Button variant="outline" onClick={() => { void refresh(); }}>Retry</Button></Alert>
       : analytics.completed === 0 ? <section><h2>Statistics</h2><p>No completed Matches yet.</p></section>
       : <Suspense fallback={<p role="status">Loading charts…</p>}><BenchmarkCharts analytics={analytics} onOpenMatch={setSelectedMatchId} /></Suspense>}

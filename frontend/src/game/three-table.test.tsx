@@ -77,6 +77,21 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); delete (HTMLCanvasElement.prototype as Partial<HTMLCanvasElement>).transferControlToOffscreen; });
 
 describe("ThreeTable native Worker adapter", () => {
+  it("projects focus consistently into DOM, scene and center bitmap without changing authority", async () => {
+    const state = projection({ audience: "benchmark_admin", dora_indicators: [], players: [player(0, "A", { hand: [0], score: 21000 }), player(1, "B", { hand: [4], score: 29000 })] });
+    const view = render(<ThreeTable projection={state} room={room} surface="replay" {...{ viewSeat: 1 }} />);
+    await ready();
+    expect(screen.getByTestId("three-table").querySelector('[data-position="bottom"]')).toHaveTextContent("B");
+    expect(screen.getByRole("group", { name: "Your concealed hand" }).querySelector("img")).toHaveAttribute("alt", "2m");
+    const scene = currentWorker().messages.filter(input => input.scene).at(-1)!.scene!;
+    expect(scene.layout.players.find(p => p.position === "bottom")).toMatchObject({ participantId: "B", seat: 1 });
+    expect(painter.fillText.mock.calls.filter(([, , y]) => y === 385).at(-2)?.[0]).toBe("29,000");
+    expect(state.viewer_seat).toBe(0);
+    expect(state.audience).toBe("benchmark_admin");
+    view.rerender(<ThreeTable projection={state} room={room} surface="replay" />);
+    await ready();
+    expect(screen.getByTestId("three-table").querySelector('[data-position="bottom"]')).toHaveTextContent("A");
+  });
   it("shares static ordinary-Dora phase with the Replay DOM hand, not red artwork alone", async () => {
     const state = projection({ dora_indicators: [12], players: [player(0, "local", { hand: [16, 17, 0] })] });
     const view = render(<ThreeTable projection={state} room={room} surface="replay" reducedMotion />);

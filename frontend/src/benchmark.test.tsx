@@ -13,7 +13,7 @@ const room = {
 const run = {
   run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "interrupted", reason: "server restarted", failed_match_id: "aborted", roster: Array.from({ length: 4 }, (_, initial_seat) => ({ participant_id: `p${initial_seat}`, display_name: "Same bot", initial_seat, participant_kind: "built_in_bot", character_id: null })), matches: [], statistics: [],
 };
-const live = { revision: 5, benchmark: null, projection: { audience: "benchmark_admin", mode: "4p-red-east", round: "east", kyoku: 1, dora_indicators: [0], players: Array.from({ length: 4 }, (_, seat) => ({ seat, participant_id: `p${seat}`, display_name: `Bot ${seat}`, score: 25000, hand: Array(13).fill(0), concealed_count: 13, discards: [], melds: [], riichi: false })), decision: null } };
+const live = { revision: 5, benchmark: { run_id: "run-1", target: 3, completed: 0, stop_requested: false, status: "running" }, projection: { audience: "benchmark_admin", mode: "4p-red-east", round: "east", kyoku: 1, dora_indicators: [0], players: Array.from({ length: 4 }, (_, seat) => ({ seat, participant_id: `p${seat}`, display_name: `Bot ${seat}`, score: 25000, hand: Array(13).fill(0), concealed_count: 13, discards: [], melds: [], riichi: false })), decision: null } };
 function response(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }); }
 function stubFetch(handler: (path: string, init?: RequestInit) => Response) {
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => handler(String(input), init)));
@@ -139,7 +139,7 @@ it("recovers a private observer read without joining a participant or submitting
   render(<App />);
   fireEvent.click(await screen.findByText("Live table — all current hands"));
   expect(await screen.findByRole("alert")).toHaveTextContent("Observer connection lost");
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh table" }));
   expect(await screen.findByText(/Read-only Admin view/)).toBeVisible();
   const paths = vi.mocked(fetch).mock.calls.map(([path]) => String(path));
   expect(paths.some(path => path.endsWith("/join") || path.endsWith("/actions"))).toBe(false);
