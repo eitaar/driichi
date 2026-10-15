@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft } from "@phosphor-icons/react/dist/csr/ArrowLeft";
 import { ArrowRight } from "@phosphor-icons/react/dist/csr/ArrowRight";
 import { Pause } from "@phosphor-icons/react/dist/csr/Pause";
@@ -11,7 +11,6 @@ import { AudioManager } from "./game/audio";
 import { preloadRosterAssets, voiceEvents } from "./game/gameplay";
 import { RoundWinSurface, ResultsPanel, ScoreTransfer } from "./game/result-presentation";
 import { decodeWinResult, decodeSettlement } from "./game/results";
-import { ThreeTable } from "./game/three-table";
 import { TableAppearanceSettings, useTableAppearance } from "./game/table-appearance";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
@@ -21,6 +20,7 @@ import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } 
 import { DesktopTableBoundary, DesktopTableFallback } from "./components/desktop-table-boundary";
 import "./replay.css";
 
+const ThreeTable = lazy(() => import("./game/three-table").then(module => ({ default: module.ThreeTable })));
 const REPLAY_PAGE_SIZE = 50;
 const replayKeys = {
   list: (offset: number) => ["admin", "replays", offset] as const,
@@ -217,6 +217,28 @@ function roundDestinations(frames: ReplayFrame[]): Array<{ position: number; lab
   return destinations;
 }
 
+function ReplayChapters({ rounds, position, onSelect }: { rounds: ReturnType<typeof roundDestinations>; position: number; onSelect: (position: number) => void }) {
+  const current = rounds.reduce((selected, entry) => entry.position <= position ? entry.position : selected, rounds[0]?.position);
+  if (!rounds.length) return null;
+  return <nav className="replay-chapters" aria-label="Kyoku chapters"><h2>Kyoku chapters</h2><ol>{rounds.map(entry => <li key={entry.position}><Button variant="ghost" className="min-h-11 w-full justify-start whitespace-normal text-left" aria-current={entry.position === current ? "step" : undefined} onClick={() => onSelect(entry.position)}>{entry.label}</Button></li>)}</ol></nav>;
+}
+
+function ReplayMobileMetadata({ replay }: { replay: ReplayView }) {
+  const rounds = useMemo(() => roundDestinations(replay.frames), [replay.frames]);
+  const [position, setPosition] = useState(rounds[0]?.position ?? 0);
+  const frame = replay.frames[position];
+  const room = useMemo(() => replayRoom(replay, false), [replay]);
+  const win = decodeWinResult(frame?.result, replay.game_mode);
+  const settlement = decodeSettlement(frame?.settlement, replay.game_mode);
+  return <section className="replay-mobile-metadata" aria-label="Replay chapter metadata">
+    {rounds.length > 0 && <label className="replay-option">Kyoku <select aria-label="Jump to Kyoku" value={position} onChange={event => setPosition(Number(event.target.value))}>{rounds.map(entry => <option key={entry.position} value={entry.position}>{entry.label}</option>)}</select></label>}
+    {rounds.length > 0 && frame && <p>Chapter start: Event {position + 1} · {readableKind(eventKind(frame.visible_event))}</p>}
+    {win && <RoundWinSurface result={win} room={room} assets={{}} reducedMotion />}
+    {settlement && <ScoreTransfer settlement={settlement} room={room} />}
+    {replay.result != null && <ResultsPanel room={{ ...room, result: replay.result }} assets={{}} />}
+  </section>;
+}
+
 function replayRoom(replay: ReplayView, includeCharacters: boolean): RoomSnapshot {
   const players = replay.players.map((player) => ({
     participant_id: player.participant_id,
@@ -349,9 +371,11 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
   if (!frame) return <section className="replay-state"><h2>Replay has no frames.</h2><p>The saved timeline is empty.</p></section>;
   const statusText = frameLog(frame).join(" / ");
   const presentationLabel = replay.source === "ranked" || assetStatus === "missing" ? "GENERIC / SILENT" : assetStatus === "checking" ? "CHECKING ASSETS…" : "ROOM ASSETS";
+  const selectKyoku = (next: number) => { setPosition(Math.max(0, Math.min(frames.length - 1, next))); };
   const selectPosition = (next: number) => { setPlaying(false); setPosition(Math.max(0, Math.min(frames.length - 1, next))); };
   return (
     <>
+      <div className="replay-chapter-viewer"><ReplayChapters rounds={rounds} position={position} onSelect={selectKyoku} />
       <section
         className="replay-viewer"
         aria-label="Replay viewer"
@@ -379,10 +403,9 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
             <button type="button" aria-label="Next Event" disabled={position >= frames.length - 1} onClick={() => selectPosition(position + 1)}>Next<ArrowRight aria-hidden="true" /></button>
           </div>
           <label className="replay-option">Speed <select aria-label="Playback speed" value={rate} onChange={(event) => setRate(Number(event.target.value))}>{[0.5, 1, 2, 4, 8, 16, 32, 64].map((value) => <option value={value} key={value}>{value}×</option>)}</select></label>
-          {rounds.length > 0 && <label className="replay-option">Round <select aria-label="Jump to Kyoku" value={rounds.reduce((current, entry) => entry.position <= position ? entry.position : current, rounds[0].position)} onChange={(event) => selectPosition(Number(event.target.value))}>{rounds.map((entry) => <option key={entry.position} value={entry.position}>{entry.label}</option>)}</select></label>}
           <ReplayLink className="replay-library-link" href="/admin/replays">Replay library</ReplayLink>
         </div>
-      </section>
+      </section></div>
       <section className="replay-event-log" role="log" aria-label="Replay event log" aria-live="off"><div className="section-heading"><div><p className="eyebrow">TIMELINE</p><h3>Event log</h3></div><span className="state-label">SERVER FRAMES</span></div><ol>{frames.map((entry, index) => <li key={entry.event_index} className={index === position ? "is-current" : ""}><button type="button" onClick={() => selectPosition(index)}><span>{String(index + 1).padStart(3, "0")}</span><span>{frameLog(entry).join(" / ")}</span></button></li>)}</ol></section>
     </>
   );
@@ -393,7 +416,7 @@ function ReplayDetail({ matchId }: { matchId: string }) {
   if (query.isLoading) return <main id="replay-main" className="replay-main"><section className="replay-loading" role="status" aria-busy="true" aria-live="polite"><span className="state-label">Loading Replay…</span></section></main>;
   if (query.isError) return <main id="replay-main" className="replay-main"><ProblemMessage problem={problemFrom(query.error)} /></main>;
   if (!query.data) return <main id="replay-main" className="replay-main"><ProblemMessage problem={{ code: "replay_unavailable", detail: "The Replay could not be loaded." }} /></main>;
-  return <main id="replay-main" className="replay-main replay-detail-main"><DesktopTableBoundary fallback={<DesktopTableFallback backHref="/admin/replays" />}><ReplayViewer key={matchId} replay={query.data} /></DesktopTableBoundary><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
+  return <main id="replay-main" className="replay-main replay-detail-main"><DesktopTableBoundary fallback={<><DesktopTableFallback backHref="/admin/replays" /><ReplayMobileMetadata key={matchId} replay={query.data} /></>}><ReplayViewer key={matchId} replay={query.data} /></DesktopTableBoundary><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
 }
 
 export function ReplayWorkspace({ matchId }: { matchId?: string }) {

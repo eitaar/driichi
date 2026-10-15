@@ -376,7 +376,7 @@ describe("Replay Admin workspace", () => {
     expect(screen.getByRole("button", { name: /previous event/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /next event/i })).toBeVisible();
     expect(screen.getByRole("combobox", { name: /playback speed/i })).toHaveValue("1");
-    expect(screen.getByRole("combobox", { name: /jump to kyoku/i })).toBeVisible();
+    expect(screen.getByRole("navigation", { name: "Kyoku chapters" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent(/disconnected/i);
     const eventLog = screen.getByRole("log", { name: /replay event log/i });
     expect(within(eventLog).getAllByRole("listitem")[0]).toHaveTextContent(/before.*disconnected.*start game/i);
@@ -386,8 +386,45 @@ describe("Replay Admin workspace", () => {
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
     fireEvent.change(screen.getByRole("combobox", { name: /playback speed/i }), { target: { value: "2" } });
     expect(screen.getByRole("combobox", { name: /playback speed/i })).toHaveValue("2");
-    fireEvent.change(screen.getByRole("combobox", { name: /jump to kyoku/i }), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "East 2 · 0 honba" }));
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
+  });
+
+  it("preserves playing and paused chapter jumps, distinguishes honba, and pauses ordinary seeks", async () => {
+    const frames = Array.from({ length: 8 }, (_, index) => ({ ...frame(index, index % 2 === 0 ? "start_kyoku" : "tsumo"),
+      visible_state: { ...frame(index, "tsumo").visible_state, kyoku: index < 4 ? 1 : 2, honba: index < 2 ? 0 : index < 4 ? 1 : 0 } }));
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation((input) => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? { ...replay, frames } : [])));
+    render(<App />);
+    await screen.findByRole("heading", { name: /night market replay/i });
+    fireEvent.click(screen.getByRole("button", { name: "East 1 · 1 honba" }));
+    expect(screen.getByRole("slider")).toHaveValue("2");
+    expect(screen.getByRole("button", { name: "East 1 · 1 honba" })).toHaveAttribute("aria-current", "step");
+    expect(screen.getByRole("button", { name: /^Play$/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^Play$/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: "East 2 · 0 honba" })[0]);
+    expect(screen.getByRole("slider")).toHaveValue("4");
+    expect(screen.getByRole("button", { name: /^Pause$/ })).toBeVisible();
+    for (const seek of [
+      () => fireEvent.click(screen.getByRole("button", { name: "Previous Event" })),
+      () => fireEvent.click(screen.getByRole("button", { name: "Next Event" })),
+      () => fireEvent.change(screen.getByRole("slider"), { target: { value: "1" } }),
+      () => fireEvent.click(within(screen.getByRole("log")).getAllByRole("button")[0]),
+    ]) {
+      if (screen.queryByRole("button", { name: /^Play$/ })) fireEvent.click(screen.getByRole("button", { name: /^Play$/ }));
+      seek();
+      expect(screen.getByRole("button", { name: /^Play$/ })).toBeVisible();
+    }
+  });
+
+  it("omits chapters when legacy projection lacks Kyoku metadata", async () => {
+    const legacy = { ...replay, frames: replay.frames.map(entry => ({ ...entry, visible_state: { ...entry.visible_state, round: undefined, kyoku: undefined, honba: undefined } })) };
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation((input) => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? legacy : [])));
+    render(<App />);
+    await screen.findByRole("heading", { name: /night market replay/i });
+    expect(screen.queryByRole("navigation", { name: "Kyoku chapters" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/honba/)).not.toBeInTheDocument();
   });
 
   it("passes only the authoritative hands from the current Replay frame while stepping events", async () => {

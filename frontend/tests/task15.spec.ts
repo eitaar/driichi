@@ -1,3 +1,4 @@
+/// <reference types="../node_modules/@types/node" />
 import AxeBuilder from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -69,6 +70,37 @@ const replay = {
   ],
 };
 
+test("chapter jumps retain playback and ordinary seeks pause the same clock", async ({ page }) => {
+  const frames = Array.from({ length: 40 }, (_, index) => ({ ...replayFrame(index, index % 2 === 0 ? "start_kyoku" : "tsumo"),
+    visible_state: { ...replayFrame(index, "tsumo").visible_state, kyoku: Math.floor(index / 4) + 1, honba: Math.floor(index / 2) % 2 } }));
+  await page.route("**/api/v1/admin/**", route => route.fulfill({ json: route.request().url().endsWith("/replays/MATCH15") ? { ...replay, frames } : [] }));
+  await page.goto("/admin/replays/MATCH15");
+  const chapters = page.getByRole("navigation", { name: "Kyoku chapters" });
+  await expect(chapters.getByRole("button")).toHaveCount(20);
+  await page.clock.install();
+  await page.clock.pauseAt(Date.now() + 1000);
+  await chapters.getByRole("button", { name: "East 1 · 1 honba", exact: true }).click();
+  await expect(page.getByRole("slider")).toHaveValue("2");
+  await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  const destination = chapters.getByRole("button", { name: "East 2 · 0 honba", exact: true });
+  await destination.focus(); await page.keyboard.press("Enter");
+  await expect(destination).toHaveAttribute("aria-current", "step");
+  await expect(page.getByRole("slider")).toHaveValue("4");
+  await expect(page.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
+  await page.clock.runFor(900);
+  await expect(page.getByRole("slider")).toHaveValue("5");
+  await page.getByRole("button", { name: "Previous Event" }).click();
+  await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  await page.clock.runFor(1800);
+  await expect(page.getByRole("slider")).toHaveValue("4");
+  await chapters.getByRole("button").last().focus();
+  await page.keyboard.press("Enter");
+  await expect(chapters.getByRole("button").last()).toBeInViewport();
+  await page.clock.resume();
+  await expectNoAxeViolations(page, ".replay-chapters");
+});
+
 async function expectNoAxeViolations(page: import("@playwright/test").Page, include?: string) {
   const axe = new AxeBuilder({ page });
   if (include) axe.include(include);
@@ -135,10 +167,17 @@ for (const viewport of [
         eventLogTop: eventLog?.top ?? 0,
       };
     });
-    // DESIGN.md: full-width table above a separate, visible playback area.
+    // UI-D49: compact chapters beside the table; playback remains below its table.
+    const rail = await page.getByRole("navigation", { name: "Kyoku chapters" }).boundingBox();
+    expect(rail).not.toBeNull();
+    expect(rail!.x).toBe(0);
+    expect(rail!.y).toBe(0);
+    expect(rail!.width).toBeGreaterThanOrEqual(180);
+    expect(rail!.width).toBeLessThanOrEqual(200);
     expect(foldComposition.stage.top).toBe(0);
-    expect(foldComposition.stage.left).toBe(0);
-    expect(foldComposition.stage.width).toBe(foldComposition.viewport.width);
+    expect(foldComposition.stage.left).toBe(rail!.width);
+    expect(foldComposition.stage.right).toBe(foldComposition.viewport.width);
+    expect(foldComposition.stage.width + rail!.width).toBe(foldComposition.viewport.width);
     expect(foldComposition.stage.height).toBeGreaterThan(0);
     expect(foldComposition.playback.top).toBeGreaterThanOrEqual(foldComposition.stage.bottom);
     expect(foldComposition.playback.bottom).toBeLessThanOrEqual(foldComposition.viewport.height);
@@ -293,7 +332,11 @@ for (const viewport of [
       options.map((option) => (option as HTMLOptionElement).value),
     )).toEqual(["0.5", "1", "2", "4", "8", "16", "32", "64"]);
     await page.keyboard.press("Tab");
-    await expect(replayControls.getByRole("combobox", { name: /jump to kyoku/i })).toBeFocused();
+    await expect(replayControls.getByRole("link", { name: "Replay library", exact: true })).toBeFocused();
+    const chapters = page.getByRole("navigation", { name: "Kyoku chapters" });
+    await chapters.getByRole("button", { name: "East 1 · 0 honba" }).first().focus();
+    await page.keyboard.press("Enter");
+    await expect(chapters.getByRole("button").first()).toHaveAttribute("aria-current", "step");
     await speed.selectOption("2");
     await expect(speed).toHaveValue("2");
     await page.screenshot({ path: `test-results/task-15/viewer-${viewport.label}.png`, fullPage: false });
@@ -383,7 +426,7 @@ for (const viewport of [
     await expect(page.getByText("EVENT 003")).toBeVisible();
     await page.getByRole("button", { name: /previous event/i }).click();
     await expect(page.getByText("EVENT 002")).toBeVisible();
-    await page.getByRole("combobox", { name: /jump to kyoku/i }).selectOption("2");
+    await page.getByRole("navigation", { name: "Kyoku chapters" }).getByRole("button", { name: "East 2 · 0 honba" }).click();
     await expect(page.getByText("EVENT 003")).toBeVisible();
     await expect(page.getByRole("button", { name: /^play$/i })).toBeVisible();
 

@@ -2,6 +2,8 @@ import { defineConfig } from "@playwright/test";
 import appConfig from "./playwright.config.ts";
 
 export default defineConfig(appConfig, {
+  outputDir: ".cache/playwright-foundation-results",
+  reporter: [["list"], ["html", { outputFolder: ".cache/playwright-foundation-report", open: "never" }]],
   testIgnore: [],
   testMatch: "**/ui-foundation.spec.ts",
   use: { baseURL: "http://127.0.0.1:4174" },

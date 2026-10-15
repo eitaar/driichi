@@ -103,7 +103,7 @@ function standingsFor(mode: string) {
 
 // Synthetic layout fixtures, not saved EngineAdapter or full-Match evidence.
 function savedReplay(mode: string) {
-  const projection = { ...fixtures.projections[mode], audience: "replay_admin", decision: null };
+  const projection = { ...fixtures.projections[mode], audience: "replay_admin", decision: null, round: "East", kyoku: 1, honba: 0 };
   const result = standingsFor(mode);
   const players: Array<Record<string, unknown>> = (fixtures.room_envelopes[mode].roster as Array<Record<string, unknown>>)
     .map((player, seat) => ({ ...player, participant_kind: player.kind, final_points: result.final_scores[seat] }));
@@ -119,6 +119,38 @@ function savedReplay(mode: string) {
 }
 
 test.describe("authoritative result surfaces", () => {
+  test("phone Replay exposes chapter metadata and saved standings without playback resources", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const resources: string[] = [];
+    const methods: string[] = [];
+    page.on("request", request => {
+      if (/three-table|renderer-worker|\/assets\/characters\//.test(request.url())) resources.push(request.url());
+      if (request.url().includes("/api/")) methods.push(request.method());
+    });
+    await page.addInitScript(() => {
+      const browser = window as unknown as { __audioContexts: number };
+      browser.__audioContexts = 0;
+      const NativeAudioContext = window.AudioContext;
+      window.AudioContext = class extends NativeAudioContext { constructor() { super(); browser.__audioContexts++; } };
+    });
+    const saved = savedReplay("4p-red-east");
+    saved.frames = saved.frames.map((frame, index) => ({ ...frame, visible_state: { ...frame.visible_state, round: "East", kyoku: 1, honba: index < 2 ? 0 : 1 } }));
+    await page.route("**/api/v1/admin/**", route => route.fulfill({ json: route.request().url().endsWith("/replays/MATCH") ? saved : [] }));
+    await page.goto("/admin/replays/MATCH");
+    await expect(page.getByRole("heading", { name: "Night Market Replay" })).toBeVisible();
+    const chapters = page.getByRole("combobox", { name: "Jump to Kyoku" });
+    await expect(chapters).toHaveValue("0");
+    await chapters.selectOption("2");
+    await expect(page.getByText("Chapter start: Event 3 · End Kyoku")).toBeVisible();
+    await expect(page.getByLabel("Score transfer")).toContainText("suucha_riichi");
+    await expect(page.getByRole("list", { name: "Final standings" }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.locator("canvas")).toHaveCount(0);
+    await expect(page.getByRole("slider")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^(Play|Pause|Continue|Next Event|Previous Event)$/ })).toHaveCount(0);
+    expect(resources).toEqual([]);
+    expect(methods.every(method => method === "GET")).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { __audioContexts: number }).__audioContexts)).toBe(0);
+  });
   for (const delivery of ["held", "refused"] as const) {
   test(`keeps result confirmation usable while the 3D module is ${delivery}`, async ({ page }) => {
     let release!: () => void;
@@ -179,6 +211,11 @@ test.describe("authoritative result surfaces", () => {
           expect(winBox!.x).toBeGreaterThanOrEqual(0); expect(winBox!.y).toBeGreaterThanOrEqual(0);
           expect(winBox!.x + winBox!.width).toBeLessThanOrEqual(viewport.width);
           expect(winBox!.y + winBox!.height).toBeLessThanOrEqual(viewport.height);
+          if (surface === "Replay") {
+            const stage = (await page.locator(".replay-table-stage").boundingBox())!;
+            expect(winBox!.x).toBeGreaterThanOrEqual(stage.x);
+            expect(winBox!.x + winBox!.width).toBeLessThanOrEqual(stage.x + stage.width);
+          }
           await page.screenshot({ path: test.info().outputPath("round-win.png"), fullPage: false });
           if (surface === "Live") await showStandings(page, standingsFor(mode));
           else { await page.getByRole("button", { name: "Next Event" }).click(); await page.getByRole("button", { name: "Next Event" }).click(); }
@@ -192,6 +229,11 @@ test.describe("authoritative result surfaces", () => {
           expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.y).toBeGreaterThanOrEqual(0);
           expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
           expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
+          if (surface === "Replay") {
+            const stage = (await page.locator(".replay-table-stage").boundingBox())!;
+            expect(box!.x).toBeGreaterThanOrEqual(stage.x);
+            expect(box!.x + box!.width).toBeLessThanOrEqual(stage.x + stage.width);
+          }
           expect(requests.every(method => method === "GET")).toBe(true);
           await page.screenshot({ path: test.info().outputPath("final-standings.png"), fullPage: false });
         });
