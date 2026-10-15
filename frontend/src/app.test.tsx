@@ -512,7 +512,9 @@ describe("human lobby websocket", () => {
     expect(screen.getByText('3 / 3 selected')).toBeVisible();
     expect(screen.getByText('2 / 3 ready')).toBeVisible();
     expect(screen.getByText('3 connected')).toBeVisible();
-    expect(screen.getByText(/Room 123456/)).toBeVisible();
+    expect(screen.getByText('Room code')).toBeVisible();
+    expect(screen.getByText('123456', { exact: true })).toBeVisible();
+    expect(screen.getByText('Night Market', { exact: true })).toBeVisible();
     fireEvent.click(screen.getByText('Match readiness blockers', { selector: 'summary' }));
     expect(screen.getByText('Mika: not ready')).toBeVisible();
     expect(screen.queryByText(/Seat 1/)).not.toBeInTheDocument();
@@ -636,6 +638,19 @@ describe("human lobby websocket", () => {
     await waitFor(() => expect(ready).toBeEnabled());
     fireEvent.click(ready);
     expect(JSON.parse(instance.sent.at(-1) ?? "{}")).toEqual({ type: "set_ready", preloaded_characters: ["player-red", "tsumogiri-bot", "tsumogiri-bot"] });
+    const completeRoom = useGameStore.getState().room!;
+    for (const missingId of ['P1', 'B1']) {
+      act(() => useGameStore.setState({ room: { ...completeRoom, participants: completeRoom.participants.map(participant => participant.participant_id === missingId ? { ...participant, selected: false } : participant) } }));
+      expect(ready).toBeDisabled();
+      fireEvent.click(ready);
+      expect(instance.sent).toHaveLength(1);
+    }
+    act(() => useGameStore.setState({ room: completeRoom }));
+    await waitFor(() => expect(ready).toBeEnabled());
+    act(() => instance.onerror?.());
+    expect(ready).toBeDisabled();
+    fireEvent.click(ready);
+    expect(instance.sent).toHaveLength(1);
   });
 
   it("repeats selected asset preload for a fresh connection generation", async () => {

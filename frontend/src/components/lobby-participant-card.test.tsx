@@ -39,9 +39,24 @@ it('touch/click details have no next Seat and show exact unselected, ready and c
  expect(detail).not.toHaveTextContent(/Seat|Your Participant/);
 });
 
-it('keeps participant name available when the portrait is missing', () => {
+it('keeps participant name and details available when the portrait is missing', async () => {
  render(<LobbyParticipantCard participant={participant} own={false} />);
  fireEvent.error(screen.getByAltText(''));
  expect(screen.getByRole('button', { name: 'Mika' })).toBeVisible();
  expect(screen.getByRole('button', { name: 'Mika' })).toHaveTextContent('Portrait unavailable');
+ fireEvent.click(screen.getByRole('button', { name: 'Mika' }));
+ expect(await screen.findByRole('dialog', { name: 'Mika' })).toHaveTextContent('P1');
+});
+
+it('keeps duplicate display names mapped to independent Participant IDs', async () => {
+ const user = userEvent.setup();
+ render(<><LobbyParticipantCard participant={participant} own /><LobbyParticipantCard participant={{ ...participant, participant_id: 'P2' }} own={false} /></>);
+ const triggers = screen.getAllByRole('button', { name: 'Mika' });
+ await user.click(triggers[0]);
+ expect(await screen.findByRole('dialog')).toHaveTextContent('P1');
+ expect(screen.getByRole('dialog')).not.toHaveTextContent('P2');
+ await user.keyboard('{Escape}');
+ await user.click(triggers[1]);
+ expect(await screen.findByRole('dialog')).toHaveTextContent('P2');
+ expect(screen.getByRole('dialog')).not.toHaveTextContent('P1');
 });

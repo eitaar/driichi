@@ -18,6 +18,25 @@ for (const count of [3, 4]) for (const theme of ['light', 'dark']) {
   const cards = page.getByRole('list', { name: 'Participants' }).getByRole('button');
   const names = ['Mika', ...Array.from({ length: count-1 }, (_, index) => `Participant ${index+2}`)];
   await expect(cards).toHaveText(names);
+  const frames = cards.locator('.lobby-portrait-frame');
+  await expect(frames).toHaveCount(count);
+  for (const width of [1440, 1024, 390]) {
+   await page.setViewportSize({ width, height: width === 1024 ? 600 : 960 });
+   const boxes = await Promise.all((await cards.all()).map(card => card.boundingBox()));
+   expect(boxes[0]!.y).toBe(boxes[1]!.y);
+   if (width >= 1024) expect(boxes.at(-1)!.y).toBe(boxes[0]!.y);
+   else expect(boxes[2]!.y).toBeGreaterThan(boxes[0]!.y);
+   expect(await cards.first().evaluate(element => getComputedStyle(element).transform)).toBe('none');
+   const crop = await frames.first().evaluate(element => {
+    const image = element.parentElement!.querySelector('img')!;
+    return { frame: image.parentElement!.clientHeight, image: image.getBoundingClientRect().height, transform: getComputedStyle(element).transform, imageTransform: getComputedStyle(image).transform };
+   });
+   expect(crop.image).toBeGreaterThan(crop.frame);
+   expect(crop.transform).not.toBe('none');
+   expect(crop.imageTransform).toBe('none');
+   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByText(`${count-1} / ${count} ready`, { exact: true })).toBeVisible();
   await expect(page.getByText(`${count} connected`, { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Set Ready' })).toBeEnabled();
@@ -33,8 +52,10 @@ for (const count of [3, 4]) for (const theme of ['light', 'dark']) {
   await expect(page.getByText('Mika: not ready', { exact: true })).toBeVisible();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath(`lobby-${count}p-${theme}-390.png`), fullPage: true });
+  const stableNames = await cards.allTextContents();
   update();
-  await expect(cards).toHaveText(names);
+  await expect(cards).toHaveText(stableNames);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(page.getByText('0 connected', { exact: true })).toBeVisible();
   await trigger.click(); await expect(detail).toContainText('disconnected'); await page.keyboard.press('Escape');
   await page.setViewportSize({ width: 320, height: 740 });
@@ -43,6 +64,38 @@ for (const count of [3, 4]) for (const theme of ['light', 'dark']) {
   await page.screenshot({ path: testInfo.outputPath(`lobby-${count}p-${theme}-320-text200.png`), fullPage: true });
  });
 }
+
+test('Lobby keeps long names, duplicate identities and a missing portrait usable at 200% text', async ({ page }, testInfo) => {
+ const longName = 'Participant-with-a-long-unbroken-display-name'.repeat(3);
+ const participants = ['P3', 'P1', 'P2'].map((id, index) => ({ participant_id: id, display_name: index === 0 ? longName : 'Same name', kind: 'human', presence: 'connected', selected: true, ready: false, character_id: index === 0 ? 'missing' : 'player-red', role: 'none', controller: 'interactive' }));
+ await page.addInitScript(() => sessionStorage.setItem('driichi:participant:123456', 'P1'));
+ await page.route('**/assets/characters/player-red/*.webp', route => route.fulfill({ path: resolve('tests/fixtures/task12-characters/player-red', new URL(route.request().url()).pathname.split('/').at(-1)!) }));
+ await page.route('**/assets/characters/missing/*.webp', route => route.fulfill({ status: 404 }));
+ await page.routeWebSocket('**/ws/v1/rooms/123456/human', socket => socket.send(JSON.stringify({ type: 'snapshot', room: { join_code: '123456', room_name: 'Room-with-a-long-unbroken-display-name'.repeat(4), game_mode: '3p-red-east', phase: 'lobby', revision: 1, participants, roster: [], match_players: [], result: null }, state: null })));
+ await page.goto('/room/123456/lobby');
+ const cards = page.getByRole('list', { name: 'Participants' }).getByRole('button');
+ await expect(cards).toHaveCount(3);
+ const missing = cards.filter({ hasText: longName });
+ await expect(missing).toContainText('Portrait unavailable');
+ for (const width of [1440, 1024, 390, 320]) {
+  await page.setViewportSize({ width, height: width === 1024 ? 600 : 844 });
+  await page.evaluate(() => document.documentElement.style.fontSize = '200%');
+  await testInfo.attach(`overflow-${width}`, { body: JSON.stringify(await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth, offenders: Array.from(document.querySelectorAll('body *')).map(element => ({ tag: element.tagName, class: element.className, x: element.getBoundingClientRect().x, right: element.getBoundingClientRect().right, height: element.getBoundingClientRect().height, scroll: element.scrollWidth, client: element.clientWidth, whiteSpace: getComputedStyle(element).whiteSpace, wrap: getComputedStyle(element).overflowWrap })).filter(box => box.x < 0 || box.right > innerWidth || box.scroll > box.client) }))), contentType: 'application/json' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await missing.click();
+  const detail = page.getByRole('dialog', { name: longName });
+  await expect(detail).toContainText('P3');
+  await page.keyboard.press('Escape');
+  await expect(missing).toBeFocused();
+ }
+ for (const [index, id] of ['P1', 'P2'].entries()) {
+  await cards.filter({ hasText: 'Same name' }).nth(index).click();
+  await expect(page.getByRole('dialog', { name: 'Same name' })).toContainText(id);
+  await page.keyboard.press('Escape');
+ }
+ await expect(page.getByRole('button', { name: 'Set Ready' })).toBeDisabled();
+ await page.screenshot({ path: testInfo.outputPath('lobby-long-names-missing-320-text200.png'), fullPage: true });
+});
 
 for (const theme of ['light', 'dark']) test(`mobile Admin list/detail/Back preserves management and one-time token in ${theme}`, async ({ page }, testInfo) => {
  await page.setViewportSize({ width: 390, height: 844 });

@@ -6,9 +6,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 export function LobbyParticipantCard({ participant, own, previousSeat }: { participant: RoomParticipant; own: boolean; previousSeat?: number }) {
  const [failed, setFailed] = useState(false);
  return <Dialog>
-  <DialogTrigger render={<Button variant="outline" className="lobby-participant-card" />} aria-label={participant.display_name}>
-   {failed ? <span className="lobby-portrait-fallback">Portrait unavailable</span> : <img className="lobby-portrait" src={`/assets/characters/${encodeURIComponent(participant.character_id)}/portrait.webp`} alt="" onError={() => setFailed(true)} />}
-   <span className="lobby-participant-name">{participant.display_name}</span>
+  <DialogTrigger render={<Button variant="ghost" className="lobby-participant-card relative isolate flex h-auto w-full min-w-0 flex-col gap-0 p-0 whitespace-normal" />} aria-label={participant.display_name}>
+   <span aria-hidden="true" className="lobby-portrait-frame pointer-events-none absolute inset-0 -z-10 -skew-x-4 rounded-lg border bg-muted/30 md:-skew-x-8" />
+   <span className="relative block aspect-square max-h-[36vh] w-full overflow-hidden pt-3">
+    {failed ? <span className="flex h-full items-center justify-center text-muted-foreground">Portrait unavailable</span> : <img className="lobby-portrait ml-[-5%] block h-auto w-[110%] max-w-none" src={`/assets/characters/${encodeURIComponent(participant.character_id)}/portrait.webp`} alt="" onError={() => setFailed(true)} />}
+   </span>
+   <span className="block w-full px-3 py-3 text-base wrap-anywhere">{participant.display_name}</span>
   </DialogTrigger>
   <DialogContent>
    <DialogHeader><DialogTitle>{participant.display_name}</DialogTitle><DialogDescription>{own ? 'Your Participant' : 'Participant details'}</DialogDescription></DialogHeader>
