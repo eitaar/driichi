@@ -1,12 +1,11 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { resolve } from 'node:path';
 
 for (const count of [3, 4]) for (const theme of ['light', 'dark']) {
  test(`${count}p Lobby has stable portrait cards and keyboard/touch states in ${theme}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(theme => { localStorage.setItem('driichi-theme', theme); sessionStorage.setItem('driichi:participant:123456', 'P1'); }, theme);
-  await page.route('**/assets/characters/player-red/*.webp', route => route.fulfill({ path: resolve('tests/fixtures/task12-characters/player-red', new URL(route.request().url()).pathname.split('/').at(-1)!) }));
+  await page.route('**/assets/characters/player-red/*.webp', route => route.fulfill({ path: `tests/fixtures/task12-characters/player-red/${new URL(route.request().url()).pathname.split('/').at(-1)}` }));
   const participants = Array.from({ length: count }, (_, index) => ({ participant_id: `P${count-index}`, display_name: index === count-1 ? 'Mika' : `Participant ${count-index}`, kind: index === count-1 ? 'human' : 'built_in_bot', presence: 'connected', selected: true, ready: index !== count-1, character_id: 'player-red', role: 'none', controller: 'interactive' }));
   const room = { join_code: '123456', room_name: 'Night Market', game_mode: `${count}p-red-east`, phase: 'lobby', revision: 1, participants, roster: [], match_players: [], result: null };
   let update!: () => void;
@@ -58,10 +57,32 @@ for (const count of [3, 4]) for (const theme of ['light', 'dark']) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(page.getByText('0 connected', { exact: true })).toBeVisible();
   await trigger.click(); await expect(detail).toContainText('disconnected'); await page.keyboard.press('Escape');
-  await page.setViewportSize({ width: 320, height: 740 });
-  await page.evaluate(() => document.documentElement.style.fontSize = '200%');
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath(`lobby-${count}p-${theme}-320-text200.png`), fullPage: true });
+  for (const width of [320, 390]) {
+   await page.setViewportSize({ width, height: 844 });
+   await page.evaluate(() => document.documentElement.style.fontSize = '200%');
+   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+   const enlargedCards = await Promise.all((await cards.all()).map(card => card.boundingBox()));
+   expect(enlargedCards[1]!.y).toBeGreaterThan(enlargedCards[0]!.y);
+   for (const card of await cards.all()) {
+    if (await card.getAttribute('aria-label') !== 'Mika') continue;
+    expect(await card.locator(':scope > span:last-child').evaluate(element => {
+     const text = element.firstChild!;
+     return Array.from(text.textContent!.matchAll(/\S+/g)).every(word => {
+      const range = document.createRange(); range.setStart(text, word.index); range.setEnd(text, word.index + word[0].length);
+      return range.getClientRects().length === 1;
+     });
+    })).toBe(true);
+   }
+   for (const text of ['Lobby', 'Night Market', '123456']) {
+    const lineCount = await page.locator('main > header').getByText(text, { exact: true }).evaluate(element => {
+     const range = document.createRange();
+     range.selectNodeContents(element);
+     return range.getClientRects().length;
+    });
+    expect(lineCount, `${text} must remain readable as one line at ${width}px/200%`).toBe(1);
+   }
+   await page.screenshot({ path: testInfo.outputPath(`lobby-${count}p-${theme}-${width}-text200.png`), fullPage: true });
+  }
  });
 }
 
@@ -69,7 +90,7 @@ test('Lobby keeps long names, duplicate identities and a missing portrait usable
  const longName = 'Participant-with-a-long-unbroken-display-name'.repeat(3);
  const participants = ['P3', 'P1', 'P2'].map((id, index) => ({ participant_id: id, display_name: index === 0 ? longName : 'Same name', kind: 'human', presence: 'connected', selected: true, ready: false, character_id: index === 0 ? 'missing' : 'player-red', role: 'none', controller: 'interactive' }));
  await page.addInitScript(() => sessionStorage.setItem('driichi:participant:123456', 'P1'));
- await page.route('**/assets/characters/player-red/*.webp', route => route.fulfill({ path: resolve('tests/fixtures/task12-characters/player-red', new URL(route.request().url()).pathname.split('/').at(-1)!) }));
+ await page.route('**/assets/characters/player-red/*.webp', route => route.fulfill({ path: `tests/fixtures/task12-characters/player-red/${new URL(route.request().url()).pathname.split('/').at(-1)}` }));
  await page.route('**/assets/characters/missing/*.webp', route => route.fulfill({ status: 404 }));
  await page.routeWebSocket('**/ws/v1/rooms/123456/human', socket => socket.send(JSON.stringify({ type: 'snapshot', room: { join_code: '123456', room_name: 'Room-with-a-long-unbroken-display-name'.repeat(4), game_mode: '3p-red-east', phase: 'lobby', revision: 1, participants, roster: [], match_players: [], result: null }, state: null })));
  await page.goto('/room/123456/lobby');
@@ -82,6 +103,9 @@ test('Lobby keeps long names, duplicate identities and a missing portrait usable
   await page.evaluate(() => document.documentElement.style.fontSize = '200%');
   await testInfo.attach(`overflow-${width}`, { body: JSON.stringify(await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth, offenders: Array.from(document.querySelectorAll('body *')).map(element => ({ tag: element.tagName, class: element.className, x: element.getBoundingClientRect().x, right: element.getBoundingClientRect().right, height: element.getBoundingClientRect().height, scroll: element.scrollWidth, client: element.clientWidth, whiteSpace: getComputedStyle(element).whiteSpace, wrap: getComputedStyle(element).overflowWrap })).filter(box => box.x < 0 || box.right > innerWidth || box.scroll > box.client) }))), contentType: 'application/json' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await page.getByRole('heading', { name: 'Lobby', exact: true }).evaluate(element => {
+   const range = document.createRange(); range.selectNodeContents(element); return range.getClientRects().length;
+  })).toBe(1);
   await missing.click();
   const detail = page.getByRole('dialog', { name: longName });
   await expect(detail).toContainText('P3');
@@ -111,7 +135,7 @@ for (const theme of ['light', 'dark']) test(`mobile Admin list/detail/Back prese
   if (path.endsWith('/rooms')) return route.fulfill({ json: [room] });
   return route.fulfill({ json: room });
  });
- await page.route('**/assets/characters/player-red/icon.webp', route => route.fulfill({ path: resolve('tests/fixtures/task12-characters/player-red/icon.webp') }));
+ await page.route('**/assets/characters/player-red/icon.webp', route => route.fulfill({ path: 'tests/fixtures/task12-characters/player-red/icon.webp' }));
  await page.goto('/admin');
  await expect(page.getByRole('heading', { name: 'Rooms', exact: true })).toBeVisible();
  await expect(page.getByRole('region', { name: 'Room detail' })).not.toBeVisible();
