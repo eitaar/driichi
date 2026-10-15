@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, ApiProblem, type AdminRoomDetail, type BenchmarkRun } from "./api";
 import { deriveRunAnalytics } from "./benchmark-analytics";
 import type { ReplayAvailability } from "./benchmark-types";
+import { usePostMutationRefresh } from "./query-refresh";
 
 export function validateLoadedRuns(value: unknown): BenchmarkRun[] {
   const ids = new Set<string>();
@@ -91,5 +92,6 @@ export function useBenchmarkEvidence(runId: string) {
     : { kind: "complete" as const, run: query.data.run, analytics: query.data.analytics };
   // Explicit refresh and future event invalidations share this one non-overlapping query.
   const refresh = () => query.refetch({ cancelRefetch: false });
-  return { query, evidence, refresh };
+  const refreshAfterMutation = usePostMutationRefresh(benchmarkRunKey(runId), query.refetch);
+  return { query, evidence, refresh, refreshAfterMutation };
 }

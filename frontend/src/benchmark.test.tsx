@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { App } from "./app";
+import { focusManager } from "@tanstack/react-query";
 
 const room = {
   join_code: "123456", room_name: "Bot benchmark", game_mode: "4p-red-east", phase: "lobby", benchmark_mode: true, benchmark: null,
@@ -282,6 +283,97 @@ it("keeps uncertain Stop disabled when recovery fails and never treats a differe
   expect(await screen.findByText(/Stop state unknown/)).toBeVisible();
   expect(screen.queryByText("Stopping after current Match")).not.toBeInTheDocument();
   expect(stop).toBeDisabled();
+});
+
+it.each(["/admin/benchmark/runs/run-1", "/admin/rooms/123456"])("rechecks open Stop confirmation after refreshed pending, unknown or terminal state at %s", async route => {
+  window.history.replaceState({}, "", route);
+  let state = "eligible";
+  let reads = 0;
+  let posts = 0;
+  stubFetch((path, init) => {
+    if (init?.method === "POST") posts++;
+    const currentRoom = { ...room, revision: reads, benchmark: { run_id: "run-1", stop_requested: state === "unknown" ? undefined : state === "pending", status: state === "terminal" ? "stopped" : "running" } };
+    if (path === "/api/v1/admin/rooms") return response([currentRoom]);
+    if (path.endsWith("/tokens")) return response([]);
+    if (path === "/api/v1/admin/rooms/123456") { reads++; return response(currentRoom); }
+    return response({ ...run, status: state === "terminal" ? "stopped" : "running" });
+  });
+  render(<App />);
+  for (const next of ["pending", "unknown", "terminal"]) {
+    fireEvent.click(await screen.findByRole("button", { name: "Stop after current Match" }));
+    const confirm = await screen.findByRole("button", { name: "Confirm Stop" });
+    state = next;
+    const previous = reads;
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    if (next !== "terminal" || !route.includes("/benchmark/")) await waitFor(() => expect(reads).toBeGreaterThan(previous));
+    await waitFor(() => next === "terminal" ? expect(confirm).not.toBeInTheDocument() : expect(confirm).toBeDisabled());
+    fireEvent.click(confirm);
+    expect(posts).toBe(0);
+    if (next !== "terminal") {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      state = "eligible";
+      act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Stop after current Match" })).toBeEnabled());
+      if (route.includes("/benchmark/")) await waitFor(() => expect(screen.getByRole("button", { name: "Refresh Run" })).toBeEnabled());
+    }
+  }
+  focusManager.setFocused(undefined);
+});
+
+it.each(["/admin/benchmark/runs/run-1", "/admin/rooms/123456"].flatMap(route => ["pending", "failed", "revoked", "old-revoked", "mismatched", "left"].map(outcome => [route, outcome])))("does not recover a lost Stop using a pre-outcome snapshot at %s (%s)", async (route, outcome) => {
+  window.history.replaceState({}, "", route);
+  let posts = 0;
+  let reads = 0;
+  let releaseOld!: (value: Response) => void;
+  let releaseFresh!: (value: Response) => void;
+  const snapshot = (pending: boolean) => response({ ...room, benchmark: { run_id: "run-1", status: "running", stop_requested: pending } });
+  vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+    if (input.endsWith("/stop")) { posts++; return response({ detail: "Response lost" }, 503); }
+    if (input === "/api/v1/admin/rooms/123456") {
+      reads++;
+      if (reads === 2) return new Promise<Response>(resolve => { releaseOld = resolve; });
+      if (reads === 3) return new Promise<Response>(resolve => { releaseFresh = resolve; });
+      return snapshot(false);
+    }
+    if (input === "/api/v1/admin/rooms") return response([room]);
+    if (input.endsWith("/tokens")) return response([]);
+    return response({ ...run, status: "running" });
+  }));
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Stop after current Match" }));
+  act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+  await waitFor(() => expect(reads).toBe(2));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm Stop" }));
+  await screen.findByText(/Stop state unknown/);
+  if (outcome === "left") {
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Admin" })).getByRole("link", { name: "Replays" }));
+    await act(async () => { releaseOld(snapshot(false)); });
+    expect(reads).toBe(2);
+    expect(screen.queryByRole("button", { name: "Stop after current Match" })).not.toBeInTheDocument();
+  } else if (outcome === "old-revoked") {
+    await act(async () => { releaseOld(response({ detail: "Session expired" }, 401)); });
+    await screen.findByRole("heading", { name: "Sign in to host." });
+    expect(reads).toBe(2);
+  } else {
+    await act(async () => { releaseOld(snapshot(false)); });
+    await waitFor(() => expect(reads).toBe(3));
+    expect(screen.getByRole("button", { name: "Stop after current Match" })).toBeDisabled();
+    expect(screen.getByText(/Stop state unknown/)).toBeVisible();
+    await act(async () => { releaseFresh(outcome === "failed" ? response({ detail: "Read failed" }, 503)
+      : outcome === "revoked" ? response({ detail: "Session expired" }, 401)
+      : outcome === "mismatched" ? response({ ...room, benchmark: { run_id: "other", status: "running", stop_requested: false } }) : snapshot(true)); });
+    if (outcome === "revoked") await screen.findByRole("heading", { name: "Sign in to host." });
+    else if (outcome === "pending") expect(await screen.findByText("Stopping after current Match")).toBeVisible();
+    else if (outcome === "mismatched" && route.startsWith("/admin/rooms/")) {
+      expect(screen.queryByText("Stopping after current Match")).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.getByRole("link", { name: "View Run and live table" })).toHaveAttribute("href", "/admin/benchmark/runs/other"));
+    } else {
+      await waitFor(() => expect(screen.getByRole("button", { name: "Stop after current Match" })).toBeDisabled());
+      expect(screen.getByText(/Stop state unknown/)).toBeVisible();
+    }
+  }
+  expect(posts).toBe(1);
+  focusManager.setFocused(undefined);
 });
 
 it("shows an honest unavailable Resume for Interrupted only", async () => {

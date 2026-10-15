@@ -36,7 +36,7 @@ function StopRun({ runId, code, stopRequested, snapshotVersion, refresh }: {
   const [accepted, setAccepted] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const inFlight = useRef(false);
-  useEffect(() => { if (stopRequested !== null) setUncertain(false); }, [stopRequested, snapshotVersion]);
+  useEffect(() => { if (!inFlight.current && stopRequested !== null) setUncertain(false); }, [stopRequested, snapshotVersion]);
   const stop = useMutation({
     mutationFn: async () => {
       const room = await api.stopBenchmarkRun(code);
@@ -57,16 +57,17 @@ function StopRun({ runId, code, stopRequested, snapshotVersion, refresh }: {
   });
   const pending = accepted || stopRequested === true;
   const unknown = !pending && (uncertain || stopRequested === null);
+  const disabled = stop.isPending || pending || unknown;
   return <div className="flex flex-col gap-2">
     {pending && <p role="status">Stopping after current Match</p>}
     {unknown && <p role="status">Stop state unknown. Refresh authoritative Room detail before another Stop.</p>}
     {stop.isError && <ErrorMessage error={stop.error} />}
     {stop.error instanceof ApiProblem && stop.error.status === 409 && <p role="alert">Run changed. Review refreshed state and confirm a new Stop intent.</p>}
     <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger render={<Button variant="outline" disabled={stop.isPending || pending || unknown} />}>Stop after current Match</AlertDialogTrigger>
+      <AlertDialogTrigger render={<Button variant="outline" disabled={disabled} />}>Stop after current Match</AlertDialogTrigger>
       <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Finish current Match, then stop</AlertDialogTitle><AlertDialogDescription>The current Match may finish and be recorded. No further Matches will be scheduled after the server accepts Stop.</AlertDialogDescription></AlertDialogHeader>
-        <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={stop.isPending} onClick={() => {
-          if (inFlight.current) return;
+        <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={disabled} onClick={() => {
+          if (inFlight.current || disabled || stopRequested !== false) return;
           inFlight.current = true; setOpen(false); stop.mutate();
         }}>Confirm Stop</AlertDialogAction></AlertDialogFooter>
       </AlertDialogContent>
@@ -160,7 +161,7 @@ function ModeOptions() {
 
 function RunDetail({ runId }: { runId: string }) {
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
-  const { query, evidence, refresh } = useBenchmarkEvidence(runId);
+  const { query, evidence, refresh, refreshAfterMutation } = useBenchmarkEvidence(runId);
   const metadata = useQuery({ queryKey: ["admin", "benchmark", "replay-metadata", runId, selectedMatchId, 0, 50], queryFn: ({ signal }) => api.listAdminReplays(0, 50, signal), enabled: selectedMatchId !== null, retry: false });
   if (evidence.kind === "error") return <ErrorMessage error={evidence.error} retry={() => { void refresh(); }} />;
   if (evidence.kind === "loading" || !query.data) return <p role="status">Loading Run…</p>;
@@ -175,7 +176,7 @@ function RunDetail({ runId }: { runId: string }) {
     {run.failed_match_id && <p className="field-hint">Incomplete attempt {run.failed_match_id} — excluded from statistics.</p>}
     {run.status === "interrupted" && <><Button disabled aria-describedby="resume-unavailable">Resume unavailable</Button><p id="resume-unavailable">The server does not publish safe Resume eligibility, roster/revision checks, or an accepted Resume operation. This Run remains Interrupted.</p></>}
     {run.status === "running" && <>
-      <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refresh(); return result.isError ? null : result.data?.stopRequested ?? null; }} />
+      <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />
       <Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link><DesktopTableBoundary fallback={null}><LiveObserver code={run.room_code} /></DesktopTableBoundary>
     </>}
     {analytics.kind === "invalid" ? <Alert variant="destructive"><AlertTitle>Invalid Match evidence</AlertTitle><AlertDescription>{analytics.reason}</AlertDescription><Button variant="outline" onClick={() => { void refresh(); }}>Retry</Button></Alert>
