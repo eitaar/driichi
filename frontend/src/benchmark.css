@@ -7,11 +7,9 @@
 .benchmark-controls h3 { margin: 0 0 12px; font-size: 18px; }
 .benchmark-controls .action-row { align-items: end; flex-wrap: wrap; }
 .benchmark-controls .form-block { max-width: 180px; }
-.benchmark-create { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(150px, .7fr); gap: 16px; align-items: end; margin: 32px 0; }
-.benchmark-create > button { grid-column: 1 / -1; justify-self: start; }
+.benchmark-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+.benchmark-main select { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); padding: 4px 8px; }
 .benchmark-history, .benchmark-statistics { margin-top: 40px; }
-.benchmark-history ul { list-style: none; margin: 0; padding: 0; }
-.benchmark-history li { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .benchmark-history a { display: block; min-height: 44px; align-content: center; }
 .benchmark-identity { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .benchmark-table-scroll { max-width: 100%; overflow-x: auto; }
@@ -39,7 +37,7 @@
 .benchmark-live .table-player-copy strong { color: #283342; }
 @media (max-width: 700px) {
   .benchmark-main { margin-top: 24px; padding: 0 16px 32px; }
-  .benchmark-create { grid-template-columns: 1fr; }
+  .benchmark-filters { grid-template-columns: 1fr; }
   .benchmark-shell .topbar { flex-wrap: wrap; }
   .benchmark-live .table-replay-hand img { width: 100%; max-width: none; }
   .benchmark-controls .action-row { display: grid; }

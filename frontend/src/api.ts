@@ -192,7 +192,8 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, { ...init, credentials: "include", headers });
-  } catch {
+  } catch (error) {
+    if (init?.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
     throw new ApiProblem({
       type: "about:blank",
       title: "Host unavailable",
@@ -249,8 +250,8 @@ export const api = {
     return requestJson<AdminRoomDetail>(`${benchmarkRoomPath(joinCode)}/runs`, { method: "POST", body: JSON.stringify({ target }) });
   },
   stopBenchmarkRun(joinCode: string) { return requestJson<AdminRoomDetail>(`${benchmarkRoomPath(joinCode)}/stop`, { method: "POST" }); },
-  listBenchmarkRuns() { return requestJson<BenchmarkRun[]>("/api/v1/admin/benchmark/runs"); },
-  getBenchmarkRun(runId: string) { return requestJson<BenchmarkRun>(`/api/v1/admin/benchmark/runs/${encodeURIComponent(runId)}`); },
+  listBenchmarkRuns(signal?: AbortSignal) { return requestJson<BenchmarkRun[]>("/api/v1/admin/benchmark/runs", { signal }); },
+  getBenchmarkRun(runId: string, signal?: AbortSignal) { return requestJson<BenchmarkRun>(`/api/v1/admin/benchmark/runs/${encodeURIComponent(runId)}`, { signal }); },
   getBenchmarkLive(joinCode: string) { return requestJson<BenchmarkLive>(`${benchmarkRoomPath(joinCode)}/live`); },
   lookupRoom(joinCode: string) { return requestJson<RoomLookup>(roomPath(joinCode)); },
   listHumanCharacters() { return requestJson<HumanCharacter[]>("/api/v1/characters/human"); },
@@ -262,7 +263,7 @@ export const api = {
   },
   logoutAdmin() { return requestJson<void>("/api/v1/admin/logout", { method: "POST" }); },
   listAdminRooms() { return requestJson<AdminRoomSummary[]>("/api/v1/admin/rooms"); },
-  getAdminRoom(joinCode: string) { return requestJson<AdminRoomDetail>(adminRoomPath(joinCode)); },
+  getAdminRoom(joinCode: string, signal?: AbortSignal) { return requestJson<AdminRoomDetail>(adminRoomPath(joinCode), { signal }); },
   createAdminRoom(input: { room_name: string; game_mode: GameMode; time_control: TimeControl; replay_save: boolean; participant_limit?: number }) {
     return requestJson<AdminRoomDetail>("/api/v1/admin/rooms", { method: "POST", body: JSON.stringify(input) });
   },
@@ -280,10 +281,10 @@ export const api = {
   listBotTokens() { return requestJson<BotTokenRecord[]>("/api/v1/admin/tokens"); },
   createBotToken(name: string) { return requestJson<CreatedBotToken>("/api/v1/admin/tokens", { method: "POST", body: JSON.stringify({ name }) }); },
   revokeBotToken(tokenId: string) { return requestJson<BotTokenRecord>(`/api/v1/admin/tokens/${encodeURIComponent(tokenId)}/revoke`, { method: "POST" }); },
-  listAdminReplays(offset = 0, limit = 50) {
-    if (offset === 0 && limit === 50) return requestJson<ReplayListResponse>("/api/v1/admin/replays");
+  listAdminReplays(offset = 0, limit = 50, signal?: AbortSignal) {
+    if (offset === 0 && limit === 50) return requestJson<ReplayListResponse>("/api/v1/admin/replays", { signal });
     const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
-    return requestJson<ReplayListResponse>(`/api/v1/admin/replays?${params.toString()}`);
+    return requestJson<ReplayListResponse>(`/api/v1/admin/replays?${params.toString()}`, { signal });
   },
   getAdminReplay(matchId: string) { return requestJson<ReplayView>(adminReplayPath(matchId)); },
   deleteAdminReplay(matchId: string) { return requestJson<void>(adminReplayPath(matchId), { method: "DELETE" }); },

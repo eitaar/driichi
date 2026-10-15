@@ -28,7 +28,7 @@ export function BenchmarkMatchDetail({ match, roster, onClose, onRetryReplay }: 
         <TableCell>{roster.find(p => p.participant_id === result.participant_id)?.display_name} ({result.participant_id})</TableCell><TableCell>{result.seat + 1}</TableCell><TableCell>{result.rank}</TableCell><TableCell>{result.final_score.toLocaleString()}</TableCell>
       </TableRow>)}
     </TableBody></Table>
-    <p role="status">{status === "available" ? "Replay available." : status === "unavailable" ? "Replay unavailable. The recorded placements and points remain valid." : status === "too_large" ? "Replay is too large for the viewer. Placements and points remain available." : "Replay status not verified. Placements and points remain available; no verified metadata source is connected."}</p>
+    <p role="status">{status === "available" ? "Replay available." : status === "unavailable" ? "Replay unavailable. The recorded placements and points remain valid." : status === "too_large" ? "Replay is too large for the viewer. Placements and points remain available." : "Replay status not verified. Placements and points remain available; missing or failed metadata never establishes availability."}</p>
     {status === "available" && <a href={`/admin/replays/${encodeURIComponent(match.match_id)}`} onClick={event => {
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault(); navigate(`/admin/replays/${encodeURIComponent(match.match_id)}`);

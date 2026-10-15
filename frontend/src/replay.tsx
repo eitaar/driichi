@@ -79,7 +79,7 @@ function ReplayMeta({ replay }: { replay: ReplaySummary }) {
 
 function ReplayList() {
   const [offset, setOffset] = useState(replayOffsetFromLocation);
-  const query = useQuery({ queryKey: replayKeys.list(offset), queryFn: () => api.listAdminReplays(offset, REPLAY_PAGE_SIZE) });
+  const query = useQuery({ queryKey: replayKeys.list(offset), queryFn: ({ signal }) => api.listAdminReplays(offset, REPLAY_PAGE_SIZE, signal) });
   const queryClient = useQueryClient();
   const [deleteReplay, setDeleteReplay] = useState<ReplaySummary | null>(null);
   const goToPage = (nextOffset: number) => {
