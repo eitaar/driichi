@@ -254,7 +254,12 @@ describe("admin room workspace", () => {
     expect(screen.getByText(/presence/i)).toBeVisible();
     expect(screen.getByText(/selection/i)).toBeVisible();
     expect(screen.getByText(/controller/i)).toBeVisible();
-    expect(screen.getAllByText(/seat open/i)).toHaveLength(4);
+    expect(screen.queryByText(/seat open/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Selected roster' })).not.toHaveTextContent(/Seat/i);
+    fireEvent.click(screen.getByRole('link', { name: /night market/i }));
+    expect(window.location.pathname).toBe('/admin/rooms/123456');
+    fireEvent.click(screen.getByRole('link', { name: 'Back to Rooms' }));
+    expect(window.location.pathname).toBe('/admin');
   });
 
   it("runs a Room mutation and refetches the exact Room detail key", async () => {
@@ -502,13 +507,24 @@ describe("human lobby websocket", () => {
       state: null,
     });
     expect(await screen.findByRole("heading", { name: /^lobby$/i })).toBeVisible();
-    screen.getAllByText('Details',{selector:'summary'}).forEach(summary => fireEvent.click(summary));
-    expect(screen.getByText(/mika \/ you/i)).toBeVisible();
-    expect(screen.getAllByText("Presence")).toHaveLength(3);
-    expect(screen.getAllByText("Selection")).toHaveLength(3);
-    expect(screen.getAllByText("Controller")).toHaveLength(3);
-    expect(screen.getByText(/seat 1/i)).toBeVisible();
+    const cards = () => within(screen.getByRole('list', { name: 'Participants' })).getAllByRole('button').map(button => button.getAttribute('aria-label'));
+    expect(cards()).toEqual(['Bot 1', 'Bot 2', 'Mika']);
     expect(screen.getByText('3 / 3 selected')).toBeVisible();
+    expect(screen.getByText('2 / 3 ready')).toBeVisible();
+    expect(screen.getByText('3 connected')).toBeVisible();
+    expect(screen.getByText(/Room 123456/)).toBeVisible();
+    fireEvent.click(screen.getByText('Match readiness blockers', { selector: 'summary' }));
+    expect(screen.getByText('Mika: not ready')).toBeVisible();
+    expect(screen.queryByText(/Seat 1/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mika' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Mika' });
+    expect(dialog).toHaveTextContent('Your Participant');
+    expect(dialog).not.toHaveTextContent('Seat');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    act(() => useGameStore.setState(state => ({ room: { ...state.room!, participants: [...state.room!.participants].reverse().map(p => ({ ...p, ready: true, presence: 'disconnected' })) } })));
+    expect(cards()).toEqual(['Bot 1', 'Bot 2', 'Mika']);
+    expect(screen.getByText('3 / 3 ready')).toBeVisible();
+    expect(screen.getByText('0 connected')).toBeVisible();
   });
 
   it("keeps the WebSocket connected when the server rejects a normal command", async () => {

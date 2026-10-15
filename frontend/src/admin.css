@@ -1,126 +1,23 @@
-.workspace-shell {
-  --ink: #eef0f2;
-  --ink-raised: #fafbfc;
-  --ink-panel: #fafbfc;
-  --ink-soft: #dce4ed;
-  --line: #bcc6cf;
-  --line-strong: #9faeba;
-  --paper: #283342;
-  --legacy-muted: #586574;
-  --muted-strong: #354a66;
-  --legacy-accent: #dca64a;
-  --accent-bright: #2762ab;
-  color-scheme: light;
-  font-family: "Segoe UI", system-ui, sans-serif;
-  color: var(--paper);
-  background: var(--ink);
-  overflow: visible;
-}
-.workspace-shell button, .workspace-shell input, .workspace-shell select { font-family: inherit; }
-.workspace-shell :focus-visible { outline: 3px solid #2762ab; outline-offset: 3px; }
-.workspace-shell .topbar { min-height: 64px; height: auto; padding: 10px 24px; gap: 20px; }
-.workspace-shell .brand { font-family: inherit; font-size: 15px; letter-spacing: 0; }
-.workspace-shell .brand-mark { border-color: var(--line); color: var(--muted-strong); font-family: inherit; }
-.workspace-shell .workspace-actions { flex-wrap: wrap; gap: 12px 24px; }
-.workspace-shell .nav-link, .workspace-shell .text-button { color: var(--muted-strong); font-size: 14px; }
-.workspace-shell .nav-link:hover, .workspace-shell .text-button:hover:not(:disabled) { color: var(--paper); }
-.workspace-shell .text-button:disabled { color: var(--legacy-muted); opacity: .6; }
-.workspace-shell .danger-text, .workspace-shell .danger-button { color: #a72e3f; }
-.workspace-shell .danger-button { border-color: #a72e3f; }
-.workspace-shell .danger-button:hover:not(:disabled) { background: #f9eaed; border-color: #a72e3f; }
-.workspace-shell .button { height: auto; min-height: 44px; white-space: normal; }
-.workspace-shell .button:hover:not(:disabled) { transform: none; }
-.workspace-shell .button-primary { background: var(--legacy-accent); border-color: var(--legacy-accent); color: #283342; }
-.workspace-shell .button-primary:hover:not(:disabled) { background: #e5b965; }
-.workspace-shell .button-primary:disabled { background: #e2e7ec; border-color: var(--line); color: var(--legacy-muted); }
-.workspace-shell .button-secondary { background: transparent; border-color: var(--line); color: var(--muted-strong); }
-.workspace-shell .button-secondary:hover:not(:disabled) { background: var(--ink-soft); border-color: var(--line-strong); }
-.workspace-shell input, .workspace-shell select { min-height: 44px; height: 44px; background: var(--ink-panel); color: var(--paper); border-color: var(--line); }
-.workspace-shell input::placeholder { color: var(--legacy-muted); }
-.workspace-shell input:hover, .workspace-shell select:hover { border-color: var(--legacy-muted); }
-.workspace-shell input:focus, .workspace-shell select:focus { border-color: #2762ab; background: var(--ink-panel); }
-.workspace-shell .eyebrow, .workspace-shell .state-label, .workspace-shell .request-id { font-family: inherit; letter-spacing: 0; color: var(--legacy-muted); font-size: 12px; }
-.workspace-shell .form-error { color: #a72e3f; }
-.workspace-shell .admin-workspace { width: min(1200px, 100%); margin: 32px auto; padding: 0 24px; flex: 1; min-height: auto; grid-template-columns: 248px minmax(0, 1fr); gap: 40px; border: 0; align-items: start; }
-.workspace-shell .workspace-rail { border: 0; padding: 0; }
-.workspace-shell .workspace-rail h1 { font-size: 24px; font-weight: 600; letter-spacing: 0; line-height: 1.25; }
-.workspace-shell .admin-disclosure { border-top: 1px solid var(--line); padding: 8px 0; }
-.workspace-shell .admin-disclosure summary { cursor: pointer; min-height: 44px; align-content: center; font-size: 14px; font-weight: 600; }
-.workspace-shell .admin-disclosure summary:hover { color: #865a10; }
-.workspace-shell .create-room-disclosure { margin-top: 16px; }
-.workspace-shell .create-room-disclosure .button { margin: 8px 0; }
-.workspace-shell .room-list { display: grid; gap: 4px; margin-top: 16px; white-space: normal; }
-.workspace-shell .room-list-item { display: block; min-width: 0; padding: 14px 16px; border: 1px solid transparent; border-radius: 3px; color: var(--paper); overflow-wrap: anywhere; line-height: 1.4; }
-.workspace-shell .room-list-item:hover, .workspace-shell .room-list-item.is-active { background: var(--ink-soft); color: var(--paper); }
-.workspace-shell .room-list-item.is-active { border-color: var(--line); }
-.workspace-shell .room-list-item strong { font-size: 15px; font-weight: 600; }
-.workspace-shell .room-list-item small { margin-top: 6px; color: var(--legacy-muted); font: 13px "Segoe UI", system-ui, sans-serif; }
-.workspace-shell .workspace-main { overflow: visible; min-width: 0; background: var(--ink-panel); padding: 24px 28px; }
-.workspace-shell .room-detail { padding: 0; }
-.workspace-shell .detail-heading { align-items: flex-start; gap: 16px; padding-bottom: 24px; border: 0; }
-.workspace-shell .detail-heading > div { min-width: 0; }
-.workspace-shell .detail-heading h2 { font-size: 28px; font-weight: 600; letter-spacing: 0; line-height: 1.2; overflow-wrap: anywhere; }
-.workspace-shell .detail-lede { margin: 8px 0 0; font-size: 14px; font-variant-numeric: tabular-nums; }
-.workspace-shell .detail-lobby-link { display: inline-flex; align-items: center; min-height: 44px; white-space: nowrap; text-decoration: underline; text-underline-offset: 4px; color: var(--muted-strong); font-size: 14px; }
-.workspace-shell .flat-section { padding: 0; border: 0; }
-.workspace-shell .section-heading { align-items: center; gap: 12px; margin-bottom: 8px; }
-.workspace-shell .section-heading h3 { font-size: 16px; font-weight: 600; letter-spacing: 0; }
-.workspace-shell .section-heading .state-label { margin-left: 8px; font-weight: 400; text-transform: none; }
-.workspace-shell .participant-list { gap: 0; }
-.workspace-shell .participant-row { grid-template-columns: 40px minmax(95px, 1fr) minmax(210px, 1.6fr); gap: 8px 12px; padding: 10px 0; min-height: 68px; border: 0; border-bottom: 1px solid var(--line); background: transparent; }
-.workspace-shell .participant-row .character-asset-icon { width: 40px; height: 46px; object-fit: cover; }
-.workspace-shell .participant-main { min-width: 0; overflow-wrap: anywhere; }
-.workspace-shell .participant-main strong { font-size: 16px; }
-.workspace-shell .participant-main .state-label { margin-top: 3px; }
-.workspace-shell .participant-axes { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; }
-.workspace-shell .participant-axes dt { font: 11px "Segoe UI", system-ui, sans-serif; color: var(--legacy-muted); letter-spacing: 0; text-transform: none; }
-.workspace-shell .participant-axes dd { font-size: 12px; color: var(--paper); overflow-wrap: anywhere; white-space: normal; }
-.workspace-shell .participant-actions { grid-column: 2 / -1; justify-content: flex-start; gap: 18px; }
-.workspace-shell .participant-actions .text-button { min-height: 28px; }
-.workspace-shell .lifecycle-section { padding: 20px 0; }
-.workspace-shell .action-row { align-items: center; gap: 10px 16px; }
-.workspace-shell .start-note { margin: 0; color: var(--legacy-muted); font-size: 14px; }
-.workspace-shell .roster-rail { padding: 12px 0; border: 0; border-top: 1px solid var(--line); }
-.workspace-shell .roster-rail .section-heading { margin-bottom: 8px; }
-.workspace-shell .seat-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.workspace-shell .seat-row, .workspace-shell .seat-row:not(.is-filled) { display: flex; min-height: 62px; gap: 6px; padding: 6px; border-color: var(--line); background: transparent; min-width: 0; }
-.workspace-shell .seat-row .character-asset-portrait { width: 32px; height: 42px; object-fit: cover; flex-shrink: 0; }
-.workspace-shell .seat-row strong, .workspace-shell .seat-row small { overflow-wrap: anywhere; font-size: 11px; }
-.workspace-shell .seat-number { color: var(--muted-strong); font: 12px "Segoe UI", system-ui, sans-serif; }
-.workspace-shell .settings-disclosure { margin-top: 8px; }
-.workspace-shell .settings-grid { margin-top: 12px; }
-.workspace-shell .settings-disclosure .button { margin: 4px 8px 4px 0; }
-.workspace-shell .check-row input { min-height: 16px; height: 16px; accent-color: var(--legacy-accent); }
-.workspace-shell .token-panel { width: auto; padding: 0; margin-top: 16px; border: 0; background: transparent; }
-.workspace-shell .token-create { margin: 16px 0; }
-.workspace-shell .token-create .field-row { display: grid; }
-.workspace-shell .token-create .button { width: 100%; }
-.workspace-shell .token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; padding: 12px 0; }
-.workspace-shell .token-row code, .workspace-shell .token-row time { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font: 12px "Segoe UI", system-ui, sans-serif; color: var(--legacy-muted); }
-.workspace-shell .token-row .text-button { grid-column: 2; grid-row: 1; }
-.workspace-shell .empty-detail { min-height: 300px; }
-.workspace-shell .empty-detail h2 { font-size: 28px; letter-spacing: 0; }
-.workspace-shell .confirm-dialog { background: var(--ink-panel); color: var(--paper); border-color: var(--line); box-shadow: 0 24px 80px #28334233; }
-.workspace-shell .confirm-dialog::backdrop { background: #28334299; }
-.workspace-shell .confirm-dialog h2 { font-size: 26px; letter-spacing: 0; }
-.workspace-shell .secret-value { background: var(--ink); color: var(--paper); font-family: ui-monospace, monospace; }
-@media (max-width: 900px) {
-  .workspace-shell .admin-workspace { gap: 20px; padding: 0 16px; }
-  .workspace-shell .seat-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workspace-shell .participant-row { grid-template-columns: 40px minmax(0, 1fr); }
-  .workspace-shell .participant-axes { grid-column: 1 / -1; }
-  .workspace-shell .participant-actions { grid-column: 1 / -1; }
-}
-@media (max-width: 700px) {
-  .workspace-shell .topbar { padding: 8px 12px; flex-wrap: wrap; }
-  .workspace-shell .admin-workspace { display: grid; grid-template-columns: 1fr; gap: 20px; margin: 20px auto; padding: 0 12px; }
-  .workspace-shell .workspace-main { padding: 20px 16px; }
-  .workspace-shell .room-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
-  .workspace-shell .room-list-item { min-width: 0; padding: 12px; }
-  .workspace-shell .detail-heading { display: flex; flex-wrap: wrap; }
-  .workspace-shell .detail-heading h2 { font-size: 24px; }
-  .workspace-shell .participant-axes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .workspace-shell .seat-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workspace-shell .settings-grid { grid-template-columns: 1fr; }
-  .workspace-shell .action-row .button { flex: none; }
-}
+.workspace-shell{--ink:var(--background);--ink-raised:var(--background);--ink-panel:var(--background);--ink-soft:var(--muted);--paper:var(--foreground);--legacy-muted:var(--muted-foreground);--muted-strong:var(--foreground);--line:var(--border);--line-strong:var(--input);--legacy-accent:var(--primary);--accent-bright:var(--ring);font-family:var(--font-sans);color:var(--foreground);background:var(--background);overflow:visible}
+.workspace-shell :is(button,input,select){font-family:inherit}.workspace-shell :focus-visible{outline:3px solid var(--ring);outline-offset:3px}
+.workspace-shell .button{min-height:44px;height:auto;white-space:normal}.workspace-shell .button-primary{color:var(--primary-foreground);background:var(--primary);border-color:var(--primary);transition:none}.workspace-shell .button-primary:hover:not(:disabled){background:var(--primary)}.workspace-shell .button-primary:disabled{background:var(--muted);color:var(--muted-foreground);border-color:var(--border)}
+.workspace-shell .button-secondary{background:transparent;color:var(--foreground);border-color:var(--border)}.workspace-shell .button-secondary:hover:not(:disabled){background:var(--muted);border-color:var(--input)}
+.workspace-shell :is(.danger-text,.danger-button,.form-error){color:var(--destructive)}.workspace-shell .danger-button{border-color:var(--destructive)}
+.workspace-shell :is(input,select){min-height:44px;height:auto;color:var(--foreground);background:var(--background);border-color:var(--input);font-size:1rem}.workspace-shell input::placeholder{color:var(--muted-foreground)}.workspace-shell input:focus,.workspace-shell select:focus{background:var(--background);border-color:var(--ring)}
+.workspace-shell :is(.eyebrow,.state-label,.request-id){font-family:inherit;letter-spacing:0;color:var(--muted-foreground);font-size:.75rem}
+.workspace-shell .admin-workspace{display:grid;width:min(1200px,100%);min-height:0;margin:24px auto;padding:0 24px;grid-template-columns:248px minmax(0,1fr);gap:32px;align-items:start;border:0}
+.workspace-shell .workspace-rail{width:auto;height:auto;min-width:0;padding:0;border:0;background:none;color:var(--foreground)}.workspace-rail [data-slot=sidebar-content]{overflow:visible}
+.workspace-shell .workspace-rail h1{font-size:1.5rem;font-weight:600;line-height:1.3;letter-spacing:0}
+.workspace-shell .admin-disclosure{border-top:1px solid var(--border);padding:8px 0}.workspace-shell .admin-disclosure summary{min-height:44px;align-content:center;cursor:pointer;font-size:.875rem;font-weight:600}.workspace-shell .admin-disclosure summary:hover{color:var(--foreground)}
+.workspace-shell .room-list{display:block;margin-top:16px;white-space:normal}.workspace-shell .room-list-item{display:block;min-height:44px;padding:12px 8px;color:var(--foreground);overflow-wrap:anywhere;white-space:normal;line-height:1.4}.workspace-shell .room-list-item[aria-current=page]{background:var(--muted)}.workspace-shell .room-list-item small{display:block;margin-top:6px;color:var(--muted-foreground);font:inherit;font-size:.8125rem}.workspace-shell .room-list td{padding:0;white-space:normal}
+.workspace-shell .workspace-main{padding:0;min-width:0;overflow:visible;background:none}.admin-back{display:inline-flex;align-items:center;min-height:44px;text-decoration:underline;margin-bottom:12px}
+.workspace-shell .room-detail{padding:0}.workspace-shell .detail-heading{align-items:flex-start;gap:16px;padding-bottom:24px;border:0;flex-wrap:wrap}.workspace-shell .detail-heading>div{min-width:0}.workspace-shell .detail-heading h1{font-size:1.75rem;font-weight:600;line-height:1.3;letter-spacing:0;overflow-wrap:anywhere}.workspace-shell .detail-lede{margin:8px 0 0;font-size:.875rem}.workspace-shell .detail-lobby-link{min-height:44px;display:inline-flex;align-items:center;text-decoration:underline;color:var(--foreground)}
+.workspace-shell .flat-section{padding:0;border:0}.workspace-shell .section-heading{gap:12px;align-items:center;margin-bottom:8px;flex-wrap:wrap}.workspace-shell .section-heading h2,.workspace-shell .roster-rail>h2{font-size:1rem;letter-spacing:0}.workspace-shell .section-heading .state-label{margin-left:8px;text-transform:none}
+.workspace-shell .participant-list{gap:0}.workspace-shell .participant-row{grid-template-columns:40px minmax(95px,1fr) minmax(210px,1.6fr);gap:8px 12px;padding:12px 0;min-height:68px;border:0;border-bottom:1px solid var(--border);background:none}.workspace-shell .participant-row .character-asset-icon{width:40px;height:46px;object-fit:cover}.workspace-shell .participant-main{min-width:0;overflow-wrap:anywhere}.workspace-shell .participant-main strong{font-size:1rem}.workspace-shell .participant-axes{grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}.workspace-shell .participant-axes dt{font:inherit;font-size:.75rem;letter-spacing:0;color:var(--muted-foreground);text-transform:none}.workspace-shell .participant-axes dd{font-size:.8125rem;white-space:normal;overflow-wrap:anywhere}.workspace-shell .participant-actions{grid-column:2/-1;justify-content:flex-start;gap:16px}.workspace-shell .text-button{min-height:44px;color:var(--foreground);font-size:.875rem}.workspace-shell .danger-text{color:var(--destructive)}
+.workspace-shell .lifecycle-section{padding:20px 0}.workspace-shell .action-row{align-items:center;gap:12px}.workspace-shell .start-note{font-size:.875rem;color:var(--muted-foreground)}
+.workspace-shell .roster-rail{padding:12px 0;border:0;border-top:1px solid var(--border)}.workspace-shell .roster-rail ul{padding-left:20px}.workspace-shell .seat-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.workspace-shell .seat-row{display:flex;min-width:0;min-height:62px;gap:8px;padding:8px;background:none;border-color:var(--border)}.workspace-shell .seat-row .character-asset-portrait{width:32px;height:42px;object-fit:cover;flex-shrink:0}.workspace-shell .seat-row strong,.workspace-shell .seat-row small{font-size:.75rem;overflow-wrap:anywhere}.workspace-shell .seat-number{color:var(--foreground);font:inherit;font-size:.75rem}
+.workspace-shell .settings-grid{margin-top:12px}.workspace-shell .settings-disclosure .button{margin:4px 8px 4px 0}.workspace-shell .check-row input{min-height:16px;height:16px;accent-color:var(--primary)}
+.workspace-shell .token-panel{width:auto;margin-top:16px;padding:0;border:0;background:none}.workspace-shell .token-create{margin:16px 0}.workspace-shell .token-create .field-row{display:grid}.workspace-shell .token-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:12px 0}.workspace-shell .token-row code,.workspace-shell .token-row time{grid-column:1/-1;font-size:.75rem;color:var(--muted-foreground);white-space:normal;overflow-wrap:anywhere}.workspace-shell .token-row .text-button{grid-column:2;grid-row:1}
+.workspace-shell .confirm-dialog{color:var(--foreground);background:var(--background);border-color:var(--border)}.workspace-shell .confirm-dialog h2{font-size:1.5rem;letter-spacing:0}.workspace-shell .secret-value{background:var(--muted);color:var(--foreground);overflow-wrap:anywhere}.workspace-shell .empty-detail h2{font-size:1.5rem;letter-spacing:0}
+@media(max-width:1000px){.workspace-shell .participant-row{grid-template-columns:40px minmax(0,1fr)}.workspace-shell .participant-axes,.workspace-shell .participant-actions{grid-column:1/-1}.workspace-shell .seat-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:767px){.workspace-shell .admin-workspace{grid-template-columns:minmax(0,1fr);gap:16px;padding:0 16px;margin:16px auto}.workspace-shell[data-admin-view=list] .workspace-main,.workspace-shell[data-admin-view=detail] .workspace-rail{display:none}.workspace-shell .participant-axes{grid-template-columns:repeat(3,minmax(0,1fr))}.workspace-shell .settings-grid{grid-template-columns:minmax(0,1fr)}.workspace-shell .detail-heading h1{font-size:1.5rem}}

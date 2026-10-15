@@ -98,7 +98,7 @@ for (const fromDesktop of [false, true]) {
     await expect(standings.getByLabel("Rank 1")).toBeVisible();
     await expect(page.locator("canvas")).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => (window as unknown as { tableWorkers: { starts: number; active: number } }).tableWorkers)).toEqual({ starts: desktopStarts, active: 0 });
-    await expect(page.getByText("Mika / you", { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Mika', exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Set Ready" })).toBeEnabled();
     await page.getByRole("button", { name: "Return to Room", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();

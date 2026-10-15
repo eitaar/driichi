@@ -280,7 +280,7 @@ test("keeps Human ownership on chunk failure and reloads only by explicit link",
   const updatedLobby = structuredClone(lobby);
   updatedLobby.participants[0].display_name = "Updated after module failure";
   await emitRoomUpdate(page, updatedLobby, state);
-  await expect(page.getByText("Updated after module failure / you", { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Updated after module failure', exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
   expect(await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; })).toEqual(baseline);
   expect(navigations).toBe(initialNavigations);

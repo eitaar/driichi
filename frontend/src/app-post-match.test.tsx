@@ -62,7 +62,12 @@ it.each([false, true])("preserves HumanLobby Post-Match standings on phone (resi
   expect(within(rows[0]).getByLabelText("Rank 1")).toBeVisible();
   expect(document.querySelector("canvas")).toBeNull();
   expect(worker).not.toHaveBeenCalled();
-  expect(screen.getByText("Mika / you")).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Mika' })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Mika' }));
+  const detail = await screen.findByRole('dialog', { name: 'Mika' });
+  expect(detail).toHaveTextContent('Your Participant');
+  expect(detail).toHaveTextContent('Previous Match Seat');
+  fireEvent.keyDown(detail, { key: 'Escape' });
   expect(document.querySelector(".connection-state")).toHaveTextContent("connected");
   const ready = await screen.findByRole("button", { name: "Set Ready" });
   await waitFor(() => expect(ready).toBeEnabled());
