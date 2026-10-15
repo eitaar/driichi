@@ -76,7 +76,7 @@ describe("public room join", () => {
       participant_limit: 4,
     }));
 
-    expect(await screen.findByRole("heading", { name: /choose your character/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /join night market/i })).toBeVisible();
     fireEvent.click(screen.getByText('Room details'));
     expect(screen.getByText(/4p-red-east/)).toBeVisible();
     expect(screen.getByText("1 / 4 participants")).toBeVisible();
@@ -113,9 +113,14 @@ describe("public room join", () => {
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /choose your character/i });
+    await screen.findByLabelText("Display name");
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Mika" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Characters could not be loaded.");
     fireEvent.click(screen.getByRole("button", { name: /retry character list/i }));
+    await screen.findByLabelText("Display name");
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Mika" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("radio", { name: /red player/i })).toBeVisible();
   });
 
@@ -142,10 +147,11 @@ describe("public room join", () => {
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /choose your character/i });
+    await screen.findByRole("heading", { name: /join night market/i });
     fireEvent.change(screen.getByRole("textbox", { name: /display name/i }), {
       target: { value: "Mika" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     const redPlayer = await screen.findByRole("radio", { name: /red player/i });
     fireEvent.click(redPlayer);
     expect(redPlayer).toBeChecked();

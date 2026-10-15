@@ -394,7 +394,8 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   });
   await page.goto(`${harness.frontendOrigin}/room/${code}`);
   await page.getByLabel("Display name").fill(name);
-  await page.locator("label.character-option").filter({ hasText: "Player Red" }).locator("input[type=radio]").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("radio", { name: "Player Red" }).check();
   await page.getByRole("button", { name: /^join room$/i }).click();
   await page.getByRole("link", { name: /enter lobby/i }).click();
   await expect(page.locator(".connection-state")).toHaveText("connected");

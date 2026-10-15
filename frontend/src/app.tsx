@@ -9,8 +9,11 @@ import { Plus } from "@phosphor-icons/react/dist/csr/Plus";
 import { SpeakerHigh } from "@phosphor-icons/react/dist/csr/SpeakerHigh";
 import { WarningCircle } from "@phosphor-icons/react/dist/csr/WarningCircle";
 import { X } from "@phosphor-icons/react/dist/csr/X";
-import { gsap } from "gsap";
-import { useGSAP } from "@gsap/react";
+import { Button } from "./components/ui/button";
+import { Alert, AlertDescription } from "./components/ui/alert";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "./components/ui/field";
+import { Input } from "./components/ui/input";
+import { RadioGroup, RadioGroupItem } from "./components/ui/radio-group";
 import { api, ApiProblem, type AdminRoomDetail, type BotTokenRecord, type CreatedBotToken, type GameMode, type HumanCharacter, type ProblemDetails, type RoomParticipant, type TimeControl } from "./api";
 import { useGameStore, type Transport } from "./game/store";
 import { decodeCharacterAsset } from "./game/assets";
@@ -87,15 +90,30 @@ function RouteLink({ href, children, className = "", onClick }: { href: string; 
 }
 
 function EntryShell() {
-  const shellRef = useRef<HTMLDivElement>(null); const reduced = useReducedMotion(); const [code, setCode] = useState(""); const [error, setError] = useState(""); const codeInputRef = useRef<HTMLInputElement>(null);
+  const [code, setCode] = useState(""); const [error, setError] = useState(""); const codeInputRef = useRef<HTMLInputElement>(null);
   const [characters, setCharacters] = useState<HumanCharacter[]>([]);
   useEffect(() => { let active = true; void api.listHumanCharacters().then(items => { if (active) setCharacters(items.slice(0, 2)); }).catch(() => {}); return () => { active = false; }; }, []);
   useEffect(() => { codeInputRef.current?.focus(); }, []);
-  useGSAP(() => { if (reduced) return; const reveals = gsap.utils.toArray<HTMLElement>("[data-entry-reveal]"); gsap.fromTo(reveals, { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: .72, stagger: .08, ease: "power3.out", clearProps: "transform" }); }, { scope: shellRef, dependencies: [reduced], revertOnUpdate: true });
   function openRoom(event: React.FormEvent<HTMLFormElement>) { event.preventDefault(); const normalized = code.trim(); if (!/^\d{6}$/.test(normalized)) { setError("Enter the six-digit room code."); return; } setError(""); navigate(`/room/${normalized}`); }
-  return <div ref={shellRef} className="app-shell entry-shell" data-testid="entry-shell" data-motion={reduced ? "static" : "cinematic"}>
+  return <div className="app-shell entry-shell" data-testid="entry-shell" data-motion="static">
     <AppShell variant="public">{null}</AppShell>
-    <main className="entry-main"><section className="entry-welcome"><div className="entry-cast" aria-hidden="true">{characters.map(character => <CharacterImage key={character.id} character={character} kind="portrait" />)}</div><p className="entry-title">Double Riichi</p><p>Your next game starts here.</p></section><section className="entry-copy" aria-labelledby="entry-heading"><h1 id="entry-heading" data-entry-reveal>Join a room</h1><p className="entry-lede" data-entry-reveal>Enter the room code from your host.</p><form className="lookup-form" onSubmit={openRoom} data-entry-reveal><label htmlFor="room-code">Room code</label><div className="field-row"><input ref={codeInputRef} id="room-code" name="room-code" value={code} onChange={(event) => { setCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} inputMode="numeric" autoComplete="off" maxLength={6} placeholder="000000" aria-describedby={error ? "room-code-error" : "room-code-hint"} /><button type="submit" className="button button-primary">Open room <ArrowRight aria-hidden="true" weight="regular" /></button></div><p id="room-code-hint" className="field-hint">Use the code shared by your host.</p>{error && <p id="room-code-error" className="form-error" role="alert"><WarningCircle aria-hidden="true" weight="regular" />{error}</p>}</form></section></main><footer className="site-footer"><span>No account required.</span></footer>
+    <main className="entry-main">
+      <section className="entry-copy" aria-labelledby="entry-heading">
+        <h1 id="entry-heading">Join a room</h1><p className="entry-lede">Enter the room code from your host.</p>
+        <form className="lookup-form" onSubmit={openRoom} noValidate>
+          <FieldGroup>
+            <Field data-invalid={Boolean(error)}>
+              <FieldLabel htmlFor="room-code">Room code</FieldLabel>
+              <Input ref={codeInputRef} id="room-code" name="room-code" value={code} onChange={(event) => { setCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} inputMode="numeric" autoComplete="off" maxLength={6} placeholder="000000" required aria-invalid={Boolean(error)} aria-describedby={error ? "room-code-error" : "room-code-hint"} />
+              <FieldDescription id="room-code-hint">Use the code shared by your host.</FieldDescription>
+              {error && <FieldError id="room-code-error">{error}</FieldError>}
+            </Field>
+            <Button type="submit">Open room <ArrowRight data-icon="inline-end" aria-hidden="true" /></Button>
+          </FieldGroup>
+        </form>
+      </section>
+      <section className="entry-welcome" aria-hidden="true"><div className="entry-cast">{characters.map(character => <CharacterImage key={character.id} character={character} kind="portrait" />)}</div><p className="entry-title">Double Riichi</p><p>Your next game starts here.</p></section>
+    </main><footer className="site-footer"><span>No account required.</span></footer>
   </div>;
 }
 
@@ -103,16 +121,37 @@ function RoomRoute({ joinCode }: { joinCode: string }) {
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; room?: import("./api").RoomLookup; characters?: HumanCharacter[]; problem?: ProblemDetails }>({ status: "loading" });
   const [retry, setRetry] = useState(0);
   useEffect(() => { let active = true; setState({ status: "loading" }); void api.lookupRoom(joinCode).then(async (room) => { if (!active) return; if (!room.join_allowed) { setState({ status: "ready", room, characters: [] }); return; } try { const characters = (await api.listHumanCharacters()).sort((left, right) => left.name.localeCompare(right.name)); if (active) setState({ status: "ready", room, characters }); } catch (error) { if (active) setState({ status: "ready", room, problem: problemFrom(error) }); } }).catch((error) => { if (active) setState({ status: "error", problem: problemFrom(error) }); }); return () => { active = false; }; }, [joinCode, retry]);
-  return <div className="app-shell route-shell pre-match-shell"><AppShell variant="public">{null}</AppShell>{state.status === "loading" && <LoadingRoom />}{state.status === "error" && <ProblemState title="Room unavailable" problem={state.problem} actionLabel="Try another room" />}{state.status === "ready" && state.room && <RoomJoin room={state.room} joinCode={joinCode} characters={state.characters ?? []} characterProblem={state.problem} onRetryCharacters={() => setRetry((value) => value + 1)} />}</div>;
+  return <div className="app-shell route-shell pre-match-shell"><AppShell variant="public">{null}</AppShell>{state.status === "loading" && <LoadingRoom />}{state.status === "error" && <ProblemState title="Room unavailable" problem={state.problem} actionLabel="Try another room" />}{state.status === "ready" && state.room && <RoomJoin key={joinCode} room={state.room} joinCode={joinCode} characters={state.characters ?? []} characterProblem={state.problem} onRetryCharacters={() => setRetry((value) => value + 1)} />}</div>;
 }
 function LoadingRoom() { return <main className="route-main loading-state" aria-busy="true" aria-live="polite"><div className="loading-copy"><span className="eyebrow">ROOM LOOKUP</span><h1>Loading room</h1><p>Checking the host for room details.</p></div><div className="loading-lines" aria-hidden="true"><span /><span /><span /></div></main>; }
 function ProblemState({ title, problem, actionLabel }: { title: string; problem?: ProblemDetails; actionLabel: string }) { return <main className="route-main status-main"><div className="status-icon" aria-hidden="true"><WarningCircle weight="regular" /></div><p className="eyebrow">REQUEST STATUS</p><h1>{title}</h1><p className="status-detail" role="alert">{problem?.detail ?? problem?.title ?? "The host could not complete the request."}</p>{problem?.request_id && <p className="request-id">Request ID <code>{problem.request_id}</code></p>}<RouteLink href="/" className="button button-secondary">{actionLabel} <ArrowLeft aria-hidden="true" weight="regular" /></RouteLink></main>; }
 
 function RoomJoin({ room, joinCode, characters, characterProblem, onRetryCharacters }: { room: import("./api").RoomLookup; joinCode: string; characters: HumanCharacter[]; characterProblem?: ProblemDetails; onRetryCharacters: () => void }) {
+  const [step, setStep] = useState<"room-name" | "character">("room-name");
+  const [nameError, setNameError] = useState("");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const activeRef = useRef(true);
+  useEffect(() => { activeRef.current = true; return () => { activeRef.current = false; }; }, []);
+  useEffect(() => { if (step === "character") headingRef.current?.focus(); }, [step]);
   const [nickname, setNickname] = useState(""); const [selectedId, setSelectedId] = useState(""); const [voiceStatus, setVoiceStatus] = useState("Preview riichi voice"); const [joinState, setJoinState] = useState<{ status: "idle" | "joining" | "error" | "success"; problem?: ProblemDetails }>({ status: "idle" }); const selected = characters.find((character) => character.id === selectedId); const canJoin = room.join_allowed && nickname.trim().length > 0 && Boolean(selected) && joinState.status !== "joining";
-  async function join(event: React.FormEvent<HTMLFormElement>) { event.preventDefault(); if (!canJoin || !selected) return; setJoinState({ status: "joining" }); try { const result = await api.joinHuman(joinCode, nickname.trim(), selected.id); sessionStorage.setItem(`driichi:participant:${joinCode}`, result.participant_id); setJoinState({ status: "success" }); } catch (error) { setJoinState({ status: "error", problem: problemFrom(error) }); } }
+  async function join(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!room.join_allowed) return;
+    if (step === "room-name") {
+      if (!nickname.trim()) { setNameError("Enter a display name."); return; }
+      setNameError(""); setStep("character"); return;
+    }
+    if (!canJoin || !selected) return;
+    setJoinState({ status: "joining" });
+    try {
+      const result = await api.joinHuman(joinCode, nickname.trim(), selected.id);
+      if (!activeRef.current) return;
+      sessionStorage.setItem(`driichi:participant:${joinCode}`, result.participant_id);
+      setJoinState({ status: "success" });
+    } catch (error) { if (activeRef.current) setJoinState({ status: "error", problem: problemFrom(error) }); }
+  }
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  useEffect(() => { setVoiceStatus('Preview riichi voice'); return () => { audioRef.current?.pause(); audioRef.current = null; }; }, [selectedId]);
+  useEffect(() => { setVoiceStatus('Preview riichi voice'); return () => { audioRef.current?.pause(); audioRef.current = null; }; }, [selectedId, step]);
   function previewVoice() {
     if (!selected) return;
     audioRef.current?.pause();
@@ -124,11 +163,47 @@ function RoomJoin({ room, joinCode, characters, characterProblem, onRetryCharact
     void audio.play().then(() => { if (audioRef.current === audio) setVoiceStatus('Playing riichi voice'); }).catch(() => { if (audioRef.current === audio) setVoiceStatus('Voice preview is unavailable'); });
   }
   if (joinState.status === "success") return <JoinSuccess roomName={room.room_name} joinCode={joinCode} />;
-  return <main className="route-main room-main"><section className="character-stage" aria-label="Selected character">{selected ? <><CharacterImage key={selected.id} character={selected} kind="portrait" /><p>{selected.name}</p></> : <p>Choose a character to preview their portrait.</p>}</section>{!room.join_allowed && <div className="inline-notice" role="status">This room is full. Ask the host for another code.</div>}{room.join_allowed && <form className="join-form" onSubmit={join}><h1 id="room-heading">Choose your character</h1><div className="form-block"><label htmlFor="display-name">Display name</label><input id="display-name" value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={64} autoComplete="nickname" autoFocus /><p className="field-hint">This name is shown to the room.</p></div><fieldset className="character-fieldset"><legend>Character</legend>{characterProblem && <><p className="form-error" role="alert"><WarningCircle aria-hidden="true" weight="regular" />{characterProblem.detail ?? "Characters could not be loaded."}</p><button type="button" className="button button-secondary retry-button" onClick={onRetryCharacters}>Retry character list <ArrowRight aria-hidden="true" weight="regular" /></button></>}{characters.length === 0 && !characterProblem && <p className="field-hint">Characters are not available yet.</p>}<div className="character-list" role="radiogroup" aria-label="Choose a character">{characters.map((character) => <label key={character.id} className={`character-option${selectedId === character.id ? " is-selected" : ""}`}><input className="character-radio" type="radio" name="character" value={character.id} checked={selectedId === character.id} onChange={() => setSelectedId(character.id)} /><CharacterImage character={character} kind="icon" /><span>{character.name}</span>{selectedId === character.id && <Check aria-hidden="true" weight="regular" />}</label>)}</div></fieldset>{selected && <button type="button" className="voice-button" onClick={previewVoice}><SpeakerHigh aria-hidden="true" weight="regular" />{voiceStatus}</button>}<details className="join-room-details"><summary>Room details</summary><p>{room.game_mode} · {room.phase}</p><p>{room.participant_count} / {room.participant_limit} participants</p></details>{joinState.status === "error" && <p className="form-error" role="alert"><WarningCircle aria-hidden="true" weight="regular" />{joinState.problem?.detail ?? "The host could not join you to this room."}</p>}<button type="submit" className="button button-primary join-button" disabled={!canJoin}>{joinState.status === "joining" ? "Joining room" : "Join room"} <ArrowRight aria-hidden="true" weight="regular" /></button></form>}</main>;
+  return <main className="route-main room-main" data-join-step={step}>
+    {!room.join_allowed ? <Alert role="status"><AlertDescription>This room is full. Ask the host for another code.</AlertDescription></Alert> : <>
+      <form className="join-form" onSubmit={join} noValidate aria-busy={joinState.status === "joining"}>
+        <h1 id="room-heading" ref={headingRef} tabIndex={-1}>{step === "room-name" ? `Join ${room.room_name}` : "Choose your character"}</h1>
+        <FieldGroup>
+          {step === "room-name" ? <>
+            <p>Step 1 of 2 · Room and name</p>
+            <details className="join-room-details"><summary>Room details</summary><p>{room.game_mode} · {room.phase}</p><p>{room.participant_count} / {room.participant_limit} participants</p></details>
+            <Field data-invalid={Boolean(nameError)}>
+              <FieldLabel htmlFor="display-name">Display name</FieldLabel>
+              <Input id="display-name" value={nickname} onChange={(event) => { setNickname(event.target.value); setNameError(""); }} maxLength={64} autoComplete="nickname" autoFocus required aria-invalid={Boolean(nameError)} aria-describedby={nameError ? "display-name-error" : "display-name-hint"} />
+              <FieldDescription id="display-name-hint">This name is shown to the room.</FieldDescription>
+              {nameError && <FieldError id="display-name-error">{nameError}</FieldError>}
+            </Field>
+            <Button type="submit">Continue <ArrowRight data-icon="inline-end" aria-hidden="true" /></Button>
+          </> : <>
+            <p>Step 2 of 2 · Character</p>
+            <FieldSet disabled={joinState.status === "joining"}>
+              <FieldLegend id="character-legend">Character</FieldLegend>
+              {characterProblem && <><Alert variant="destructive"><AlertDescription>{characterProblem.detail ?? "Characters could not be loaded."}</AlertDescription></Alert><Button type="button" variant="outline" onClick={onRetryCharacters}>Retry character list</Button></>}
+              {characters.length === 0 && !characterProblem && <FieldDescription>Characters are not available yet.</FieldDescription>}
+              <Field data-invalid={joinState.status === "error"}>
+                <RadioGroup className="character-list" disabled={joinState.status === "joining"} aria-labelledby="character-legend" aria-required="true" aria-invalid={joinState.status === "error"} aria-describedby={joinState.status === "error" ? "join-error" : "character-hint"} value={selectedId} onValueChange={(value) => setSelectedId(String(value))}>
+                  {characters.map((character) => <FieldLabel key={character.id} className="join-character-option"><RadioGroupItem value={character.id} /><CharacterImage character={character} kind="icon" /><span>{character.name}</span></FieldLabel>)}
+                </RadioGroup>
+                <FieldDescription id="character-hint">Choose a character to enable Join room. Characters are cosmetic and do not affect play.</FieldDescription>
+              </Field>
+            </FieldSet>
+            {selected && <><Button type="button" variant="outline" onClick={previewVoice}><SpeakerHigh data-icon="inline-start" aria-hidden="true" />{voiceStatus}</Button><span className="sr-only" role="status">{voiceStatus}</span></>}
+            {joinState.status === "error" && <Alert id="join-error" variant="destructive"><AlertDescription>{joinState.problem?.detail ?? "The host could not join you to this room."}</AlertDescription></Alert>}
+            <div className="join-actions"><Button type="button" variant="outline" disabled={joinState.status === "joining"} onClick={() => setStep("room-name")}><ArrowLeft data-icon="inline-start" aria-hidden="true" />Back</Button><Button type="submit" disabled={!canJoin}>{joinState.status === "joining" ? "Joining room" : "Join room"}<ArrowRight data-icon="inline-end" aria-hidden="true" /></Button></div>
+          </>}
+        </FieldGroup>
+      </form>
+      {step === "character" && <section className="character-stage" aria-label="Selected character">{selected ? <><CharacterImage key={selected.id} character={selected} kind="portrait" /><p>{selected.name}</p></> : <p>Choose a character to preview their portrait.</p>}</section>}
+    </>}
+  </main>;
 }
 function JoinSuccess({ roomName, joinCode }: { roomName: string; joinCode: string }) { return <main className="route-main status-main success-main"><div className="status-icon success-icon" aria-hidden="true"><Check weight="regular" /></div><p className="eyebrow">JOIN ACCEPTED</p><h1>You're in {roomName}.</h1><p className="status-detail">Your Guest Session is ready. Enter the Lobby to follow the host.</p><RouteLink href={`/room/${joinCode}/lobby`} className="button button-primary">Enter Lobby <ArrowRight aria-hidden="true" weight="regular" /></RouteLink></main>; }
 
-function CharacterImage({ character, kind }: { character: { id: string; name: string }; kind: "icon" | "portrait" }) { const [failed, setFailed] = useState(false); if (failed) return <span className={`character-asset character-asset-${kind} asset-fallback`} aria-label={`${character.name} portrait unavailable`}><WarningCircle aria-hidden="true" weight="regular" /></span>; return <img className={`character-asset character-asset-${kind}`} src={`/assets/characters/${encodeURIComponent(character.id)}/${kind === "icon" ? "icon" : "portrait"}.webp`} alt={kind === "portrait" ? `${character.name} portrait` : ""} onError={() => setFailed(true)} />; }
+function CharacterImage({ character, kind }: { character: { id: string; name: string }; kind: "icon" | "portrait" }) { const [failed, setFailed] = useState(false); if (failed) return <span className={`character-asset character-asset-${kind} asset-fallback`} role="img" aria-hidden={kind === "icon" ? true : undefined} aria-label={kind === "portrait" ? `${character.name} portrait unavailable` : undefined}><WarningCircle aria-hidden="true" weight="regular" /></span>; return <img className={`character-asset character-asset-${kind}`} src={`/assets/characters/${encodeURIComponent(character.id)}/${kind === "icon" ? "icon" : "portrait"}.webp`} alt={kind === "portrait" ? `${character.name} portrait` : ""} onError={() => setFailed(true)} />; }
 
 function AdminLogin() {
   const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [state, setState] = useState<{ status: "idle" | "loading" | "error" | "success"; problem?: ProblemDetails }>({ status: "idle" });

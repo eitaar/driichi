@@ -132,9 +132,7 @@ async function createRoom(page: Page, mode: MatchMode): Promise<string> {
 }
 
 async function chooseCharacter(page: Page) {
-  const character = page.locator("label.character-option").filter({ hasText: "Player Red" });
-  await expect(character).toHaveCount(1);
-  await character.locator("input[type=radio]").check();
+  await page.getByRole("radio", { name: "Player Red" }).check();
 }
 
 async function joinHuman(
@@ -146,9 +144,12 @@ async function joinHuman(
   const page = await context.newPage();
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${harness.frontendOrigin}/room/${joinCode}`);
-  await expect(page.getByRole("heading", { name: /^choose your character$/i })).toBeVisible();
+  await expect(page.getByLabel("Display name")).toBeVisible();
   await expectAccessible(page, `${mode} room join`);
   await page.getByLabel("Display name").fill(`Human ${mode}`);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: /^choose your character$/i })).toBeVisible();
+  await expectAccessible(page, `${mode} character choice`);
   await chooseCharacter(page);
   await page.getByRole("button", { name: /^join room$/i }).click();
   await expect(page.getByRole("heading", { name: /you're in task 16/i })).toBeVisible();

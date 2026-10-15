@@ -36,6 +36,20 @@ for (const viewport of [
   });
 }
 
+test("mobile Home reads and focuses Join before decorative art", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await expect(page.getByLabel("Room code")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Open room" })).toBeFocused();
+  const sections = page.locator("main > section");
+  await expect(sections.first()).toHaveClass("entry-copy");
+  const join = await sections.first().boundingBox();
+  const art = await page.locator(".entry-welcome").boundingBox();
+  expect(join!.y + join!.height).toBeLessThanOrEqual(art!.y);
+  await expect(page.getByRole("button", { name: "Open room" })).toBeInViewport();
+});
+
 test("supports keyboard focus, reduced motion, loading, and Problem Details states", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
