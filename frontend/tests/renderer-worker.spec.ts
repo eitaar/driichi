@@ -117,6 +117,29 @@ for (const entry of seatOracle.cases) {
   });
 }
 
+test("theme changes preserve actual rendered table and tile materials", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "light" });
+  await page.goto("/tests/support/renderer-worker-product.html");
+  const table = page.getByTestId("three-table");
+  await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+  expect(page.workers()).toHaveLength(1);
+  const canvas = table.locator("canvas");
+  // Locator screenshots include DOM overlays; mask only themed portrait/name chrome, never the rendered table/tiles.
+  const materialScreenshot = () => canvas.screenshot({ mask: [table.locator(".table-player-frame")] });
+  const light = await materialScreenshot();
+  await test.info().attach("materials-light", { body: light, contentType: "image/png" });
+  for (const [name, scheme] of [["Dark theme", "dark"], ["Light theme", "light"], ["System theme", "dark"]]) {
+    await page.emulateMedia({ colorScheme: scheme as "light" | "dark" });
+    await page.getByRole("button", { name, exact: true }).click();
+    await expect(page.locator("html")).toHaveCSS("color-scheme", scheme);
+    await expect(table).toHaveAttribute("data-render-ready", "true");
+    const rendered = await materialScreenshot();
+    await test.info().attach(`materials-${name}`, { body: rendered, contentType: "image/png" });
+    expect(rendered.equals(light), `${name} must not recolor rendered materials`).toBe(true);
+    expect(page.workers()).toHaveLength(1);
+  }
+});
+
 test("local surface image renders and clears in the actual product Worker under unchanged CSP", async ({ page }) => {
   const uploaded: string[] = [];
   page.on("request", request => { if (request.method() !== "GET") uploaded.push(request.url()); });

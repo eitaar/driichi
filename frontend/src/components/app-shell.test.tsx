@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { App } from "../app";
+import { AppShell } from "./app-shell";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 it("retains confirmed success toast across navigation", async () => {
   window.history.replaceState({}, "", "/admin/login");
@@ -33,4 +35,14 @@ it("admin mobile menu is labeled and navigates without losing the shell", async 
   expect(await screen.findByRole("dialog")).toBeVisible();
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("link", { name: "Replays" }));
   expect(window.location.pathname).toBe("/admin/replays");
+});
+
+it.each([["/admin", "Rooms"], ["/admin/benchmark/runs/run-1", "Benchmarks"], ["/admin/replays/match-1", "Replays"]])("marks the selected Admin section at %s", async (path, label) => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+  window.history.replaceState({}, "", path);
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("[]")));
+  render(<QueryClientProvider client={new QueryClient()}><AppShell variant="admin"><p>Workspace</p></AppShell></QueryClientProvider>);
+  const nav = await screen.findByRole("navigation", { name: "Admin" });
+  expect(within(nav).getByRole("link", { name: label })).toHaveAttribute("data-active");
+  expect(within(nav).getAllByRole("link").filter(link => link.hasAttribute("data-active"))).toHaveLength(1);
 });

@@ -1,7 +1,7 @@
 /* Bridge legacy layout selectors to the shared semantic theme, not a second palette. */
 :is(.entry-shell,.pre-match-shell,.lobby-shell){--ink:var(--background);--ink-raised:var(--background);--ink-panel:var(--background);--ink-soft:var(--muted);--paper:var(--foreground);--legacy-muted:var(--muted-foreground);--muted-strong:var(--foreground);--line:var(--border);--line-strong:var(--input);--legacy-accent:var(--primary);--accent-bright:var(--ring);--success:var(--primary);font-family:var(--font-sans);color:var(--foreground);background:var(--background);overflow:visible}
 :is(.entry-shell,.pre-match-shell,.lobby-shell) h1{font-size:1.875rem;line-height:1.3;font-weight:600;letter-spacing:0;overflow-wrap:anywhere}
-:is(.entry-shell,.pre-match-shell,.lobby-shell) [data-slot=button]{min-height:44px;height:auto;white-space:normal;transition-property:transform,border-color;}
+:is(.entry-shell,.pre-match-shell,.lobby-shell) [data-slot=button]{white-space:normal;transition-property:transform,border-color;}
 :is(.entry-shell,.pre-match-shell) [data-slot=input]{font-family:inherit;font-size:1rem;max-width:none;color:var(--foreground);background:var(--background);border-color:var(--input)}
 :is(.entry-shell,.pre-match-shell) [data-slot=input]:focus{border-color:var(--ring)}
 .entry-shell .entry-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:48px;width:min(1200px,100%);padding:24px 48px 48px}

@@ -34,7 +34,7 @@ function ChartCard({ family, analytics, participants, onOpenMatch }: { family: F
   const n = analytics.completed - start;
   const config: ChartConfig = Object.fromEntries(participants.map((p, i) => [`p${i}`, { label: `${p.displayName} (${p.participantId})`, color: `var(--chart-${i + 1})` }]));
   const rankCount = participants.length;
-  const ranks: ChartConfig = Object.fromEntries(Array.from({ length: rankCount }, (_, i) => [`r${i}`, { label: `Rank ${i + 1}`, color: `var(--chart-${i + 1})` }]));
+  const ranks: ChartConfig = Object.fromEntries(Array.from({ length: rankCount }, (_, i) => [`r${i}`, { label: `Rank ${i + 1}`, color: `color-mix(in oklch, var(--foreground) ${85 - i * 15}%, var(--background))` }]));
   const data = (participants[0]?.points.slice(start) ?? []).map((point, index) => ({ sequence: point.sequence, matchId: point.matchId,
     ...Object.fromEntries(participants.map((p, i) => [`p${i}`, p.points[start + index][family === "movingRank" ? "movingRank" : family === "net" ? "net" : "cumulative"]])),
   }));
