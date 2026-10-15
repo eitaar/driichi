@@ -1,3 +1,4 @@
+/// <reference types="../node_modules/@types/node" />
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -198,6 +199,66 @@ test.describe("authoritative result surfaces", () => {
     }
   }
 
+  test("Review keeps one keyboard confirmation and closes on step expiry or revoked access", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await installAssets(page, true); await installSocket(page);
+    await page.goto("/room/123456/lobby");
+    await showRoundWin(page, { ...step, remaining_ms: 4500 });
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    const review = page.getByRole("dialog", { name: "Review result" });
+    await expect(review).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(1);
+    await review.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(review.getByRole("button", { name: "Waiting for players" })).toBeDisabled();
+    expect(await page.evaluate(() => (window as unknown as { __sent: unknown[] }).__sent)).toEqual([{ type: "confirm_result", step_id: step.id }]);
+    await page.keyboard.press("Escape");
+    await expect(review).toBeHidden();
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    await page.evaluate(() => {
+      const browser = window as unknown as { __room: Record<string, unknown>; __state: unknown; __socket: { emit: (value: unknown) => void } };
+      browser.__room = { ...browser.__room, kyoku_end: { ...(browser.__room.kyoku_end as object), required: [] } };
+      browser.__socket.emit({ type: "room_update", room: browser.__room, state: browser.__state });
+    });
+    await expect(review).toBeHidden();
+    await expect(page.getByRole("button", { name: "Dismiss", exact: true })).toBeFocused();
+    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await showRoundWin(page, { ...step, id: { ...step.id, step_index: 1 }, remaining_ms: 700 });
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    await expect(review).toBeVisible();
+    await expect(review).toBeHidden({ timeout: 3000 });
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+    await expect(page.locator("summary").filter({ hasText: "Settings" })).toBeFocused();
+  });
+
+  test("phone results expand read-only metadata without a renderer or confirmation", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const resources: string[] = [];
+    page.on("request", request => { if (/three-table|renderer-worker/.test(request.url())) resources.push(request.url()); });
+    await installAssets(page, true); await installSocket(page);
+    await page.goto("/room/123456/lobby");
+    await page.evaluate(step => {
+      const browser = window as unknown as { __room: Record<string, unknown>; __state: unknown; __socket: { emit: (value: unknown) => void } };
+      browser.__room = { ...browser.__room, kyoku_end: step };
+      browser.__socket.emit({ type: "room_update", room: browser.__room, state: browser.__state });
+    }, step);
+    await expect(page.getByRole("heading", { name: "Mika · Ron" })).toBeVisible();
+    await page.getByRole("button", { name: "Expand", exact: true }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer.getByLabel("Ron win details")).toContainText("1,000");
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
+    await drawer.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Expand", exact: true })).toBeFocused();
+    await page.evaluate(result => {
+      const browser = window as unknown as { __room: Record<string, unknown>; __state: unknown; __socket: { emit: (value: unknown) => void } };
+      browser.__socket.emit({ type: "room_update", room: { ...browser.__room, phase: "post_match", kyoku_end: null, result }, state: browser.__state });
+    }, standings);
+    await expect(page.getByRole("list", { name: "Final standings", exact: true }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.getByRole("button", { name: "Return to Room", exact: true })).toBeVisible();
+    await expect(page.locator("canvas")).toHaveCount(0);
+    expect(resources).toEqual([]);
+    expect(await page.evaluate(() => (window as unknown as { __sent: unknown[] }).__sent)).toEqual([]);
+  });
+
   test("keyboard confirmation survives reduced motion, refused assets, audio and WebGL", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -248,6 +309,9 @@ test.describe("authoritative result surfaces", () => {
       browser.__room = { ...browser.__room, kyoku_end: { ...step, id: { ...step.id, kyoku_sequence: 2, step_index: 0 }, content: { Draw: settlement } } };
       browser.__socket.emit({ type: "room_update", room: browser.__room, state: browser.__state });
     }, step);
+    await expect(page.getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Result", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Scores", exact: true }).click();
     await expect(page.getByLabel("Score transfer").getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
     await expect(page.getByLabel("Score transfer")).toContainText("+0");
     await expect(page.getByTestId("round-win-surface")).toHaveCount(0);

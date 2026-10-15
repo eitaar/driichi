@@ -25,14 +25,14 @@ import type {
 import { tileAssetUrl, tileLabel } from "./tiles";
 import { useGameplayViewportSupport } from "./viewport";
 import {
-  decodeRoomFinalStandings,
-  resultRoster,
   decodeKyokuEndStep,
   resultStepKey,
   type KyokuEndStep,
   type KyokuSettlement,
-  type WinResult,
 } from "./results";
+import { DrawResult, RoundWinSurface, ScoreTransfer, ResultsPanel, type AssetState } from "./result-presentation";
+import { Button } from "../components/ui/button";
+import { Sheet, SheetTrigger, SheetContent, SheetTitle, SheetDescription } from "../components/ui/sheet";
 import "./result.css";
 
 const ThreeTable = lazy(() => import("./three-table").then(module => ({ default: module.ThreeTable })));
@@ -58,10 +58,6 @@ export interface GameplayProps {
   participantId?: string | null;
   /** Leave the local result presentation without changing the authoritative room phase. */
   onLeaveResults?: () => void;
-}
-
-interface AssetState {
-  [characterId: string]: boolean;
 }
 
 function projectionPlayer(
@@ -679,147 +675,6 @@ function ActionDeck({
   );
 }
 
-function ResultPortrait({
-  characterId,
-  name,
-  available,
-  className = "",
-}: {
-  characterId: string | null | undefined;
-  name: string;
-  available: boolean;
-  className?: string;
-}) {
-  const [failed, setFailed] = useState(false);
-  const portraitClass = `results-winner-portrait${className ? ` ${className}` : ""}`;
-  const initial = Array.from(name.trim())[0]?.toUpperCase() ?? "?";
-  if (!characterId || !available || failed)
-    return (
-      <span
-        className={`${portraitClass} asset-fallback`}
-        role="img"
-        aria-label={`${name} portrait unavailable`}
-      >
-        {initial}
-      </span>
-    );
-  return (
-    <img
-      className={portraitClass}
-      src={`/assets/characters/${encodeURIComponent(characterId)}/portrait.webp`}
-      alt={`${name} portrait`}
-      onError={() => setFailed(true)}
-    />
-  );
-}
-
-function yakuLabel(name: string): string {
-  return name
-    .replaceAll("_", " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
-}
-
-function RoundWinTiles({ result }: { result: WinResult }) {
-  return (
-    <div className="round-win-hand" role="group" aria-label="Winning hand">
-      <div className="round-win-tile-row" role="group" aria-label={`${result.concealed.length} visible winning hand tiles`}>
-        {result.concealed.map((tile, index) => (
-          <span className={`round-win-tile${result.winning_tile_index === index ? " is-winning" : ""}`}
-            data-testid={result.winning_tile_index === index ? "winning-tile" : undefined} key={`${tile}-${index}`}>
-            <img src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
-          </span>
-        ))}
-      </div>
-      {result.melds.length > 0 && (
-        <div className="round-win-melds" role="group" aria-label="Visible melds">
-          {result.melds.map((meld, meldIndex) => (
-            <span className="round-win-meld" key={`meld-${meldIndex}`} role="group" aria-label={`${meld.opened ? "Open" : "Closed"} ${meld.kind}`}>
-              {meld.tiles.map((tile, tileIndex) => (
-                <img key={`${tile}-${tileIndex}`} src={!meld.opened && meld.kind === "Ankan" && (tileIndex === 0 || tileIndex === meld.tiles.length - 1)
-                  ? new URL("../assets/tiles/Regular/Back.svg", import.meta.url).href
-                  : tileAssetUrl(tile)} alt={tileLabel(tile)} />
-              ))}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function RoundWinSurface({ result, room, assets, reducedMotion = false }: {
-  result: WinResult;
-  room: RoomSnapshot | null;
-  assets: AssetState;
-  reducedMotion?: boolean;
-}) {
-  const winner = resultRoster(room)?.find((player) => player.participant_id === result.winner && player.seat === result.seat);
-  if (!winner) return null;
-  const ordinary = "Ordinary" in result.evaluation ? result.evaluation.Ordinary : null;
-  return (
-    <section className="round-win-surface" data-testid="round-win-surface" data-motion={reducedMotion ? "static" : "cinematic"}
-      aria-labelledby="round-win-heading" role="status" aria-live="polite">
-      <div className="round-win-identity">
-        <ResultPortrait characterId={winner.character_id ?? ""} name={winner.display_name}
-          available={winner.character_id ? assets[winner.character_id] !== false : false} className="round-win-portrait" />
-        <h2 id="round-win-heading">{winner.display_name}</h2>
-      </div>
-      <div className="round-win-details" aria-label={`${result.tsumo ? "Tsumo" : "Ron"} win details`}>
-        <RoundWinTiles result={result} />
-        {result.yaku.length > 0 && (
-          <dl className="round-win-yaku" aria-label="Authoritative yaku">
-            {result.yaku.map((entry, index) => (
-              <div key={`${entry.name}-${index}`}><dt>{yakuLabel(entry.name)}</dt><dd>{entry.han !== undefined ? `${entry.han} han` : entry.yakuman_multiplier !== undefined ? `${entry.yakuman_multiplier}× yakuman` : ""}</dd></div>
-            ))}
-          </dl>
-        )}
-        <div className="round-win-total">
-          <p>{ordinary ? <>{ordinary.han} han · {ordinary.fu} fu{ordinary.limit && ` · ${ordinary.limit}`}</>
-            : "Yakuman" in result.evaluation && `${result.evaluation.Yakuman.multiplier}× yakuman`}</p>
-          <strong>{result.win_points.toLocaleString()} <small>points</small></strong>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-export function ScoreTransfer({
-  settlement,
-  room,
-  progress = 1,
-}: {
-  settlement: KyokuSettlement;
-  room: RoomSnapshot | null;
-  progress?: number;
-}) {
-  const players = resultRoster(room);
-  if (!players || settlement.changes.length !== players.length || settlement.changes.some((change) =>
-    !players.some((player) => player.seat === change.seat && player.participant_id === change.participant_id),
-  )) return null;
-  return (
-    <section className="score-transfer" aria-label="Score transfer" role="status">
-      <h2>{settlement.draw_reason ?? "Score transfer"}</h2>
-      <ol>
-        {settlement.changes.map((entry) => {
-          const player = players.find((player) => player.seat === entry.seat && player.participant_id === entry.participant_id);
-          if (!player) return null;
-          const delta = entry.delta;
-          const change = Math.round(delta * progress);
-          return (
-            <li key={player.participant_id}>
-              <span>{player.display_name}</span>
-              <span>{delta >= 0 ? "+" : "−"}{Math.abs(change).toLocaleString()}</span>
-              <strong>{(entry.before + change).toLocaleString()}</strong>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
-  );
-}
-
 function useResultRemaining(step: KyokuEndStep | null, receivedDeadline: number | null): number {
   const key = step ? resultStepKey(step.id) : "";
   const clock = useRef({ key: "", deadline: 0 });
@@ -852,55 +707,6 @@ function SettlementPresentation({ settlement, room, remaining, reducedMotion }: 
       <button type="button" className="button" onClick={() => setSkipped(true)}>Skip animation</button>
     </div>
   </>;
-}
-
-export function ResultsPanel({
-  room,
-  assets,
-}: {
-  room: RoomSnapshot | null;
-  assets: AssetState;
-}) {
-  const result = decodeRoomFinalStandings(room);
-  if (!result) return null;
-  const ordered = result.players.slice().sort((left, right) => left.rank - right.rank);
-  const first = ordered.find((player) => player.rank === 1)!;
-  const roomRoster = resultRoster(room)!;
-  const firstName = first.display_name;
-  const firstAsset = roomRoster.find((entry) => entry.participant_id === first.participant_id)?.character_id;
-
-  return (
-    <section className="results-panel" data-testid="results-panel" aria-labelledby="results-heading">
-      <div className="results-winner">
-        <ResultPortrait
-          characterId={firstAsset}
-          name={firstName}
-          available={firstAsset ? assets[firstAsset] !== false : false}
-          className="results-winner-hero-portrait"
-        />
-      </div>
-      <div className="results-standings">
-        <h2 id="results-heading">Final standings</h2>
-        <ol className="results-list" aria-label="Final standings">
-        {ordered.map((player) => {
-          const id = player.participant_id;
-          const name = player.display_name;
-          const score = player.final_score;
-          const rank = player.rank;
-          return (
-            <li key={id} className={rank === 1 ? "is-first" : undefined}>
-              <span className="result-rank" aria-label={`Rank ${rank}`}>
-                {rank}
-              </span>
-              <span className="result-name">{name}</span>
-              <span className="result-score">{score.toLocaleString()}</span>
-            </li>
-          );
-        })}
-        </ol>
-      </div>
-    </section>
-  );
 }
 
 function GameplayPlayerStatus({
@@ -993,9 +799,15 @@ export function GameplaySurface({
   const confirmRef = useRef<HTMLButtonElement>(null);
   const supported = useGameplayViewportSupport();
   const confirmationReady = canConfirm && !confirmed && status === "connected" && resultRemaining > 0;
+  const [reviewKey, setReviewKey] = useState("");
+  const reviewAllowed = supported && canConfirm && status === "connected" && resultRemaining > 0;
+  const reviewOpen = reviewAllowed && reviewKey === stepKey;
   useEffect(() => {
-    if (supported && (!canConfirm || confirmationReady)) confirmRef.current?.focus();
-  }, [stepKey, confirmationReady, canConfirm, supported]);
+    if (!reviewAllowed || reviewKey !== stepKey) setReviewKey("");
+  }, [reviewAllowed, stepKey, reviewKey]);
+  useEffect(() => {
+    if (supported && !reviewOpen && (!canConfirm || confirmationReady)) confirmRef.current?.focus();
+  }, [stepKey, confirmationReady, canConfirm, supported, reviewOpen]);
   const win = step && "Win" in step.content ? step.content.Win : null;
   const settlement = step && !("Win" in step.content)
     ? ("Settlement" in step.content ? step.content.Settlement : step.content.Draw)
@@ -1037,6 +849,12 @@ export function GameplaySurface({
     ?? "";
   const inputDisabled = room?.kyoku_end != null || Boolean(pending) || status !== "connected" || !decision
     || actionResultHistory.some((result) => result.decision_id === decision.decision_id && result.status === "accepted");
+  const resultView = step && <>
+    {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
+    {settlement && ("Draw" in step.content ? <DrawResult key={stepKey} settlement={settlement} room={room} /> : <SettlementPresentation key={stepKey} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} />)}
+  </>;
+  const resultAction = step && (canConfirm ? <Button ref={confirmRef} className="round-win-continue" disabled={!confirmationReady} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : "Continue"}</Button>
+    : <Button ref={confirmRef} variant="outline" onClick={() => setDismissedStep(stepKey)}>Dismiss</Button>);
   return (
     <div
       ref={tableSheenRef}
@@ -1130,12 +948,19 @@ export function GameplaySurface({
             )}
             {step && dismissedStep !== stepKey && room?.phase !== "post_match" && (
               <div className="round-win-overlay">
-                {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
-                {settlement && <SettlementPresentation key={resultStepKey(step.id)} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} />}
-                <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining">{formatSeconds(resultRemaining)}s</span>
+                {!reviewOpen && resultView}
+                <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining" aria-live="off">{formatSeconds(resultRemaining)}s</span>
+                <p key={stepKey} role="status">{resultRemaining === 0 ? "Result time expired. Waiting for the server." : confirmed ? "Waiting for players" : `${"Win" in step.content ? "Win" : "Draw" in step.content ? "Draw" : "Scores"} result ${step.id.step_index + 1} ready`}</p>
                 <div className="round-win-actions">
-                  {canConfirm ? <button ref={confirmRef} type="button" className="button round-win-continue" disabled={confirmed || status !== "connected" || resultRemaining === 0} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : "Continue"}</button>
-                    : <button ref={confirmRef} type="button" className="button" onClick={() => setDismissedStep(stepKey)}>Dismiss</button>}
+                  {!reviewOpen && resultAction}
+                  <Sheet open={reviewOpen} onOpenChange={open => setReviewKey(open ? stepKey : "")}>
+                    <SheetTrigger render={<Button variant="outline" disabled={!reviewAllowed} />}>Review</SheetTrigger>
+                    <SheetContent className="result-review overflow-y-auto" finalFocus={() => confirmRef.current && !confirmRef.current.disabled ? confirmRef.current : tableSheenRef.current?.querySelector<HTMLElement>("summary") ?? null}>
+                      <SheetTitle>Review result</SheetTitle>
+                      <SheetDescription>The server deadline continues during Review.</SheetDescription>
+                      {reviewOpen && <><div className="result-details">{resultView}</div><p aria-label="Result time remaining">{formatSeconds(resultRemaining)}s</p>{resultAction}</>}
+                    </SheetContent>
+                  </Sheet>
                 </div>
               </div>
             )}

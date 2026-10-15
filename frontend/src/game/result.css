@@ -128,7 +128,25 @@
 .gameplay-shell .results-list li.is-first .result-rank,
 .gameplay-shell .results-list li.is-first .result-score { color: #865a10; }
 .gameplay-shell .score-transfer { width: min(700px, 100%); margin: auto; }
-.gameplay-shell .score-transfer li { grid-template-columns: minmax(0, 1fr) auto auto; font-size: 20px; }
+.gameplay-shell .score-transfer li, .score-transfer-labels { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 100px)); gap: 12px; font-size: 18px; }
+.score-transfer-labels { font-size: 14px; }
+.draw-result { width: min(900px, 100%); margin: auto; pointer-events: auto; }
+.draw-reason { display: flex; align-items: center; gap: 32px; min-height: 280px; }
+.draw-reason h2 { font-size: clamp(28px, 4vw, 48px); overflow-wrap: anywhere; }
+.draw-reason img { width: 48px; opacity: .4; }
+.result-review { padding: 24px; }
+.result-details .round-win-surface, .result-details .results-panel { display: flex; flex-direction: column; gap: 16px; }
+.result-details .round-win-portrait, .result-details .results-winner-hero-portrait { display: none; }
+.result-details .round-win-identity, .result-details .results-winner { min-height: 0; }
+.result-details .round-win-tile-row, .result-details .round-win-melds { display: flex; flex-wrap: wrap; gap: 3px; }
+.result-details .round-win-tile img, .result-details .round-win-meld img { width: 24px; }
+.result-details .round-win-yaku > div { display: flex; justify-content: space-between; gap: 12px; }
+.result-details .round-win-yaku dd { margin: 0; }
+.result-details .score-transfer ol, .result-details .results-list { list-style: none; padding: 0; }
+.result-details .score-transfer li { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, auto); gap: 8px; margin-block: 16px; }
+.result-details .score-transfer-labels { grid-template-columns: minmax(0, 1fr) repeat(3, auto); gap: 8px; }
+.result-details .results-list li { display: flex; gap: 12px; margin-block: 12px; }
+.mobile-result { display: flex; flex-direction: column; gap: 12px; }
 .gameplay-shell .score-transfer li span:nth-child(2),
 .gameplay-shell .score-transfer li strong { min-width: 100px; text-align: right; }
 @media (max-width: 700px) {

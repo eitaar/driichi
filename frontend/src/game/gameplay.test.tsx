@@ -3,10 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   GameplaySurface,
-  ResultsPanel,
-  RoundWinSurface,
   handActionMap,
 } from "./gameplay";
+import { ResultsPanel, RoundWinSurface } from "./result-presentation";
 import { actionCandidates } from "./actions";
 import { useGameStore } from "./store";
 import type { ProjectedState, RoomSnapshot } from "./types";
@@ -47,6 +46,37 @@ const liveProjection: ProjectedState = { audience: "player", viewer_seat: 0, mod
 const liveProps = { projection: liveProjection, status: "connected" as const, reason: "", commandError: "", connectionGeneration: 0, send: () => true, reducedMotion: false, participantId: "p0" };
 
 describe("result surfaces", () => {
+  it("moves the only Continue into Review and invalidates Review on step change and expiry", async () => {
+    useGameStore.getState().reset(); useGameStore.getState().setStatus("connected");
+    const room = liveRoom();
+    useGameStore.getState().receiveSnapshot(room, liveProjection);
+    const view = render(<GameplaySurface {...liveProps} room={room} />);
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const review = await screen.findByRole("dialog", { name: "Review result" });
+    expect(within(review).getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: "Continue" })).toHaveLength(1);
+    const next = liveRoom({ Settlement: resultSettlement }, 5000, 1);
+    act(() => { useGameStore.getState().receiveSnapshot(next, liveProjection); });
+    view.rerender(<GameplaySurface {...liveProps} room={next} />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    const expired = liveRoom({ Settlement: resultSettlement }, 0, 1);
+    act(() => { useGameStore.getState().receiveSnapshot(expired, liveProjection); });
+    view.rerender(<GameplaySurface {...liveProps} room={expired} />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("keeps Draw reason and scores immediately reachable in one server step", () => {
+    render(<GameplaySurface {...liveProps} room={liveRoom({ Draw: { ...resultSettlement, draw_reason: "suucha_riichi" } })} />);
+    expect(screen.getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
+    expect(screen.queryByLabelText("Score transfer")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
+    expect(screen.getByLabelText("Score transfer")).toHaveTextContent("25,000");
+    expect(screen.getByLabelText("Score transfer")).toHaveTextContent("+6,000");
+    fireEvent.click(screen.getByRole("button", { name: "Result" }));
+    expect(screen.getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
+  });
   it("offers local surface and surround images inside the existing Settings without replacing audio controls", () => {
     render(<GameplaySurface {...liveProps} room={liveRoom()} />);
     expect(screen.getByLabelText("Table surface image")).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
@@ -195,6 +225,7 @@ describe("result surfaces", () => {
   it("displays the supplied draw reason with settlement and omits it when absent", () => {
     const settlement = { ...resultSettlement, draw_reason: "suucha_riichi", changes: resultSettlement.changes.map((change) => ({ ...change, delta: 0, after: change.before })) };
     const view = render(<GameplaySurface {...liveProps} room={liveRoom({ Draw: settlement })} reducedMotion />);
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
     const transfer = screen.getByLabelText("Score transfer");
     expect(within(transfer).getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
     expect(transfer).toHaveTextContent("+0");

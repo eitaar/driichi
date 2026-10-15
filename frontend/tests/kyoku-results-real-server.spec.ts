@@ -44,15 +44,15 @@ function reconnectUiMatchesCurrentPublication(sample: ReconnectUiSample, first: 
   if (sample.epoch_ms >= step.deadline_at_ms || step.remaining_ms <= 0) return false;
   const action = !step.required.includes(ownId) ? "Dismiss" : step.confirmed.includes(ownId) ? "Waiting for players" : "Continue";
   return step.id.step_index === 2
-    ? sample.surface === "settlement" && isDeepStrictEqual(sample.labels, ["Pause for review", "Skip animation", action])
-    : sample.surface === "win" && isDeepStrictEqual(sample.labels, [action]);
+    ? sample.surface === "settlement" && isDeepStrictEqual(sample.labels, ["Pause for review", "Skip animation", action, "Review"])
+    : sample.surface === "win" && isDeepStrictEqual(sample.labels, [action, "Review"]);
 }
 
 function checkReconnectUiMatchesCurrentPublication() {
   const first: ResultStep = { id: { match_id: "oracle-match", kyoku_sequence: 7, step_index: 0 }, content: {}, required: ["other"], confirmed: [], published_at_ms: 1000, deadline_at_ms: 6000, remaining_ms: 4000 };
-  const step0: ReconnectUiSample = { epoch_ms: 2000, status: "connected", phase: "playing", surface: "win", standings_count: 0, step: first, labels: ["Dismiss"] };
-  const step1: ReconnectUiSample = { ...step0, epoch_ms: 6002, step: { ...first, id: { ...first.id, step_index: 1 }, published_at_ms: 6001, deadline_at_ms: 11001, required: ["own", "other"] }, labels: ["Continue"] };
-  const step2: ReconnectUiSample = { ...step1, epoch_ms: 11002, surface: "settlement", step: { ...step1.step!, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001 }, labels: ["Pause for review", "Skip animation", "Continue"] };
+  const step0: ReconnectUiSample = { epoch_ms: 2000, status: "connected", phase: "playing", surface: "win", standings_count: 0, step: first, labels: ["Dismiss", "Review"] };
+  const step1: ReconnectUiSample = { ...step0, epoch_ms: 6002, step: { ...first, id: { ...first.id, step_index: 1 }, published_at_ms: 6001, deadline_at_ms: 11001, required: ["own", "other"] }, labels: ["Continue", "Review"] };
+  const step2: ReconnectUiSample = { ...step1, epoch_ms: 11002, surface: "settlement", step: { ...step1.step!, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001 }, labels: ["Pause for review", "Skip animation", "Continue", "Review"] };
   const received: Snapshot["room"][] = [step0, step1, step2].map(sample => ({ phase: "playing", roster: [], kyoku_end: sample.step, result: null }));
   received.push({ phase: "post_match", roster: [], kyoku_end: null, result: {} });
   const matches = (sample: ReconnectUiSample) => reconnectUiMatchesCurrentPublication(sample, first, "own", received);
@@ -88,7 +88,7 @@ function checkReconnectUiMatchesCurrentPublication() {
 
 base("reconnect UI oracle permits an authoritative settlement after slow rendering", () => {
   const first: ResultStep = { id: { match_id: "oracle-match", kyoku_sequence: 7, step_index: 0 }, content: {}, required: ["other"], confirmed: [], published_at_ms: 1000, deadline_at_ms: 6000, remaining_ms: 4000 };
-  const settlement: ReconnectUiSample = { epoch_ms: 11002, status: "connected", phase: "playing", surface: "settlement", standings_count: 0, step: { ...first, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001, required: ["own", "other"] }, labels: ["Pause for review", "Skip animation", "Continue"] };
+  const settlement: ReconnectUiSample = { epoch_ms: 11002, status: "connected", phase: "playing", surface: "settlement", standings_count: 0, step: { ...first, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001, required: ["own", "other"] }, labels: ["Pause for review", "Skip animation", "Continue", "Review"] };
   const received: Snapshot["room"][] = [{ phase: "playing", roster: [], kyoku_end: settlement.step, result: null }];
   expect(reconnectUiHasValidPublication(settlement, first, "own", received)).toBe(true);
   expect(reconnectUiMatchesCurrentPublication(settlement, first, "own", received)).toBe(true);
