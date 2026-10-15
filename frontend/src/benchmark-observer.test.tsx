@@ -61,6 +61,25 @@ it("coalesces refresh intents without overlapping private reads and reports Poll
   expect(screen.queryByText(/^Live$/)).not.toBeInTheDocument();
 });
 
+it("discloses routine connection metadata without renewing or remounting observation", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot())));
+  mount(); await flush();
+  const table = screen.getByRole("group", { name: "3D mahjong table" });
+  const details = screen.getByRole("button", { name: "Connection details" });
+  expect(details.closest("h2")).not.toBeNull();
+  expect(details).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByText(/Revision 7/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Read-only Admin view/)).toBeVisible();
+  expect(screen.getByText(/Last successful update:/)).toHaveTextContent("2026-10-01T00:00:00.000Z");
+  fireEvent.click(details); await flush();
+  expect(screen.getByText(/Revision 7.*GET compatibility mode; SSE unavailable/)).toBeVisible();
+  fireEvent.click(details); await flush();
+  expect(details).toHaveAttribute("aria-expanded", "false");
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("group", { name: "3D mahjong table" })).toBe(table);
+  expect(screen.getByText(/Polling · Fresh/)).toBeVisible();
+});
+
 it("only successful current authorized reads renew freshness, including unchanged revisions", async () => {
   let fail = false;
   vi.stubGlobal("fetch", vi.fn(async () => fail ? response({ detail: "Offline" }, 503) : response(snapshot())));

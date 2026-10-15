@@ -22,12 +22,28 @@ for (const mobile of [false, true]) test(`${mobile ? "touch Drawer" : "desktop S
   }
   await expect(page.locator(".recharts-line-curve")).toHaveCount(6);
   await expect(page.getByText("Rank 4", { exact: true })).toHaveCount(0);
-  for (const label of ["Cumulative net score window", "Moving-average rank window", "Per-Match net score window"]) await expect(page.getByLabel(label)).toContainText("Recent 50");
-  await expect(page.getByText("Sample n = 50 of 60 completed Matches.")).toHaveCount(3);
+  for (const name of ["Cumulative net score", "Moving-average rank", "Rank distribution", "Per-Match net score"]) {
+    await expect(page.getByRole("button", { name: `${name} options`, exact: true })).toHaveAttribute("aria-expanded", "false");
+  }
+  await expect(page.getByRole("region", { name: "Benchmark analytics", exact: true }).getByRole("combobox")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Benchmark analytics", exact: true }).getByRole("checkbox")).toHaveCount(0);
+  for (const name of ["Cumulative net score", "Moving-average rank", "Per-Match net score"]) {
+    const options = page.getByRole("button", { name: `${name} options`, exact: true });
+    await options.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByLabel(`${name} window`)).toContainText("Recent 50");
+  }
+  await expect(page.getByRole("button", { name: "Rank distribution options", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("Sample n = 50 of 60 completed Matches. Range: Recent 50.")).toHaveCount(3);
   await page.getByLabel("Cumulative net score window").focus();
   await page.keyboard.press("Enter");
   await page.getByRole("option", { name: "Full Run", exact: true }).click();
-  await expect(page.getByText("Sample n = 60 of 60 completed Matches.")).toBeVisible();
+  await expect(page.getByText("Sample n = 60 of 60 completed Matches. Range: Full Run.")).toBeVisible();
+  const options = page.getByRole("button", { name: "Cumulative net score options", exact: true });
+  await options.click();
+  await expect(page.getByRole("combobox", { name: "Cumulative net score window" })).toHaveCount(0);
+  await options.click();
+  await expect(page.getByLabel("Cumulative net score window")).toContainText("Full Run");
   await expect(page.getByLabel("Moving-average rank window")).toContainText("Recent 50");
   await expect(page.getByLabel("Per-Match net score window")).toContainText("Recent 50");
   await page.getByLabel("Cumulative net score window").click();
@@ -89,6 +105,7 @@ for (const participant of ["Bot 0 (z]{})", "Bot 2 (b)"]) test(`cumulative zero r
   await page.goto("/admin/benchmark/runs/run-1");
   const chart = page.getByRole("region", { name: "Cumulative net score", exact: true });
   await expect(chart.locator(".recharts-line-curve")).toHaveCount(3, { timeout: 20000 });
+  await chart.getByRole("button", { name: "Cumulative net score options", exact: true }).click();
   await chart.getByLabel("Cumulative net score window").focus();
   await page.keyboard.press("Enter");
   await page.keyboard.press("End");
@@ -139,6 +156,40 @@ for (const category of ["Performance", "Consistency"]) test(`${category} mobile 
   await trigger.focus();
   await page.keyboard.press("Enter");
   await expect(page.locator(".recharts-surface")).toHaveCount(4);
+});
+
+for (const theme of ["light", "dark"]) test(`drawable charts survive 320px and 200% text in ${theme}`, async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.addInitScript(theme => { localStorage.setItem("driichi-theme", theme); }, theme);
+  await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: run }));
+  await page.goto("/admin/benchmark/runs/run-1");
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  await expect(page.locator(".recharts-surface")).toHaveCount(4, { timeout: 20000 });
+  for (const name of ["Cumulative net score", "Moving-average rank", "Per-Match net score", "Rank distribution"]) {
+    const chart = page.getByRole("region", { name, exact: true });
+    await chart.locator(".recharts-surface").scrollIntoViewIfNeeded();
+    const plot = chart.locator("clipPath rect").first();
+    await expect.poll(async () => Number(await plot.getAttribute("height"))).toBeGreaterThan(100);
+    expect(Number(await plot.getAttribute("width"))).toBeGreaterThan(10);
+    const marks = chart.locator(name === "Rank distribution" || name === "Per-Match net score" ? ".recharts-bar-rectangle path" : ".recharts-line-curve");
+    expect(await marks.count()).toBeGreaterThan(0);
+    expect(await marks.first().evaluate(el => (el as SVGGraphicsElement).getBBox().width)).toBeGreaterThan(0);
+    if (name !== "Rank distribution") {
+      const ticks = chart.locator(".recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value");
+      expect(await ticks.count()).toBeGreaterThan(0);
+      const bounds = await chart.locator(".recharts-surface").boundingBox();
+      for (const tick of await ticks.all()) {
+        const box = await tick.boundingBox();
+        expect(box!.x).toBeGreaterThanOrEqual(bounds!.x - 1);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width + 1);
+      }
+      if (name === "Cumulative net score") expect(await ticks.allTextContents()).toEqual(expect.arrayContaining([expect.stringMatching(/^-/)]));
+    }
+    await expect(chart.getByRole("button", { name: `${name} options` })).toHaveAttribute("aria-expanded", "false");
+  }
+  await page.getByRole("heading", { name: "Match history and numeric chart equivalent", exact: true }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole("heading", { name: "Benchmark Run", exact: true })).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("invalid persisted scores fail closed with Retry, not summary-only charts", async ({ page }) => {

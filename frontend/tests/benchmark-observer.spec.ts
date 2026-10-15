@@ -49,6 +49,19 @@ test("authorized GET focus, rotation, fullscreen and revocation use one current 
   await expect(table).toHaveAttribute("data-render-ready", "true");
   const initialStarts = await page.evaluate(() => (window as unknown as { observerWorkers: { starts: number } }).observerWorkers.starts);
   await table.evaluate(node => node.setAttribute("data-original-host", "yes"));
+  const connection = page.getByRole("button", { name: "Connection details", exact: true });
+  await expect(connection).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText(/Revision 7/)).toHaveCount(0);
+  await expect(page.getByText(/Last successful update:/)).toBeVisible();
+  await expect(page.getByText("Read-only Admin view · All current hands", { exact: true })).toBeVisible();
+  await connection.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Revision 7 · GET compatibility mode; SSE unavailable", { exact: true })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(connection).toHaveAttribute("aria-expanded", "false");
+  await expect(table).toHaveAttribute("data-original-host", "yes");
+  await expect(table).toHaveAttribute("data-render-ready", "true");
+  expect(await workerCounts(page)).toEqual({ starts: initialStarts, active: 1 });
   await page.getByLabel("Focus Participant").click();
   await page.getByRole("option", { name: "Bot 1 (p1) · Seat 2", exact: true }).click();
   await expect(table.locator('[data-position="bottom"]')).toContainText("Bot 1");
@@ -117,9 +130,16 @@ test("runningDesktopStartsWithTableAndRunLeaderboard", async ({ page }) => {
   await expect(currentScores).toContainText("Bot 0: 25,000");
   const tableBox = await page.locator(".benchmark-live").boundingBox();
   const leaderboardBox = await leaderboard.boundingBox();
+  const actualTableBox = await page.getByRole("group", { name: "3D mahjong table" }).boundingBox();
+  expect(Math.abs(actualTableBox!.y - leaderboardBox!.y)).toBeLessThanOrEqual(1);
   expect(leaderboardBox!.x).toBeGreaterThan(tableBox!.x + tableBox!.width);
   expect(tableBox!.width / leaderboardBox!.width).toBeGreaterThan(1.8);
   expect(tableBox!.width / leaderboardBox!.width).toBeLessThan(2.2);
+  await page.setViewportSize({ width: 1024, height: 600 });
+  const stackedTable = await page.getByRole("group", { name: "3D mahjong table" }).boundingBox();
+  const stackedLeaderboard = await leaderboard.boundingBox();
+  expect(stackedLeaderboard!.y).toBeGreaterThanOrEqual(stackedTable!.y + stackedTable!.height);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect((await new AxeBuilder({ page }).include(".benchmark-observer").analyze()).violations).toEqual([]);
 });
 

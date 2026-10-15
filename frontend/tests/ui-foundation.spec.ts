@@ -145,6 +145,35 @@ test("Participant chart hues contrast with both themes while rank patterns stay 
   }
 });
 
+test("nested chart options stay closed on desktop and usable at narrow enlarged text", async ({ page }) => {
+  for (const theme of ["Light", "Dark"]) {
+    await page.getByRole("button", { name: theme, exact: true }).click();
+    for (const viewport of [{ width: 1440, height: 960 }, { width: 390, height: 844 }, { width: 320, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await page.evaluate(enlarged => { document.documentElement.style.fontSize = enlarged ? "200%" : ""; }, viewport.width === 320);
+      const chart = page.getByRole("region", { name: "Cumulative net score", exact: true });
+      const options = chart.getByRole("button", { name: "Cumulative net score options", exact: true });
+      await expect(options.locator("xpath=..")).toHaveJSProperty("tagName", "H3");
+      await expect(options).toHaveAttribute("aria-expanded", "false");
+      await expect(chart.getByRole("combobox")).toHaveCount(0);
+      await options.focus();
+      await page.keyboard.press("Enter");
+      await expect(chart.getByLabel("Cumulative net score window")).toBeVisible();
+      const checkbox = chart.getByRole("checkbox").first();
+      await checkbox.focus();
+      await page.keyboard.press("Space");
+      await expect(checkbox).not.toBeChecked();
+      await options.click();
+      await options.click();
+      await expect(checkbox).not.toBeChecked();
+      await checkbox.check();
+      await options.click();
+      await expect(chart.locator(".recharts-surface")).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  }
+});
+
 test("vertical ToggleGroup navigates with ArrowDown and ArrowUp", async ({ page }) => {
   const group = page.getByRole("group", { name: "Text alignment" });
   const left = group.getByRole("button", { name: "Align left" });

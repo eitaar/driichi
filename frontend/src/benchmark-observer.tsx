@@ -4,6 +4,7 @@ import { api, ApiProblem, problemFrom, type BenchmarkLive } from "./api";
 import { clearAdminSession } from "./admin-session";
 import type { RunAnalytics } from "./benchmark-analytics";
 import { Button } from "./components/ui/button";
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "./components/ui/accordion";
 import { Field, FieldGroup, FieldLabel } from "./components/ui/field";
 import { ThreeTable } from "./game/three-table";
 import { seatPositions } from "./game/orientation";
@@ -147,7 +148,8 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
       if (event.key === "Escape" && !event.defaultPrevented && expanded) { event.preventDefault(); void exit(); }
     }}>
       <div className="benchmark-observer-toolbar flex flex-wrap items-center gap-3 bg-background in-data-[expanded=true]:sticky in-data-[expanded=true]:top-0 in-data-[expanded=true]:z-10">
-        <p role="status">Polling · {status}{current.reading ? " · Updating" : ""}</p>
+        <div><p role="status">Polling · {status}{current.reading ? " · Updating" : ""}</p>
+          <p>Last successful update: {current.lastSnapshotAt === null ? "Not yet received" : new Date(current.lastSnapshotAt).toISOString()}</p></div>
         <Button variant="outline" onClick={() => refresh.current()}>Refresh table</Button>
         <Button ref={trigger} variant="outline" onClick={async () => {
           if (expanded) { await exit(); return; }
@@ -157,14 +159,15 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
         }}>{expanded ? "Exit fullscreen" : "Fullscreen table"}</Button>
       </div>
       {fullscreenNote && <p role="status">{fullscreenNote}</p>}
-      <p>Last successful update: {current.lastSnapshotAt === null ? "Not yet received" : new Date(current.lastSnapshotAt).toISOString()}</p>
       {current.error && <p role="alert">{current.error}</p>}
       {!snapshot && !current.failed && <p role="status">Connecting to live table…</p>}
-      {snapshot && <p className="field-hint">Read-only Admin view · Revision {snapshot.revision} · GET compatibility mode; SSE unavailable</p>}
+      {snapshot && <><p className="field-hint">Read-only Admin view · All current hands</p>
+        <Accordion><AccordionItem value="connection"><AccordionTrigger headingRender={<h2 />}>Connection details</AccordionTrigger><AccordionContent>
+          <p>Revision {snapshot.revision} · GET compatibility mode; SSE unavailable</p>
+        </AccordionContent></AccordionItem></Accordion></>}
       {snapshot && !projection && <p>{snapshot.benchmark?.status === "running" ? "Waiting for next Match." : "Run ended. No active Match."}</p>}
-      <div className="benchmark-observer-grid grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] [&>*]:min-w-0">
-        <div>
-          <FieldGroup><Field><FieldLabel htmlFor={focusId}>Focus Participant</FieldLabel>
+      <div className="my-4 flex min-w-0 flex-wrap items-end gap-3">
+          <FieldGroup className="min-w-0 flex-1"><Field><FieldLabel htmlFor={focusId}>Focus Participant</FieldLabel>
             <Select items={focusItems} value={focusedParticipantId ?? ""} onValueChange={value => {
               if (typeof value !== "string") return;
               setFocusedParticipantId(value || null);
@@ -177,8 +180,9 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
             </Select>
           </Field></FieldGroup>
           <p>{focused ? `Focused: ${focused.display_name} · Seat ${focused.seat + 1}` : "Default view · No focused current Seat"}</p>
-          <div ref={tableVisual} className="benchmark-live replay-table-wrap"><ThreeTable projection={projection} viewSeat={seat} room={null} surface="replay" reducedMotion /></div>
-        </div>
+      </div>
+      <div className="benchmark-observer-grid grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] [&>*]:min-w-0">
+        <div ref={tableVisual} className="benchmark-live replay-table-wrap my-0!"><ThreeTable projection={projection} viewSeat={seat} room={null} surface="replay" reducedMotion /></div>
         <section aria-label="Run leaderboard" className="min-w-0 rounded-lg border p-4 [overflow-wrap:anywhere]"><h2>Run leaderboard</h2>
           {analytics.kind === "invalid" ? <p>Standings unavailable: {analytics.reason}</p>
             : analytics.completed === 0 ? <p>No completed Matches yet.</p> : <>
