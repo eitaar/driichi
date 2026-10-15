@@ -10,7 +10,7 @@ const room = {
   match_players: [], roster: [], result: null, revision: 1, persistence_degraded: false, replay_available: true,
 };
 const run = {
-  run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "interrupted", reason: "server restarted", failed_match_id: "aborted", roster: [], matches: [], statistics: [],
+  run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "interrupted", reason: "server restarted", failed_match_id: "aborted", roster: Array.from({ length: 4 }, (_, initial_seat) => ({ participant_id: `p${initial_seat}`, display_name: "Same bot", initial_seat, participant_kind: "built_in_bot", character_id: null })), matches: [], statistics: [],
 };
 const live = { revision: 5, benchmark: null, projection: { audience: "benchmark_admin", mode: "4p-red-east", round: "east", kyoku: 1, dora_indicators: [0], players: Array.from({ length: 4 }, (_, seat) => ({ seat, participant_id: `p${seat}`, display_name: `Bot ${seat}`, score: 25000, hand: Array(13).fill(0), concealed_count: 13, discards: [], melds: [], riichi: false })), decision: null } };
 function response(data: unknown, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } }); }
@@ -104,23 +104,23 @@ it("keeps interrupted history read-only with null statistics and no fabricated g
   expect(screen.queryByRole("button", { name: "Start Run" })).not.toBeInTheDocument();
 });
 
-it("shows stored rank/rate and centered series separately for same-name participants", async () => {
+it("derives charts from persisted evidence and opens the identified Match without unverified Replay navigation", async () => {
   window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
-  const statistics = [
-    { participant_id: "p0", display_name: "Same bot", average_rank: 7 / 3, first_place_rate: 1 / 3, cumulative_net_scores: [15000, 0, 5000] },
-    { participant_id: "p1", display_name: "Same bot", average_rank: 2, first_place_rate: 1 / 3, cumulative_net_scores: [5000, 0, 5000] },
-  ];
-  stubFetch(() => response({ ...run, status: "completed", completed: 3, statistics }));
+  const matches = [1, 2, 3].map(sequence => ({ match_id: `m${sequence}`, sequence, results: run.roster.map((p, seat) => ({ participant_id: p.participant_id, seat, rank: seat + 1, final_score: [40000, 30000, 20000, 10000][seat] })) }));
+  stubFetch(() => response({ ...run, status: "completed", completed: 3, matches, statistics: [] }));
   render(<App />);
-  const table = await screen.findByRole("table", { name: "Participant statistics" });
+  const table = await screen.findByRole("table", { name: "Participant statistics" }, { timeout: 20000 });
   const rows = within(table).getAllByRole("row");
-  expect(rows).toHaveLength(3);
-  expect(within(rows[1]).getByText("p0")).toBeVisible();
-  expect(within(rows[1]).getByText("2.33")).toBeVisible();
-  expect(within(rows[1]).getByText("33.3%")).toBeVisible();
-  expect(within(rows[2]).getByText("p1")).toBeVisible();
-  expect(screen.getByRole("img", { name: "Cumulative score relative to table average" })).toBeVisible();
-});
+  expect(rows).toHaveLength(5);
+  expect(rows[1]).toHaveTextContent("Same bot (p0)");
+  expect(rows[1]).toHaveTextContent("1.00");
+  expect(rows[1]).toHaveTextContent("100.0%");
+  expect(rows[1]).toHaveTextContent("45,000");
+  expect(screen.getByRole("heading", { name: "Cumulative net score" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "View Match 2 details" }));
+  expect(await screen.findByRole("dialog")).toHaveTextContent("m2");
+  expect(screen.queryByRole("link", { name: "Open Replay" })).not.toBeInTheDocument();
+}, 30000);
 
 it("recovers a private observer read without joining a participant or submitting actions", async () => {
   window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");

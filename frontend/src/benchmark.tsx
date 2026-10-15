@@ -1,10 +1,15 @@
-import { lazy, useState, type ReactNode } from "react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api, problemFrom, type AdminRoomDetail, type BenchmarkRun, type GameMode, type TimeControl } from "./api";
+import { api, problemFrom, type AdminRoomDetail, type GameMode, type TimeControl } from "./api";
 import { AppShell } from "./components/app-shell";
 import { DesktopTableBoundary } from "./components/desktop-table-boundary";
 const LiveObserver = lazy(() => import("./benchmark-live-observer").then(module => ({ default: module.BenchmarkLiveObserver })));
 import { navigate } from "./routes";
+import { deriveRunAnalytics } from "./benchmark-analytics";
+import { BenchmarkMatchDetail } from "./benchmark-match-detail";
+import { Alert, AlertTitle, AlertDescription } from "./components/ui/alert";
+import { Button } from "./components/ui/button";
+const BenchmarkCharts = lazy(() => import("./benchmark-charts").then(module => ({ default: module.BenchmarkCharts })));
 import "./benchmark.css";
 
 function Link({ href, children }: { href: string; children: ReactNode }) {
@@ -67,33 +72,24 @@ function RunList() {
 }
 
 function RunDetail({ runId }: { runId: string }) {
+  const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
   const query = useQuery({ queryKey: ["admin", "benchmark", "run", runId], queryFn: () => api.getBenchmarkRun(runId), refetchInterval: query => query.state.data?.status === "running" ? 2000 : false });
   if (query.isError) return <ErrorMessage error={query.error} retry={() => { void query.refetch(); }} />;
   if (!query.data) return <p role="status">Loading Run…</p>;
   const run = query.data;
+  const analytics = deriveRunAnalytics(run);
+  const selectedMatch = run.matches.find(match => match.match_id === selectedMatchId);
+  // Legacy Run records carry no Replay availability; never infer it from a persisted score.
+  const evidence = selectedMatch ? { ...selectedMatch, replay_availability: "unknown" as const } : null;
   return <>
     <h1>Benchmark Run</h1><p className="benchmark-identity">{run.run_id}</p>
     <p role="status">{run.status} · {run.completed} / {run.target} completed Matches</p>
     {run.reason && <p>{run.reason}</p>}
     {run.failed_match_id && <p className="field-hint">Incomplete attempt {run.failed_match_id} — excluded from statistics.</p>}
     {run.status === "running" && <><Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link><DesktopTableBoundary fallback={null}><LiveObserver code={run.room_code} /></DesktopTableBoundary></>}
-    <RunStatistics run={run} />
-    {run.matches.length > 0 && <details className="admin-disclosure"><summary>Per-Match results</summary><div className="benchmark-table-scroll"><table aria-label="Per-Match results"><thead><tr><th scope="col">Match</th><th scope="col">Participant ID</th><th scope="col">Seat</th><th scope="col">Rank</th><th scope="col">Final score</th><th scope="col">Cumulative net score</th></tr></thead><tbody>{run.matches.flatMap(game => game.results.map(player => <tr key={`${game.match_id}:${player.participant_id}`}><td><Link href={`/admin/replays/${encodeURIComponent(game.match_id)}`}>{game.sequence}</Link></td><td>{player.participant_id}</td><td>{player.seat + 1}</td><td>{player.rank}</td><td>{player.final_score.toLocaleString()}</td><td>{run.statistics?.find(stat => stat.participant_id === player.participant_id)?.cumulative_net_scores[game.sequence - 1]?.toLocaleString()}</td></tr>))}</tbody></table></div></details>}
+    {analytics.kind === "invalid" ? <Alert variant="destructive"><AlertTitle>Invalid Match evidence</AlertTitle><AlertDescription>{analytics.reason}</AlertDescription><Button variant="outline" onClick={() => { void query.refetch(); }}>Retry</Button></Alert>
+      : analytics.completed === 0 ? <section><h2>Statistics</h2><p>No completed Matches yet.</p></section>
+      : <Suspense fallback={<p role="status">Loading charts…</p>}><BenchmarkCharts analytics={analytics} onOpenMatch={setSelectedMatchId} /></Suspense>}
+    <BenchmarkMatchDetail match={analytics.kind === "ready" ? evidence : null} roster={run.roster} onClose={() => setSelectedMatchId(null)} />
   </>;
-}
-
-const SERIES_COLORS = ["#354a66", "#a72e3f", "#2762ab", "#865a10"];
-function RunStatistics({ run }: { run: BenchmarkRun }) {
-  const stats = run.statistics ?? [];
-  if (run.completed === 0) return <section className="benchmark-statistics"><h2>Statistics</h2><p>No completed Matches yet.</p></section>;
-  const range = Math.max(1, ...stats.flatMap(stat => stat.cumulative_net_scores.map(Math.abs)));
-  return <section className="benchmark-statistics"><h2>Statistics</h2>
-    <figure><svg viewBox="0 0 640 240" role="img" aria-label="Cumulative score relative to table average">
-      <title>Cumulative score relative to table average</title><desc>Match sequence on the horizontal axis, cumulative net score on the vertical axis. Exact values are in Per-Match results.</desc>
-      <line x1="36" y1="112" x2="620" y2="112" stroke="#bcc6cf" />
-      <text x="4" y="20">{range.toLocaleString()}</text><text x="4" y="218">{(-range).toLocaleString()}</text><text x="36" y="238">0</text><text x="620" y="238" textAnchor="end">Match {run.completed}</text>
-      {stats.map((stat, index) => <polyline key={stat.participant_id} fill="none" stroke={SERIES_COLORS[index % 4]} strokeWidth="2" strokeDasharray={index === 0 ? undefined : `${8 + index * 2} ${index * 2}`} points={[0, ...stat.cumulative_net_scores].map((score, sequence) => `${36 + sequence / Math.max(1, run.completed) * 584},${112 - score / range * 92}`).join(" ")} />)}
-    </svg><figcaption>Cumulative score relative to table average. Only persisted completed Matches count.</figcaption></figure>
-    <div className="benchmark-table-scroll"><table aria-label="Participant statistics"><thead><tr><th scope="col">Participant</th><th scope="col">Participant ID</th><th scope="col">Mean rank</th><th scope="col">First-place rate</th><th scope="col">Net score</th></tr></thead><tbody>{stats.map((stat, index) => <tr key={stat.participant_id}><th scope="row"><span className="benchmark-series-key" style={{ color: SERIES_COLORS[index % 4] }}>{stat.display_name}</span></th><td>{stat.participant_id}</td><td>{stat.average_rank?.toFixed(2) ?? "—"}</td><td>{stat.first_place_rate === null ? "—" : `${(stat.first_place_rate * 100).toFixed(1)}%`}</td><td>{stat.cumulative_net_scores.at(-1)?.toLocaleString() ?? "—"}</td></tr>)}</tbody></table></div>
-  </section>;
 }
