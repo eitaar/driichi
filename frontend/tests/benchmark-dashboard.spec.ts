@@ -73,6 +73,57 @@ for (const mobile of [false, true]) test(`${mobile ? "touch Drawer" : "desktop S
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
+for (const participant of ["Bot 0 (z]{})", "Bot 2 (b)"]) test(`cumulative zero remains visible with only ${participant} in Recent 50`, async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: run }));
+  await page.goto("/admin/benchmark/runs/run-1");
+  const chart = page.getByRole("region", { name: "Cumulative net score", exact: true });
+  await expect(chart.locator(".recharts-line-curve")).toHaveCount(3, { timeout: 20000 });
+  await chart.getByLabel("Cumulative net score window").selectOption("50");
+  for (const checkbox of await chart.getByRole("checkbox").all()) {
+    if ((await checkbox.getAttribute("aria-label")) !== `Cumulative net score ${participant}`) await checkbox.uncheck();
+  }
+  await expect(chart.locator(".recharts-line-curve")).toHaveCount(1);
+  const zero = chart.locator(".recharts-reference-line-line");
+  // Horizontal SVG lines have zero-height bounds, so Playwright calls them hidden.
+  await expect(zero).toHaveCount(1);
+  const line = await zero.evaluate(el => {
+    const bounds = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return { y: bounds.y, width: bounds.width, stroke: style.stroke, visibility: style.visibility };
+  });
+  const plot = await chart.locator(".recharts-surface").boundingBox();
+  expect(line.width).toBeGreaterThan(100);
+  expect(line.stroke).not.toBe("none");
+  expect(line.visibility).toBe("visible");
+  expect(line.y).toBeGreaterThanOrEqual(plot!.y);
+  expect(line.y).toBeLessThanOrEqual(plot!.y + plot!.height);
+  await expect(chart.locator(".recharts-surface").getByText("0", { exact: true })).toHaveCount(1);
+  await expect(page.getByRole("table", { name: "Participant statistics" })).toContainText("600,000");
+});
+
+for (const category of ["Performance", "Consistency"]) test(`${category} mobile collapse survives desktop round trip without hiding desktop charts`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: run }));
+  await page.goto("/admin/benchmark/runs/run-1");
+  await expect(page.locator(".recharts-surface")).toHaveCount(4, { timeout: 20000 });
+  const trigger = page.getByRole("button", { name: category, exact: true });
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".recharts-surface")).toHaveCount(2);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.locator(".recharts-surface")).toHaveCount(4);
+  for (const chart of await page.locator('[data-slot="chart"]').all()) await expect(chart).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".recharts-surface")).toHaveCount(2);
+  const other = page.getByRole("button", { name: category === "Performance" ? "Consistency" : "Performance", exact: true });
+  await expect(other).toHaveAttribute("aria-expanded", "true");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".recharts-surface")).toHaveCount(4);
+});
+
 test("invalid persisted scores fail closed with Retry, not summary-only charts", async ({ page }) => {
   let invalid = true;
   await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: invalid ? { ...run, matches: [] } : run }));

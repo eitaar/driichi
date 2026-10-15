@@ -64,7 +64,7 @@ function ChartCard({ family, analytics, participants, onOpenMatch }: { family: F
           {chosen && <Bar dataKey={`p${participants.indexOf(chosen)}`} fill={`var(--color-p${participants.indexOf(chosen)})`} isAnimationActive={false} onClick={(_, index) => { const point = data[index]; if (point) onOpenMatch(point.matchId); }} />}
         </BarChart> : <LineChart accessibilityLayer data={data} onClick={details}>
           <CartesianGrid vertical={false} /><XAxis dataKey="sequence" /><YAxis reversed={family === "movingRank"} domain={family === "movingRank" ? [1, rankCount] : ["auto", "auto"]} allowDecimals={family !== "movingRank"} />
-          {family === "cumulative" && <ReferenceLine y={0} stroke="var(--foreground)" />}{tooltip}{legend}
+          {family === "cumulative" && <ReferenceLine y={0} ifOverflow="extendDomain" stroke="var(--foreground)" />}{tooltip}{legend}
           {participants.map((p, i) => !hidden.includes(p.participantId) && <Line key={p.participantId} type="linear" dataKey={`p${i}`} stroke={`var(--color-p${i})`} strokeDasharray={dashes[i]} dot={false} isAnimationActive={false} />)}
         </LineChart>}
       </ChartContainer>
@@ -75,6 +75,15 @@ function ChartCard({ family, analytics, participants, onOpenMatch }: { family: F
 
 export function BenchmarkCharts({ analytics, onOpenMatch }: { analytics: Ready; onOpenMatch(matchId: string): void }) {
   const participants = [...analytics.participants].sort((a, b) => compareId(a.participantId, b.participantId));
+  const [mobileSections, setMobileSections] = useState(["performance", "consistency"]);
+  const [desktop, setDesktop] = useState(() => window.matchMedia("(min-width: 1024px)").matches);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1024px)");
+    const update = () => setDesktop(query.matches);
+    query.addEventListener("change", update);
+    update();
+    return () => query.removeEventListener("change", update);
+  }, []);
   const [page, setPage] = useState(0);
   const [sequence, setSequence] = useState(1);
   const points = participants[0]?.points ?? [];
@@ -86,7 +95,7 @@ export function BenchmarkCharts({ analytics, onOpenMatch }: { analytics: Ready; 
     {analytics.provisional && <Alert><AlertTitle>Provisional results</AlertTitle><AlertDescription>Sample n = {analytics.completed} completed Matches. Small samples do not establish playing strength.</AlertDescription></Alert>}
     <nav aria-label="Analytics jump menu"><a href="#benchmark-performance">Performance</a> · <a href="#benchmark-consistency">Consistency</a> · <a href="#benchmark-numeric">Match history</a></nav>
     <h2>Performance and consistency</h2>
-    <Accordion multiple defaultValue={["performance", "consistency"]} className="benchmark-chart-groups">
+    <Accordion multiple value={desktop ? ["performance", "consistency"] : mobileSections} onValueChange={value => { if (!desktop) setMobileSections(value); }} className="benchmark-chart-groups">
       <AccordionItem value="performance" id="benchmark-performance"><AccordionTrigger>Performance</AccordionTrigger><AccordionContent><div className="benchmark-chart-grid">
         <ChartCard family="cumulative" analytics={analytics} participants={participants} onOpenMatch={onOpenMatch} />
         <ChartCard family="net" analytics={analytics} participants={participants} onOpenMatch={onOpenMatch} />
