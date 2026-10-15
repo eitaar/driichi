@@ -18,7 +18,6 @@ async function advance(ms: number) { await act(async () => { vi.advanceTimersByT
 function mount(analytics: RunAnalytics = emptyAnalytics) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(<QueryClientProvider client={client}><Observer runId="run-1" roomCode="123456" analytics={analytics} /></QueryClientProvider>);
-  fireEvent.click(screen.getByText("Live table — all current hands"));
   return { ...view, client };
 }
 beforeEach(() => {
@@ -40,12 +39,10 @@ it("orders persisted Run standings by average rank then stable ID, not current M
   if (emptyAnalytics.kind !== "ready") throw new Error("Invalid fixture");
   const participants = emptyAnalytics.participants.map((p, i) => ({ ...p, averageRank: i < 2 ? 1.5 : 3.5, firstPlaceRate: i < 2 ? 0.5 : 0, cumulativeNet: i < 2 ? 1500 : -1500 }));
   mount({ kind: "ready", completed: 2, provisional: true, participants: participants.reverse() }); await flush();
-  const rows = within(screen.getByRole("region", { name: "Run leaderboard" })).getAllByRole("listitem");
+  const rows = within(screen.getByRole("region", { name: "Run leaderboard" })).getAllByRole("row").slice(1);
   expect(rows[0]).toHaveTextContent("Bot 0 (p0)");
   expect(rows[1]).toHaveTextContent("Bot 1 (p1)");
-  expect(rows[0]).toHaveTextContent("Mean rank: 1.50");
-  expect(rows[0]).toHaveTextContent("First-place rate: 50.0%");
-  expect(rows[0]).toHaveTextContent("Net score: 1,500");
+  expect(within(rows[0]).getAllByRole("cell").map(cell => cell.textContent)).toEqual(["Bot 0 (p0)", "1.50", "50.0%", "1,500"]);
   expect(screen.queryByRole("region", { name: "Current Match scores" })).not.toBeInTheDocument();
 });
 
@@ -97,7 +94,9 @@ it("keeps Participant focus through Seat rotation and waiting without remounting
   vi.stubGlobal("fetch", vi.fn(async () => response(next)));
   mount(); await flush();
   const table = screen.getByRole("group", { name: "3D mahjong table" });
-  fireEvent.change(screen.getByLabelText("Focus Participant"), { target: { value: "p1" } });
+  fireEvent.click(screen.getByLabelText("Focus Participant")); await flush();
+  const option = screen.getByRole("option", { name: "Bot 1 (p1) · Seat 2" });
+  fireEvent.pointerDown(option, { pointerType: "mouse" }); fireEvent.click(option); await flush();
   expect(table.querySelector('[data-position="bottom"]')).toHaveTextContent("Bot 1");
   expect(within(screen.getByRole("group", { name: "Your concealed hand" })).getByRole("img")).toHaveAttribute("alt", "2m");
   next = { ...snapshot(8), projection: null }; await advance(5000);
@@ -115,7 +114,9 @@ it.each(["3p-red-east", "ThreePlayerRedEast"])("resolves %s focus without creati
   const three = { ...snapshot(), projection: { ...snapshot().projection, mode, players: snapshot().projection.players.slice(0, 3) } };
   vi.stubGlobal("fetch", vi.fn(async () => response(three)));
   mount(); await flush();
-  fireEvent.change(screen.getByLabelText("Focus Participant"), { target: { value: "p2" } });
+  fireEvent.click(screen.getByLabelText("Focus Participant")); await flush();
+  const option = screen.getByRole("option", { name: "Bot 2 (p2) · Seat 3" });
+  fireEvent.pointerDown(option, { pointerType: "mouse" }); fireEvent.click(option); await flush();
   expect(screen.getByText("Focused: Bot 2 · Seat 3")).toBeVisible();
   const table = screen.getByRole("group", { name: "3D mahjong table" });
   expect(table.querySelector('[data-position="bottom"]')).toHaveTextContent("Bot 2");

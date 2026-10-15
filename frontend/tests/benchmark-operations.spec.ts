@@ -15,7 +15,7 @@ test("local 25-row history and keyboard New Run create only a Room before explic
     if (request.method() === "POST") posts.push(path);
     if (path === "/api/v1/admin/benchmark/runs") return route.fulfill({ json: Array.from({ length: 27 }, (_, i) => ({ ...run, run_id: `run-${i}` })) });
     if (path === "/api/v1/admin/benchmark/rooms") {
-      expect(request.postDataJSON()).toEqual({ room_name: "Bot room", game_mode: "4p-red-east", time_control: "casual" });
+      expect(request.postDataJSON()).toEqual({ room_name: "Bot room", game_mode: "4p-red-half", time_control: "unlimited" });
       return route.fulfill({ json: room });
     }
     if (path === "/api/v1/admin/rooms") return route.fulfill({ json: [room] });
@@ -39,6 +39,21 @@ test("local 25-row history and keyboard New Run create only a Room before explic
   await expect(trigger).toBeFocused();
   await page.keyboard.press("Enter");
   await page.getByLabel("Room name").fill("Bot room");
+  await page.getByLabel("Game mode", { exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("option", { name: "4p red East", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("option", { name: "4p red half", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Game mode", { exact: true }).locator('[data-slot="select-value"]')).toHaveText("4p red half");
+  await page.getByLabel("Time control", { exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("option", { name: "Casual", exact: true })).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(page.getByRole("option", { name: "Unlimited", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Time control", { exact: true }).locator('[data-slot="select-value"]')).toHaveText("Unlimited");
   await expect(page.getByRole("button", { name: "Create benchmark room" })).toHaveCSS("opacity", "1");
   expect((await new AxeBuilder({ page }).include('[data-slot="dialog-content"]').analyze()).violations).toEqual([]);
   await page.getByRole("button", { name: "Create benchmark room" }).click();

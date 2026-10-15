@@ -11,6 +11,7 @@ import { Alert, AlertTitle, AlertDescription } from "./components/ui/alert";
 import { Button } from "./components/ui/button";
 import { Field, FieldGroup, FieldLabel, FieldDescription } from "./components/ui/field";
 import { Input } from "./components/ui/input";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "./components/ui/select";
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./components/ui/dialog";
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "./components/ui/alert-dialog";
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "./components/ui/table";
@@ -103,7 +104,7 @@ export function BenchmarkControls({ room, pending, perform, refreshRoom }: {
 
 export function BenchmarkWorkspace({ runId }: { runId?: string }) {
   return <AppShell variant="admin"><div className="app-shell workspace-shell benchmark-shell">
-    <div className="benchmark-main">{runId ? <RunDetail key={runId} runId={runId} /> : <RunList />}</div>
+    <div className="benchmark-main mx-auto my-6 flex w-full max-w-7xl min-w-0 flex-col gap-6 px-4 pb-12 sm:my-8 sm:px-6">{runId ? <RunDetail key={runId} runId={runId} /> : <RunList />}</div>
   </div></AppShell>;
 }
 
@@ -119,26 +120,26 @@ function RunList() {
   const create = useMutation({ mutationFn: api.createBenchmarkRoom, onSuccess: room => navigate(`/admin/rooms/${room.join_code}`) });
   const page = filterLoadedRuns(runs.data ?? [], search, status, filterMode, offset);
   return <>
-    <h1>Benchmarks</h1><p>Compare a fixed bot roster over 1–1,000 completed Matches.</p>
+    <h1>Benchmarks</h1>
     <Dialog><DialogTrigger render={<Button />}>New Run</DialogTrigger><DialogContent>
       <DialogHeader><DialogTitle>New Run</DialogTitle><DialogDescription>Create a Room, then connect and explicitly select bots in Admin before starting.</DialogDescription></DialogHeader>
       <form onSubmit={event => { event.preventDefault(); if (name.trim() && !create.isPending) create.mutate({ room_name: name.trim(), game_mode: mode, time_control: timing }); }}>
         <FieldGroup>
           <Field><FieldLabel htmlFor="benchmark-room-name">Room name</FieldLabel><Input id="benchmark-room-name" value={name} maxLength={64} required onChange={event => setName(event.target.value)} /></Field>
-          <Field><FieldLabel htmlFor="benchmark-mode">Game mode</FieldLabel><select id="benchmark-mode" value={mode} onChange={event => setMode(event.target.value as GameMode)}><ModeOptions /></select></Field>
-          <Field><FieldLabel htmlFor="benchmark-timing">Time control</FieldLabel><select id="benchmark-timing" value={timing} onChange={event => setTiming(event.target.value as TimeControl)}><option value="casual">Casual</option><option value="riichi_dev">Riichi.dev</option><option value="unlimited">Unlimited</option></select></Field>
+          <Field><FieldLabel htmlFor="benchmark-mode">Game mode</FieldLabel><Select items={modeItems} value={mode} onValueChange={value => { if (modeItems.some(item => item.value === value)) setMode(value as GameMode); }}><SelectTrigger id="benchmark-mode"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><ModeOptions /></SelectGroup></SelectContent></Select></Field>
+          <Field><FieldLabel htmlFor="benchmark-timing">Time control</FieldLabel><Select items={timingItems} value={timing} onValueChange={value => { if (timingItems.some(item => item.value === value)) setTiming(value as TimeControl); }}><SelectTrigger id="benchmark-timing"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{timingItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
           {create.isError && <ErrorMessage error={create.error} />}
           <Button type="submit" disabled={create.isPending || !name.trim()}>Create benchmark room</Button>
         </FieldGroup>
       </form>
     </DialogContent></Dialog>
-    <section className="benchmark-history"><h2>Run history</h2>
+    <section className="benchmark-history flex min-w-0 flex-col gap-4"><h2>Run history</h2>
       <p>Search and paging apply only to the loaded legacy snapshot. Newest-first server order is retained; timestamps and efficient server pagination are unavailable.</p>
       <Button variant="outline" disabled={runs.isFetching} onClick={() => { void runs.refetch({ cancelRefetch: false }); }}>Refresh</Button>
-      <FieldGroup className="benchmark-filters">
+      <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Field><FieldLabel htmlFor="run-search">Search loaded Runs</FieldLabel><Input id="run-search" type="search" value={search} onChange={event => { setSearch(event.target.value); setOffset(0); }} /></Field>
-        <Field><FieldLabel htmlFor="run-status">Status</FieldLabel><select id="run-status" value={status} onChange={event => { setStatus(event.target.value); setOffset(0); }}><option value="">All statuses</option>{["running", "completed", "stopped", "interrupted", "failed"].map(value => <option key={value}>{value}</option>)}</select></Field>
-        <Field><FieldLabel htmlFor="run-mode">Mode</FieldLabel><select id="run-mode" value={filterMode} onChange={event => { setFilterMode(event.target.value); setOffset(0); }}><option value="">All modes</option><ModeOptions /></select></Field>
+        <Field><FieldLabel htmlFor="run-status">Status</FieldLabel><Select items={statusItems} value={status} onValueChange={value => { if (typeof value === "string") { setStatus(value); setOffset(0); } }}><SelectTrigger id="run-status"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{statusItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
+        <Field><FieldLabel htmlFor="run-mode">Mode</FieldLabel><Select items={[{ value: "", label: "All modes" }, ...modeItems]} value={filterMode} onValueChange={value => { if (typeof value === "string") { setFilterMode(value); setOffset(0); } }}><SelectTrigger id="run-mode"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="">All modes</SelectItem><ModeOptions /></SelectGroup></SelectContent></Select></Field>
       </FieldGroup>
       {runs.isLoading && <p role="status">Loading Runs…</p>}
       {runs.isError ? <ErrorMessage error={runs.error} retry={() => { void runs.refetch({ cancelRefetch: false }); }} /> : runs.data && <>
@@ -155,8 +156,11 @@ function RunList() {
     </section>
   </>;
 }
+const modeItems = [{ value: "4p-red-east", label: "4p red East" }, { value: "4p-red-half", label: "4p red half" }, { value: "3p-red-east", label: "3p red East (no MJAI)" }, { value: "3p-red-half", label: "3p red half (no MJAI)" }];
+const timingItems = [{ value: "casual", label: "Casual" }, { value: "riichi_dev", label: "Riichi.dev" }, { value: "unlimited", label: "Unlimited" }];
+const statusItems = [{ value: "", label: "All statuses" }, ...["running", "completed", "stopped", "interrupted", "failed"].map(value => ({ value, label: value }))];
 function ModeOptions() {
-  return <><option value="4p-red-east">4p red East</option><option value="4p-red-half">4p red half</option><option value="3p-red-east">3p red East (no MJAI)</option><option value="3p-red-half">3p red half (no MJAI)</option></>;
+  return modeItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>);
 }
 
 function RunDetail({ runId }: { runId: string }) {
@@ -169,17 +173,19 @@ function RunDetail({ runId }: { runId: string }) {
   const selectedMatch = Array.isArray(run.matches) ? run.matches.find(match => match?.match_id === selectedMatchId) : undefined;
   const matchEvidence = selectedMatch ? { ...selectedMatch, replay_availability: metadata.isError ? "unknown" as const : replayAvailability(selectedMatch.match_id, metadata.data) } : null;
   return <>
-    <h1>Benchmark Run</h1><p className="benchmark-identity">{run.run_id}</p>
-    <p role="status">{run.status} · {run.completed} / {run.target} completed Matches</p>
-    <Button variant="outline" disabled={query.isFetching} onClick={() => { void refresh(); }}>Refresh Run</Button>
+    <header className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex min-w-0 flex-col gap-2"><h1>Benchmark Run</h1><p className="break-all font-mono text-sm">{run.run_id}</p>
+        <p role="status">{run.status} · {run.completed} / {run.target} completed Matches</p></div>
+      <div className="flex flex-wrap items-start gap-3">
+        <Button variant="outline" disabled={query.isFetching} onClick={() => { void refresh(); }}>Refresh Run</Button>
+        {run.status === "running" && <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />}
+      </div>
+    </header>
     {run.reason && <p>{run.reason}</p>}
     {run.failed_match_id && <p className="field-hint">Incomplete attempt {run.failed_match_id} — excluded from statistics.</p>}
     {run.status === "interrupted" && <><Button disabled aria-describedby="resume-unavailable">Resume unavailable</Button><p id="resume-unavailable">The server does not publish safe Resume eligibility, roster/revision checks, or an accepted Resume operation. This Run remains Interrupted.</p></>}
-    {run.status === "running" && <>
-      <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />
-      <Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link>
-    </>}
-    <DesktopTableBoundary fallback={null}><LiveObserver runId={runId} roomCode={run.room_code} analytics={analytics} /></DesktopTableBoundary>
+    {run.status === "running" && <Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link>}
+    {run.status === "running" && <DesktopTableBoundary fallback={null}><LiveObserver runId={runId} roomCode={run.room_code} analytics={analytics} /></DesktopTableBoundary>}
     {analytics.kind === "invalid" ? <Alert variant="destructive"><AlertTitle>Invalid Match evidence</AlertTitle><AlertDescription>{analytics.reason}</AlertDescription><Button variant="outline" onClick={() => { void refresh(); }}>Retry</Button></Alert>
       : analytics.completed === 0 ? <section><h2>Statistics</h2><p>No completed Matches yet.</p></section>
       : <Suspense fallback={<p role="status">Loading charts…</p>}><BenchmarkCharts analytics={analytics} onOpenMatch={setSelectedMatchId} /></Suspense>}

@@ -1,57 +1,7 @@
-.benchmark-main { width: min(1100px, 100%); margin: 32px auto; padding: 0 24px 48px; }
-.benchmark-main h1 { font-size: 28px; font-weight: 600; letter-spacing: 0; }
-.benchmark-main h2 { margin: 0 0 16px; font-size: 20px; font-weight: 600; }
-.benchmark-main p { margin: 12px 0; max-width: 72ch; }
-.benchmark-shell .topbar nav { display: flex; flex-wrap: wrap; gap: 16px; }
-.benchmark-controls { margin: 24px 0; }
-.benchmark-controls h3 { margin: 0 0 12px; font-size: 18px; }
-.benchmark-controls .action-row { align-items: end; flex-wrap: wrap; }
-.benchmark-controls .form-block { max-width: 180px; }
-.benchmark-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
-.benchmark-main select { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); padding: 4px 8px; }
-.benchmark-history, .benchmark-statistics { margin-top: 40px; }
-.benchmark-history a { display: block; min-height: 44px; align-content: center; }
-.benchmark-identity { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.benchmark-table-scroll { max-width: 100%; overflow-x: auto; }
-.benchmark-main table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; text-align: left; }
-.benchmark-main th, .benchmark-main td { padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.benchmark-main th { font-weight: 600; }
-.benchmark-dashboard { display: flex; flex-direction: column; gap: 24px; margin-top: 24px; }
-.benchmark-chart-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-.benchmark-chart-card { min-width: 0; }
 .benchmark-chart-region { width: 100%; height: 280px; min-height: 240px; aspect-ratio: auto; }
-.benchmark-series-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0; }
-.benchmark-series-controls label { display: inline-flex; gap: 6px; align-items: center; }
-.benchmark-dashboard select, .benchmark-dashboard input[type="number"] { max-width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; background: var(--background); color: var(--foreground); }
-.benchmark-detail-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px; display: flex; flex-direction: column; gap: 16px; overflow-wrap: anywhere; }
-@media (min-width: 1024px) {
-  .benchmark-chart-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-  .benchmark-chart-groups > [data-slot="accordion-item"], .benchmark-chart-groups [data-slot="accordion-content"], .benchmark-chart-groups [data-slot="accordion-content"] > div, .benchmark-chart-grid { display: contents; }
-  .benchmark-chart-groups [data-slot="accordion-trigger"] { display: none; }
-  .benchmark-chart-groups [data-slot="accordion-item"] > h3 { display: none; }
-  .benchmark-hero { grid-column: 1 / -1; }
-}
-.benchmark-observer { margin-top: 16px; background: var(--background); color: var(--foreground); }
-.benchmark-observer-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-.benchmark-observer-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
-.benchmark-observer-grid > * { min-width: 0; }
-.benchmark-observer select { min-height: 44px; max-width: 100%; }
-.benchmark-observer li { overflow-wrap: anywhere; }
 .benchmark-observer .benchmark-live { height: auto; aspect-ratio: 16 / 9; }
 .benchmark-observer[data-expanded="true"] .benchmark-live { height: 75vh; aspect-ratio: auto; }
-.benchmark-observer:fullscreen { width: 100%; height: 100%; padding: 16px; overflow: auto; }
-.benchmark-observer[data-expanded="true"] .benchmark-observer-toolbar { position: sticky; top: 0; background: var(--background); z-index: 1; }
-@media (min-width: 1280px) {
-  .benchmark-observer-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
-}
-.benchmark-live { position: relative; width: 100%; height: clamp(400px, 60vw, 650px); margin: 16px 0; overflow: hidden; }
+.benchmark-live { position: relative; width: 100%; margin: 16px 0; overflow: hidden; }
 .benchmark-live .three-table { height: 100%; }
 .benchmark-live .table-replay-hand img { flex: 1 1 0; width: 0; max-width: 64px; height: auto; aspect-ratio: 3 / 4; }
 .benchmark-live .table-player-copy strong { color: #283342; }
-@media (max-width: 700px) {
-  .benchmark-main { margin-top: 24px; padding: 0 16px 32px; }
-  .benchmark-filters { grid-template-columns: 1fr; }
-  .benchmark-shell .topbar { flex-wrap: wrap; }
-  .benchmark-live .table-replay-hand img { width: 100%; max-width: none; }
-  .benchmark-controls .action-row { display: grid; }
-}

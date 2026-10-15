@@ -22,7 +22,9 @@ for (const mobile of [false, true]) test(`${mobile ? "touch Drawer" : "desktop S
   }
   await expect(page.locator(".recharts-line-curve")).toHaveCount(6);
   await expect(page.getByText("Rank 4", { exact: true })).toHaveCount(0);
-  await page.getByLabel("Cumulative net score window").selectOption("50");
+  await page.getByLabel("Cumulative net score window").focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("option", { name: "Recent 50", exact: true }).click();
   await expect(page.getByText(/Window net:.*Bot 0.*500,000/)).toBeVisible();
   await expect(page.getByText("All completed Matches: n = 60; denominator per Participant.")).toBeVisible();
   await expect(page.getByRole("table", { name: "Participant statistics" })).toContainText("600,000");
@@ -79,9 +81,16 @@ for (const participant of ["Bot 0 (z]{})", "Bot 2 (b)"]) test(`cumulative zero r
   await page.goto("/admin/benchmark/runs/run-1");
   const chart = page.getByRole("region", { name: "Cumulative net score", exact: true });
   await expect(chart.locator(".recharts-line-curve")).toHaveCount(3, { timeout: 20000 });
-  await chart.getByLabel("Cumulative net score window").selectOption("50");
+  await chart.getByLabel("Cumulative net score window").focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
   for (const checkbox of await chart.getByRole("checkbox").all()) {
-    if ((await checkbox.getAttribute("aria-label")) !== `Cumulative net score ${participant}`) await checkbox.uncheck();
+    if ((await checkbox.getAttribute("aria-label")) !== `Cumulative net score ${participant}`) {
+      await checkbox.focus();
+      await page.keyboard.press("Space");
+      await expect(checkbox).not.toBeChecked();
+    }
   }
   await expect(chart.locator(".recharts-line-curve")).toHaveCount(1);
   const zero = chart.locator(".recharts-reference-line-line");

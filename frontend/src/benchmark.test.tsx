@@ -24,7 +24,7 @@ it("omits the private observer opener on phone while preserving Run status and R
   const width = window.innerWidth;
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
   window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
-  stubFetch(() => response({ ...run, status: "running" }));
+  stubFetch(path => response(path.endsWith("/live") ? live : { ...run, status: "running" }));
   try {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Benchmark Run" })).toBeVisible();
@@ -34,7 +34,7 @@ it("omits the private observer opener on phone while preserving Run status and R
     expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/live"))).toBe(false);
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
     act(() => window.dispatchEvent(new Event("resize")));
-    fireEvent.click(await screen.findByText("Live table — all current hands"));
+    await screen.findByText("Live table — all current hands");
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/live"))).toBe(true));
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     act(() => window.dispatchEvent(new Event("resize")));
@@ -137,7 +137,7 @@ it("recovers a private observer read without joining a participant or submitting
     return response(live);
   });
   render(<App />);
-  fireEvent.click(await screen.findByText("Live table — all current hands"));
+  await screen.findByText("Live table — all current hands");
   expect(await screen.findByRole("alert")).toHaveTextContent("Observer connection lost");
   fireEvent.click(screen.getByRole("button", { name: "Refresh table" }));
   expect(await screen.findByText(/Read-only Admin view/)).toBeVisible();
@@ -154,7 +154,6 @@ it("purges private snapshots on sign-out before back navigation can reuse them",
     return response(path.endsWith("/live") ? live : { ...run, status: "running" });
   }));
   render(<App />);
-  fireEvent.click(await screen.findByText("Live table — all current hands"));
   await screen.findByText(/Read-only Admin view/);
   fireEvent.click(screen.getByText("Current hands as text"));
   expect(screen.getByText(/Bot 0 \(p0\):/)).toBeVisible();
@@ -174,13 +173,12 @@ it("waits for a fresh authorized observer read before rendering a cached hand on
     return response(path === "/api/v1/admin/benchmark/runs" ? [{ ...run, status: "running" }] : { ...run, status: "running" });
   }));
   render(<App />);
-  fireEvent.click(await screen.findByText("Live table — all current hands"));
   await screen.findByText(/Read-only Admin view/);
   fireEvent.click(within(screen.getByRole("navigation", { name: "Admin" })).getByRole("link", { name: "Benchmarks" }));
   await screen.findByRole("heading", { name: "Benchmarks" });
   holdLiveRead = true;
   fireEvent.click(await screen.findByRole("link", { name: /^123456/ }));
-  fireEvent.click(await screen.findByText("Live table — all current hands"));
+  await screen.findByText("Live table — all current hands");
   expect(await screen.findByText("Connecting to live table…")).toBeVisible();
   expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument();
 });
@@ -194,7 +192,6 @@ it("removes private snapshots and leaves the Admin surface after a live read ret
   });
   render(<App />);
   const summary = await screen.findByText("Live table — all current hands");
-  fireEvent.click(summary);
   await screen.findByText(/Read-only Admin view/);
   expired = true;
   fireEvent.click(summary);
@@ -212,7 +209,9 @@ it("locally pages and filters loaded history without aggressive index polling", 
   expect(within(table).getAllByRole("row")).toHaveLength(26);
   fireEvent.click(screen.getByRole("button", { name: "Next page" }));
   expect(within(table).getAllByRole("row")).toHaveLength(3);
-  fireEvent.change(screen.getByRole("combobox", { name: "Status" }), { target: { value: "stopped" } });
+  fireEvent.click(screen.getByRole("combobox", { name: "Status" }));
+  const stopped = await screen.findByRole("option", { name: "stopped" });
+  fireEvent.pointerDown(stopped, { pointerType: "mouse" }); fireEvent.click(stopped);
   expect(within(table).getAllByRole("row")).toHaveLength(2);
   expect(screen.getByRole("link", { name: /^123482/ })).toBeVisible();
   fireEvent.change(screen.getByRole("searchbox", { name: "Search loaded Runs" }), { target: { value: "missing" } });
@@ -235,7 +234,7 @@ it("keeps an out-of-range local page empty after Refresh without inverted ranges
 
 it.each([true, false])("restores authoritative Stop state on mobile (pending=%s), independent of the observer", async pending => {
   window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
-  stubFetch(path => response(path === "/api/v1/admin/rooms/123456"
+  stubFetch(path => response(path.endsWith("/live") ? { ...live, projection: null } : path === "/api/v1/admin/rooms/123456"
     ? { ...room, benchmark: { run_id: "run-1", target: 3, completed: 0, stop_requested: pending, status: "running" } }
     : { ...run, status: "running" }));
   render(<App />);
@@ -250,6 +249,7 @@ it("confirms Stop and recovers a lost response by reading matching ordinary Room
   let accepted = false;
   let posts = 0;
   stubFetch((path, init) => {
+    if (path.endsWith("/live")) return response({ ...live, projection: null });
     if (path.endsWith("/stop")) { ++posts; accepted = true; return response({ detail: "Response lost" }, 503); }
     if (path === "/api/v1/admin/rooms/123456") return response({ ...room, benchmark: { run_id: "run-1", target: 3, completed: 0, stop_requested: accepted, status: "running" } });
     expect(init?.method).not.toBe("POST");
@@ -272,6 +272,7 @@ it("keeps uncertain Stop disabled when recovery fails and never treats a differe
   window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
   let attempted = false;
   stubFetch(path => {
+    if (path.endsWith("/live")) return response({ ...live, projection: null });
     if (path.endsWith("/stop")) { attempted = true; return response({ ...room, benchmark: { run_id: "other", stop_requested: true, status: "running" } }); }
     if (path === "/api/v1/admin/rooms/123456") return attempted ? response({ detail: "Read failed" }, 503) : response({ ...room, benchmark: { run_id: "run-1", stop_requested: false, status: "running" } });
     return response({ ...run, status: "running" });
@@ -292,6 +293,7 @@ it.each(["/admin/benchmark/runs/run-1", "/admin/rooms/123456"])("rechecks open S
   let posts = 0;
   stubFetch((path, init) => {
     if (init?.method === "POST") posts++;
+    if (path.endsWith("/live")) return response({ ...live, projection: null });
     const currentRoom = { ...room, revision: reads, benchmark: { run_id: "run-1", stop_requested: state === "unknown" ? undefined : state === "pending", status: state === "terminal" ? "stopped" : "running" } };
     if (path === "/api/v1/admin/rooms") return response([currentRoom]);
     if (path.endsWith("/tokens")) return response([]);
@@ -328,6 +330,7 @@ it.each(["/admin/benchmark/runs/run-1", "/admin/rooms/123456"].flatMap(route => 
   let releaseFresh!: (value: Response) => void;
   const snapshot = (pending: boolean) => response({ ...room, benchmark: { run_id: "run-1", status: "running", stop_requested: pending } });
   vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+    if (input.endsWith("/live")) return response({ ...live, projection: null });
     if (input.endsWith("/stop")) { posts++; return response({ detail: "Response lost" }, 503); }
     if (input === "/api/v1/admin/rooms/123456") {
       reads++;
@@ -388,6 +391,7 @@ it("requires a fresh explicit Stop intent after conflict and never retries the P
   window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
   let posts = 0;
   stubFetch(path => {
+    if (path.endsWith("/live")) return response({ ...live, projection: null });
     if (path.endsWith("/stop")) { posts++; return response({ detail: "Changed" }, 409); }
     if (path === "/api/v1/admin/rooms/123456") return response({ ...room, benchmark: { run_id: "run-1", stop_requested: false, status: "running" } });
     return response({ ...run, status: "running" });
@@ -429,7 +433,7 @@ it("uses bounded exact-Match metadata retry without downloading Replay or changi
 
 it("leaves the Admin surface on ordinary detail authorization loss", async () => {
   window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
-  stubFetch(path => path === "/api/v1/admin/rooms/123456" ? response({ detail: "Expired" }, 401) : response({ ...run, status: "running" }));
+  stubFetch(path => path === "/api/v1/admin/rooms/123456" ? response({ detail: "Expired" }, 401) : response(path.endsWith("/live") ? { ...live, projection: null } : { ...run, status: "running" }));
   render(<App />);
   expect(await screen.findByRole("heading", { name: "Sign in to host." })).toBeVisible();
   expect(screen.queryByRole("button", { name: "Stop after current Match" })).not.toBeInTheDocument();

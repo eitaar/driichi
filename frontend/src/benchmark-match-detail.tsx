@@ -21,8 +21,8 @@ export function BenchmarkMatchDetail({ match, roster, onClose, onRetryReplay }: 
   }, [open]);
   const restoreFocus = () => { trigger.current?.focus({ preventScroll: true }); return false; };
   const status = match?.replay_availability;
-  const body = match && <div className="benchmark-detail-body">
-    <p className="benchmark-identity">{match.match_id}</p>
+  const body = match && <div className="flex min-h-0 flex-col gap-4 overflow-auto overscroll-contain p-4 [overflow-wrap:anywhere]">
+    <p className="break-all tabular-nums">{match.match_id}</p>
     <Table aria-label="Match placements" tabIndex={0}><TableHeader><TableRow><TableHead>Participant</TableHead><TableHead>Seat</TableHead><TableHead>Rank</TableHead><TableHead>Final points</TableHead></TableRow></TableHeader><TableBody>
       {[...match.results].sort((a, b) => a.rank - b.rank || a.seat - b.seat).map(result => <TableRow key={result.participant_id}>
         <TableCell>{roster.find(p => p.participant_id === result.participant_id)?.display_name} ({result.participant_id})</TableCell><TableCell>{result.seat + 1}</TableCell><TableCell>{result.rank}</TableCell><TableCell>{result.final_score.toLocaleString()}</TableCell>

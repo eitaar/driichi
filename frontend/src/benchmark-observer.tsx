@@ -9,6 +9,8 @@ import { ThreeTable } from "./game/three-table";
 import { seatPositions } from "./game/orientation";
 import type { ProjectedState } from "./game/types";
 import { tileLabel } from "./game/tiles";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "./components/ui/select";
+import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "./components/ui/table";
 
 export function focusedSeat(projection: ProjectedState | null, participantId: string | null): number | undefined {
   return projection?.players?.find(player => player.participant_id === participantId)?.seat;
@@ -35,7 +37,7 @@ const empty = (lifetime: string): Observation => ({ lifetime, snapshot: null, la
 export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: string; roomCode: string; analytics: RunAnalytics }) {
   const client = useQueryClient();
   const lifetime = JSON.stringify([runId, roomCode]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [observation, setObservation] = useState(() => empty(lifetime));
   const [now, setNow] = useState(Date.now);
   const [focusedParticipantId, setFocusedParticipantId] = useState<string | null>(null);
@@ -136,12 +138,15 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
     if (document.fullscreenElement === host.current) await document.exitFullscreen();
     setExpanded(false); trigger.current?.focus();
   };
-  return <details className="admin-disclosure" onToggle={event => setOpen(event.currentTarget.open)}>
+  const focusItems = [{ value: "", label: "Default view" },
+    ...(focusedParticipantId && !focused ? [{ value: focusedParticipantId, label: "Selected Participant — awaiting current Seat" }] : []),
+    ...(projection?.players?.map(player => ({ value: player.participant_id, label: `${player.display_name} (${player.participant_id}) · Seat ${player.seat + 1}` })) ?? [])];
+  return <details open={open} className="admin-disclosure" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Live table — all current hands</summary>
-    {open && <div ref={host} className="benchmark-observer" data-expanded={expanded} onKeyDown={event => {
-      if (event.key === "Escape" && expanded) { event.preventDefault(); void exit(); }
+    {open && <div ref={host} className="benchmark-observer mt-4 bg-background text-foreground fullscreen:size-full fullscreen:overflow-auto fullscreen:p-4" data-expanded={expanded} onKeyDown={event => {
+      if (event.key === "Escape" && !event.defaultPrevented && expanded) { event.preventDefault(); void exit(); }
     }}>
-      <div className="benchmark-observer-toolbar">
+      <div className="benchmark-observer-toolbar flex flex-wrap items-center gap-3 bg-background in-data-[expanded=true]:sticky in-data-[expanded=true]:top-0 in-data-[expanded=true]:z-10">
         <p role="status">Polling · {status}{current.reading ? " · Updating" : ""}</p>
         <Button variant="outline" onClick={() => refresh.current()}>Refresh table</Button>
         <Button ref={trigger} variant="outline" onClick={async () => {
@@ -157,34 +162,34 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
       {!snapshot && !current.failed && <p role="status">Connecting to live table…</p>}
       {snapshot && <p className="field-hint">Read-only Admin view · Revision {snapshot.revision} · GET compatibility mode; SSE unavailable</p>}
       {snapshot && !projection && <p>{snapshot.benchmark?.status === "running" ? "Waiting for next Match." : "Run ended. No active Match."}</p>}
-      <div className="benchmark-observer-grid">
+      <div className="benchmark-observer-grid grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] [&>*]:min-w-0">
         <div>
           <FieldGroup><Field><FieldLabel htmlFor={focusId}>Focus Participant</FieldLabel>
-            <select id={focusId} value={focusedParticipantId ?? ""} onChange={event => {
-              setFocusedParticipantId(event.target.value || null);
+            <Select items={focusItems} value={focusedParticipantId ?? ""} onValueChange={value => {
+              if (typeof value !== "string") return;
+              setFocusedParticipantId(value || null);
               if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
                 tableVisual.current?.animate?.([{ opacity: 0.94 }, { opacity: 1 }], { duration: 150 });
               }
             }}>
-              <option value="">Default view</option>
-              {focusedParticipantId && !focused && <option value={focusedParticipantId}>Selected Participant — awaiting current Seat</option>}
-              {projection?.players?.map(player => <option key={player.participant_id} value={player.participant_id}>{player.display_name} ({player.participant_id}) · Seat {player.seat + 1}</option>)}
-            </select>
+              <SelectTrigger id={focusId} className="w-full min-w-0"><SelectValue /></SelectTrigger>
+              <SelectContent portalContainer={host}><SelectGroup>{focusItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent>
+            </Select>
           </Field></FieldGroup>
           <p>{focused ? `Focused: ${focused.display_name} · Seat ${focused.seat + 1}` : "Default view · No focused current Seat"}</p>
           <div ref={tableVisual} className="benchmark-live replay-table-wrap"><ThreeTable projection={projection} viewSeat={seat} room={null} surface="replay" reducedMotion /></div>
         </div>
-        <section aria-label="Run leaderboard"><h2>Run leaderboard</h2>
+        <section aria-label="Run leaderboard" className="min-w-0 rounded-lg border p-4 [overflow-wrap:anywhere]"><h2>Run leaderboard</h2>
           {analytics.kind === "invalid" ? <p>Standings unavailable: {analytics.reason}</p>
             : analytics.completed === 0 ? <p>No completed Matches yet.</p> : <>
               <p>{analytics.provisional ? "Provisional · " : ""}{analytics.completed} completed Matches · Persisted results only</p>
-              <ol>{[...analytics.participants].sort((a, b) => (a.averageRank ?? Infinity) - (b.averageRank ?? Infinity)
-                || (a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0)).map(player => <li key={player.participantId}>
-                  <strong>{player.displayName} ({player.participantId})</strong>
-                  <div>Mean rank: {player.averageRank?.toFixed(2) ?? "Unavailable"}</div>
-                  <div>First-place rate: {player.firstPlaceRate === null ? "Unavailable" : `${(player.firstPlaceRate * 100).toFixed(1)}%`}</div>
-                  <div>Net score: {player.cumulativeNet.toLocaleString()}</div>
-                </li>)}</ol>
+              <Table aria-label="Run leaderboard" className="tabular-nums"><TableHeader><TableRow><TableHead>Participant</TableHead><TableHead className="whitespace-normal">Mean rank</TableHead><TableHead className="whitespace-normal">First-place rate</TableHead><TableHead className="whitespace-normal">Net score</TableHead></TableRow></TableHeader><TableBody>{[...analytics.participants].sort((a, b) => (a.averageRank ?? Infinity) - (b.averageRank ?? Infinity)
+                || (a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0)).map(player => <TableRow key={player.participantId}>
+                  <TableCell className="whitespace-normal">{player.displayName} ({player.participantId})</TableCell>
+                  <TableCell>{player.averageRank?.toFixed(2) ?? "Unavailable"}</TableCell>
+                  <TableCell>{player.firstPlaceRate === null ? "Unavailable" : `${(player.firstPlaceRate * 100).toFixed(1)}%`}</TableCell>
+                  <TableCell>{player.cumulativeNet.toLocaleString()}</TableCell>
+                </TableRow>)}</TableBody></Table>
             </>}
         </section>
       </div>

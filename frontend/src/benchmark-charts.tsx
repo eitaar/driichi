@@ -7,6 +7,10 @@ import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "./
 import { Button } from "./components/ui/button";
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "./components/ui/table";
 import { Alert, AlertTitle, AlertDescription } from "./components/ui/alert";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "./components/ui/select";
+import { Checkbox } from "./components/ui/checkbox";
+import { Field, FieldGroup, FieldSet, FieldLegend, FieldLabel } from "./components/ui/field";
+import { Input } from "./components/ui/input";
 
 type Ready = Extract<RunAnalytics, { kind: "ready" }>;
 type Family = "cumulative" | "movingRank" | "distribution" | "net";
@@ -47,12 +51,16 @@ function ChartCard({ family, analytics, participants, onOpenMatch }: { family: F
   };
   const tooltip = <ChartTooltip content={<ChartTooltipContent labelFormatter={(_, payload) => family === "distribution" ? payload[0]?.payload?.name : `Match ${payload[0]?.payload?.sequence}`} />} />;
   const legend = <ChartLegend content={<ChartLegendContent className="flex-wrap" />} />;
-  return <Card className={family === "cumulative" ? "benchmark-chart-card benchmark-hero" : "benchmark-chart-card"}>
+  const windowItems = [{ value: "all", label: "Full Run" }, { value: "50", label: "Recent 50" }];
+  const participantItems = [{ value: "", label: "Waiting for standings" }, ...participants.map(p => ({ value: p.participantId, label: `${p.displayName} (${p.participantId})` }))];
+  return <Card className={family === "cumulative" ? "benchmark-chart-card min-w-0 lg:col-span-2" : "benchmark-chart-card min-w-0"}>
     <CardHeader><CardTitle><h3 id={`${id}-title`}>{title}</h3></CardTitle><CardDescription>{descriptions[family]}</CardDescription></CardHeader>
     <CardContent><section role="region" aria-labelledby={`${id}-title`}>
       <p>{family === "distribution" ? `All completed Matches: n = ${analytics.completed}; denominator per Participant.` : `Sample n = ${n} of ${analytics.completed} completed Matches.`}</p>
-      {family !== "distribution" && <label>{title} window <select aria-label={`${title} window`} value={windowSize} onChange={e => setWindowSize(e.target.value)}><option value="all">Full Run</option><option value="50">Recent 50</option></select></label>}
-      {family === "net" ? <label>Net score Participant <select aria-label="Net score Participant" value={selected ?? ""} onChange={e => setSelected(e.target.value)}><option value="" disabled>Waiting for standings</option>{participants.map(p => <option key={p.participantId} value={p.participantId}>{p.displayName} ({p.participantId})</option>)}</select></label> : <fieldset className="benchmark-series-controls"><legend>Visible Participants — {title}</legend>{participants.map(p => <label key={p.participantId}><input type="checkbox" aria-label={`${title} ${p.displayName} (${p.participantId})`} checked={!hidden.includes(p.participantId)} onChange={e => setHidden(e.target.checked ? hidden.filter(id => id !== p.participantId) : [...hidden, p.participantId])} />{p.displayName} ({p.participantId})</label>)}</fieldset>}
+      <FieldGroup className="my-4">
+        {family !== "distribution" && <Field><FieldLabel htmlFor={`${id}-window`}>{title} window</FieldLabel><Select items={windowItems} value={windowSize} onValueChange={value => { if (value === "all" || value === "50") setWindowSize(value); }}><SelectTrigger id={`${id}-window`}><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{windowItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}
+        {family === "net" ? <Field><FieldLabel htmlFor={`${id}-participant`}>Net score Participant</FieldLabel><Select items={participantItems} value={selected ?? ""} onValueChange={value => { if (typeof value === "string" && participants.some(p => p.participantId === value)) setSelected(value); }}><SelectTrigger id={`${id}-participant`}><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{participantItems.map(item => <SelectItem key={item.value} value={item.value} disabled={item.value === ""}>{item.label}</SelectItem>)}</SelectGroup></SelectContent></Select></Field> : <FieldSet><FieldLegend variant="label">Visible Participants — {title}</FieldLegend><div className="flex flex-wrap gap-x-6 gap-y-3">{participants.map(p => <FieldLabel key={p.participantId} className="min-h-11 items-center"><Checkbox aria-label={`${title} ${p.displayName} (${p.participantId})`} checked={!hidden.includes(p.participantId)} onCheckedChange={checked => setHidden(checked ? hidden.filter(id => id !== p.participantId) : [...hidden, p.participantId])} />{p.displayName} ({p.participantId})</FieldLabel>)}</div></FieldSet>}
+      </FieldGroup>
       {family === "cumulative" && windowSize === "50" && <p>Window net: {participants.map(p => `${p.displayName} (${p.participantId}) ${(p.points.slice(start).reduce((sum, point) => sum + point.net, 0)).toLocaleString()}`).join("; ")}. Cumulative lines retain full-run totals.</p>}
       <ChartContainer config={family === "distribution" ? ranks : config} className="benchmark-chart-region" aria-label={title} onClickCapture={event => event.currentTarget.querySelector<SVGSVGElement>(".recharts-surface")?.focus({ preventScroll: true })}>
         {family === "distribution" ? <BarChart accessibilityLayer layout="vertical" data={distribution} margin={{ left: 8, right: 24 }}>
@@ -91,16 +99,16 @@ export function BenchmarkCharts({ analytics, onOpenMatch }: { analytics: Ready; 
   const currentPage = Math.min(page, lastPage);
   const rows = [...points].reverse().slice(currentPage * 25, currentPage * 25 + 25);
   const selected = points.find(point => point.sequence === sequence);
-  return <section className="benchmark-dashboard" aria-label="Benchmark analytics">
+  return <section className="benchmark-dashboard mt-6 flex min-w-0 flex-col gap-6" aria-label="Benchmark analytics">
     {analytics.provisional && <Alert><AlertTitle>Provisional results</AlertTitle><AlertDescription>Sample n = {analytics.completed} completed Matches. Small samples do not establish playing strength.</AlertDescription></Alert>}
     <nav aria-label="Analytics jump menu"><a href="#benchmark-performance">Performance</a> · <a href="#benchmark-consistency">Consistency</a> · <a href="#benchmark-numeric">Match history</a></nav>
     <h2>Performance and consistency</h2>
-    <Accordion multiple value={desktop ? ["performance", "consistency"] : mobileSections} onValueChange={value => { if (!desktop) setMobileSections(value); }} className="benchmark-chart-groups">
-      <AccordionItem value="performance" id="benchmark-performance"><AccordionTrigger>Performance</AccordionTrigger><AccordionContent><div className="benchmark-chart-grid">
+    <Accordion multiple value={desktop ? ["performance", "consistency"] : mobileSections} onValueChange={value => { if (!desktop) setMobileSections(value); }} className="benchmark-chart-groups lg:grid lg:grid-cols-2 lg:gap-4 lg:[&>[data-slot=accordion-item]]:contents lg:[&_[data-slot=accordion-content]]:contents lg:[&_[data-slot=accordion-content]>div]:contents lg:[&_[data-slot=accordion-item]>h3]:hidden">
+      <AccordionItem value="performance" id="benchmark-performance"><AccordionTrigger>Performance</AccordionTrigger><AccordionContent><div className="grid min-w-0 grid-cols-1 gap-4 lg:contents">
         <ChartCard family="cumulative" analytics={analytics} participants={participants} onOpenMatch={onOpenMatch} />
         <ChartCard family="net" analytics={analytics} participants={participants} onOpenMatch={onOpenMatch} />
       </div></AccordionContent></AccordionItem>
-      <AccordionItem value="consistency" id="benchmark-consistency"><AccordionTrigger>Consistency</AccordionTrigger><AccordionContent><div className="benchmark-chart-grid">
+      <AccordionItem value="consistency" id="benchmark-consistency"><AccordionTrigger>Consistency</AccordionTrigger><AccordionContent><div className="grid min-w-0 grid-cols-1 gap-4 lg:contents">
         <ChartCard family="movingRank" analytics={analytics} participants={participants} onOpenMatch={onOpenMatch} />
         <ChartCard family="distribution" analytics={analytics} participants={participants} onOpenMatch={onOpenMatch} />
       </div></AccordionContent></AccordionItem>
@@ -110,7 +118,7 @@ export function BenchmarkCharts({ analytics, onOpenMatch }: { analytics: Ready; 
       {[...participants].sort((a, b) => (a.averageRank ?? Infinity) - (b.averageRank ?? Infinity) || compareId(a.participantId, b.participantId)).map(p => <TableRow key={p.participantId}><TableCell>{p.displayName} ({p.participantId})</TableCell><TableCell>{p.averageRank?.toFixed(2) ?? "—"}</TableCell><TableCell>{p.firstPlaceRate === null ? "—" : `${(p.firstPlaceRate * 100).toFixed(1)}%`}</TableCell><TableCell>{p.cumulativeNet.toLocaleString()}</TableCell>{p.rankCounts.map((count, i) => <TableCell key={i}>{count} / {analytics.completed ? (count / analytics.completed * 100).toFixed(1) : "0.0"}%</TableCell>)}</TableRow>)}
     </TableBody></Table>
     <section id="benchmark-numeric"><h2>Match history and numeric chart equivalent</h2>
-      <label>Selected Match sequence <input aria-label="Selected Match sequence" type="number" min={1} max={Math.max(1, points.length)} value={sequence} onChange={e => setSequence(Number(e.target.value))} /></label>
+      <FieldGroup><Field><FieldLabel htmlFor="benchmark-sequence">Selected Match sequence</FieldLabel><Input id="benchmark-sequence" className="max-w-48" type="number" min={1} max={Math.max(1, points.length)} value={sequence} onChange={e => setSequence(Number(e.target.value))} /></Field></FieldGroup>
       <Button variant="outline" disabled={!selected} onClick={() => { if (selected) onOpenMatch(selected.matchId); }}>View Match details</Button>
       <p>Recent-first, 25 Matches per page. Net / full-run cumulative / trailing mean rank (sample n).</p>
       <Table aria-label="Per-Match numeric results"><TableHeader><TableRow><TableHead>Match</TableHead>{participants.map(p => <TableHead key={p.participantId}>{p.displayName} ({p.participantId})</TableHead>)}</TableRow></TableHeader><TableBody>{rows.map(point => <TableRow key={point.matchId}><TableCell><Button variant="outline" onClick={() => onOpenMatch(point.matchId)}>View Match {point.sequence} details</Button></TableCell>{participants.map(p => {

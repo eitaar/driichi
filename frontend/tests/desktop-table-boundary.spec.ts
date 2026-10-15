@@ -36,8 +36,21 @@ test("phone Replay deep link retains metadata and a safe Back without renderer r
 
 test("phone Benchmark deep link omits private observer but preserves status and Room navigation", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const privateReads: string[] = [];
-  page.on("request", request => { if (request.url().endsWith("/live")) privateReads.push(request.url()); });
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    Object.assign(window, { tableWorkerStarts: 0 });
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        (window as unknown as { tableWorkerStarts: number }).tableWorkerStarts++;
+      }
+    };
+  });
+  const privateReads: string[] = [], rendererReads: string[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith("/live")) privateReads.push(request.url());
+    if (/table-scene|three-renderer|renderer\.worker/.test(request.url())) rendererReads.push(request.url());
+  });
   await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: { run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "running", reason: null, failed_match_id: null, roster: Array.from({ length: 4 }, (_, initial_seat) => ({ participant_id: `p${initial_seat}`, display_name: `Bot ${initial_seat}`, initial_seat, participant_kind: "built_in_bot", character_id: null })), matches: [], statistics: [] } }));
   await page.goto("/admin/benchmark/runs/run-1");
   await expect(page.getByRole("heading", { name: "Benchmark Run", exact: true })).toBeVisible();
@@ -46,6 +59,8 @@ test("phone Benchmark deep link omits private observer but preserves status and 
   await expect(page.getByText("Live table — all current hands")).toHaveCount(0);
   await expect(page.locator("canvas")).toHaveCount(0);
   expect(privateReads).toEqual([]);
+  expect(rendererReads).toEqual([]);
+  expect(await page.evaluate(() => (window as unknown as { tableWorkerStarts: number }).tableWorkerStarts)).toBe(0);
 });
 
 for (const fromDesktop of [false, true]) {
