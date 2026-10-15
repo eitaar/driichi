@@ -1,4 +1,5 @@
-import type { ResultStepId } from "./types";
+import type { ResultStepId, RoomPlayerSnapshot, RoomSnapshot } from "./types";
+import { seatPositions } from "./orientation";
 
 const MAX_ARRAY_LENGTH = 256;
 const MAX_ID_LENGTH = 128;
@@ -440,6 +441,26 @@ export function decodeFinalStandings(value: unknown, mode: string): FinalStandin
     players.push({ participant_id: participant, display_name: displayName, kind, seat, final_score: score, rank });
   }
   return { mode: object.mode, players, final_scores: finalScores };
+}
+
+export function resultRoster(room: RoomSnapshot | null): RoomPlayerSnapshot[] | null {
+  if (!room) return null;
+  const players = room.roster?.length ? room.roster : (room.match_players ?? []);
+  const count = seatPositions(room.game_mode).length;
+  if (players.length !== count || new Set(players.map((player) => player.participant_id)).size !== count
+    || players.some((player) => typeof player.participant_id !== "string" || !player.participant_id.trim() || player.participant_id.length > 128
+      || typeof player.display_name !== "string" || !player.display_name.trim() || player.display_name.length > 256)
+    || Array.from({ length: count }, (_, seat) => seat).some((seat) => players.filter((player) => player.seat === seat).length !== 1)) return null;
+  return players;
+}
+
+export function decodeRoomFinalStandings(room: RoomSnapshot | null): FinalStandings | null {
+  const result = decodeFinalStandings(room?.result, room?.game_mode ?? "");
+  const players = resultRoster(room);
+  if (!result || !players || players.length !== result.players.length || result.players.some((player) =>
+    players.filter((entry) => entry.seat === player.seat && entry.participant_id === player.participant_id).length !== 1,
+  )) return null;
+  return result;
 }
 
 export function resultStepKey(id: ResultStepId): string {

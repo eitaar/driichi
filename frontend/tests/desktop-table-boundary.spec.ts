@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const summary = { match_id: "saved-match", source: "room", room_name: "Saved room", game_mode: "4p-red-east", started_at: "2026-09-16T00:00:00Z", completed_at: "2026-09-16T00:10:00Z", file_size: 512, availability: "available", replay_available: true };
 
@@ -45,3 +47,65 @@ test("phone Benchmark deep link omits private observer but preserves status and 
   await expect(page.locator("canvas")).toHaveCount(0);
   expect(privateReads).toEqual([]);
 });
+
+for (const fromDesktop of [false, true]) {
+  test(`HumanLobby Post-Match standings survive ${fromDesktop ? "desktop-to-phone resize" : "initial phone load"}`, async ({ page }) => {
+    await page.setViewportSize({ width: fromDesktop ? 1280 : 390, height: 844 });
+    await page.addInitScript(() => {
+      sessionStorage.setItem("driichi:participant:123456", "P1");
+      const NativeWorker = window.Worker;
+      const resources = { starts: 0, active: 0 };
+      Object.assign(window, { tableWorkers: resources });
+      window.Worker = class extends NativeWorker {
+        constructor(url: string | URL, options?: WorkerOptions) {
+          super(url, options);
+          resources.starts += 1;
+          resources.active += 1;
+        }
+        terminate() { resources.active -= 1; super.terminate(); }
+      };
+    });
+    const players = [
+      { participant_id: "P1", display_name: "Mika", seat: 0, final_score: 30000, rank: 2 },
+      { participant_id: "B1", display_name: "Bot One", seat: 1, final_score: 45000, rank: 1 },
+      { participant_id: "B2", display_name: "Bot Two", seat: 2, final_score: 0, rank: 3 },
+    ];
+    const sent: string[] = [];
+    await page.route("**/api/v1/characters/human", route => route.fulfill({ json: [] }));
+    await page.route("**/assets/characters/player-red/*.webp", route => route.fulfill({ path: resolve("tests/fixtures/task12-characters/player-red", new URL(route.request().url()).pathname.split("/").at(-1)!) }));
+    const projection = JSON.parse(readFileSync(resolve("tests/fixtures/task12-projection.json"), "utf8")).projections["3p-red-east"];
+    projection.players = projection.players.map((player: object, seat: number) => ({ ...player, participant_id: players[seat].participant_id, display_name: players[seat].display_name }));
+    await page.routeWebSocket("**/ws/v1/rooms/123456/human", socket => {
+      socket.onMessage(message => sent.push(String(message)));
+      socket.send(JSON.stringify({ type: "snapshot", room: {
+        join_code: "123456", room_name: "Post-Match Room", game_mode: "3p-red-east", phase: "post_match", revision: 1,
+        participants: players.map(player => ({ ...player, kind: player.seat === 0 ? "human" : "built_in_bot", presence: "connected", selected: true, ready: false, character_id: "player-red", role: "none", controller: "interactive" })),
+        roster: players.map(player => ({ ...player, kind: "human", character_id: "player-red", controller: "interactive" })), match_players: [],
+        result: { mode: "ThreePlayerRedEast", players: players.map(player => ({ ...player, kind: player.seat === 0 ? "Human" : "BuiltInBot" })), final_scores: [30000, 45000, 0] },
+      }, state: projection }));
+    });
+    await page.goto("/room/123456/lobby");
+    await expect(page.getByRole("heading", { name: "Final standings" })).toBeVisible();
+    let desktopStarts = 0;
+    if (fromDesktop) {
+      await expect(page.locator("canvas")).toHaveCount(1);
+      desktopStarts = await page.evaluate(() => (window as unknown as { tableWorkers: { starts: number } }).tableWorkers.starts);
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
+    const standings = page.getByRole("list", { name: "Final standings" });
+    await expect(standings).toBeVisible();
+    await expect(standings.getByRole("listitem")).toHaveText(["1Bot One45,000", "2Mika30,000", "3Bot Two0"]);
+    await expect(standings.getByLabel("Rank 1")).toBeVisible();
+    await expect(page.locator("canvas")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { tableWorkers: { starts: number; active: number } }).tableWorkers)).toEqual({ starts: desktopStarts, active: 0 });
+    await expect(page.getByText("Mika / you", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Set Ready" })).toBeEnabled();
+    await page.getByRole("button", { name: "Return to Room", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+    expect(sent).toEqual([]);
+    await page.getByRole("button", { name: "Review final standings" }).click();
+    await expect(standings).toBeVisible();
+    await page.getByRole("button", { name: "Set Ready" }).click();
+    await expect.poll(() => sent.map(message => JSON.parse(message))).toEqual([{ type: "set_ready", preloaded_characters: ["player-red", "player-red", "player-red"] }]);
+  });
+}

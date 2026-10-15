@@ -25,7 +25,8 @@ import type {
 import { tileAssetUrl, tileLabel } from "./tiles";
 import { useGameplayViewportSupport } from "./viewport";
 import {
-  decodeFinalStandings,
+  decodeRoomFinalStandings,
+  resultRoster,
   decodeKyokuEndStep,
   resultStepKey,
   type KyokuEndStep,
@@ -80,17 +81,6 @@ function ownSeat(projection: ProjectedState | null): number {
 function roster(room: RoomSnapshot | null): RoomPlayerSnapshot[] {
   if (!room) return [];
   return room.roster?.length ? room.roster : (room.match_players ?? []);
-}
-
-function resultRoster(room: RoomSnapshot | null): RoomPlayerSnapshot[] | null {
-  if (!room) return null;
-  const players = roster(room);
-  const count = seatPositions(room.game_mode).length;
-  if (players.length !== count || new Set(players.map((player) => player.participant_id)).size !== count
-    || players.some((player) => typeof player.participant_id !== "string" || !player.participant_id.trim() || player.participant_id.length > 128
-      || typeof player.display_name !== "string" || !player.display_name.trim() || player.display_name.length > 256)
-    || Array.from({ length: count }, (_, seat) => seat).some((seat) => players.filter((player) => player.seat === seat).length !== 1)) return null;
-  return players;
 }
 
 function characterForSeat(
@@ -871,14 +861,11 @@ export function ResultsPanel({
   room: RoomSnapshot | null;
   assets: AssetState;
 }) {
-  const result = decodeFinalStandings(room?.result, room?.game_mode ?? "");
+  const result = decodeRoomFinalStandings(room);
   if (!result) return null;
   const ordered = result.players.slice().sort((left, right) => left.rank - right.rank);
   const first = ordered.find((player) => player.rank === 1)!;
-  const roomRoster = resultRoster(room);
-  if (!roomRoster || roomRoster.length !== result.players.length || result.players.some((player) =>
-    roomRoster.filter((entry) => entry.seat === player.seat && entry.participant_id === player.participant_id).length !== 1,
-  )) return null;
+  const roomRoster = resultRoster(room)!;
   const firstName = first.display_name;
   const firstAsset = roomRoster.find((entry) => entry.participant_id === first.participant_id)?.character_id;
 
