@@ -227,7 +227,7 @@ test.describe("authoritative result surfaces", () => {
     await expect(review).toBeVisible();
     await expect(review).toBeHidden({ timeout: 3000 });
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
-    await expect(page.locator("summary").filter({ hasText: "Settings" })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeFocused();
   });
 
   test("phone results expand read-only metadata without a renderer or confirmation", async ({ page }) => {

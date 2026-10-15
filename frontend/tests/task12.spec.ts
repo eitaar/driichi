@@ -1058,8 +1058,8 @@ test("keeps Settings accessible when opened", async ({ page }) => {
   await page.goto("/room/123456/lobby");
   await expectRenderedTable(page);
   await page.getByText("Settings", { exact: true }).click();
-  await expect(page.locator(".audio-settings[open]")).toBeVisible();
-  await expectNoSeriousOrCriticalViolations(page, ".gameplay-shell");
+  await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
+  await expectNoSeriousOrCriticalViolations(page, ".gameplay-settings");
 });
 
 test("omits the Action row when no Decision is open", async ({ page }) => {
@@ -1085,7 +1085,7 @@ for (const viewport of requiredViewports) {
     ];
     await installSocket(page, "4p-red-east", popupState);
     await page.goto("/room/123456/lobby");
-    const trigger = page.getByRole("button", { name: "Chi (2)" });
+    const trigger = page.locator('.action-buttons button[aria-haspopup="dialog"]');
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "Choose a legal candidate" });
     await expect(dialog).toHaveAttribute("aria-modal", "true");
@@ -1100,7 +1100,7 @@ for (const viewport of requiredViewports) {
       dialog,
       page.locator(".table-hit-layer"),
     );
-    await expectNoAxeViolations(page, ".gameplay-main");
+    await expectNoAxeViolations(page, ".candidate-popup");
     const candidateButtons = dialog.locator(".candidate-list button");
     await candidateButtons.last().focus();
     await page.keyboard.press("Tab");
@@ -1108,7 +1108,7 @@ for (const viewport of requiredViewports) {
     await page.keyboard.press("Shift+Tab");
     await expect(candidateButtons.last()).toBeFocused();
 
-    const backgroundPass = page.getByRole("button", { name: "Pass" });
+    const backgroundPass = page.locator('.action-buttons [data-action-id="pass-1"]');
     await backgroundPass.focus();
     await expect(backgroundPass).not.toBeFocused();
     await expect(candidateButtons.last()).toBeFocused();

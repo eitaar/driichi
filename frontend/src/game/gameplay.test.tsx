@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -44,6 +45,28 @@ function liveRoom(content: unknown = { Win: resultWin }, remaining = 5000, index
 }
 const liveProjection: ProjectedState = { audience: "player", viewer_seat: 0, mode: "4p-red-east", player_count: 4, players: [0, 1, 2, 3].map((seat) => player(seat, `Seat ${seat}`)), decision: null };
 const liveProps = { projection: liveProjection, status: "connected" as const, reason: "", commandError: "", connectionGeneration: 0, send: () => true, reducedMotion: false, participantId: "p0" };
+
+describe("gameplay HUD settings", () => {
+  it("opens with Enter, preserves audio preferences and restores focus on Escape", async () => {
+    localStorage.setItem("driichi:audio-settings", JSON.stringify({ master: 0.4, sfx: 0.6, voice: 0.8, voiceEnabled: false }));
+    const user = userEvent.setup();
+    render(<GameplaySurface {...liveProps} room={null} />);
+    const trigger = screen.getByRole("button", { name: "Settings" });
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    expect(within(settings).getByLabelText("Master", { selector: "input" })).toHaveAttribute("aria-valuenow", "0.4");
+    const voice = within(settings).getByRole("switch", { name: "Voice enabled" });
+    expect(voice).not.toBeChecked();
+    await user.click(voice);
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("switch", { name: "Voice enabled" })).toBeChecked();
+    expect(JSON.parse(localStorage.getItem("driichi:audio-settings")!)).toEqual({ master: 0.4, sfx: 0.6, voice: 0.8, voiceEnabled: true });
+    localStorage.removeItem("driichi:audio-settings");
+  });
+});
 
 describe("result surfaces", () => {
   it("moves the only Continue into Review and invalidates Review on step change and expiry", async () => {
@@ -113,9 +136,10 @@ describe("result surfaces", () => {
   });
   it("offers local surface and surround images inside the existing Settings without replacing audio controls", () => {
     render(<GameplaySurface {...liveProps} room={liveRoom()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByLabelText("Table surface image")).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
     expect(screen.getByLabelText("Table surround image")).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
-    expect(screen.getByLabelText("Master")).toBeInTheDocument();
+    expect(screen.getByLabelText("Master", { selector: "input" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear surface image", hidden: true })).toBeDisabled();
   });
 

@@ -32,6 +32,11 @@ import {
 } from "./results";
 import { DrawResult, RoundWinSurface, ScoreTransfer, ResultsPanel, type AssetState } from "./result-presentation";
 import { Button } from "../components/ui/button";
+import { Alert, AlertDescription } from "../components/ui/alert";
+import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription, DialogClose } from "../components/ui/dialog";
+import { Field, FieldGroup, FieldLabel } from "../components/ui/field";
+import { Slider } from "../components/ui/slider";
+import { Switch } from "../components/ui/switch";
 import { Sheet, SheetTrigger, SheetContent, SheetTitle, SheetDescription } from "../components/ui/sheet";
 import "./result.css";
 
@@ -285,53 +290,26 @@ function AudioSettingsPanel({ manager, appearance }: { manager: AudioManager; ap
   const update = (patch: Partial<AudioSettings>) =>
     setSettings(manager.setSettings(patch));
   return (
-    <details className="audio-settings">
-      <summary>Settings</summary>
-      <div className="audio-settings-body">
-        <label htmlFor="audio-master">Master</label>
-        <input
-          id="audio-master"
-          aria-label="Master"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={settings.master}
-          onChange={(event) => update({ master: Number(event.target.value) })}
-        />
-        <label htmlFor="audio-sfx">SFX</label>
-        <input
-          id="audio-sfx"
-          aria-label="SFX"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={settings.sfx}
-          onChange={(event) => update({ sfx: Number(event.target.value) })}
-        />
-        <label htmlFor="audio-voice">Voice</label>
-        <input
-          id="audio-voice"
-          aria-label="Voice"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={settings.voice}
-          onChange={(event) => update({ voice: Number(event.target.value) })}
-        />
-        <label className="audio-toggle">
-          <input
-            type="checkbox"
-            checked={settings.voiceEnabled}
-            onChange={(event) => update({ voiceEnabled: event.target.checked })}
-          />
-          Voice enabled
-        </label>
-        <TableAppearanceSettings settings={appearance} />
-      </div>
-    </details>
+    <Dialog>
+      <DialogTrigger render={<Button variant="secondary" data-gameplay-settings className="min-h-11" />}>Settings</DialogTrigger>
+      <DialogContent className="gameplay-settings max-h-[calc(100dvh-2rem)] overflow-y-auto">
+        <DialogTitle>Settings</DialogTitle>
+        <DialogDescription>Audio preferences and local table images.</DialogDescription>
+        <FieldGroup>
+          {([['master', 'Master'], ['sfx', 'SFX'], ['voice', 'Voice']] as const).map(([key, label]) => (
+            <Field key={key}>
+              <FieldLabel id={`audio-${key}-label`}>{label}</FieldLabel>
+              <Slider aria-labelledby={`audio-${key}-label`} min={0} max={1} step={0.05} value={settings[key]} onValueChange={(value) => update({ [key]: value as number })} />
+            </Field>
+          ))}
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor="audio-voice-enabled">Voice enabled</FieldLabel>
+            <Switch id="audio-voice-enabled" checked={settings.voiceEnabled} onCheckedChange={(value) => update({ voiceEnabled: value })} />
+          </Field>
+          <TableAppearanceSettings settings={appearance} />
+        </FieldGroup>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -367,22 +345,17 @@ function GameplayToast({
   return (
     <div className="gameplay-toast-stack">
       {(status === "reconnecting" || status === "error") && (
-        <p className="gameplay-toast" role="status">
+        <Alert role="status"><AlertDescription>
           {status === "error"
             ? "Network connection interrupted… Retrying while the last authoritative table state remains visible."
             : "Reconnecting… The last authoritative table state remains visible."}
-        </p>
+        </AlertDescription></Alert>
       )}
       {commandError && (
-        <p className="gameplay-toast" role="alert">
-          Action rejected: {commandError}
-        </p>
+        <Alert variant="destructive"><AlertDescription>Action rejected: {commandError}</AlertDescription></Alert>
       )}
       {actionError && (
-        <p className="gameplay-toast" role="alert">
-          Action rejected: {actionError}. Retry while this Decision remains
-          open.
-        </p>
+        <Alert variant="destructive"><AlertDescription>Action rejected: {actionError}. Retry while this Decision remains open.</AlertDescription></Alert>
       )}
     </div>
   );
@@ -453,113 +426,58 @@ function CandidatePopup({
   id: string;
   disabled: boolean;
 }) {
-  const popupRef = useRef<HTMLDialogElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  const popupRef = useRef<HTMLDivElement>(null);
+  const candidateRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const [returnFocus] = useState(() => document.activeElement instanceof HTMLElement ? document.activeElement : null);
   useEffect(() => {
-    const popup = popupRef.current;
-    if (!popup) return;
-    const returnFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    try {
-      if (!popup.open) popup.showModal();
-    } catch {
-      popup.setAttribute("open", "");
-    }
-    const focusableSelector = [
-      "button:not([disabled])",
-      "[href]",
-      "input:not([disabled])",
-      "select:not([disabled])",
-      "textarea:not([disabled])",
-      "[tabindex]:not([tabindex=\"-1\"])",
-    ].join(",");
-    const focusable = () =>
-      Array.from(popup.querySelectorAll<HTMLElement>(focusableSelector));
-    const initialFocus =
-      popup.querySelector<HTMLButtonElement>(
-        ".candidate-list button:not([disabled])",
-      ) ?? popup.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button");
-    initialFocus?.focus();
-    const onCancel = (event: Event) => {
-      event.preventDefault();
-      closeRef.current();
+    // Base UI traps Tab; preserve the native dialog's programmatic focus boundary too.
+    let lastFocus: HTMLElement | null = null;
+    const containFocus = (event: FocusEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && popupRef.current?.contains(target)) lastFocus = target;
+      else (lastFocus && !lastFocus.matches(":disabled") ? lastFocus : closeRef.current)?.focus();
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const elements = focusable();
-      if (elements.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey) {
-        if (active === first || !popup.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !popup.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    popup.addEventListener("cancel", onCancel);
-    popup.addEventListener("keydown", onKeyDown);
-    return () => {
-      popup.removeEventListener("cancel", onCancel);
-      popup.removeEventListener("keydown", onKeyDown);
-      if (popup.open) popup.close();
-      else popup.removeAttribute("open");
-      if (returnFocus?.isConnected) returnFocus.focus();
-    };
+    document.addEventListener("focusin", containFocus);
+    return () => document.removeEventListener("focusin", containFocus);
   }, []);
   useEffect(() => {
-    const popup = popupRef.current;
-    if (!popup) return;
-    const firstCandidate = popup.querySelector<HTMLButtonElement>(
-      ".candidate-list button:not([disabled])",
-    );
-    if (!disabled) {
-      firstCandidate?.focus();
-      return;
-    }
-    if (document.activeElement instanceof HTMLButtonElement && document.activeElement.disabled) {
-      popup.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button")?.focus();
-    }
+    if (disabled) closeRef.current?.focus();
+    else candidateRef.current?.focus();
   }, [disabled]);
   return (
-    <dialog
-      ref={popupRef}
-      id={id}
-      className="candidate-popup"
-      aria-modal="true"
-      aria-label="Choose a legal candidate"
-      aria-busy={disabled ? "true" : "false"}
-    >
-      <div className="candidate-popup-head">
-        <span>Choose a line</span>
-        <button type="button" className="text-button" onClick={onClose}>
-          Close
-        </button>
-      </div>
-      <div className="candidate-list">
-        {actions.map((action) => (
-          <button
-            type="button"
-            className="button button-secondary"
-            key={action.action_id}
-            data-action-id={action.action_id}
-            disabled={disabled}
-            onClick={() => onAction(action)}
-          >
-            {describeAction(action)}
-          </button>
-        ))}
-      </div>
-    </dialog>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent
+        ref={popupRef}
+        id={id}
+        className="candidate-popup"
+        showCloseButton={false}
+        initialFocus={() => disabled ? closeRef.current : candidateRef.current}
+        finalFocus={() => returnFocus?.isConnected ? returnFocus : null}
+        aria-modal="true"
+        aria-busy={disabled ? "true" : "false"}
+      >
+        <DialogTitle>Choose a legal candidate</DialogTitle>
+        <DialogDescription>Choose a line from the offered actions.</DialogDescription>
+        <DialogClose render={<Button ref={closeRef} variant="ghost" className="min-h-11" />}>Close</DialogClose>
+        <div className="candidate-list">
+          {actions.map((action, index) => (
+            <Button
+              ref={index === 0 ? candidateRef : undefined}
+              type="button"
+              variant="secondary"
+              className="min-h-11 justify-start"
+              key={action.action_id}
+              data-action-id={action.action_id}
+              disabled={disabled}
+              onClick={() => onAction(action)}
+            >
+              {describeAction(action)}
+            </Button>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -622,26 +540,28 @@ function ActionDeck({
           (kind) => {
             const action = simpleByKind.get(kind);
             return action ? (
-              <button
+              <Button
                 key={kind}
                 type="button"
-                className={`button ${kind === "pass" ? "button-secondary" : "button-primary"}`}
+                variant={kind === "pass" ? "secondary" : "default"}
+                className="min-h-11"
                 data-action-id={action.action_id}
                 disabled={disabled}
                 onClick={() => onAction(action)}
               >
                 {actionGroupLabel(kind)}
-              </button>
+              </Button>
             ) : null;
           },
         )}
         {candidateButtons.map(({ kind, candidates }) => {
           const multiple = candidates.length > 1;
           return (
-            <button
+            <Button
               key={kind}
               type="button"
-              className="button button-secondary"
+              variant="secondary"
+              className="min-h-11"
               data-action-id={candidates.length === 1 ? candidates[0].action_id : ""}
               disabled={disabled}
               aria-haspopup={multiple ? "dialog" : undefined}
@@ -656,7 +576,7 @@ function ActionDeck({
               {candidates.length === 1
                 ? actionGroupLabel(kind)
                 : `${actionGroupLabel(kind)} (${candidates.length})`}
-            </button>
+            </Button>
           );
         })}
       </div>
@@ -962,7 +882,7 @@ export function GameplaySurface({
                   {!reviewOpen && resultAction}
                   <Sheet open={reviewOpen} onOpenChange={open => setReviewKey(open ? stepKey : "")}>
                     <SheetTrigger render={<Button variant="outline" disabled={!reviewAllowed} />}>Review</SheetTrigger>
-                    <SheetContent className="result-review overflow-y-auto" finalFocus={() => confirmRef.current && !confirmRef.current.disabled ? confirmRef.current : tableSheenRef.current?.querySelector<HTMLElement>("summary") ?? null}>
+                    <SheetContent className="result-review overflow-y-auto" finalFocus={() => confirmRef.current && !confirmRef.current.disabled ? confirmRef.current : tableSheenRef.current?.querySelector<HTMLElement>("[data-gameplay-settings]") ?? null}>
                       <SheetTitle>Review result</SheetTitle>
                       <SheetDescription>The server deadline continues during Review.</SheetDescription>
                       {reviewOpen && <><div className="result-details">{resultView}</div><p aria-label="Result time remaining">{formatSeconds(resultRemaining)}s</p>{resultAction}</>}

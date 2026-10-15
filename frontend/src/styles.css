@@ -4,10 +4,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+
 @font-face{font-family:Geist;src:url('./assets/fonts/Geist-Variable.woff2') format('woff2');font-style:normal;font-weight:100 900;font-display:swap}
 @font-face{font-family:'Geist Mono';src:url('./assets/fonts/GeistMono-Variable.woff2') format('woff2');font-style:normal;font-weight:100 900;font-display:swap}
 
 :root {
+  --hud-surface: var(--card);
+  --hud-filter: none;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -74,6 +77,13 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+}
+
+@supports (backdrop-filter: blur(8px)) {
+  :root { --hud-surface: color-mix(in oklch, var(--card) 94%, transparent); --hud-filter: blur(8px); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root { --hud-surface: var(--card); --hud-filter: none; }
 }
 
 @theme inline {
@@ -240,52 +250,18 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   display: flex;
   align-items: center;
   gap: 12px;
-  color: #f5eddb;
+  color: var(--foreground);
 }
 .gameplay-controls .connection-state {
   align-self: auto;
   margin: 0;
   padding: 8px 10px;
-  border: 1px solid rgba(183, 141, 76, .55);
-  background: #0d1530;
-  color: #e7dfcd;
+  border: 1px solid var(--border);
+  background: var(--hud-surface);
+  color: var(--foreground);
   font-size: 9px;
 }
-.audio-settings {
-  position: relative;
-  color: #ded6c5;
-  font-family: 'Geist Mono', monospace;
-  font-size: 10px;
-  letter-spacing: .11em;
-  text-transform: uppercase;
-}
-.audio-settings summary {
-  cursor: pointer;
-  padding: 8px 10px;
-  border: 1px solid rgba(183, 141, 76, .7);
-  background: #0d1530;
-  list-style: none;
-}
-.audio-settings summary::-webkit-details-marker { display: none; }
-.audio-settings[open] summary { border-color: #f0c76c; color: #fff4d7; }
-.audio-settings-body {
-  position: absolute;
-  z-index: 7;
-  inset-inline-end: 0;
-  inset-block-start: calc(100% + 8px);
-  width: 235px;
-  padding: 16px;
-  border: 1px solid rgba(183, 141, 76, .7);
-  background: #0d1530;
-  box-shadow: 0 18px 40px rgba(2, 5, 20, .52);
-  display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 12px 10px;
-  color: #c6c5c2;
-}
-.audio-settings-body input[type=range] { height: 24px; padding: 0; accent-color: #d0a24f; background: transparent; border: 0; }
-.audio-toggle { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px; color: #e3dccd; }
-.audio-toggle input { width: 16px; height: 16px; accent-color: #d0a24f; }
+.gameplay-settings [data-slot=slider] { padding-block: 8px; }
 .gameplay-toast-stack {
   position: absolute;
   z-index: 7;
@@ -296,17 +272,6 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   gap: 8px;
   pointer-events: none;
 }
-.gameplay-toast {
-  margin: 0;
-  padding: 9px 12px;
-  border-inline-start: 2px solid #d0a24f;
-  background: #0d1530;
-  color: #f2ead8;
-  box-shadow: 0 14px 34px rgba(2, 5, 20, .38);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.gameplay-toast[role=alert] { border-inline-start-color: #ef8d84; }
 .three-table { position: absolute; inset: 0; overflow: hidden; background: radial-gradient(circle at 50% 42%, #18352f 0, #111b19 48%, #0b0e11 76%); }
 .three-table canvas { display: block; width: 100% !important; height: 100% !important; }
 .three-table__fallback { position: absolute; z-index: 1; inset: 42% 24% auto; padding: 12px; border: 1px solid rgba(154, 112, 66, .7); background: rgba(11, 14, 17, .92); color: #eee5d2; text-align: center; }
@@ -432,10 +397,9 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   gap: 12px;
   min-height: 46px;
   padding: 4px 8px;
-  border: 1px solid rgba(154, 112, 66, .86);
-  background: rgba(11, 14, 17, .95);
-  color: #eee5d2;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, .44), inset 0 1px 0 rgba(238, 229, 210, .08);
+  border: 1px solid var(--border);
+  background: var(--hud-surface);
+  color: var(--foreground);
 }
 .action-deck-label {
   min-width: 132px;
@@ -445,12 +409,12 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   gap: 2px 10px;
 }
 .action-deck .eyebrow { margin: 0; font-size: 9px; }
-.action-deck-label strong { color: #eee5d2; font-size: 12px; }
+.action-deck-label strong { color: var(--foreground); font-size: 12px; }
 .action-deck-label [data-testid=decision-timer] {
   grid-column: 2;
   grid-row: 1 / 3;
   margin-inline-start: auto;
-  color: #f0c76c;
+  color: var(--foreground);
   font: 600 12px 'Geist Mono', monospace;
   letter-spacing: .04em;
   white-space: nowrap;
@@ -463,48 +427,8 @@ input:focus{border-color:var(--accent-bright);background:var(--ink-panel)}
   gap: 8px;
   margin-block-start: 0;
 }
-.action-buttons .button,
-.candidate-list .button {
-  min-height: 40px;
-  height: 40px;
-  padding: 0 13px;
-  border: 1px solid #c59a51;
-  background: #101d42;
-  color: #fff4d7;
-  font-size: 11px;
-  box-shadow: inset 0 1px 0 rgba(255, 239, 195, .1);
-}
-.action-buttons .button:hover:not(:disabled),
-.action-buttons .button:focus-visible,
-.candidate-list .button:hover:not(:disabled),
-.candidate-list .button:focus-visible {
-  border-color: #ffe19a;
-  background: #182a57;
-  color: #fff8e9;
-}
-.action-buttons .button:focus-visible,
-.candidate-list .button:focus-visible { outline: 3px solid #ffe19a; outline-offset: 3px; }
-.action-buttons .button:disabled,
-.candidate-list .button:disabled { border-color: #6a5d48; background: #18203a; color: #aaa18f; }
-.candidate-popup {
-  position: fixed;
-  z-index: 7;
-  inset: auto 17vw calc(24dvh + 60px) auto;
-  width: min(265px, calc(100vw - 32px));
-  max-width: none;
-  height: auto;
-  margin: 0;
-  padding: 13px;
-  border: 1px solid #c59a51;
-  background: #0d1530;
-  color: #eee5d2;
-  box-shadow: 0 18px 42px rgba(2, 5, 20, .58);
-}
-.candidate-popup::backdrop { background: rgba(5, 7, 9, .28); }
-.candidate-popup-head { display: flex; align-items: center; justify-content: space-between; margin-block-end: 10px; color: #ded6c5; font: 10px 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: .12em; }
-.candidate-popup-head .text-button { font: 10px 'Geist Mono', monospace; text-transform: uppercase; color: #f0c76c; }
+.candidate-popup { max-height: calc(100dvh - 2rem); overflow-y: auto; }
 .candidate-list { display: grid; gap: 7px; }
-.candidate-list .button { justify-content: flex-start; }
 .gameplay-blocking-state {
   width: min(600px, 100%);
   padding: clamp(34px, 7vw, 80px);

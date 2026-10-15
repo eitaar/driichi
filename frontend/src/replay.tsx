@@ -16,6 +16,8 @@ import { TableAppearanceSettings, useTableAppearance } from "./game/table-appear
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
 import { AppShell } from "./components/app-shell";
+import { Button } from "./components/ui/button";
+import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from "./components/ui/dialog";
 import { DesktopTableBoundary, DesktopTableFallback } from "./components/desktop-table-boundary";
 import "./replay.css";
 
@@ -357,7 +359,7 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
         data-motion={reducedMotion || rate > 2 ? "static" : "cinematic"}
       >
         <div className="replay-table-stage gameplay-shell">
-          <div className="gameplay-controls"><details className="audio-settings"><summary>Settings</summary><div className="audio-settings-body"><TableAppearanceSettings settings={appearance} /></div></details></div>
+          <div className="gameplay-controls"><Dialog><DialogTrigger render={<Button variant="secondary" className="min-h-11" />}>Settings</DialogTrigger><DialogContent className="gameplay-settings max-h-[calc(100dvh-2rem)] overflow-y-auto"><DialogTitle>Settings</DialogTitle><DialogDescription>Local table images.</DialogDescription><TableAppearanceSettings settings={appearance} /></DialogContent></Dialog></div>
           <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} surface="replay" appearance={appearance.appearance} /></div>
           {win && win.event_index === frame.event_index && <div className="round-win-overlay"><RoundWinSurface key={frame.event_index} result={win} room={room} assets={assets} reducedMotion={reducedMotion || rate > 2} /></div>}
           {settlement && <div className="round-win-overlay"><ScoreTransfer settlement={settlement} room={room} /></div>}

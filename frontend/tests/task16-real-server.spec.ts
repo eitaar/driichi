@@ -512,12 +512,12 @@ test("serves the embedded gameplay with visible tiles under its CSP", async ({ p
   await expect(page.getByRole("button", { name: "Chi (2)" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Pass" })).toBeEnabled();
 
-  const settings = page.locator(".audio-settings summary");
+  const settings = page.getByRole("button", { name: "Settings", exact: true });
   await tabTo(page, settings);
   await page.keyboard.press("Enter");
-  await expect(page.locator(".audio-settings[open]")).toBeVisible();
-  await page.keyboard.press("Enter");
-  await expect(page.locator(".audio-settings[open]")).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(settings).toBeFocused();
 
   const chiTrigger = page.getByRole("button", { name: "Chi (2)" });
   await tabTo(page, chiTrigger);
@@ -609,12 +609,12 @@ async function verifyReplayAndOpenRoutes(
   await adminPage.locator(".skip-link").focus();
   await expect(adminPage.locator(".skip-link")).toBeFocused();
   await adminPage.keyboard.press("Tab");
-  const settings = adminPage.locator(".audio-settings summary");
+  const settings = adminPage.getByRole("button", { name: "Settings", exact: true });
   await expect(settings).toBeFocused();
   await adminPage.keyboard.press("Enter");
-  await expect(adminPage.locator(".audio-settings[open]")).toBeVisible();
-  await adminPage.keyboard.press("Enter");
-  await expect(adminPage.locator(".audio-settings[open]")).toHaveCount(0);
+  await expect(adminPage.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
+  await adminPage.keyboard.press("Escape");
+  await expect(settings).toBeFocused();
   await adminPage.keyboard.press("Tab");
   await expect(replayControls.getByRole("slider", { name: /replay position/i })).toBeFocused();
 }

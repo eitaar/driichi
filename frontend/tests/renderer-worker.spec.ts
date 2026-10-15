@@ -185,6 +185,7 @@ test("cached Replay navigation resets local images and playback and retires the 
     await expect(page.getByRole("button", { name: `Clear ${target} image`, exact: true })).toBeEnabled();
   }
   await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+  await page.keyboard.press("Escape");
   await page.getByRole("combobox", { name: "Playback speed" }).selectOption("2");
   await page.getByRole("button", { name: "Next Event", exact: true }).click();
   await expect(page.getByRole("slider", { name: "Replay position" })).toHaveValue("1");
@@ -192,12 +193,11 @@ test("cached Replay navigation resets local images and playback and retires the 
   expect(oldWorker).toBeDefined();
   await page.goBack();
   await expect(page.getByRole("heading", { name: "CACHED-B Replay", exact: true })).toBeVisible();
-  if (!await page.locator("details.audio-settings").evaluate(node => (node as HTMLDetailsElement).open)) {
-    await page.getByText("Settings", { exact: true }).click();
-  }
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   for (const target of ["surface", "surround"]) {
     await expect(page.getByRole("button", { name: `Clear ${target} image`, exact: true })).toBeDisabled();
   }
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("slider", { name: "Replay position" })).toHaveValue("0");
   await expect(page.getByRole("combobox", { name: "Playback speed" })).toHaveValue("1");
   await expect.poll(() => page.workers().includes(oldWorker)).toBe(false);

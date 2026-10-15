@@ -1,6 +1,6 @@
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadLocalTableImage, useTableAppearance } from "./table-appearance";
+import { loadLocalTableImage, TableAppearanceSettings, useTableAppearance } from "./table-appearance";
 
 const header = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
 function file(type = "image/png", size = 12, bytes = header) {
@@ -16,6 +16,19 @@ beforeEach(() => { pending.length = 0; decode.mockClear(); vi.stubGlobal("create
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("local table images", () => {
+  it("associates persistent validation errors and local-only privacy with each image field", async () => {
+    function Settings() { return <TableAppearanceSettings settings={useTableAppearance()} />; }
+    render(<Settings />);
+    const input = screen.getByLabelText("Table surface image");
+    expect(input).toHaveAccessibleDescription(expect.stringContaining("never uploaded"));
+    fireEvent.change(input, { target: { files: [file("image/svg+xml")] } });
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("Choose a PNG, JPEG or WebP image up to 10 MB.");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription(expect.stringContaining("Choose a PNG"));
+    expect(screen.getByLabelText("Table surround image")).not.toHaveAttribute("aria-invalid", "true");
+    expect(decode).not.toHaveBeenCalled();
+  });
   it("rejects unsupported, forged and oversized files before any pixel decode", async () => {
     for (const value of [file("image/svg+xml"), file("image/png", 10 * 1024 * 1024 + 1), file("image/png", 12, new Uint8Array(12))]) {
       await expect(loadLocalTableImage(value, new AbortController().signal)).rejects.toThrow();
