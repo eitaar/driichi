@@ -119,6 +119,42 @@ function savedReplay(mode: string) {
 }
 
 test.describe("authoritative result surfaces", () => {
+  test("compact phone Win shows the validated Character and awarded points before Expand without renderer resources", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      const Native = window.Worker;
+      Object.assign(window, { resultWorkers: 0 });
+      window.Worker = class extends Native {
+        constructor(url: string | URL, options?: WorkerOptions) {
+          super(url, options);
+          (window as unknown as { resultWorkers: number }).resultWorkers++;
+        }
+      };
+    });
+    const reads: string[] = [];
+    page.on("request", request => { if (/\/live$|table-scene|three-renderer|renderer\.worker|three-table-worker|\.wasm/.test(request.url())) reads.push(request.url()); });
+    await installAssets(page);
+    await installSocket(page);
+    await page.goto("/room/123456/lobby");
+    await expect(page.getByRole("heading", { name: "Desktop required for the 3D table" })).toBeVisible();
+    await page.evaluate(step => {
+      const browser = window as unknown as { __room: Record<string, unknown>; __state: unknown; __socket: { emit(value: unknown): void } };
+      browser.__socket.emit({ type: "game_update", room: { ...browser.__room, revision: 13, kyoku_end: step }, state: browser.__state });
+    }, step);
+    const summary = page.getByRole("region", { name: "Match result", exact: true });
+    await expect(summary.getByRole("heading", { name: "Mika · Ron" })).toBeVisible();
+    await expect(summary.getByText("1,000 points", { exact: true })).toBeVisible();
+    const portrait = summary.getByRole("img", { name: "Mika portrait", exact: true });
+    await expect(portrait).toBeVisible();
+    expect(await portrait.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
+    await summary.getByRole("button", { name: "Expand" }).click();
+    await expect(page.getByRole("dialog").getByRole("group", { name: "Winning hand", exact: true })).toBeVisible();
+    await expect(page.locator("canvas")).toHaveCount(0);
+    expect(reads).toEqual([]);
+    expect(await page.evaluate(() => (window as unknown as { resultWorkers: number }).resultWorkers)).toBe(0);
+  });
   test("phone Replay exposes chapter metadata and saved standings without playback resources", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const resources: string[] = [];

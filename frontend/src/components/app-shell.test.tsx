@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { App } from "../app";
 import { AppShell } from "./app-shell";
+import { ThemeProvider } from "./theme-provider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 it("retains confirmed success toast across navigation", async () => {
@@ -15,6 +17,21 @@ it("retains confirmed success toast across navigation", async () => {
   fireEvent.click(screen.getByRole("link", { name: "Open Admin" }));
   expect(await screen.findByRole("heading", { name: "Rooms" })).toBeVisible();
   expect(screen.getByText("Signed in")).toBeVisible();
+});
+
+it("exposes the persisted theme choice through public navigation", async () => {
+  window.history.replaceState({}, "", "/");
+  localStorage.removeItem("driichi-theme");
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("[]")));
+  render(<App />);
+  const user = userEvent.setup();
+  expect(screen.getByRole("combobox", { name: "Theme" })).toHaveTextContent("System");
+  for (const [label, value] of [["Dark", "dark"], ["Light", "light"], ["System", "system"]]) {
+    await user.click(screen.getByRole("combobox", { name: "Theme" }));
+    await user.click(await screen.findByRole("option", { name: label }));
+    expect(localStorage.getItem("driichi-theme")).toBe(value);
+    expect(document.documentElement.classList.contains("dark")).toBe(value === "dark");
+  }
 });
 
 it("guest navigation contains no Admin-only links", () => {
@@ -41,7 +58,7 @@ it.each([["/admin", "Rooms"], ["/admin/benchmark/runs/run-1", "Benchmarks"], ["/
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
   window.history.replaceState({}, "", path);
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("[]")));
-  render(<QueryClientProvider client={new QueryClient()}><AppShell variant="admin"><p>Workspace</p></AppShell></QueryClientProvider>);
+  render(<QueryClientProvider client={new QueryClient()}><ThemeProvider><AppShell variant="admin"><p>Workspace</p></AppShell></ThemeProvider></QueryClientProvider>);
   const nav = await screen.findByRole("navigation", { name: "Admin" });
   expect(within(nav).getByRole("link", { name: label })).toHaveAttribute("data-active");
   expect(within(nav).getAllByRole("link").filter(link => link.hasAttribute("data-active"))).toHaveLength(1);

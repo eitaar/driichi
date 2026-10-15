@@ -13,15 +13,19 @@ function analytics(n = 60): Extract<RunAnalytics, { kind: "ready" }> {
 it("shows four families and keeps full-run cumulative values with a separately labeled recent-window net", async () => {
   render(<BenchmarkCharts analytics={analytics()} onOpenMatch={vi.fn()} />);
   for (const name of ["Cumulative net score", "Moving-average rank", "Rank distribution", "Per-Match net score"]) expect(screen.getByRole("heading", { name })).toBeVisible();
-  fireEvent.click(screen.getByRole("combobox", { name: "Cumulative net score window" }));
-  const option = within(await screen.findByRole("listbox")).getByRole("option", { name: "Recent 50" });
-  fireEvent.pointerDown(option, { pointerType: "mouse" }); fireEvent.click(option);
+  for (const name of ["Cumulative net score window", "Moving-average rank window", "Per-Match net score window"]) expect(screen.getByRole("combobox", { name })).toHaveTextContent("Recent 50");
+  expect(screen.getAllByText("Sample n = 50 of 60 completed Matches.")).toHaveLength(3);
   expect(screen.getByText(/Window net:.*Bot 0.*5,000/)).toBeVisible();
+  fireEvent.click(screen.getByRole("combobox", { name: "Cumulative net score window" }));
+  const option = within(await screen.findByRole("listbox")).getByRole("option", { name: "Full Run" });
+  fireEvent.pointerDown(option, { pointerType: "mouse" }); fireEvent.click(option);
+  expect(screen.getByText("Sample n = 60 of 60 completed Matches.")).toBeVisible();
+  expect(screen.queryByText(/Window net:/)).not.toBeInTheDocument();
   const statistics = screen.getByRole("table", { name: "Participant statistics" });
   expect(statistics).toHaveTextContent("6,000");
   expect(within(statistics).getByRole("columnheader", { name: "Rank 1 count / rate" })).toBeVisible();
   expect(within(statistics).getAllByText("60 / 100.0%")).toHaveLength(3);
-  expect(screen.getByLabelText("Moving-average rank window")).toHaveTextContent("Full Run");
+  expect(screen.getByLabelText("Moving-average rank window")).toHaveTextContent("Recent 50");
   expect(screen.getByText("All completed Matches: n = 60; denominator per Participant.")).toBeVisible();
   expect(screen.queryByText("Rank 4")).not.toBeInTheDocument();
 });

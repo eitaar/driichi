@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
+import { verifyReplayControls } from "./support/replay-controls";
+
 test.describe.configure({ mode: "serial" });
 
 const characterFixtureRoot = resolve(
@@ -69,6 +71,13 @@ const replay = {
     replayFrame(2, "end_game"),
   ],
 };
+
+test("live-service Replay control helper follows the fixture-backed chapter and Settings keyboard order", async ({ page }) => {
+  await installReplayFixtures(page);
+  await page.goto("/admin/replays/MATCH15");
+  await expect(page.getByTestId("three-table")).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+  await verifyReplayControls(page);
+});
 
 test("chapter jumps retain playback and ordinary seeks pause the same clock", async ({ page }) => {
   const frames = Array.from({ length: 40 }, (_, index) => ({ ...replayFrame(index, index % 2 === 0 ? "start_kyoku" : "tsumo"),

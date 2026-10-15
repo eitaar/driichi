@@ -95,7 +95,9 @@ export function MobileResultSummary({ room, onReturn }: { room: RoomSnapshot; on
   if (!final && !winner && !settlement) return null;
   const title = final ? "Final standings" : winner ? `${winner.display_name} · ${win!.tsumo ? "Tsumo" : "Ron"}` : settlement?.draw_reason ?? (step && "Draw" in step.content ? "Draw" : "Score transfer");
   return <section className="flat-section mobile-result" aria-label="Match result">
-    <h2>{title}</h2><p>Read-only result</p>
+    <h2>{title}</h2>
+    {!final && winner && win && <div className="flex flex-wrap items-center gap-3"><ResultPortrait key={winner.participant_id} characterId={winner.character_id} name={winner.display_name} available={!!winner.character_id} /><strong>{win.win_points.toLocaleString()} points</strong></div>}
+    <p>Read-only result</p>
     {final && <ol aria-label="Final standings">{final.players.slice().sort((a, b) => a.rank - b.rank).map(player => <li className="flex gap-4" key={player.participant_id}><span aria-label={`Rank ${player.rank}`}>{player.rank}</span><span>{player.display_name}</span><span>{player.final_score.toLocaleString()}</span></li>)}</ol>}
     <Drawer key={final ? "final" : step ? resultStepKey(step.id) : "none"}>
       <DrawerTrigger render={<Button variant="outline" />}>Expand</DrawerTrigger>

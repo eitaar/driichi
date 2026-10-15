@@ -26,7 +26,7 @@ const compareId = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 function ChartCard({ family, analytics, participants, onOpenMatch }: { family: Family; analytics: Ready; participants: ParticipantAnalytics[]; onOpenMatch(id: string): void }) {
   const id = useId().replace(/:/g, "");
   const title = titles[family];
-  const [windowSize, setWindowSize] = useState("all");
+  const [windowSize, setWindowSize] = useState("50");
   const [hidden, setHidden] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const leader = [...participants].sort((a, b) => (a.averageRank ?? Infinity) - (b.averageRank ?? Infinity) || compareId(a.participantId, b.participantId))[0];

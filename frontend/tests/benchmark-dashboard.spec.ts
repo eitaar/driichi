@@ -22,8 +22,15 @@ for (const mobile of [false, true]) test(`${mobile ? "touch Drawer" : "desktop S
   }
   await expect(page.locator(".recharts-line-curve")).toHaveCount(6);
   await expect(page.getByText("Rank 4", { exact: true })).toHaveCount(0);
+  for (const label of ["Cumulative net score window", "Moving-average rank window", "Per-Match net score window"]) await expect(page.getByLabel(label)).toContainText("Recent 50");
+  await expect(page.getByText("Sample n = 50 of 60 completed Matches.")).toHaveCount(3);
   await page.getByLabel("Cumulative net score window").focus();
   await page.keyboard.press("Enter");
+  await page.getByRole("option", { name: "Full Run", exact: true }).click();
+  await expect(page.getByText("Sample n = 60 of 60 completed Matches.")).toBeVisible();
+  await expect(page.getByLabel("Moving-average rank window")).toContainText("Recent 50");
+  await expect(page.getByLabel("Per-Match net score window")).toContainText("Recent 50");
+  await page.getByLabel("Cumulative net score window").click();
   await page.getByRole("option", { name: "Recent 50", exact: true }).click();
   await expect(page.getByText(/Window net:.*Bot 0.*500,000/)).toBeVisible();
   await expect(page.getByText("All completed Matches: n = 60; denominator per Participant.")).toBeVisible();

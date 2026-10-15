@@ -39,11 +39,27 @@ describe("result-presentation", () => {
   it("labels a phone Draw truthfully even when no reason is supplied", () => {
     render(<MobileResultSummary room={{ ...room, kyoku_end: { id: { match_id: "m", kyoku_sequence: 1, step_index: 0 }, content: { Draw: { ...settlement, draw_reason: undefined } }, published_at_ms: 0, deadline_at_ms: 5000, remaining_ms: 5000, required: [], confirmed: [] } }} />);
     expect(screen.getByRole("heading", { name: "Draw" })).toBeVisible();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.queryByText(/points/)).not.toBeInTheDocument();
+  });
+  it("uses only each current validated Win award and falls back when its Character cannot load", () => {
+    const current = { ...room, roster: room.roster!.map(player => ({ ...player, character_id: "missing" })), kyoku_end: { id: { match_id: "m", kyoku_sequence: 1, step_index: 0 }, content: { Win: win }, published_at_ms: 0, deadline_at_ms: 5000, remaining_ms: 5000, required: [], confirmed: [] } };
+    const view = render(<MobileResultSummary room={current} />);
+    fireEvent.error(screen.getByRole("img", { name: "Player 0 portrait" }));
+    expect(screen.getByRole("img", { name: "Player 0 portrait unavailable" })).toBeVisible();
+    view.rerender(<MobileResultSummary room={{ ...current, kyoku_end: { ...current.kyoku_end, content: { Win: { ...win, winner: "p2", seat: 2, win_points: 7700 } } } }} />);
+    expect(screen.getByRole("heading", { name: "Player 2 · Ron" })).toBeVisible();
+    expect(screen.getByText("7,700 points")).toBeVisible();
+    expect(screen.queryByText("1,000 points")).not.toBeInTheDocument();
+    view.rerender(<MobileResultSummary room={{ ...current, kyoku_end: { ...current.kyoku_end, content: { Win: { ...win, seat: 2 } } } }} />);
+    expect(screen.queryByRole("region", { name: "Match result" })).not.toBeInTheDocument();
   });
   it("expands authorized phone win metadata without a live confirmation", async () => {
     const current = { ...room, kyoku_end: { id: { match_id: "m", kyoku_sequence: 1, step_index: 0 }, content: { Win: win }, published_at_ms: 0, deadline_at_ms: 5000, remaining_ms: 5000, required: ["p0"], confirmed: [] } };
     render(<MobileResultSummary room={current} />);
     expect(screen.getByRole("heading", { name: "Player 0 · Ron" })).toBeVisible();
+    expect(screen.getByText("1,000 points")).toBeVisible();
+    expect(screen.getByRole("img", { name: "Player 0 portrait unavailable" })).toBeVisible();
     expect(screen.queryByLabelText("Winning hand")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Expand" }));
     const dialog = await screen.findByRole("dialog");

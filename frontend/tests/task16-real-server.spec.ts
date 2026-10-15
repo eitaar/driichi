@@ -1,6 +1,7 @@
 /// <reference types="../node_modules/@types/node" />
 
 import AxeBuilder from "@axe-core/playwright";
+import { verifyReplayControls } from "./support/replay-controls";
 import { expect, test as base, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -587,36 +588,7 @@ async function verifyReplayAndOpenRoutes(
   await expect(adminPage.getByTestId("replay-viewer")).toHaveAttribute("data-motion", "static");
   await expectAccessible(adminPage, "replay viewer");
   await captureAtBothViewports(adminPage, `${mode}-replay-viewer`);
-  await adminPage.getByRole("button", { name: /next event/i }).click();
-  const replayControls = adminPage.locator(".replay-playback");
-  await replayControls.getByRole("button", { name: /previous event/i }).focus();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: /^play$/i })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: /next event/i })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  const speed = replayControls.getByRole("combobox", { name: /playback speed/i });
-  await expect(speed).toBeFocused();
-  expect(await speed.locator("option").evaluateAll((options) =>
-    options.map((option) => (option as HTMLOptionElement).value),
-  )).toEqual(["0.5", "1", "2", "4", "8", "16", "32", "64"]);
-  await speed.selectOption("2");
-  await expect(speed).toHaveValue("2");
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("combobox", { name: /jump to kyoku/i })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("link", { name: /^replay library$/i })).toBeFocused();
-  await adminPage.locator(".skip-link").focus();
-  await expect(adminPage.locator(".skip-link")).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  const settings = adminPage.getByRole("button", { name: "Settings", exact: true });
-  await expect(settings).toBeFocused();
-  await adminPage.keyboard.press("Enter");
-  await expect(adminPage.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
-  await adminPage.keyboard.press("Escape");
-  await expect(settings).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("slider", { name: /replay position/i })).toBeFocused();
+  await verifyReplayControls(adminPage);
 }
 
 for (const [mode, seats] of [

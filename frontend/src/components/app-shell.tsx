@@ -5,10 +5,18 @@ import { signOutAdmin } from "../admin-session";
 import { Sidebar, SidebarContent, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from "./ui/sidebar";
 import { buttonVariants } from "./ui/button";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "./ui/breadcrumb";
+import { useTheme } from "./theme-provider";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "./ui/select";
 
 function follow(event: MouseEvent<HTMLAnchorElement>, href: string) {
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
   event.preventDefault(); navigate(href); return true;
+}
+
+function ThemeSelect() {
+  const { preference, setPreference } = useTheme();
+  const items = [{ value: "system", label: "System" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }];
+  return <Select items={items} value={preference} onValueChange={value => { if (value === "system" || value === "light" || value === "dark") setPreference(value); }}><SelectTrigger aria-label="Theme"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{items.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent></Select>;
 }
 
 function AdminNavigation({ section }: { section: string }) {
@@ -23,7 +31,7 @@ function AdminNavigation({ section }: { section: string }) {
 export function AppShell({ variant, children }: { variant: "public" | "admin" | "table"; children: ReactNode }) {
   // Table surfaces retain their existing compact HUD; persistent chrome must not resize the canvas.
   if (variant === "table") return <>{children}</>;
-  if (variant === "public") return <><header className="flex min-h-18 flex-wrap items-center justify-between gap-3 border-b bg-background px-6 py-3 text-foreground sm:px-12"><a className="font-semibold" href="/" onClick={event => follow(event, "/")}>DOUBLE RIICHI</a><nav aria-label="Primary navigation"><a className={buttonVariants({ variant: "ghost" })} href="/admin/login" onClick={event => follow(event, "/admin/login")}>Admin sign in</a></nav></header>{children}</>;
+  if (variant === "public") return <><header className="flex min-h-18 flex-wrap items-center justify-between gap-3 border-b bg-background px-6 py-3 text-foreground sm:px-12"><a className="font-semibold" href="/" onClick={event => follow(event, "/")}>DOUBLE RIICHI</a><nav className="flex min-w-0 flex-wrap items-center gap-3" aria-label="Primary navigation"><ThemeSelect /><a className={buttonVariants({ variant: "ghost" })} href="/admin/login" onClick={event => follow(event, "/admin/login")}>Admin sign in</a></nav></header>{children}</>;
   const section = window.location.pathname.startsWith("/admin/benchmark") ? "Benchmarks" : window.location.pathname.startsWith("/admin/replays") ? "Replays" : "Rooms";
-  return <SidebarProvider><AdminNavigation section={section} /><SidebarInset className="min-w-0"><header className="flex items-center gap-3 border-b p-3"><SidebarTrigger aria-label="Toggle navigation" /><Breadcrumb><BreadcrumbList><BreadcrumbItem><BreadcrumbLink href="/admin" onClick={event => follow(event, "/admin")}>Admin</BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator /><BreadcrumbItem><BreadcrumbPage>{section}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></header>{children}</SidebarInset></SidebarProvider>;
+  return <SidebarProvider><AdminNavigation section={section} /><SidebarInset className="min-w-0"><header className="flex flex-wrap items-center gap-3 border-b p-3"><SidebarTrigger aria-label="Toggle navigation" /><Breadcrumb><BreadcrumbList><BreadcrumbItem><BreadcrumbLink href="/admin" onClick={event => follow(event, "/admin")}>Admin</BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator /><BreadcrumbItem><BreadcrumbPage>{section}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb><ThemeSelect /></header>{children}</SidebarInset></SidebarProvider>;
 }

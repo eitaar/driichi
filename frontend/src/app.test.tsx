@@ -620,11 +620,12 @@ describe("human lobby websocket", () => {
     }
     const instance = new FakeWebSocket("ws://test");
     vi.stubGlobal("WebSocket", Object.assign(vi.fn(function () { return instance; }), { OPEN: FakeWebSocket.OPEN }));
+    const pendingImages: (() => void)[] = [];
     class FakeImage {
       onload: (() => void) | null = null;
       onerror: (() => void) | null = null;
       decode = () => Promise.resolve();
-      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+      set src(_value: string) { pendingImages.push(() => this.onload?.()); }
     }
     vi.stubGlobal("Image", FakeImage);
     render(<App />);
@@ -633,8 +634,12 @@ describe("human lobby websocket", () => {
       { participant_id: "B1", display_name: "Bot 1", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
       { participant_id: "B2", display_name: "Bot 2", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
     ], match_players: [], roster: [], result: null }, state: null });
-    const ready = await screen.findByRole("button", { name: /set ready/i });
+    const ready = await screen.findByRole("button", { name: "Preloading roster" });
+    expect(pendingImages.length).toBeGreaterThan(0);
     expect(ready).toBeDisabled();
+    fireEvent.click(ready);
+    expect(instance.sent).toEqual([]);
+    await act(async () => { pendingImages.splice(0).forEach(complete => complete()); });
     await waitFor(() => expect(ready).toBeEnabled());
     fireEvent.click(ready);
     expect(JSON.parse(instance.sent.at(-1) ?? "{}")).toEqual({ type: "set_ready", preloaded_characters: ["player-red", "tsumogiri-bot", "tsumogiri-bot"] });
@@ -646,6 +651,7 @@ describe("human lobby websocket", () => {
       expect(instance.sent).toHaveLength(1);
     }
     act(() => useGameStore.setState({ room: completeRoom }));
+    await act(async () => { pendingImages.splice(0).forEach(complete => complete()); });
     await waitFor(() => expect(ready).toBeEnabled());
     act(() => instance.onerror?.());
     expect(ready).toBeDisabled();
