@@ -14,7 +14,8 @@ import { ThreeTable } from "./game/three-table";
 import { TableAppearanceSettings, useTableAppearance } from "./game/table-appearance";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
-import { signOutAdmin } from "./admin-session";
+import { AppShell } from "./components/app-shell";
+import { DesktopTableBoundary, DesktopTableFallback } from "./components/desktop-table-boundary";
 import "./replay.css";
 
 const REPLAY_PAGE_SIZE = 50;
@@ -47,23 +48,6 @@ function formatReplayDate(value: string): string {
   return Number.isNaN(date.getTime())
     ? value
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
-function ReplayTopbar() {
-  const client = useQueryClient();
-  return (
-    <header className="topbar">
-      <ReplayLink className="brand" href="/" aria-label="Double Riichi home">
-        <span className="brand-mark" aria-hidden="true">二</span>
-        <span>DOUBLE RIICHI</span>
-      </ReplayLink>
-      <nav aria-label="Replay navigation">
-        <ReplayLink className="nav-link" href="/admin">Rooms <ArrowLeft aria-hidden="true" weight="regular" /></ReplayLink>
-        <ReplayLink className="nav-link" href="/admin/replays">Replay library</ReplayLink>
-        <button className="text-button" onClick={() => signOutAdmin(client)}>Sign out</button>
-      </nav>
-    </header>
-  );
 }
 
 function ProblemMessage({ problem, title = "Replay unavailable", onRetry, retrying = false }: { problem: ProblemDetails; title?: string; onRetry?: () => void; retrying?: boolean }) {
@@ -406,9 +390,9 @@ function ReplayDetail({ matchId }: { matchId: string }) {
   if (query.isLoading) return <main id="replay-main" className="replay-main"><section className="replay-loading" role="status" aria-busy="true" aria-live="polite"><span className="state-label">Loading Replay…</span></section></main>;
   if (query.isError) return <main id="replay-main" className="replay-main"><ProblemMessage problem={problemFrom(query.error)} /></main>;
   if (!query.data) return <main id="replay-main" className="replay-main"><ProblemMessage problem={{ code: "replay_unavailable", detail: "The Replay could not be loaded." }} /></main>;
-  return <main id="replay-main" className="replay-main replay-detail-main"><ReplayViewer key={matchId} replay={query.data} /><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
+  return <main id="replay-main" className="replay-main replay-detail-main"><DesktopTableBoundary fallback={<DesktopTableFallback backHref="/admin/replays" />}><ReplayViewer key={matchId} replay={query.data} /></DesktopTableBoundary><div className="replay-detail-context"><ReplayLink className="back-link" href="/admin/replays"><ArrowLeft aria-hidden="true" weight="regular" />Back to Replay library</ReplayLink><header className="replay-heading replay-detail-heading"><div><p className="eyebrow">ADMIN / REPLAY</p><h1>{query.data.room_name ?? "Ranked Match"} Replay</h1><p>{query.data.match_id} · {formatReplayDate(query.data.completed_at)}</p></div><ReplayMeta replay={query.data} /></header></div></main>;
 }
 
 export function ReplayWorkspace({ matchId }: { matchId?: string }) {
-  return <div className={`app-shell workspace-shell replay-shell${matchId ? " replay-detail-shell" : ""}`}><a className="skip-link" href="#replay-main">Skip to main content</a><ReplayTopbar />{matchId ? <ReplayDetail matchId={matchId} /> : <ReplayList />}</div>;
+  return <AppShell variant={matchId ? "table" : "admin"}><div className={`app-shell workspace-shell replay-shell${matchId ? " replay-detail-shell" : ""}`}><a className="skip-link" href="#replay-main">Skip to main content</a>{matchId ? <ReplayDetail matchId={matchId} /> : <ReplayList />}</div></AppShell>;
 }

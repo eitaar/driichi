@@ -1,10 +1,10 @@
-import { useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiProblem, problemFrom, type AdminRoomDetail, type BenchmarkRun, type GameMode, type TimeControl } from "./api";
-import { ThreeTable } from "./game/three-table";
-import { tileLabel } from "./game/tiles";
+import { lazy, useState, type ReactNode } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { api, problemFrom, type AdminRoomDetail, type BenchmarkRun, type GameMode, type TimeControl } from "./api";
+import { AppShell } from "./components/app-shell";
+import { DesktopTableBoundary } from "./components/desktop-table-boundary";
+const LiveObserver = lazy(() => import("./benchmark-live-observer").then(module => ({ default: module.BenchmarkLiveObserver })));
 import { navigate } from "./routes";
-import { signOutAdmin } from "./admin-session";
 import "./benchmark.css";
 
 function Link({ href, children }: { href: string; children: ReactNode }) {
@@ -39,11 +39,9 @@ export function BenchmarkControls({ room, pending, perform }: {
 }
 
 export function BenchmarkWorkspace({ runId }: { runId?: string }) {
-  const client = useQueryClient();
-  return <div className="app-shell workspace-shell benchmark-shell">
-    <header className="topbar"><Link href="/admin">DOUBLE RIICHI</Link><nav aria-label="Benchmark navigation"><Link href="/admin">Rooms</Link><Link href="/admin/benchmark">Benchmarks</Link><button className="text-button" onClick={() => signOutAdmin(client)}>Sign out</button></nav></header>
+  return <AppShell variant="admin"><div className="app-shell workspace-shell benchmark-shell">
     <main className="benchmark-main">{runId ? <RunDetail key={runId} runId={runId} /> : <RunList />}</main>
-  </div>;
+  </div></AppShell>;
 }
 
 function RunList() {
@@ -78,26 +76,10 @@ function RunDetail({ runId }: { runId: string }) {
     <p role="status">{run.status} · {run.completed} / {run.target} completed Matches</p>
     {run.reason && <p>{run.reason}</p>}
     {run.failed_match_id && <p className="field-hint">Incomplete attempt {run.failed_match_id} — excluded from statistics.</p>}
-    {run.status === "running" && <><Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link><LiveObserver code={run.room_code} /></>}
+    {run.status === "running" && <><Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link><DesktopTableBoundary fallback={null}><LiveObserver code={run.room_code} /></DesktopTableBoundary></>}
     <RunStatistics run={run} />
     {run.matches.length > 0 && <details className="admin-disclosure"><summary>Per-Match results</summary><div className="benchmark-table-scroll"><table aria-label="Per-Match results"><thead><tr><th scope="col">Match</th><th scope="col">Participant ID</th><th scope="col">Seat</th><th scope="col">Rank</th><th scope="col">Final score</th><th scope="col">Cumulative net score</th></tr></thead><tbody>{run.matches.flatMap(game => game.results.map(player => <tr key={`${game.match_id}:${player.participant_id}`}><td><Link href={`/admin/replays/${encodeURIComponent(game.match_id)}`}>{game.sequence}</Link></td><td>{player.participant_id}</td><td>{player.seat + 1}</td><td>{player.rank}</td><td>{player.final_score.toLocaleString()}</td><td>{run.statistics?.find(stat => stat.participant_id === player.participant_id)?.cumulative_net_scores[game.sequence - 1]?.toLocaleString()}</td></tr>))}</tbody></table></div></details>}
   </>;
-}
-
-function LiveObserver({ code }: { code: string }) {
-  const [open, setOpen] = useState(false);
-  const live = useQuery({ queryKey: ["admin", "benchmark", "live", code], queryFn: () => api.getBenchmarkLive(code), enabled: open,
-    refetchInterval: query => query.state.error instanceof ApiProblem && query.state.error.status === 401 ? false : 1000,
-    refetchIntervalInBackground: false,
-  });
-  const projection = live.data?.projection;
-  return <details className="admin-disclosure" onToggle={event => setOpen(event.currentTarget.open)}><summary>Live table — all current hands</summary>
-    {open && (live.isError ? <ErrorMessage error={live.error} retry={() => { void live.refetch(); }} /> : !live.data || !live.isFetchedAfterMount ? <p role="status">Connecting to live table…</p> : projection ? <>
-      <p className="field-hint">Read-only Admin view · Revision {live.data.revision} · Updates every second</p>
-      <div className="benchmark-live replay-table-wrap"><ThreeTable projection={projection} room={null} surface="replay" reducedMotion /></div>
-      <details><summary>Current hands as text</summary><ul>{projection.players?.map(player => <li key={player.participant_id}>{player.display_name} ({player.participant_id}): {player.hand?.map(tileLabel).join(", ")}</li>)}</ul></details>
-    </> : <p>No active Match.</p>)}
-  </details>;
 }
 
 const SERIES_COLORS = ["#354a66", "#a72e3f", "#2762ab", "#865a10"];

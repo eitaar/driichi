@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { App } from "./app";
 
@@ -18,6 +18,29 @@ function stubFetch(handler: (path: string, init?: RequestInit) => Response) {
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => handler(String(input), init)));
 }
 beforeEach(() => { window.history.replaceState({}, "", "/admin/benchmark"); });
+
+it("omits the private observer opener on phone while preserving Run status and Room controls", async () => {
+  const width = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
+  stubFetch(() => response({ ...run, status: "running" }));
+  try {
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Benchmark Run" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Room controls" })).toBeVisible();
+    expect(screen.getByText("No completed Matches yet.")).toBeVisible();
+    expect(screen.queryByText("Live table — all current hands")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/live"))).toBe(false);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    act(() => window.dispatchEvent(new Event("resize")));
+    fireEvent.click(await screen.findByText("Live table — all current hands"));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/live"))).toBe(true));
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    act(() => window.dispatchEvent(new Event("resize")));
+    expect(screen.queryByText("Live table — all current hands")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Benchmark Run" })).toBeVisible();
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: width }); }
+});
 
 it("creates a bot-only room through the benchmark endpoint and reuses explicit participant selection", async () => {
   const requests: string[] = [];
@@ -147,7 +170,7 @@ it("waits for a fresh authorized observer read before rendering a cached hand on
   render(<App />);
   fireEvent.click(await screen.findByText("Live table — all current hands"));
   await screen.findByText(/Read-only Admin view/);
-  fireEvent.click(screen.getByRole("link", { name: "Benchmarks" }));
+  fireEvent.click(within(screen.getByRole("navigation", { name: "Admin" })).getByRole("link", { name: "Benchmarks" }));
   await screen.findByRole("heading", { name: "Benchmarks" });
   holdLiveRead = true;
   fireEvent.click(await screen.findByRole("link", { name: /^123456/ }));
