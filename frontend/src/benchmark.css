@@ -17,7 +17,7 @@
 .benchmark-statistics figure { margin: 0 0 24px; }
 .benchmark-statistics svg { display: block; width: 100%; max-width: 800px; color: var(--paper); }
 .benchmark-statistics svg text { fill: currentColor; font: 12px "Segoe UI", system-ui, sans-serif; }
-.benchmark-statistics figcaption { font-size: 14px; color: var(--muted); margin-top: 12px; }
+.benchmark-statistics figcaption { font-size: 14px; color: var(--legacy-muted); margin-top: 12px; }
 .benchmark-table-scroll { max-width: 100%; overflow-x: auto; }
 .benchmark-main table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; text-align: left; }
 .benchmark-main th, .benchmark-main td { padding: 12px 14px; border-bottom: 1px solid var(--line); }

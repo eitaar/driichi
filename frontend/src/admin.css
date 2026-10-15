@@ -6,9 +6,9 @@
   --line: #bcc6cf;
   --line-strong: #9faeba;
   --paper: #283342;
-  --muted: #586574;
+  --legacy-muted: #586574;
   --muted-strong: #354a66;
-  --accent: #dca64a;
+  --legacy-accent: #dca64a;
   --accent-bright: #2762ab;
   color-scheme: light;
   font-family: "Segoe UI", system-ui, sans-serif;
@@ -24,22 +24,22 @@
 .workspace-shell .workspace-actions { flex-wrap: wrap; gap: 12px 24px; }
 .workspace-shell .nav-link, .workspace-shell .text-button { color: var(--muted-strong); font-size: 14px; }
 .workspace-shell .nav-link:hover, .workspace-shell .text-button:hover:not(:disabled) { color: var(--paper); }
-.workspace-shell .text-button:disabled { color: var(--muted); opacity: .6; }
+.workspace-shell .text-button:disabled { color: var(--legacy-muted); opacity: .6; }
 .workspace-shell .danger-text, .workspace-shell .danger-button { color: #a72e3f; }
 .workspace-shell .danger-button { border-color: #a72e3f; }
 .workspace-shell .danger-button:hover:not(:disabled) { background: #f9eaed; border-color: #a72e3f; }
 .workspace-shell .button { height: auto; min-height: 44px; white-space: normal; }
 .workspace-shell .button:hover:not(:disabled) { transform: none; }
-.workspace-shell .button-primary { background: var(--accent); border-color: var(--accent); color: #283342; }
+.workspace-shell .button-primary { background: var(--legacy-accent); border-color: var(--legacy-accent); color: #283342; }
 .workspace-shell .button-primary:hover:not(:disabled) { background: #e5b965; }
-.workspace-shell .button-primary:disabled { background: #e2e7ec; border-color: var(--line); color: var(--muted); }
+.workspace-shell .button-primary:disabled { background: #e2e7ec; border-color: var(--line); color: var(--legacy-muted); }
 .workspace-shell .button-secondary { background: transparent; border-color: var(--line); color: var(--muted-strong); }
 .workspace-shell .button-secondary:hover:not(:disabled) { background: var(--ink-soft); border-color: var(--line-strong); }
 .workspace-shell input, .workspace-shell select { min-height: 44px; height: 44px; background: var(--ink-panel); color: var(--paper); border-color: var(--line); }
-.workspace-shell input::placeholder { color: var(--muted); }
-.workspace-shell input:hover, .workspace-shell select:hover { border-color: var(--muted); }
+.workspace-shell input::placeholder { color: var(--legacy-muted); }
+.workspace-shell input:hover, .workspace-shell select:hover { border-color: var(--legacy-muted); }
 .workspace-shell input:focus, .workspace-shell select:focus { border-color: #2762ab; background: var(--ink-panel); }
-.workspace-shell .eyebrow, .workspace-shell .state-label, .workspace-shell .request-id { font-family: inherit; letter-spacing: 0; color: var(--muted); font-size: 12px; }
+.workspace-shell .eyebrow, .workspace-shell .state-label, .workspace-shell .request-id { font-family: inherit; letter-spacing: 0; color: var(--legacy-muted); font-size: 12px; }
 .workspace-shell .form-error { color: #a72e3f; }
 .workspace-shell .admin-workspace { width: min(1200px, 100%); margin: 32px auto; padding: 0 24px; flex: 1; min-height: auto; grid-template-columns: 248px minmax(0, 1fr); gap: 40px; border: 0; align-items: start; }
 .workspace-shell .workspace-rail { border: 0; padding: 0; }
@@ -54,7 +54,7 @@
 .workspace-shell .room-list-item:hover, .workspace-shell .room-list-item.is-active { background: var(--ink-soft); color: var(--paper); }
 .workspace-shell .room-list-item.is-active { border-color: var(--line); }
 .workspace-shell .room-list-item strong { font-size: 15px; font-weight: 600; }
-.workspace-shell .room-list-item small { margin-top: 6px; color: var(--muted); font: 13px "Segoe UI", system-ui, sans-serif; }
+.workspace-shell .room-list-item small { margin-top: 6px; color: var(--legacy-muted); font: 13px "Segoe UI", system-ui, sans-serif; }
 .workspace-shell .workspace-main { overflow: visible; min-width: 0; background: var(--ink-panel); padding: 24px 28px; }
 .workspace-shell .room-detail { padding: 0; }
 .workspace-shell .detail-heading { align-items: flex-start; gap: 16px; padding-bottom: 24px; border: 0; }
@@ -73,13 +73,13 @@
 .workspace-shell .participant-main strong { font-size: 16px; }
 .workspace-shell .participant-main .state-label { margin-top: 3px; }
 .workspace-shell .participant-axes { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; }
-.workspace-shell .participant-axes dt { font: 11px "Segoe UI", system-ui, sans-serif; color: var(--muted); letter-spacing: 0; text-transform: none; }
+.workspace-shell .participant-axes dt { font: 11px "Segoe UI", system-ui, sans-serif; color: var(--legacy-muted); letter-spacing: 0; text-transform: none; }
 .workspace-shell .participant-axes dd { font-size: 12px; color: var(--paper); overflow-wrap: anywhere; white-space: normal; }
 .workspace-shell .participant-actions { grid-column: 2 / -1; justify-content: flex-start; gap: 18px; }
 .workspace-shell .participant-actions .text-button { min-height: 28px; }
 .workspace-shell .lifecycle-section { padding: 20px 0; }
 .workspace-shell .action-row { align-items: center; gap: 10px 16px; }
-.workspace-shell .start-note { margin: 0; color: var(--muted); font-size: 14px; }
+.workspace-shell .start-note { margin: 0; color: var(--legacy-muted); font-size: 14px; }
 .workspace-shell .roster-rail { padding: 12px 0; border: 0; border-top: 1px solid var(--line); }
 .workspace-shell .roster-rail .section-heading { margin-bottom: 8px; }
 .workspace-shell .seat-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
@@ -90,13 +90,13 @@
 .workspace-shell .settings-disclosure { margin-top: 8px; }
 .workspace-shell .settings-grid { margin-top: 12px; }
 .workspace-shell .settings-disclosure .button { margin: 4px 8px 4px 0; }
-.workspace-shell .check-row input { min-height: 16px; height: 16px; accent-color: var(--accent); }
+.workspace-shell .check-row input { min-height: 16px; height: 16px; accent-color: var(--legacy-accent); }
 .workspace-shell .token-panel { width: auto; padding: 0; margin-top: 16px; border: 0; background: transparent; }
 .workspace-shell .token-create { margin: 16px 0; }
 .workspace-shell .token-create .field-row { display: grid; }
 .workspace-shell .token-create .button { width: 100%; }
 .workspace-shell .token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; padding: 12px 0; }
-.workspace-shell .token-row code, .workspace-shell .token-row time { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font: 12px "Segoe UI", system-ui, sans-serif; color: var(--muted); }
+.workspace-shell .token-row code, .workspace-shell .token-row time { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font: 12px "Segoe UI", system-ui, sans-serif; color: var(--legacy-muted); }
 .workspace-shell .token-row .text-button { grid-column: 2; grid-row: 1; }
 .workspace-shell .empty-detail { min-height: 300px; }
 .workspace-shell .empty-detail h2 { font-size: 28px; letter-spacing: 0; }
