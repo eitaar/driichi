@@ -1,12 +1,121 @@
 /// <reference types="../node_modules/@types/node" />
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import fixture from "./fixtures/task12-projection.json" with { type: "json" };
+import seatOracle from "./fixtures/seat-score.json" with { type: "json" };
 import { armRendererStall, captureRenderer, prepareRendererStall } from "./support/renderer-stall";
 
 test.use({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
+
+// Literal crops recorded at 1280×720/DPR2; no production geometry generates the oracle.
+const scoreCrops = {
+  bottom: { x: 600, y: 362, width: 80, height: 15 },
+  right: { x: 715, y: 305, width: 17, height: 43 },
+  top: { x: 600, y: 278, width: 80, height: 15 },
+  left: { x: 548, y: 305, width: 17, height: 43 },
+};
+const rasterCrops = {
+  bottom: { x: 140, y: 424, width: 232, height: 50 },
+  right: { x: 424, y: 140, width: 50, height: 232 },
+  top: { x: 140, y: 38, width: 232, height: 50 },
+  left: { x: 38, y: 140, width: 50, height: 232 },
+};
+
+async function cropError(page: Page, actual: Buffer, reference: Buffer, crop: { x: number; y: number; width: number; height: number }, scale: number) {
+  return page.evaluate(async ({ actual, reference, crop, scale }) => {
+    const decode = async (encoded: string) => {
+      const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(encoded), c => c.charCodeAt(0))], { type: "image/png" }));
+      const canvas = document.createElement("canvas"); canvas.width = bitmap.width; canvas.height = bitmap.height;
+      const ctx = canvas.getContext("2d")!; ctx.drawImage(bitmap, 0, 0); bitmap.close();
+      return ctx.getImageData(crop.x * scale, crop.y * scale, crop.width * scale, crop.height * scale).data;
+    };
+    const a = await decode(actual), b = await decode(reference);
+    return a.reduce((sum, value, i) => sum + Math.abs(value - b[i]), 0) / a.length;
+  }, { actual: actual.toString("base64"), reference: reference.toString("base64"), crop, scale });
+}
+
+for (const entry of seatOracle.cases) {
+  test(`independent final pixels ${entry.mode} viewer ${entry.viewer}`, async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/tests/support/renderer-worker-product.html");
+    const table = page.getByTestId("three-table");
+    await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+    expect(page.workers()).toHaveLength(1);
+    expect(await page.workers()[0].evaluate(() => typeof window)).toBe("undefined");
+    const participants = seatOracle.participants.slice(0, entry.mode === "3p-red-east" ? 3 : 4);
+    const mode = entry.mode as keyof typeof fixture.projections;
+    const metrics: unknown[] = [];
+    for (const updated of [false, true]) {
+      const projection = { ...fixture.projections[mode], decision: undefined,
+        players: participants.map(p => ({ ...fixture.projections[mode].players[p.seat], ...p,
+          seat: updated ? (entry.mode === "3p-red-east" ? p.rotatedSeat3! : p.rotatedSeat4) : p.seat,
+          score: updated ? p.updatedScore : p.score,
+        })),
+      };
+      const apply = async (score?: number) => {
+        await page.evaluate(detail => window.dispatchEvent(new CustomEvent("seat-score-input", { detail })), {
+          projection: { ...projection, players: projection.players.map(p => ({ ...p, score: score ?? p.score })) },
+          viewSeat: updated ? entry.rotatedViewer : entry.viewer, surface: "replay",
+        });
+        await expect(table.getByRole("list", { name: "Table scores" })).toContainText(`Amber: ${(score ?? projection.players[0].score).toLocaleString("en-US")}`);
+        await expect(table).toHaveAttribute("data-render-ready", "true", { timeout: 20_000 });
+      };
+      // Uniform-score reference frames cannot encode a mistaken Seat→position mapping.
+      const references = new Map<number, { screen: Buffer; raster: Buffer }>();
+      for (const p of participants) {
+        const score = updated ? p.updatedScore : p.score;
+        await apply(score);
+        references.set(score, { raster: await page.getByTestId("center-raster").locator("canvas").screenshot(), screen: await table.locator("canvas").screenshot() });
+      }
+      await apply();
+      const raster = await page.getByTestId("center-raster").locator("canvas").screenshot();
+      const screen = await table.locator("canvas").screenshot();
+      await test.info().attach(`final-${updated ? "rotated" : "initial"}`, { body: screen, contentType: "image/png" });
+      await test.info().attach(`window-raster-${updated ? "rotated" : "initial"}`, { body: raster, contentType: "image/png" });
+      for (const position of ["bottom", "right", "top", "left"] as const) {
+        const name = entry[position];
+        if (!name) {
+          await expect(table.locator(`[data-position="${position}"]`)).toHaveCount(0);
+          const whitePixels = await page.evaluate(async ({ image, crop }) => {
+            const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(image), c => c.charCodeAt(0))], { type: "image/png" }));
+            const canvas = document.createElement("canvas"); canvas.width = bitmap.width; canvas.height = bitmap.height;
+            const ctx = canvas.getContext("2d")!; ctx.drawImage(bitmap, 0, 0); bitmap.close();
+            const pixels = ctx.getImageData(crop.x * 2, crop.y * 2, crop.width * 2, crop.height * 2).data;
+            let count = 0;
+            for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 180 && pixels[i + 1] > 180 && pixels[i + 2] > 180) count++;
+            return count;
+          }, { image: screen.toString("base64"), crop: scoreCrops.top });
+          expect.soft(whitePixels, "3p top has no score glyphs").toBe(0);
+          continue;
+        }
+        await expect(table.locator(`.table-player-frame[data-position="${position}"]`)).toContainText(name);
+        const p = participants.find(p => p.display_name === name)!;
+        const expectedScore = updated ? p.updatedScore : p.score;
+        const errors: Record<string, number> = {};
+        for (const [candidate, reference] of references) {
+          errors[candidate] = await cropError(page, screen, reference.screen, scoreCrops[position], 2);
+        }
+        const best = Number(Object.entries(errors).sort((a, b) => a[1] - b[1])[0][0]);
+        metrics.push({ updated, position, participantId: p.participant_id, seat: projection.players.find(player => player.participant_id === p.participant_id)!.seat, expectedScore, best, errors });
+        await test.info().attach(`${updated}-${position}-crop`, { body: await page.screenshot({ clip: scoreCrops[position] }), contentType: "image/png" });
+        // Exact candidate identity, not a permissive screenshot tolerance.
+        expect.soft(best, `${name} ${position} final Worker pixels: ${JSON.stringify(errors)}`).toBe(expectedScore);
+        expect.soft(errors[expectedScore], "expected glyphs match exactly").toBe(0);
+        for (const [candidate, error] of Object.entries(errors)) {
+          if (Number(candidate) !== expectedScore) expect.soft(error, "wrong score must be distinguishable").toBeGreaterThan(1);
+        }
+        const rasterErrors: Record<string, number> = {};
+        for (const [candidate, reference] of references) {
+          rasterErrors[candidate] = await cropError(page, raster, reference.raster, rasterCrops[position], 1);
+        }
+        expect.soft(Number(Object.entries(rasterErrors).sort((a, b) => a[1] - b[1])[0][0]), `${name} ${position} Window raster`).toBe(expectedScore);
+      }
+    }
+    await test.info().attach("spatial-score-metrics", { body: JSON.stringify({ browser: page.context().browser()!.version(), viewport: page.viewportSize(), dpr: 2, metrics }, null, 2), contentType: "application/json" });
+  });
+}
 
 test("local surface image renders and clears in the actual product Worker under unchanged CSP", async ({ page }) => {
   const uploaded: string[] = [];
