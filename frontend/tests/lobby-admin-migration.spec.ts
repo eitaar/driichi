@@ -1,6 +1,7 @@
 import { expect, test } from './support/task7b-evidence';
 import AxeBuilder from '@axe-core/playwright';
 import { resolve } from 'node:path';
+import { originalArtAvailable, originalArtRoot } from './support/original-art';
 import { attachUiDiagnosticsIfInstalled, installUiDiagnostics } from './support/ui-diagnostics';
 
 // Attaches only when the case installed the opt-in diagnostic; never fails the test.
@@ -141,10 +142,11 @@ test('Lobby keeps long names, duplicate identities and a missing portrait usable
 // Task 7 executes these physical geometry/face checks against original licensed art.
 for (const count of [3, 4]) for (const theme of ['light', 'dark']) for (const width of [1440, 390, 320]) {
  test(`Lobby original faces and footer ${count}p ${theme} ${width}${width === 320 ? ' text200' : ''}`, async ({ page }) => {
+  test.skip(!originalArtAvailable, 'Original licensed Character Packs are unavailable on this runner');
   await page.setViewportSize({ width, height: 900 });
   await page.addInitScript(theme => { localStorage.setItem('driichi-theme', theme); sessionStorage.setItem('driichi:participant:123456', 'P1'); }, theme);
   for (const character of ['reimu', 'marisa']) {
-   await page.route(`**/assets/characters/${character}/*.webp`, route => route.fulfill({ path: resolve('../../../../driichi-runtime/character-packs', character, new URL(route.request().url()).pathname.split('/').at(-1)!) }));
+   await page.route(`**/assets/characters/${character}/*.webp`, route => route.fulfill({ path: resolve(originalArtRoot, character, new URL(route.request().url()).pathname.split('/').at(-1)!) }));
   }
   const participants = Array.from({ length: count }, (_, index) => ({ participant_id: `P${index + 1}`, display_name: index === 0 ? 'N'.repeat(64) : 'Same name', kind: 'human', presence: 'connected', selected: true, ready: false, character_id: index % 2 ? 'marisa' : 'reimu', role: 'none', controller: 'interactive' }));
   await page.routeWebSocket('**/ws/v1/rooms/123456/human', socket => socket.send(JSON.stringify({ type: 'snapshot', room: { join_code: '123456', room_name: 'Night Market', game_mode: `${count}p-red-east`, phase: 'lobby', revision: 1, participants, roster: [], match_players: [], result: null }, state: null })));

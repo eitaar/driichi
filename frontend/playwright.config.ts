@@ -11,8 +11,8 @@ const webglArgs = hardwareWebgl
 
 export default defineConfig({
   testDir: "./tests",
-  // Worker and foundation fixtures own isolated servers/configs.
-  testIgnore: ["**/renderer-worker.spec.ts", "**/ui-foundation.spec.ts"],
+  // Worker, foundation and real-service suites own isolated configs and lifetimes.
+  testIgnore: ["**/renderer-worker.spec.ts", "**/ui-foundation.spec.ts", "**/*-real-server.spec.ts"],
   fullyParallel: true,
   workers: 1, // Isolate SwiftShader scenes, particularly the renderer-budget probe.
   forbidOnly: !!process.env.CI,

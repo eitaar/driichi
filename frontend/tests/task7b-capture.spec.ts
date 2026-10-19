@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import type { ElementHandle } from '@playwright/test';
 import { expect, test } from './support/task7b-evidence';
 import fixtures from './fixtures/task12-projection.json' with { type: 'json' };
+import { originalArtAvailable, originalArtRoot } from './support/original-art';
 
 for (const theme of ['light', 'dark']) for (const width of [1440, 1024, 390, 320]) {
   test(`Task7B four-chart Run native observer ${theme} ${width}`, async ({ page }) => {
@@ -82,6 +83,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 1024, 390, 320
 
 for (const theme of ['light', 'dark']) for (const width of [1440, 1024, 390, 320]) {
   test(`Task7B original Join and login ${theme} ${width}`, async ({ page }) => {
+    test.skip(!originalArtAvailable, 'Original licensed Character Packs are unavailable on this runner');
     await page.setViewportSize({ width, height: width === 1024 ? 600 : 900 });
     await page.addInitScript(theme => localStorage.setItem('driichi-theme', theme), theme);
     const characters = [{ id: 'reimu', name: 'Reimu' }, { id: 'marisa', name: 'Marisa' }];
@@ -89,7 +91,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 1024, 390, 320
     await page.route('**/api/v1/rooms/123456', route => route.fulfill({ json: { room_name: 'Night Market', game_mode: '4p-red-east', phase: 'Lobby', join_allowed: true, participant_count: 1, participant_limit: 4 } }));
     await page.route('**/assets/characters/*/*.webp', route => {
       const parts = new URL(route.request().url()).pathname.split('/');
-      return route.fulfill({ path: resolve('../../../../driichi-runtime/character-packs', parts.at(-2)!, parts.at(-1)!) });
+      return route.fulfill({ path: resolve(originalArtRoot, parts.at(-2)!, parts.at(-1)!) });
     });
     await page.goto('/room/123456');
     if (width === 320) await page.evaluate(() => document.documentElement.style.fontSize = '200%');
