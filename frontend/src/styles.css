@@ -417,7 +417,6 @@ input:not([data-slot]):focus{border-color:var(--accent-bright);background:var(--
   gap: 8px;
   margin-block-start: 0;
 }
-.candidate-popup { max-height: calc(100dvh - 2rem); overflow-y: auto; }
 .candidate-list { display: grid; gap: 7px; }
 .gameplay-blocking-state {
   width: min(600px, 100%);

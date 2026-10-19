@@ -1135,6 +1135,7 @@ for (const viewport of requiredViewports) {
     expect(dialogId).toBeTruthy();
     await expect(trigger).toHaveAttribute("aria-controls", dialogId ?? "");
     await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
+    await expect(page.locator(".table-letterbox").getByRole("dialog", { name: "Choose a legal candidate" })).toHaveCount(1);
     await expectInsideStageAndClearOfHand(
       page.locator(".table-letterbox"),
       dialog,
@@ -1175,6 +1176,60 @@ for (const viewport of requiredViewports) {
     await expect(trigger).toBeFocused();
   });
 }
+
+test("keeps a scrolling candidate list above the hand through resize and enlarged text", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await installCharacterFixtures(page);
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  (state.decision as Record<string, unknown>).actions = Array.from({ length: 20 }, (_, index) => ({
+    action_id: `chi-${index}`,
+    action: { Chi: { target: 1, called: 1, consumed: [0, 4] } },
+  }));
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  const trigger = page.getByRole("button", { name: "Chi (20)" });
+  await trigger.click();
+  const dialog = page.locator(".table-letterbox").getByRole("dialog", { name: "Choose a legal candidate" });
+  await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  for (const width of [1024, 1920]) {
+    await page.setViewportSize({ width, height: 600 });
+    await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+    await expect(dialog).toHaveCSS("font-size", "28px");
+    await dialog.getByRole("button", { name: "Close", exact: true }).focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(dialog.locator(".candidate-list button").last()).toBeFocused();
+    await expect(dialog.locator(".candidate-list button").last()).toBeInViewport();
+    await expectInsideStageAndClearOfHand(page.locator(".table-letterbox"), dialog, page.locator(".table-hit-layer"));
+  }
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveAttribute("aria-busy", "true");
+  const sent = await page.evaluate(() => (window as unknown as { __socket: { sent: string[] } }).__socket.sent.map(value => JSON.parse(value)));
+  expect(sent).toEqual([{ type: "submit_action", decision_id: "d1", action_id: "chi-19" }]);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
+test("portals ambiguous tile choices into the same table safe area", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await installCharacterFixtures(page);
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  const tile = ((state.players as Array<Record<string, unknown>>)[0].hand as number[])[0];
+  (state.decision as Record<string, unknown>).actions = [
+    { action_id: "tile-a", action: { Discard: { tile, tsumogiri: false } } },
+    { action_id: "tile-b", action: { Discard: { tile, tsumogiri: true } } },
+  ];
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  const trigger = page.locator(".table-tile-hit.is-legal").first();
+  await trigger.click();
+  const dialog = page.locator(".table-letterbox").getByRole("dialog", { name: "Choose a legal candidate" });
+  await expect(dialog.locator(".candidate-list button")).toHaveCount(2);
+  await expectInsideStageAndClearOfHand(page.locator(".table-letterbox"), dialog, page.locator(".table-hit-layer"));
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
 
 test("disables open candidate choices after transport disconnects", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });

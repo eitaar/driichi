@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   actionCandidates,
   actionGroupLabel,
@@ -416,6 +416,7 @@ function TileHitLayer({
 }
 
 function CandidatePopup({
+  portalContainer,
   actions,
   onAction,
   onClose,
@@ -427,6 +428,7 @@ function CandidatePopup({
   onClose: () => void;
   id: string;
   disabled: boolean;
+  portalContainer: RefObject<HTMLDivElement | null>;
 }) {
   const popupRef = useRef<HTMLDivElement>(null);
   const candidateRef = useRef<HTMLButtonElement>(null);
@@ -452,7 +454,8 @@ function CandidatePopup({
       <DialogContent
         ref={popupRef}
         id={id}
-        className="candidate-popup"
+        className="candidate-popup absolute max-h-[calc(100%-2rem)] overflow-y-auto"
+        portalContainer={portalContainer}
         showCloseButton={false}
         initialFocus={() => disabled ? closeRef.current : candidateRef.current}
         finalFocus={() => returnFocus?.isConnected ? returnFocus : null}
@@ -484,6 +487,7 @@ function CandidatePopup({
 }
 
 function ActionDeck({
+  portalContainer,
   decision,
   pending,
   disabled,
@@ -495,6 +499,7 @@ function ActionDeck({
   disabled: boolean;
   motionActive: boolean;
   onAction: (action: VisibleAction) => void;
+  portalContainer: RefObject<HTMLDivElement | null>;
 }) {
   const [popupKind, setPopupKind] = useState<
     "riichi_discard" | "chi" | "pon" | "kan" | "nuki" | null
@@ -584,6 +589,7 @@ function ActionDeck({
       </div>
       {popupKind && (
         <CandidatePopup
+          portalContainer={portalContainer}
           id={popupId}
           actions={popupKind === "riichi_discard"
             ? grouped.riichiDiscard
@@ -707,6 +713,7 @@ export function GameplaySurface({
     : grouped.riichiDiscard;
   const appearance = useTableAppearance();
   const tableSheenRef = useRef<HTMLDivElement>(null);
+  const candidatePortalRef = useRef<HTMLDivElement>(null);
   const resultDismissRef = useRef<HTMLButtonElement>(null);
   const step = decodeKyokuEndStep(room?.kyoku_end, room?.game_mode ?? projection?.mode ?? "");
   const receivedDeadline = useGameStore((state) => state.room === room ? state.resultDeadline : null);
@@ -834,6 +841,7 @@ export function GameplaySurface({
       ) : (
         <main className="gameplay-main">
           <div className="table-letterbox">
+            <div ref={candidatePortalRef} className="pointer-events-none absolute inset-x-0 top-0 bottom-[calc(clamp(68px,7.7vw,109px)+38px)] z-50 [&>div]:pointer-events-auto" />
             {!projection && (
               <div className="gameplay-sync-state" role="status" aria-live="polite">
                 <strong>Waiting for an authoritative projection</strong>
@@ -867,6 +875,7 @@ export function GameplaySurface({
             />
             {tileCandidates && decision && (
               <CandidatePopup
+                portalContainer={candidatePortalRef}
                 key={decision.decision_id}
                 id="tile-candidate-dialog"
                 actions={tileCandidates}
@@ -888,6 +897,7 @@ export function GameplaySurface({
             {step && dismissedStep === stepKey && <p role="status">Waiting for players to confirm</p>}
             {room?.kyoku_end == null && room?.phase !== "post_match" && (
               <ActionDeck
+                portalContainer={candidatePortalRef}
                 decision={decision}
                 pending={Boolean(pending)}
                 disabled={inputDisabled}
