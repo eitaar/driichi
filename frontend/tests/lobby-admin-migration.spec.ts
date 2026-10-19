@@ -28,6 +28,11 @@ for (const count of [3, 4]) for (const theme of ['light', 'dark']) {
   await expect(frames).toHaveCount(count);
   for (const width of [1440, 1024, 390]) {
    await page.setViewportSize({ width, height: width === 1024 ? 600 : 960 });
+   // The card height can still reflect the prior viewport during its resize transition.
+   await expect.poll(() => frames.first().evaluate(element => {
+    const image = element.parentElement!.querySelector('img')!;
+    return image.getBoundingClientRect().height - element.clientHeight;
+   })).toBeGreaterThan(0);
    const boxes = await Promise.all((await cards.all()).map(card => card.boundingBox()));
    expect(boxes[0]!.y).toBe(boxes[1]!.y);
    if (width >= 1024) expect(boxes.at(-1)!.y).toBe(boxes[0]!.y);
