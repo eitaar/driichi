@@ -13,11 +13,13 @@ export function BenchmarkMatchDetail({ match, roster, onClose, onRetryReplay }: 
   const desktop = useGameplayViewportSupport();
   const trigger = useRef<HTMLElement | SVGElement | null>(null);
   const open = match !== null;
+  // Remember the opener only. Restoring is owned by the dialog's `finalFocus`, so a single
+  // mechanism moves focus back; a second restore can land after the user re-opens a control
+  // (for example the chart's Select) and close it again.
   useEffect(() => {
     if (!open) return;
     const active = document.activeElement;
     trigger.current = active instanceof HTMLElement || active instanceof SVGElement ? active : null;
-    return () => { trigger.current?.focus({ preventScroll: true }); };
   }, [open]);
   const restoreFocus = () => { trigger.current?.focus({ preventScroll: true }); return false; };
   const status = match?.replay_availability;

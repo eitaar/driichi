@@ -20,7 +20,7 @@ function follow(event: MouseEvent<HTMLAnchorElement>, href: string) {
 function AdminNavigation({ section }: { section: string }) {
   const { setOpenMobile } = useSidebar();
   const client = useQueryClient();
-  return <Sidebar aria-label="Admin navigation"><SidebarHeader><a href="/" onClick={event => { if (follow(event, "/")) setOpenMobile(false); }}>Double Riichi</a></SidebarHeader><SidebarContent>
+  return <Sidebar aria-label="Admin navigation" role="complementary"><SidebarHeader><a href="/" onClick={event => { if (follow(event, "/")) setOpenMobile(false); }}>Double Riichi</a></SidebarHeader><SidebarContent>
     <SidebarGroup><SidebarGroupContent><nav aria-label="Admin"><SidebarMenu>{[["Rooms", "/admin"], ["Benchmarks", "/admin/benchmark"], ["Replays", "/admin/replays"]].map(([label, href]) => <SidebarMenuItem key={href}><SidebarMenuButton isActive={section === label} render={<a href={href} onClick={event => { if (follow(event, href)) setOpenMobile(false); }} />}>{label === "Rooms" ? <House aria-hidden="true" /> : label === "Benchmarks" ? <ChartLine aria-hidden="true" /> : <FilmStrip aria-hidden="true" />}<span>{label}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></nav></SidebarGroupContent></SidebarGroup>
   </SidebarContent><SidebarFooter className="mt-auto shrink-0 border-t p-3 pb-[max(.75rem,env(safe-area-inset-bottom))]"><SidebarMenu><SidebarMenuItem><Tooltip><TooltipTrigger render={<SidebarMenuButton className="size-11 justify-center" aria-label="Sign out" onClick={() => signOutAdmin(client)} />}><SignOut aria-hidden="true" /></TooltipTrigger><TooltipContent>Sign out</TooltipContent></Tooltip></SidebarMenuItem></SidebarMenu></SidebarFooter></Sidebar>;
 }

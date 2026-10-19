@@ -104,11 +104,11 @@ function ReplayList() {
     const lastOffset = Math.max(0, Math.floor((data.total - 1) / data.limit) * data.limit);
     if (lastOffset < data.offset) navigate(replayPagePath(lastOffset));
   }, [data]);
-  if (query.isError) return <main id="replay-main" className="replay-main"><ReplayHeader /><ProblemMessage problem={problemFrom(query.error)} title="Replay library unavailable" onRetry={() => { void query.refetch(); }} retrying={query.isFetching} /></main>;
-  if (query.isLoading || !data) return <main id="replay-main" className="replay-main"><ReplayHeader /><ReplayLoading /></main>;
-  if (data.replays.length === 0 && data.total > 0) return <main id="replay-main" className="replay-main"><ReplayHeader /><ReplayLoading /></main>;
+  if (query.isError) return <div id="replay-main" className="replay-main"><ReplayHeader /><ProblemMessage problem={problemFrom(query.error)} title="Replay library unavailable" onRetry={() => { void query.refetch(); }} retrying={query.isFetching} /></div>;
+  if (query.isLoading || !data) return <div id="replay-main" className="replay-main"><ReplayHeader /><ReplayLoading /></div>;
+  if (data.replays.length === 0 && data.total > 0) return <div id="replay-main" className="replay-main"><ReplayHeader /><ReplayLoading /></div>;
   return (
-    <main id="replay-main" className="replay-main">
+    <div id="replay-main" className="replay-main">
       <ReplayHeader />
       {data.total === 0 ? (
         <section className="replay-empty"><h2>No Replays yet.</h2><p>Completed Replays will appear here when Replay saving is enabled.</p></section>
@@ -127,7 +127,7 @@ function ReplayList() {
         </>
       )}
       {deleteReplay && <ReplayDeleteDialog replay={deleteReplay} pending={deletion.isPending} error={deletion.error} onCancel={() => setDeleteReplay(null)} onConfirm={() => deletion.mutate(deleteReplay.match_id)} />}
-    </main>
+    </div>
   );
 }
 

@@ -962,8 +962,12 @@ for (const [mode, count, ordinaryAfter] of [
         for (const human of bySeat) await expect(human.page.getByTestId("results-panel")).toBeVisible();
         geometry.push({ surface: "Live final standings", mode, viewport, measurement: await resultGeometry(bySeat[0].page, "standings", viewport, viewport.dpr, undefined, geometryObservations) });
         await bySeat[0].page.setViewportSize({ width: 1023, height: 600 });
-        await expect(bySeat[0].page.getByText("Widen this window to play.", { exact: true })).toBeVisible();
-        await expect(bySeat[0].page.getByTestId("results-panel")).toHaveCount(0);
+        // Post-Match keeps the approved dedicated final standings page below the table
+        // threshold; only the 3D table is gated, so no desktop-limitation panel appears.
+        await expect(bySeat[0].page.getByTestId("results-panel")).toBeVisible();
+        await expect(bySeat[0].page.getByRole("region", { name: "Desktop table limitation", exact: true })).toHaveCount(0);
+        await expect(bySeat[0].page.locator(".three-table")).toHaveCount(0);
+        await expect(bySeat[0].page.locator("canvas")).toHaveCount(0);
         await expect(bySeat[0].page.locator("[data-action-id]")).toHaveCount(0);
         expect(latest(bySeat[0]).room.result).toEqual(final);
         await bySeat[0].page.setViewportSize(viewport);
@@ -1006,7 +1010,7 @@ for (const [mode, count, ordinaryAfter] of [
         await replayPage.setViewportSize({ width: 1023, height: 600 });
         await expect(timeline).toHaveValue(sliderBefore);
         await expect(replayPage.getByRole("button", { name: "Play", exact: true })).toBeVisible();
-        geometry.push({ surface: "Replay below threshold existing behavior", guidanceCount: await replayPage.getByText("Widen this window to play.", { exact: true }).count(), sliderBefore, currentSlider: await timeline.inputValue(), url: replayPage.url() });
+        geometry.push({ surface: "Replay below threshold existing behavior", guidanceCount: await replayPage.getByRole("region", { name: "Desktop table limitation", exact: true }).count(), tableCount: await replayPage.locator(".three-table").count(), sliderBefore, currentSlider: await timeline.inputValue(), url: replayPage.url() });
         await replayPage.setViewportSize(viewport);
         geometry.push({ surface: "Replay supported restoration", mode, viewport, measurement: await resultGeometry(replayPage, "win", viewport, viewport.dpr, undefined, geometryObservations) });
         await timeline.press("End");

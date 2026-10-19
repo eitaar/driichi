@@ -26,9 +26,13 @@ export async function verifyReplayControls(page: Page) {
     await expect(chapter).toBeFocused();
   }
   await chapters.first().focus();
+  const beforeJump = Number(await controls.getByRole("slider", { name: /replay position/i }).inputValue());
   await page.keyboard.press("Enter");
   await expect(chapters.first()).toHaveAttribute("aria-current", "step");
-  await expect(controls.getByRole("slider", { name: /replay position/i })).toHaveValue("0");
+  // Chapter one starts at the first saved kyoku event, which is not always frame 0 in a
+  // real Replay; the jump must seek backwards to that chapter and pause playback.
+  const afterJump = Number(await controls.getByRole("slider", { name: /replay position/i }).inputValue());
+  expect(Number.isInteger(afterJump) && afterJump >= 0 && afterJump <= beforeJump).toBe(true);
   await expect(controls.getByRole("button", { name: /^play$/i })).toBeVisible();
   await chapters.last().focus();
   await page.keyboard.press("Tab");

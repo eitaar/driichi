@@ -54,9 +54,9 @@ let observedMultiCandidateAction = false;
 
 async function expectAccessible(page: Page, surface: string) {
   const axe = new AxeBuilder({ page });
-  if (surface === "actual decision" || surface === "results") {
-    axe.include(".gameplay-main");
-  }
+  if (surface === "actual decision") axe.include(".gameplay-main");
+  // Post-Match uses the dedicated final page, which has no .gameplay-main to scope to.
+  if (surface === "results") axe.include(".match-victory-page, .results-panel");
   const results = await axe.analyze();
   expect(
     results.violations,
@@ -133,7 +133,10 @@ async function createRoom(page: Page, mode: MatchMode): Promise<string> {
 }
 
 async function chooseCharacter(page: Page) {
-  await page.getByRole("radio", { name: "Player Red" }).check();
+  // The radio input is intentionally sr-only inside its labelled option; a real user
+  // clicks the visible option, so the test does the same and then proves the binding.
+  await page.getByText("Player Red", { exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Player Red" })).toBeChecked();
 }
 
 async function joinHuman(
@@ -470,8 +473,13 @@ async function completeMatch(page: Page, mode: MatchMode, seats: number) {
   }
   await expect(page.getByRole("heading", { name: /standings/i })).toBeVisible();
   await expect(page.locator(".results-list li")).toHaveCount(seats);
-  // Controller facts are checked in the Admin roster, not the names/scores-only results.
-  await expect(page.getByTestId("gameplay-shell")).toHaveAttribute("data-human-controller", /interactive/i);
+  // Post-Match renders the dedicated final page; the gameplay shell and table are retired
+  // there, so controller facts stay in the Admin roster rather than this surface.
+  await expect(page.getByTestId("gameplay-shell")).toHaveCount(0);
+  await expect(page.getByTestId("three-table")).toHaveCount(0);
+  await expect(page.locator("canvas")).toHaveCount(0);
+  await expect.poll(() => page.workers().length).toBe(0);
+  await expect(page.getByRole("button", { name: "Return to room", exact: true })).toBeVisible();
   await expectAccessible(page, "results");
   await captureAtBothViewports(page, `${mode}-results`);
 }
@@ -607,12 +615,14 @@ for (const [mode, seats] of [
       await fillWithBotsAndStart(adminPage, humanPage, mode, seats);
       await completeMatch(humanPage, mode, seats);
       await expect(adminPage.locator(".detail-lede")).toContainText("Post-Match", { timeout: 30_000 });
-      await expect(adminPage.locator(".seat-row.is-filled")).toHaveCount(seats);
-      await expect(adminPage.locator(".participant-row").filter({ hasText: /permanent[_ ]auto[_ ]builtinbot/i })).toHaveCount(seats - 1);
-      await expect(adminPage.locator(".participant-row").filter({ hasText: /temporary[_ ]auto/i })).toHaveCount(0);
+      // The approved Admin detail shows participating rows with state axes, not a seat rail.
+      await expect(adminPage.locator(".participant-row")).toHaveCount(seats);
+      const controllerAxes = await adminPage.locator(".participant-row .participant-axes").allInnerTexts();
+      expect(controllerAxes.join(" | "), "admin controller axes").toMatch(/permanent auto/i);
+      await expect(adminPage.locator(".participant-row").filter({ hasText: /temporary auto/i })).toHaveCount(0);
       const humanParticipant = adminPage.locator(".participant-row").filter({ hasText: new RegExp(`Human ${mode}`) });
       await expect(humanParticipant).toContainText(/interactive/i);
-      await expect(humanParticipant).not.toContainText(/temporary[_ ]auto/i);
+      await expect(humanParticipant).not.toContainText(/temporary auto/i);
       await expectAccessible(adminPage, "admin");
       await captureAtBothViewports(adminPage, `${mode}-admin-post-match`);
       await verifyReplayAndOpenRoutes(adminPage, harness, mode);
