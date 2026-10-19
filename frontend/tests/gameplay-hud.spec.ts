@@ -1,7 +1,7 @@
 /// <reference types="../node_modules/@types/node" />
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./support/task7b-evidence";
 import AxeBuilder from "@axe-core/playwright";
 
 // Authoritative-shape socket fixture: DOM acceptance, not native integration evidence.
@@ -76,9 +76,13 @@ for (const viewport of [{ width: 1024, height: 600 }, { width: 1440, height: 900
         expect((await deck.boundingBox())!.y + (await deck.boundingBox())!.height).toBeLessThan((await tiles.boundingBox())!.y);
         const audit = await new AxeBuilder({ page }).include(".action-deck").include(".gameplay-controls").analyze();
         expect(audit.violations.filter(violation => violation.impact === "serious" || violation.impact === "critical")).toEqual([]);
-        const hud = page.locator(".connection-state");
-        await expect(hud).toHaveCSS("backdrop-filter", reduced ? "none" : "blur(8px)");
-        await page.screenshot({ path: `../.superpowers/sdd/ui-ux-cutover/task-5a-${viewport.width}-${theme}-${reduced}.png` });
+        await expect(page.locator(".connection-state")).toHaveCount(0);
+        const hud = page.locator(".gameplay-controls .theme-toggle");
+        await expect(hud).toBeVisible();
+        await expect(hud).toHaveCSS("position", "static");
+        await expect(page.locator(".gameplay-controls")).toHaveCSS("z-index", "7");
+        await expect(deck).toHaveCSS("backdrop-filter", reduced ? "none" : "blur(8px)");
+        await page.screenshot({ path: test.info().outputPath(`task-5a-${viewport.width}-${theme}-${reduced}.png`) });
         const before = await hud.evaluate(el => getComputedStyle(el).backgroundColor);
         const deckBefore = await deck.evaluate(el => getComputedStyle(el).backgroundColor);
         const actionBefore = await deck.locator('[data-action-id="ron"]').evaluate(el => getComputedStyle(el).backgroundColor);

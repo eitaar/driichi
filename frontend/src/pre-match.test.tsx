@@ -8,11 +8,9 @@ beforeEach(()=>{
  sessionStorage.clear();
  vi.stubGlobal('fetch',vi.fn(async(url)=>new Response(JSON.stringify(String(url).includes('characters')?characters:room),{headers:{'content-type':'application/json'}})));
 });
-async function enterCharacterStep(){
+async function fillJoinName(){
  await screen.findByLabelText('Display name');
  fireEvent.change(screen.getByLabelText('Display name'),{target:{value:'Mika'}});
- fireEvent.click(screen.getByRole('button',{name:'Continue'}));
- await screen.findByRole('heading',{name:'Choose your character'});
 }
 it('entry puts functional Join before decorative artwork in reading order and associates invalid code errors',async()=>{
  render(<App/>);
@@ -27,34 +25,32 @@ it('entry puts functional Join before decorative artwork in reading order and as
  expect(screen.getByRole('alert')).toHaveTextContent('six-digit');
  expect(window.location.pathname).toBe('/');
 });
-it('uses two local steps with room context and retains name and selection on in-app Back',async()=>{
+it('shows name and character together and Back returns to entry',async()=>{
  window.history.replaceState({},'','/room/123456');render(<App/>);
  await screen.findByRole('heading',{name:'Join Night Market'});
- expect(screen.queryByRole('radio')).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'Continue'}));
+ expect(screen.getByRole('radio',{name:'Red Player'})).toBeVisible();
+ fireEvent.blur(screen.getByLabelText('Display name'));
  expect(screen.getByLabelText('Display name')).toHaveAttribute('aria-invalid','true');
  expect(screen.getByLabelText('Display name')).toHaveAccessibleDescription(/enter a display name/i);
- await enterCharacterStep();
+ await fillJoinName();
  fireEvent.click(screen.getByRole('radio',{name:'Red Player'}));
  expect(document.querySelector('.character-stage img')).toHaveAttribute('src','/assets/characters/player-red/portrait.webp');
- expect(screen.queryByLabelText('Display name')).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'Back'}));
  expect(screen.getByLabelText('Display name')).toHaveValue('Mika');
- expect(screen.getByLabelText('Display name')).toHaveFocus();
- fireEvent.click(screen.getByRole('button',{name:'Continue'}));
  expect(screen.getByRole('radio',{name:'Red Player'})).toBeChecked();
  expect(window.location.pathname).toBe('/room/123456');
+ fireEvent.click(screen.getByRole('button',{name:'Back'}));
+ expect(screen.getByRole('heading',{name:'Join a room'})).toBeVisible();
+ expect(window.location.pathname).toBe('/');
 });
-it('retains rejected join input and associates the inline error with the character step',async()=>{
+it('retains rejected join input and associates the inline error with Character',async()=>{
  vi.stubGlobal('fetch',vi.fn(async(url)=>String(url).endsWith('/join')?new Response(JSON.stringify({title:'Join rejected',detail:'This room is now full.',code:'room_full'}),{status:409,headers:{'content-type':'application/problem+json'}}):new Response(JSON.stringify(String(url).includes('characters')?characters:room),{headers:{'content-type':'application/json'}})));
- window.history.replaceState({},'','/room/123456');render(<App/>);await enterCharacterStep();
+ window.history.replaceState({},'','/room/123456');render(<App/>);await fillJoinName();
  fireEvent.click(screen.getByRole('radio',{name:'Red Player'}));
  fireEvent.click(screen.getByRole('button',{name:'Join room'}));
  expect(await screen.findByRole('alert')).toHaveTextContent('This room is now full.');
  expect(screen.getByRole('radiogroup')).toHaveAccessibleDescription('This room is now full.');
  expect(screen.getByRole('radio',{name:'Red Player'})).toBeChecked();
  expect(screen.getByRole('button',{name:'Join room'})).toBeEnabled();
- fireEvent.click(screen.getByRole('button',{name:'Back'}));
  expect(screen.getByLabelText('Display name')).toHaveValue('Mika');
 });
 it('does not present character or join controls when joining is forbidden',async()=>{
@@ -62,12 +58,12 @@ it('does not present character or join controls when joining is forbidden',async
  window.history.replaceState({},'','/room/123456');render(<App/>);
  expect(await screen.findByRole('status')).toHaveTextContent('full');
  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
- expect(screen.queryByRole('button',{name:'Continue'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'Join room'})).not.toBeInTheDocument();
 });
 it('stops an old voice preview when switching characters',async()=>{
  const pause=vi.fn();const play=vi.fn(()=>Promise.resolve());
  vi.stubGlobal('Audio',vi.fn(function(){return {play,pause,onended:null};}));
- window.history.replaceState({},'','/room/123456');render(<App/>);await enterCharacterStep();
+ window.history.replaceState({},'','/room/123456');render(<App/>);await fillJoinName();
  fireEvent.click(screen.getByRole('radio',{name:'Red Player'}));
  fireEvent.click(screen.getByRole('button',{name:'Preview riichi voice'}));
  await screen.findByRole('button',{name:'Playing riichi voice'});
@@ -77,7 +73,7 @@ it('stops an old voice preview when switching characters',async()=>{
 });
 it('reports unavailable portrait and rejected voice without claiming playback',async()=>{
  vi.stubGlobal('Audio',vi.fn(function(){return {play:()=>Promise.reject(new Error('missing voice')),pause:vi.fn(),onended:null};}));
- window.history.replaceState({},'','/room/123456');render(<App/>);await enterCharacterStep();
+ window.history.replaceState({},'','/room/123456');render(<App/>);await fillJoinName();
  fireEvent.click(screen.getByRole('radio',{name:'Red Player'}));
  fireEvent.error(screen.getByAltText('Red Player portrait'));
  expect(screen.getByLabelText('Red Player portrait unavailable')).toBeVisible();
@@ -89,7 +85,7 @@ it('reports unavailable portrait and rejected voice without claiming playback',a
 it('does not save a late accepted join after browser navigation leaves Join',async()=>{
  let resolveJoin!: (value:Response)=>void;
  vi.stubGlobal('fetch',vi.fn(async(url)=>String(url).endsWith('/join')?new Promise<Response>(done=>{resolveJoin=done;}):new Response(JSON.stringify(String(url).includes('characters')?characters:room),{headers:{'content-type':'application/json'}})));
- window.history.replaceState({},'','/room/123456');render(<App/>);await enterCharacterStep();
+ window.history.replaceState({},'','/room/123456');render(<App/>);await fillJoinName();
  fireEvent.click(screen.getByRole('radio',{name:'Red Player'}));
  fireEvent.click(screen.getByRole('button',{name:'Join room'}));
  expect(screen.getByRole('button',{name:'Joining room'})).toBeDisabled();

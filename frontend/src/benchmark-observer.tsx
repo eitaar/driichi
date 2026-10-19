@@ -4,8 +4,13 @@ import { api, ApiProblem, problemFrom, type BenchmarkLive } from "./api";
 import { clearAdminSession } from "./admin-session";
 import type { RunAnalytics } from "./benchmark-analytics";
 import { Button } from "./components/ui/button";
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "./components/ui/accordion";
-import { Field, FieldGroup, FieldLabel } from "./components/ui/field";
+import { Card, CardHeader, CardTitle, CardAction, CardContent, CardFooter } from "./components/ui/card";
+import { Field, FieldLabel } from "./components/ui/field";
+import { Eye } from "@phosphor-icons/react/dist/csr/Eye";
+import { Trophy } from "@phosphor-icons/react/dist/csr/Trophy";
+import { Info } from "@phosphor-icons/react/dist/csr/Info";
+import { ArrowClockwise } from "@phosphor-icons/react/dist/csr/ArrowClockwise";
+import { ArrowsOut } from "@phosphor-icons/react/dist/csr/ArrowsOut";
 import { ThreeTable } from "./game/three-table";
 import { seatPositions } from "./game/orientation";
 import type { ProjectedState } from "./game/types";
@@ -42,10 +47,14 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
   const [observation, setObservation] = useState(() => empty(lifetime));
   const [now, setNow] = useState(Date.now);
   const [focusedParticipantId, setFocusedParticipantId] = useState<string | null>(null);
+  const [focusMenuOpen, setFocusMenuOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [details, setDetails] = useState(false);
   const [fullscreenNote, setFullscreenNote] = useState<string | null>(null);
   const host = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const reopen = useRef<HTMLButtonElement>(null);
+  const previousExpanded = useRef(false);
   const tableVisual = useRef<HTMLDivElement>(null);
   const refresh = useRef(() => {});
   const focusId = useId();
@@ -66,6 +75,7 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
       refresh.current = () => {};
       setObservation(empty(lifetime));
       setFocusedParticipantId(null);
+      setFocusMenuOpen(false);
     };
     // shortcut: current backend has GET only; replace compatibility Polling when authorized SSE ships.
     const read = async () => {
@@ -120,12 +130,16 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
     const changed = () => {
       if (document.fullscreenElement !== host.current) {
         setExpanded(false);
-        trigger.current?.focus();
       }
     };
     document.addEventListener("fullscreenchange", changed);
     return () => { document.removeEventListener("fullscreenchange", changed); };
   }, []);
+
+  useEffect(() => {
+    if (previousExpanded.current && !expanded) (open ? trigger : reopen).current?.focus();
+    previousExpanded.current = expanded;
+  }, [expanded, open]);
 
   const current = open && observation.lifetime === lifetime ? observation : empty(lifetime);
   const snapshot = current.snapshot;
@@ -137,67 +151,87 @@ export function BenchmarkObserver({ runId, roomCode, analytics }: { runId: strin
     ? snapshot.benchmark?.status : stale ? "Stale" : !projection ? "Waiting" : "Fresh";
   const exit = async () => {
     if (document.fullscreenElement === host.current) await document.exitFullscreen();
-    setExpanded(false); trigger.current?.focus();
+    setExpanded(false);
   };
   const focusItems = [{ value: "", label: "Default view" },
     ...(focusedParticipantId && !focused ? [{ value: focusedParticipantId, label: "Selected Participant — awaiting current Seat" }] : []),
-    ...(projection?.players?.map(player => ({ value: player.participant_id, label: `${player.display_name} (${player.participant_id}) · Seat ${player.seat + 1}` })) ?? [])];
-  return <details open={open} className="admin-disclosure" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>Live table — all current hands</summary>
-    {open && <div ref={host} className="benchmark-observer mt-4 bg-background text-foreground fullscreen:size-full fullscreen:overflow-auto fullscreen:p-4" data-expanded={expanded} onKeyDown={event => {
-      if (event.key === "Escape" && !event.defaultPrevented && expanded) { event.preventDefault(); void exit(); }
+    ...(projection?.players?.map(player => ({ value: player.participant_id, label: `${player.display_name} · Seat ${player.seat + 1}` })) ?? [])];
+  const players = projection?.players ?? [];
+  const dealer = players.find(player => player.seat === projection?.dealer);
+  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("en") : "Unknown";
+  return <div ref={host} className="benchmark-observer" data-expanded={expanded} onKeyDown={event => {
+      if (event.key === "Escape" && !event.defaultPrevented && expanded && !focusMenuOpen) { event.preventDefault(); void exit(); }
     }}>
-      <div className="benchmark-observer-toolbar flex flex-wrap items-center gap-3 bg-background in-data-[expanded=true]:sticky in-data-[expanded=true]:top-0 in-data-[expanded=true]:z-10">
-        <div><p role="status">Polling · {status}{current.reading ? " · Updating" : ""}</p>
-          <p>Last successful update: {current.lastSnapshotAt === null ? "Not yet received" : new Date(current.lastSnapshotAt).toISOString()}</p></div>
-        <Button variant="outline" onClick={() => refresh.current()}>Refresh table</Button>
-        <Button ref={trigger} variant="outline" onClick={async () => {
+      <section className="benchmark-observation-grid" aria-label="Observation">
+      <Card className="benchmark-observation"><CardHeader className="benchmark-observer-toolbar">
+        <CardTitle><h2><Eye aria-hidden="true" />Observation</h2></CardTitle>
+        <CardAction className="benchmark-observer-actions">
+        <Button variant="outline" aria-label="Refresh table" disabled={!open} onClick={() => refresh.current()}><ArrowClockwise aria-hidden="true" /></Button>
+        <Button ref={trigger} variant="outline" aria-label={expanded ? "Exit fullscreen" : "Fullscreen table"} disabled={!open && !expanded} onClick={async () => {
           if (expanded) { await exit(); return; }
           setExpanded(true); setFullscreenNote(null);
           try { if (!host.current?.requestFullscreen) throw new Error(); await host.current.requestFullscreen(); }
           catch { setFullscreenNote("Browser fullscreen unavailable. Expanded in-page view."); }
-        }}>{expanded ? "Exit fullscreen" : "Fullscreen table"}</Button>
-      </div>
-      {fullscreenNote && <p role="status">{fullscreenNote}</p>}
+        }}><ArrowsOut aria-hidden="true" /></Button>
+        <Button variant="outline" aria-expanded={details} onClick={() => setDetails(!details)}><Info aria-hidden="true" />Details</Button>
+        </CardAction>
+        {open && status !== "Fresh" && <p role="status">Polling · {status}</p>}
+        {fullscreenNote && <p role="status">{fullscreenNote}</p>}
+      </CardHeader><CardContent>
+      {details && <div className="benchmark-observer-details">
+        <p>Revision {snapshot?.revision ?? "Unknown"} · GET compatibility mode; SSE unavailable</p>
+        {open && status === "Fresh" && <p>Polling · {status}{current.reading ? " · Updating" : ""}</p>}
+        <p>Last successful update: {current.lastSnapshotAt === null ? "Not yet received" : new Date(current.lastSnapshotAt).toISOString()}</p>
+        {projection && <details><summary>Current hands as text</summary><ul>{players.map(player => <li key={player.participant_id}>{player.display_name}: {player.hand?.map(tileLabel).join(", ")}</li>)}</ul></details>}
+        {open && <Button variant="outline" onClick={() => setOpen(false)}>Close observation</Button>}
+      </div>}
       {current.error && <p role="alert">{current.error}</p>}
-      {!snapshot && !current.failed && <p role="status">Connecting to live table…</p>}
-      {snapshot && <><p className="field-hint">Read-only Admin view · All current hands</p>
-        <Accordion><AccordionItem value="connection"><AccordionTrigger headingRender={<h2 />}>Connection details</AccordionTrigger><AccordionContent>
-          <p>Revision {snapshot.revision} · GET compatibility mode; SSE unavailable</p>
-        </AccordionContent></AccordionItem></Accordion></>}
+      {open && !snapshot && !current.failed && <p role="status">Connecting to live table…</p>}
       {snapshot && !projection && <p>{snapshot.benchmark?.status === "running" ? "Waiting for next Match." : "Run ended. No active Match."}</p>}
-      <div className="my-4 flex min-w-0 flex-wrap items-end gap-3">
-          <FieldGroup className="min-w-0 flex-1"><Field><FieldLabel htmlFor={focusId}>Focus Participant</FieldLabel>
-            <Select items={focusItems} value={focusedParticipantId ?? ""} onValueChange={value => {
+      {open ? <><Field orientation="horizontal" className="benchmark-observer-focus"><FieldLabel htmlFor={focusId}>Focus Participant</FieldLabel>
+            <Select items={focusItems} open={focusMenuOpen} onOpenChange={setFocusMenuOpen} value={focusedParticipantId ?? ""} onValueChange={value => {
               if (typeof value !== "string") return;
               setFocusedParticipantId(value || null);
-              if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-                tableVisual.current?.animate?.([{ opacity: 0.94 }, { opacity: 1 }], { duration: 150 });
-              }
             }}>
               <SelectTrigger id={focusId} className="w-full min-w-0"><SelectValue /></SelectTrigger>
               <SelectContent portalContainer={host}><SelectGroup>{focusItems.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent>
             </Select>
-          </Field></FieldGroup>
-          <p>{focused ? `Focused: ${focused.display_name} · Seat ${focused.seat + 1}` : "Default view · No focused current Seat"}</p>
-      </div>
-      <div className="benchmark-observer-grid grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] [&>*]:min-w-0">
-        <div ref={tableVisual} className="benchmark-live replay-table-wrap my-0!"><ThreeTable projection={projection} viewSeat={seat} room={null} surface="replay" reducedMotion /></div>
-        <section aria-label="Run leaderboard" className="min-w-0 rounded-lg border p-4 [overflow-wrap:anywhere]"><h2>Run leaderboard</h2>
+          </Field>
+          <p className="sr-only">{focused ? `Focused: ${focused.display_name} · Seat ${focused.seat + 1}` : "Default view · No focused current Seat"}</p>
+        <div ref={tableVisual} className="benchmark-live"><ThreeTable projection={projection} viewSeat={seat} room={null} surface="replay" reducedMotion /></div>
+        </> : <Button ref={reopen} variant="outline" onClick={() => setOpen(true)}>Open observation</Button>}
+      </CardContent><CardFooter className="benchmark-observation-status">
+        <span aria-label="Elapsed since Run start: unknown">--:--:-- elapsed</span>
+        <span>{current.lastSnapshotAt === null ? "Not yet received" : `${new Date(current.lastSnapshotAt).toISOString().slice(11, 19)} UTC`}</span>
+      </CardFooter></Card>
+      <div className="benchmark-observer-rail">
+        <Card role="region" aria-label="Run leaderboard" className="benchmark-observer-leaderboard"><CardHeader><CardTitle><h2><Trophy aria-hidden="true" />Run leaderboard</h2></CardTitle></CardHeader><CardContent>
           {analytics.kind === "invalid" ? <p>Standings unavailable: {analytics.reason}</p>
             : analytics.completed === 0 ? <p>No completed Matches yet.</p> : <>
-              <p>{analytics.provisional ? "Provisional · " : ""}{analytics.completed} completed Matches · Persisted results only</p>
+              <p className="text-sm font-normal text-muted-foreground">{analytics.provisional ? "Provisional · " : ""}{analytics.completed} completed Matches · Persisted results only</p>
               <Table aria-label="Run leaderboard" className="tabular-nums"><TableHeader><TableRow><TableHead>Participant</TableHead><TableHead className="whitespace-normal">Mean rank</TableHead><TableHead className="whitespace-normal">First-place rate</TableHead><TableHead className="whitespace-normal">Net score</TableHead></TableRow></TableHeader><TableBody>{[...analytics.participants].sort((a, b) => (a.averageRank ?? Infinity) - (b.averageRank ?? Infinity)
                 || (a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0)).map(player => <TableRow key={player.participantId}>
-                  <TableCell className="whitespace-normal">{player.displayName} ({player.participantId})</TableCell>
+                  <TableCell className="whitespace-normal">{player.displayName}</TableCell>
                   <TableCell>{player.averageRank?.toFixed(2) ?? "Unavailable"}</TableCell>
                   <TableCell>{player.firstPlaceRate === null ? "Unavailable" : `${(player.firstPlaceRate * 100).toFixed(1)}%`}</TableCell>
                   <TableCell>{player.cumulativeNet.toLocaleString()}</TableCell>
                 </TableRow>)}</TableBody></Table>
             </>}
-        </section>
-      </div>
-      {projection && <details><summary>Current hands as text</summary><ul>{projection.players?.map(player => <li key={player.participant_id}>{player.display_name} ({player.participant_id}): {player.hand?.map(tileLabel).join(", ")}</li>)}</ul></details>}
-    </div>}
-  </details>;
+        </CardContent></Card>
+        <Card role="region" aria-label="Current Match" className="benchmark-observer-current-match"><CardHeader><CardTitle><h2>Current Match</h2></CardTitle></CardHeader><CardContent>
+          {!projection ? <p>{open ? "No current Match." : "Observation closed."}</p> : <>
+            <dl className="benchmark-observer-match-facts">
+              <div><dt>Round</dt><dd>{typeof projection.round === "string" && typeof projection.kyoku === "number" ? `${projection.round} ${number(projection.kyoku)}` : "Unknown"}</dd></div>
+              <div className="benchmark-observer-dealer"><dt>Dealer</dt><dd>{dealer?.display_name ?? "Unknown"}</dd></div>
+              <div><dt>Honba</dt><dd>{number(projection.honba)}</dd></div>
+              <div><dt>Kyotaku</dt><dd>{number(projection.kyotaku)}</dd></div>
+              <div><dt>Wall</dt><dd>{number(projection.remaining_wall)}</dd></div>
+            </dl>
+            <Table aria-label="Current Match points"><TableHeader><TableRow><TableHead>Participant</TableHead><TableHead>Seat</TableHead><TableHead>Points</TableHead></TableRow></TableHeader><TableBody>
+              {players.map(player => <TableRow key={player.participant_id}><TableCell>{player.display_name}</TableCell><TableCell>{player.seat + 1}</TableCell><TableCell>{number(player.score)}</TableCell></TableRow>)}
+            </TableBody></Table>
+          </>}
+        </CardContent></Card>
+      </div></section>
+    </div>;
 }

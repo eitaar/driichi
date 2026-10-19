@@ -4,6 +4,9 @@
 
 @custom-variant dark (&:is(.dark *));
 
+[data-slot=button].theme-toggle{position:static;width:44px;height:44px;min-width:44px;min-height:44px;flex:none;border:0;background:var(--background);color:var(--foreground)}
+.theme-toggle:not(:focus-visible){box-shadow:none}.theme-toggle:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.theme-toggle:hover{background:var(--muted)}
+
 
 @font-face{font-family:Geist;src:url('./assets/fonts/Geist-Variable.woff2') format('woff2');font-style:normal;font-weight:100 900;font-display:swap}
 @font-face{font-family:'Geist Mono';src:url('./assets/fonts/GeistMono-Variable.woff2') format('woff2');font-style:normal;font-weight:100 900;font-display:swap}
@@ -25,7 +28,8 @@
   --muted-foreground: oklch(0.556 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
+  /* House destructive buttons use a translucent fill; keep normal text above AA contrast. */
+  --destructive: oklch(0.5 0.2 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.55 0 0);

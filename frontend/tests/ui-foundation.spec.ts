@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from "@playwright/test";
+import { expect, test, type Locator } from "./support/task7b-evidence";
 
 async function colors(locator: Locator, pseudo?: string) {
   return locator.evaluate((element, pseudo) => {
@@ -51,6 +51,33 @@ test("semantic consumers follow theme without inheriting legacy input styles", a
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveCSS("color-scheme", "light");
   await expect(card).not.toHaveCSS("background-color", dark);
+});
+
+test("header theme toggle is an opaque borderless house control with visible keyboard focus", async ({ page }) => {
+  const theme = page.getByRole("button", { name: /^Theme:/ });
+  for (const mode of ["Light", "Dark"]) {
+    await page.getByRole("button", { name: mode, exact: true }).click();
+    await expect(theme).toHaveCSS("width", "44px");
+    await expect(theme).toHaveCSS("height", "44px");
+    await expect(theme).toHaveCSS("border-top-width", "0px");
+    await page.mouse.move(0, 0);
+    const restingState = () => theme.evaluate(element => {
+      const style = getComputedStyle(element);
+      const surface = getComputedStyle(document.querySelector("header")!);
+      return { background: style.backgroundColor, headerBackground: surface.backgroundColor,
+        sameBackground: style.backgroundColor === surface.backgroundColor,
+        lastControl: element.closest("nav")?.lastElementChild === element };
+    });
+    await test.info().attach(`theme-${mode}-initial`, { body: JSON.stringify(await restingState()), contentType: "application/json" });
+    await expect.poll(restingState).toMatchObject({ sameBackground: true, lastControl: true });
+    await test.info().attach(`theme-${mode}-settled`, { body: JSON.stringify(await restingState()), contentType: "application/json" });
+    await theme.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    await expect(theme).toBeFocused();
+    await expect(theme).toHaveCSS("outline-style", "solid");
+    await expect(theme).toHaveCSS("outline-width", "2px");
+  }
 });
 
 test("filled Input has readable semantic foreground in both themes", async ({ page }) => {
@@ -118,13 +145,15 @@ test("filled controls and action states use readable neutral colors in Light and
   }
 });
 
-test("Participant chart hues contrast with both themes while rank patterns stay neutral", async ({ page }) => {
+test("Participant and Rank charts share contrasting solid colors and shape identities", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
   for (const theme of ["Light", "Dark"]) {
     await page.getByRole("button", { name: theme, exact: true }).click();
     const distribution = page.getByRole("region", { name: "Rank distribution", exact: true });
-    await expect(distribution.locator("pattern")).toHaveCount(4);
-    const samples = await distribution.evaluate(element => {
+    await expect(distribution.locator(".recharts-radar-polygon")).toHaveCount(4);
+    await expect(distribution.locator("pattern")).toHaveCount(0);
+    expect(await distribution.locator(".house-chart-legend [data-shape]").evaluateAll(elements => elements.map(el => el.getAttribute("data-shape")))).toEqual(["circle", "square", "diamond", "triangle"]);
+    const samples = await distribution.locator('[data-slot="chart"]').evaluate(element => {
       const context = document.createElement("canvas").getContext("2d")!;
       const rgb = (color: string) => { context.fillStyle = color; context.fillRect(0, 0, 1, 1); return Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3); };
       const luminance = (rgb: number[]) => rgb.map(v => v / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4).reduce((s, c, i) => s + c * [.2126, .7152, .0722][i], 0);
@@ -132,15 +161,15 @@ test("Participant chart hues contrast with both themes while rank patterns stay 
       const background = luminance(rgb(style.getPropertyValue("--card")));
       return {
         participants: [1, 2, 3, 4].map(i => { const channels = rgb(style.getPropertyValue(`--chart-${i}`)); const l = luminance(channels); return { channels, contrast: (Math.max(l, background) + .05) / (Math.min(l, background) + .05) }; }),
-        ranks: Array.from(element.querySelectorAll("pattern rect")).map(rect => rgb(getComputedStyle(rect).fill)),
+        ranks: Array.from(element.querySelectorAll(".recharts-radar-polygon .recharts-polygon")).map(polygon => ({ fill: getComputedStyle(polygon).fill, stroke: getComputedStyle(polygon).stroke, dash: getComputedStyle(polygon).strokeDasharray })),
       };
     });
     for (const p of samples.participants) {
       expect(p.contrast, `${theme} chart graphic contrast`).toBeGreaterThanOrEqual(3);
       expect(Math.max(...p.channels) - Math.min(...p.channels), "Participant hue").toBeGreaterThan(10);
     }
-    for (const rank of samples.ranks) expect(Math.max(...rank) - Math.min(...rank), "Rank fill is neutral").toBeLessThanOrEqual(1);
-    await expect(distribution.locator("pattern path")).toHaveCount(4);
+    expect(samples.ranks).toHaveLength(4);
+    for (const rank of samples.ranks) { expect(rank.fill).toBe(rank.stroke); expect(rank.dash).toBe("none"); }
     await test.info().attach(`chart-colors-${theme}`, { body: JSON.stringify(samples, null, 2), contentType: "application/json" });
   }
 });

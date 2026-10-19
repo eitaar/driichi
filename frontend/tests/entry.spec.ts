@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/task7b-evidence";
 
 test.beforeEach(async ({page}) => {
   await page.route('**/api/v1/characters/human', route => route.fulfill({json:[]}));
@@ -34,7 +34,7 @@ for (const viewport of [
       await expect(page.locator("footer")).toHaveCount(0);
       expect(consoleErrors).toEqual([]);
       expect(failedRequests).toEqual([]);
-      await page.screenshot({ path: `test-results/task-10/entry-${viewport.label}.png`, fullPage: false });
+      await page.screenshot({ path: test.info().outputPath(`entry-${viewport.label}.png`), fullPage: false });
     });
   });
 }
@@ -78,11 +78,13 @@ test("supports keyboard focus, reduced motion, loading, and Problem Details stat
   });
   await page.getByRole("textbox", { name: /room code/i }).fill("123456");
   await page.getByRole("button", { name: /open room/i }).click();
-  await expect(page).toHaveURL(/\/room\/123456$/);
-  await expect(page.getByText(/loading room/i)).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("button", { name: "Checking room" })).toBeDisabled();
+  await expect(page.getByLabel("Room code")).toBeDisabled();
   releaseRoomLookup();
-  await expect(page.getByRole("heading", { name: /room unavailable/i })).toBeVisible();
-  await expect(page.getByRole("alert")).toContainText("The requested Room does not exist.");
+  await expect(page.getByText("Room not found. Check the code and try again.")).toBeVisible();
+  await expect(page.getByLabel("Room code")).toHaveValue("123456");
+  await expect(page.getByLabel("Room code")).toHaveAttribute("aria-describedby", "room-code-error");
 });
 
 test("admin route exposes the room workspace at desktop sizes", async ({ page }) => {
@@ -159,7 +161,7 @@ for (const viewport of [
     await expect(page.getByRole("heading", { name: /night market/i })).toBeVisible();
     await page.getByText("Bot tokens", { exact: true }).click();
     await expect(page.getByRole("textbox", { name: /token name/i })).toBeVisible();
-    await page.screenshot({ path: `test-results/task-11/admin-${viewport.label}.png`, fullPage: false });
+    await page.screenshot({ path: test.info().outputPath(`admin-${viewport.label}.png`), fullPage: false });
   });
 
   test(`captures Lobby at ${viewport.label}`, async ({ page }, info) => {
@@ -201,8 +203,10 @@ for (const viewport of [
     });
     await page.goto("/room/123456/lobby");
     await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
-    await expect(page.locator(".connection-state")).toHaveText("connected");
-    await expect(page.locator(".ready-block .field-hint")).toHaveText(/available|could not be preloaded|needs/);
+    await expect(page.getByLabel("Room summary")).toContainText("3 / 3 selected");
+    await expect(page.getByRole("button", { name: "Mika", exact: true })).toBeVisible();
+    await expect(page.locator(".connection-state")).toHaveCount(0);
+    await expect(page.locator(".ready-block .field-hint")).toHaveText(/^$|could not be preloaded/);
     for (const fontFamily of ["", "monospace"]) {
       // Also exercise wider fallback metrics without depending on the host OS font.
       const override = fontFamily ? await page.addStyleTag({ content: `.lobby-shell { font-family: ${fontFamily}; }` }) : null;
@@ -211,6 +215,6 @@ for (const viewport of [
       expect(readyButton!.y + readyButton!.height).toBeLessThanOrEqual(viewport.height);
       await override?.evaluate((element) => element.parentNode?.removeChild(element));
     }
-    await page.screenshot({ path: `test-results/task-11/lobby-${viewport.label}.png`, fullPage: false });
+    await page.screenshot({ path: test.info().outputPath(`lobby-${viewport.label}.png`), fullPage: false });
   });
 }

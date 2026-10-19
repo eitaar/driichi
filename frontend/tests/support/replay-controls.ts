@@ -32,6 +32,8 @@ export async function verifyReplayControls(page: Page) {
   await expect(controls.getByRole("button", { name: /^play$/i })).toBeVisible();
   await chapters.last().focus();
   await page.keyboard.press("Tab");
+  await expect(page.locator(".gameplay-controls .theme-toggle")).toBeFocused();
+  await page.keyboard.press("Tab");
   const settings = page.getByRole("button", { name: "Settings", exact: true });
   await expect(settings).toBeFocused();
   await page.keyboard.press("Enter");

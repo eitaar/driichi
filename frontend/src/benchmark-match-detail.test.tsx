@@ -7,7 +7,10 @@ const match = (replay_availability: ReplayAvailability): BenchmarkMatchEvidence 
 it.each(["unknown", "available", "unavailable", "too_large"] as const)("retains real placements and points for %s without fabricating a Replay", (state) => {
   render(<BenchmarkMatchDetail match={match(state)} roster={roster} onClose={vi.fn()} />);
   expect(screen.getByRole("dialog")).toHaveTextContent("45,000");
-  expect(screen.getByRole("table", { name: "Match placements" })).toHaveTextContent("a");
+  expect(screen.getByRole("table", { name: "Match placements" })).toHaveTextContent("Same bot");
+  expect(screen.getAllByRole("cell", { name: "Same bot" })).toHaveLength(3);
+  expect(screen.getByRole("table", { name: "Match placements" })).not.toHaveTextContent(/\([abc]\)/);
+  expect(screen.getByRole("dialog")).toHaveTextContent("match/a");
   if (state === "available") expect(screen.getByRole("link", { name: "Open Replay" })).toHaveAttribute("href", "/admin/replays/match%2Fa");
   else expect(screen.queryByRole("link", { name: "Open Replay" })).not.toBeInTheDocument();
   expect(screen.getByRole("status")).toHaveTextContent(state === "unknown" ? "not verified" : state === "too_large" ? "too large" : state === "unavailable" ? "unavailable" : "available");

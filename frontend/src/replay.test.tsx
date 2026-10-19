@@ -1,12 +1,16 @@
+import { useEffect } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./app";
 
+const mockAudioInit = vi.hoisted(() => vi.fn());
 const mockPlayVoices = vi.hoisted(() => vi.fn());
 const mockDecodeCharacterAsset = vi.hoisted(() => vi.fn());
 const mockThreeTable = vi.hoisted(() => vi.fn());
+const mockTableLifetime = vi.hoisted(() => ({ mounts: 0, active: 0 }));
 vi.mock("./game/audio", () => ({
   AudioManager: class {
+    constructor() { mockAudioInit(); }
     settings = { master: 1, sfx: 1, voice: 1, voiceEnabled: true };
     playVoices = mockPlayVoices;
     unlock = vi.fn(() => Promise.resolve());
@@ -18,6 +22,11 @@ vi.mock("./game/assets", () => ({ decodeCharacterAsset: mockDecodeCharacterAsset
 vi.mock("./game/three-table", () => ({
   ThreeTable: (props: { projection: { players?: unknown[] }; surface?: string }) => {
     mockThreeTable(props);
+    useEffect(() => {
+      mockTableLifetime.mounts++;
+      mockTableLifetime.active++;
+      return () => { mockTableLifetime.active--; };
+    }, []);
     return <div data-testid="replay-three-table" data-surface={props.surface}>{props.projection.players?.length ?? 0} players</div>;
   },
 }));
@@ -75,7 +84,10 @@ const replay = {
 describe("Replay Admin workspace", () => {
   beforeEach(() => {
     mockPlayVoices.mockReset();
+    mockAudioInit.mockReset();
     mockThreeTable.mockReset();
+    mockTableLifetime.mounts = 0;
+    mockTableLifetime.active = 0;
     mockDecodeCharacterAsset.mockReset().mockResolvedValue(undefined);
     window.history.replaceState({}, "", "/admin/replays");
     vi.stubGlobal("fetch", vi.fn().mockImplementation((input, init) => {
@@ -264,6 +276,7 @@ describe("Replay Admin workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: /next event/i }));
     expect(screen.getAllByTestId("winning-tile")).toHaveLength(1);
     expect(screen.getByLabelText("Ron win details")).toHaveTextContent("1,000");
+    expect(screen.getByTestId("round-win-surface").parentElement).toHaveClass("result-win-modal", "result-win-modal--replay");
     expect(screen.queryByText("99,999")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: /playback speed/i }), { target: { value: "64" } });
@@ -277,6 +290,68 @@ describe("Replay Admin workspace", () => {
     expect(screen.getByTestId("round-win-surface")).toBeVisible();
     expect(screen.queryByRole("list", { name: "Final standings" })).not.toBeInTheDocument();
     expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
+  it("keeps phone Theme in metadata without Character, table or audio initialization", async () => {
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(390);
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation(input => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? replay : [])));
+    const view = render(<App />);
+    await screen.findByRole("heading", { name: "Desktop required for the 3D table" });
+    const theme = view.container.querySelector(".replay-mobile-metadata .replay-metadata-actions .theme-toggle")!;
+    expect(theme).not.toBeNull();
+    fireEvent.click(theme);
+    expect(mockDecodeCharacterAsset).not.toHaveBeenCalled();
+    expect(mockThreeTable).not.toHaveBeenCalled();
+    expect(mockAudioInit).not.toHaveBeenCalled();
+    expect(view.container.querySelector('canvas, img[src*="/assets/characters/"]')).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
+  it("owns a nonmodal final stage and remounts only the previous playable chapter (mocked table lifetime)", async () => {
+    const saved = { ...replay, result: { mode: "FourPlayerRedEast", final_scores: [45000, 30000, 15000, 10000],
+      players: replay.players.map((player, seat) => ({ ...player, kind: "BuiltInBot", rank: seat + 1, final_score: [45000, 30000, 15000, 10000][seat] })) } };
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation(input => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? saved : [])));
+    const view = render(<App />);
+    await screen.findByTestId("replay-three-table");
+    const mounts = mockTableLifetime.mounts;
+    const theme = view.container.querySelector(".gameplay-controls .theme-toggle")!;
+    expect(theme).not.toBeNull();
+    fireEvent.click(theme);
+    expect(mockTableLifetime.mounts).toBe(mounts);
+    fireEvent.change(screen.getByRole("slider"), { target: { value: "2" } });
+    const final = screen.getByRole("region", { name: "Replay final standings" });
+    expect(final.tagName).toBe("SECTION");
+    expect(final.closest(".replay-table-stage")).not.toBeNull();
+    expect(within(final).getByRole("list", { name: "Final standings" })).toHaveTextContent("Seat 0");
+    expect(screen.queryByTestId("replay-three-table")).not.toBeInTheDocument();
+    expect(mockTableLifetime.active).toBe(0);
+    expect(view.container.querySelector("main main, .results-overlay")).toBeNull();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Replay library" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Playback speed" })).toBeEnabled();
+    fireEvent.click(screen.getAllByRole("button", { name: "East 1 · 0 honba" })[0]);
+    await screen.findByTestId("replay-three-table");
+    expect(mockTableLifetime.active).toBe(1);
+    expect(mockTableLifetime.mounts).toBe(mounts + 1);
+    expect(mockThreeTable.mock.lastCall![0].projection).toEqual(saved.frames[0].visible_state);
+    expect(screen.queryByRole("region", { name: "Replay final standings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Continue|Return to room|Review/ })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+  });
+
+  it.each([undefined, { invalid: true }])("keeps honest final recovery and navigation for invalid saved standings %j", async result => {
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    vi.mocked(fetch).mockImplementation(input => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? { ...replay, result } : [])));
+    render(<App />);
+    await screen.findByTestId("replay-three-table");
+    fireEvent.change(screen.getByRole("slider"), { target: { value: "2" } });
+    expect(screen.getByText("Saved final standings are unavailable.")).toBeVisible();
+    expect(screen.queryByTestId("results-panel")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("replay-three-table")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Previous Event" })).toBeEnabled();
+    expect(screen.getByRole("link", { name: "Replay library" })).toBeVisible();
   });
 
   it("restores a recorded draw reason with its settlement without inferring a missing reason", async () => {
@@ -388,6 +463,32 @@ describe("Replay Admin workspace", () => {
     expect(screen.getByRole("combobox", { name: /playback speed/i })).toHaveValue("2");
     fireEvent.click(screen.getByRole("button", { name: "East 2 · 0 honba" }));
     expect(screen.getByRole("button", { name: /^play$/i })).toBeVisible();
+  });
+
+  it("keeps long auxiliary-event log Buttons wrapping and content-sized while seeking read-only Replay", async () => {
+    const before = Array.from({ length: 24 }, (_, index) => ({ event: { Disconnected: { seat: index % 4 } }, line_index: index, phase: "before", sequence: index }));
+    const after = Array.from({ length: 24 }, (_, index) => ({ event: { Reconnected: { seat: index % 4 } }, line_index: index + 24, phase: "after", sequence: index + 24 }));
+    const saved = { ...replay, frames: [replay.frames[0], frame(1, "tsumo", [...before, ...after]), replay.frames[2]] };
+    window.history.replaceState({}, "", "/admin/replays/MATCH15");
+    const fetchMock = vi.mocked(fetch).mockImplementation(input => Promise.resolve(response(String(input).endsWith("/admin/replays/MATCH15") ? saved : [])));
+    render(<App />);
+    const eventLog = await screen.findByRole("log", { name: "Replay event log" });
+    const row = within(eventLog).getAllByRole("button")[1];
+    const description = [...before.map(() => "Before / Disconnected"), "Tsumo", ...after.map(() => "After / Reconnected")].join(" / ");
+    expect(row.children[1].textContent).toBe(description);
+    expect(row).toHaveClass("h-auto", "whitespace-normal");
+    expect(row).not.toHaveClass("h-10");
+    expect(row).not.toHaveClass("whitespace-nowrap");
+    expect(row).toHaveAttribute("type", "button");
+    fireEvent.click(screen.getByRole("button", { name: /^Play$/ }));
+    fireEvent.click(row);
+    expect(screen.getByRole("slider")).toHaveValue("1");
+    expect(row.closest("li")).toHaveClass("is-current");
+    expect(screen.getByRole("button", { name: /^Play$/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Previous Event" }));
+    expect(screen.getByRole("slider")).toHaveValue("0");
+    expect(screen.queryByRole("button", { name: /Continue/ })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
   });
 
   it("preserves playing and paused chapter jumps, distinguishes honba, and pauses ordinary seeks", async () => {

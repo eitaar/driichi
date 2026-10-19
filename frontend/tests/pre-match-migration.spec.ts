@@ -1,4 +1,4 @@
-import {expect,test} from '@playwright/test';
+import {expect,test} from './support/task7b-evidence';
 import AxeBuilder from '@axe-core/playwright';
 
 test.beforeEach(async({page})=>{
@@ -6,16 +6,13 @@ test.beforeEach(async({page})=>{
  await page.route('**/api/v1/rooms/123456',route=>route.fulfill({json:{room_name:'Night Market',game_mode:'4p-red-east',phase:'Lobby',join_allowed:true,participant_count:1,participant_limit:4}}));
 });
 
-test('homeUsesApprovedHierarchyWithoutChangingEntry',async({page})=>{
+for(const theme of ['light','dark']) for(const width of [1440,1024,390,320]) test(`homeUsesApprovedHierarchyWithoutChangingEntry ${theme} ${width}`,async({page})=>{
  // A miniature art column, art-first phone layout or broken real navigation fails this contract.
  await page.route('**/assets/characters/*/portrait.webp',route=>{
   const id=new URL(route.request().url()).pathname.split('/').at(-2)!;
   return route.fulfill({path:`tests/fixtures/task12-characters/${id}/portrait.webp`});
  });
- await page.goto('/');
- for(const theme of ['light','dark']){
-  await page.evaluate(theme=>localStorage.setItem('driichi-theme',theme),theme);
-  for(const width of [1440,1024,390,320]){
+ await page.addInitScript(theme=>localStorage.setItem('driichi-theme',theme),theme);
    await page.setViewportSize({width,height:width===1440?960:844});
    await page.goto('/');
    const input=page.getByLabel('Room code'),action=page.getByRole('button',{name:'Open room'});
@@ -48,6 +45,7 @@ test('homeUsesApprovedHierarchyWithoutChangingEntry',async({page})=>{
     await expect(action).toBeInViewport();
    }
    expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+   await page.screenshot({path:test.info().outputPath(`home-${theme}-${width}${width<1024?'-text200':''}.png`),fullPage:true});
    await input.fill('12a34');
    await expect(input).toHaveValue('1234');
    await action.click();
@@ -57,8 +55,6 @@ test('homeUsesApprovedHierarchyWithoutChangingEntry',async({page})=>{
    await page.getByRole('button',{name:'Open room'}).click();
    await expect(page).toHaveURL(/\/room\/123456$/);
    await expect(page.getByLabel('Display name')).toBeVisible();
-  }
- }
 });
 
 test('Home keeps entry usable with failed registration or missing registered art',async({page})=>{
@@ -90,8 +86,8 @@ test('missing registered portrait and voice keep the selection and join action u
  await page.route('**/assets/characters/player-red/voices/riichi.ogg',route=>route.fulfill({status:404,body:'missing test asset'}));
  await page.goto('/room/123456');
  await page.getByLabel('Display name').fill('Mika');
- await page.getByRole('button',{name:'Continue'}).click();
- await page.getByRole('radio',{name:'Red Player'}).check();
+ await page.getByText('Red Player',{exact:true}).click();
+ await expect(page.getByRole('radio',{name:'Red Player'})).toBeChecked();
  await expect(page.locator('.character-stage .asset-fallback')).toBeVisible();
  await page.getByRole('button',{name:'Preview riichi voice'}).click();
  await expect(page.getByRole('button',{name:'Voice preview is unavailable'})).toBeVisible();
@@ -135,18 +131,18 @@ test('primary action keeps readable contrast throughout enabling', async ({ page
 });
 
 for(const theme of ['light','dark']){
- test(`Home and both Join steps keep accessible controls in ${theme}`,async({page})=>{
+ test(`Home and single-screen Join keep accessible controls in ${theme}`,async({page})=>{
   await page.addInitScript(theme=>localStorage.setItem('driichi-theme',theme),theme);
   await page.goto('/');
   await expect(page.locator('html')).toHaveClass(theme === 'dark' ? 'dark' : '');
   expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
   await page.getByLabel('Room code').fill('123456');
   await page.getByRole('button',{name:'Open room'}).click();
-  await page.getByRole('button',{name:'Continue'}).click();
+  await page.getByLabel('Display name').focus();
+  await page.getByLabel('Display name').blur();
   await expect(page.getByLabel('Display name')).toHaveAttribute('aria-invalid','true');
   expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
   await page.getByLabel('Display name').fill('Mika');
-  await page.getByRole('button',{name:'Continue'}).click();
   await page.keyboard.press('Tab');
   await expect(page.getByRole('radio',{name:'Red Player'})).toBeFocused();
   await page.keyboard.press('Space');
@@ -156,23 +152,28 @@ for(const theme of ['light','dark']){
  });
 }
 
-test('local Back retains values while browser Back exits the same-URL Join',async({page})=>{
+test('browser Back leaves the single-screen Join',async({page})=>{
+ await page.goto('/');
+ await page.getByLabel('Room code').fill('123456');
+ await page.getByRole('button',{name:'Open room'}).click();
+ await expect(page.getByLabel('Display name')).toBeVisible();
+ await page.goBack();
+ await expect(page).toHaveURL(/\/$/);
+ await expect(page.getByRole('heading',{name:'Join a room'})).toBeVisible();
+});
+
+test('Join is one screen and Back returns to entry',async({page})=>{
  await page.goto('/');
  await page.getByLabel('Room code').fill('123456');
  await page.getByRole('button',{name:'Open room'}).click();
  await page.getByLabel('Display name').fill('Mika');
  const historyLength=await page.evaluate(()=>history.length);
- await page.getByRole('button',{name:'Continue'}).click();
- await expect(page.getByRole('heading',{name:'Choose your character'})).toBeFocused();
- await page.getByRole('radio',{name:'Red Player'}).check();
- await page.getByRole('button',{name:'Back',exact:true}).click();
- await expect(page.getByLabel('Display name')).toHaveValue('Mika');
- await expect(page.getByLabel('Display name')).toBeFocused();
- await page.getByRole('button',{name:'Continue'}).click();
+ await page.getByText('Red Player',{exact:true}).click();
  await expect(page.getByRole('radio',{name:'Red Player'})).toBeChecked();
- await expect(page).toHaveURL(/\/room\/123456$/);
+ await expect(page.getByLabel('Display name')).toHaveValue('Mika');
+ await expect(page.getByRole('button',{name:'Join room'})).toBeEnabled();
  expect(await page.evaluate(()=>history.length)).toBe(historyLength);
- await page.goBack();
+ await page.getByRole('button',{name:'Back',exact:true}).click();
  await expect(page).toHaveURL(/\/$/);
  await expect(page.getByRole('heading',{name:'Join a room'})).toBeVisible();
 });
@@ -193,8 +194,8 @@ for(const width of [390,320]){
   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   await page.getByLabel('Room code').fill('123456');await page.getByRole('button',{name:'Open room'}).click();
   await page.getByLabel('Display name').fill('LongParticipantName'.repeat(3));
-  await page.getByRole('button',{name:'Continue'}).click();
-  await page.getByRole('radio').check();
+  await page.locator('.join-character-option').click();
+  await expect(page.getByRole('radio')).toBeChecked();
   await page.getByRole('button',{name:'Join room'}).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button',{name:'Join room'})).toBeInViewport();
   await expect(page.getByRole('button',{name:'Join room'})).toBeEnabled();
@@ -212,8 +213,8 @@ for(const size of [{width:1024,height:600},{width:1440,height:900},{width:1920,h
   await page.screenshot({path:info.outputPath('entry.png')});
   await page.getByLabel('Room code').fill('123456');await page.getByRole('button',{name:'Open room'}).click();
   await page.getByLabel('Display name').fill('Mika');
-  await page.getByRole('button',{name:'Continue'}).click();
-  await page.getByRole('radio',{name:'Red Player'}).check();
+  await page.getByText('Red Player',{exact:true}).click();
+  await expect(page.getByRole('radio',{name:'Red Player'})).toBeChecked();
   const art=await page.locator('.character-stage').boundingBox();const form=await page.locator('.join-form').boundingBox();
   expect(art!.x+art!.width).toBeLessThan(form!.x);
   const join=await page.getByRole('button',{name:'Join room'}).boundingBox();expect(join!.y+join!.height).toBeLessThanOrEqual(size.height);

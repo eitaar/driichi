@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/task7b-evidence";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -49,14 +49,19 @@ test("phone Benchmark deep link omits private observer but preserves status and 
   const privateReads: string[] = [], rendererReads: string[] = [];
   page.on("request", request => {
     if (request.url().endsWith("/live")) privateReads.push(request.url());
-    if (/table-scene|three-renderer|renderer\.worker/.test(request.url())) rendererReads.push(request.url());
+    if (/benchmark-observer|table-scene|three-renderer|renderer\.worker/.test(request.url())) rendererReads.push(request.url());
   });
   await page.route("**/api/v1/admin/benchmark/runs/run-1", route => route.fulfill({ json: { run_id: "run-1", room_code: "123456", game_mode: "4p-red-east", target: 3, completed: 0, status: "running", reason: null, failed_match_id: null, roster: Array.from({ length: 4 }, (_, initial_seat) => ({ participant_id: `p${initial_seat}`, display_name: `Bot ${initial_seat}`, initial_seat, participant_kind: "built_in_bot", character_id: null })), matches: [], statistics: [] } }));
   await page.goto("/admin/benchmark/runs/run-1");
   await expect(page.getByRole("heading", { name: "Benchmark Run", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Room controls" })).toBeVisible();
+  const runSummary = page.getByRole("region", { name: "Run summary", exact: true });
+  await expect(runSummary).toHaveAttribute("data-slot", "card");
+  await expect(runSummary.getByRole("link", { name: "Room controls" })).toBeVisible();
+  await expect(runSummary.getByRole("progressbar", { name: "Completed Matches" })).toHaveAttribute("value", "0");
+  await expect(runSummary.getByRole("progressbar")).toHaveAttribute("max", "3");
+  await expect(runSummary.getByRole("status").filter({ hasText: /^running$/ })).toHaveText("running");
   await expect(page.getByText("No completed Matches yet.")).toBeVisible();
-  await expect(page.getByText("Live table — all current hands")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Observation", exact: true })).toHaveCount(0);
   await expect(page.locator("canvas")).toHaveCount(0);
   expect(privateReads).toEqual([]);
   expect(rendererReads).toEqual([]);
@@ -101,25 +106,22 @@ for (const fromDesktop of [false, true]) {
     });
     await page.goto("/room/123456/lobby");
     await expect(page.getByRole("heading", { name: "Final standings" })).toBeVisible();
-    let desktopStarts = 0;
-    if (fromDesktop) {
-      await expect(page.locator("canvas")).toHaveCount(1);
-      desktopStarts = await page.evaluate(() => (window as unknown as { tableWorkers: { starts: number } }).tableWorkers.starts);
-      await page.setViewportSize({ width: 390, height: 844 });
-    }
+    await expect(page.getByTestId("match-victory-page")).toBeVisible();
+    if (fromDesktop) await page.setViewportSize({ width: 390, height: 844 });
     const standings = page.getByRole("list", { name: "Final standings" });
     await expect(standings).toBeVisible();
     await expect(standings.getByRole("listitem")).toHaveText(["1Bot One45,000", "2Mika30,000", "3Bot Two0"]);
     await expect(standings.getByLabel("Rank 1")).toBeVisible();
     await expect(page.locator("canvas")).toHaveCount(0);
-    await expect.poll(() => page.evaluate(() => (window as unknown as { tableWorkers: { starts: number; active: number } }).tableWorkers)).toEqual({ starts: desktopStarts, active: 0 });
-    await expect(page.getByRole('button', { name: 'Mika', exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Set Ready" })).toBeEnabled();
-    await page.getByRole("button", { name: "Return to Room", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { tableWorkers: { starts: number; active: number } }).tableWorkers)).toEqual({ starts: 0, active: 0 });
+    await expect(page.getByRole("button", { name: "Set Ready" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Return to room", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
     expect(sent).toEqual([]);
     await page.getByRole("button", { name: "Review final standings" }).click();
     await expect(standings).toBeVisible();
+    await page.getByRole("button", { name: "Return to room", exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Mika', exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Set Ready" }).click();
     await expect.poll(() => sent.map(message => JSON.parse(message))).toEqual([{ type: "set_ready", preloaded_characters: ["player-red", "player-red", "player-red"] }]);
   });

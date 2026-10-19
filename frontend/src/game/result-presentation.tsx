@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { ThemeToggle } from "../components/theme-toggle";
 import { Button } from "../components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "../components/ui/toggle-group";
 import { Drawer, DrawerTrigger, DrawerContent, DrawerTitle, DrawerDescription, DrawerClose } from "../components/ui/drawer";
@@ -83,6 +84,14 @@ export function ResultsPanel({ room, assets }: { room: RoomSnapshot | null; asse
     <div className="results-winner"><ResultPortrait characterId={firstAsset} name={first.display_name} available={firstAsset ? assets[firstAsset] !== false : false} className="results-winner-hero-portrait" /></div>
     <div className="results-standings"><h2 id="results-heading">Final standings</h2><ol className="results-list" aria-label="Final standings">{ordered.map(player => <li key={player.participant_id} className={player.rank === 1 ? "is-first" : undefined}><span className="result-rank" aria-label={`Rank ${player.rank}`}>{player.rank}</span><span className="result-name">{player.display_name}</span><span className="result-score">{player.final_score.toLocaleString()}</span></li>)}</ol></div>
   </section>;
+}
+
+export function MatchVictoryPage({ room, onReturn, notice }: { room: RoomSnapshot; onReturn: () => void; notice: ReactNode }) {
+  return <main className="match-victory-page" data-testid="match-victory-page">
+    <div className="match-victory-notice">{notice}</div>
+    <ResultsPanel room={room} assets={{}} />
+    <div className="match-victory-actions"><ThemeToggle /><Button size="lg" variant="outline" onClick={onReturn}>Return to room</Button></div>
+  </main>;
 }
 
 /** Read-only authorized metadata; deliberately no live controller or renderer dependency. */

@@ -25,7 +25,7 @@ export function BenchmarkMatchDetail({ match, roster, onClose, onRetryReplay }: 
     <p className="break-all tabular-nums">{match.match_id}</p>
     <Table aria-label="Match placements" tabIndex={0}><TableHeader><TableRow><TableHead>Participant</TableHead><TableHead>Seat</TableHead><TableHead>Rank</TableHead><TableHead>Final points</TableHead></TableRow></TableHeader><TableBody>
       {[...match.results].sort((a, b) => a.rank - b.rank || a.seat - b.seat).map(result => <TableRow key={result.participant_id}>
-        <TableCell>{roster.find(p => p.participant_id === result.participant_id)?.display_name} ({result.participant_id})</TableCell><TableCell>{result.seat + 1}</TableCell><TableCell>{result.rank}</TableCell><TableCell>{result.final_score.toLocaleString()}</TableCell>
+        <TableCell>{roster.find(p => p.participant_id === result.participant_id)?.display_name}</TableCell><TableCell>{result.seat + 1}</TableCell><TableCell>{result.rank}</TableCell><TableCell>{result.final_score.toLocaleString()}</TableCell>
       </TableRow>)}
     </TableBody></Table>
     <p role="status">{status === "available" ? "Replay available." : status === "unavailable" ? "Replay unavailable. The recorded placements and points remain valid." : status === "too_large" ? "Replay is too large for the viewer. Placements and points remain available." : "Replay status not verified. Placements and points remain available; missing or failed metadata never establishes availability."}</p>

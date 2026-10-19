@@ -30,14 +30,15 @@ import {
   type KyokuEndStep,
   type KyokuSettlement,
 } from "./results";
-import { DrawResult, RoundWinSurface, ScoreTransfer, ResultsPanel, type AssetState } from "./result-presentation";
+import { DrawResult, RoundWinSurface, ScoreTransfer, ResultsPanel, MatchVictoryPage, type AssetState } from "./result-presentation";
 import { Button } from "../components/ui/button";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription, DialogClose } from "../components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "../components/ui/field";
 import { Slider } from "../components/ui/slider";
 import { Switch } from "../components/ui/switch";
-import { Sheet, SheetTrigger, SheetContent, SheetTitle, SheetDescription } from "../components/ui/sheet";
+import { ThemeToggle } from "../components/theme-toggle";
+import { decodeRoomFinalStandings } from "./results";
 import "./result.css";
 
 const ThreeTable = lazy(() => import("./three-table").then(module => ({ default: module.ThreeTable })));
@@ -324,11 +325,12 @@ function GameplayControls({
 }) {
   return (
     <div className="gameplay-controls">
-      <div className={`connection-state connection-${status}`}>
+      {status !== "connected" && <div className={`connection-state connection-${status}`}>
         <span className="state-dot" aria-hidden="true" />
         <span>{status}</span>
-      </div>
+      </div>}
       <AudioSettingsPanel manager={manager} appearance={appearance} />
+      <ThemeToggle />
     </div>
   );
 }
@@ -718,9 +720,7 @@ export function GameplaySurface({
   const confirmRef = useRef<HTMLButtonElement>(null);
   const supported = useGameplayViewportSupport();
   const confirmationReady = canConfirm && !confirmed && status === "connected" && resultRemaining > 0;
-  const [reviewKey, setReviewKey] = useState("");
-  const reviewAllowed = supported && canConfirm && status === "connected" && resultRemaining > 0;
-  const reviewOpen = reviewAllowed && reviewKey === stepKey;
+  const resultAccess = supported && canConfirm && status === "connected" && resultRemaining > 0;
   const [drawView, setDrawView] = useState("result");
   const [settlementPaused, setSettlementPaused] = useState<number | null>(null);
   const [settlementSkipped, setSettlementSkipped] = useState(false);
@@ -728,13 +728,11 @@ export function GameplaySurface({
     setDrawView("result");
     setSettlementPaused(null);
     setSettlementSkipped(false);
-  }, [stepKey, reviewAllowed]);
+  }, [stepKey, resultAccess]);
   useEffect(() => {
-    if (!reviewAllowed || reviewKey !== stepKey) setReviewKey("");
-  }, [reviewAllowed, stepKey, reviewKey]);
-  useEffect(() => {
-    if (supported && !reviewOpen && (!canConfirm || confirmationReady)) confirmRef.current?.focus();
-  }, [stepKey, confirmationReady, canConfirm, supported, reviewOpen]);
+    if (supported && (!canConfirm || confirmationReady)) confirmRef.current?.focus();
+    else if (supported && document.activeElement === confirmRef.current) tableSheenRef.current?.querySelector<HTMLElement>("[data-gameplay-settings]")?.focus();
+  }, [stepKey, confirmationReady, canConfirm, supported]);
   const win = step && "Win" in step.content ? step.content.Win : null;
   const settlement = step && !("Win" in step.content)
     ? ("Settlement" in step.content ? step.content.Settlement : step.content.Draw)
@@ -745,7 +743,7 @@ export function GameplaySurface({
   }, [decision?.decision_id, pending]);
   useEffect(() => {
     if (room?.phase !== "post_match" || !onLeaveResults) return;
-    const focusTimer = window.setTimeout(() => resultDismissRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => (resultDismissRef.current ?? document.querySelector<HTMLButtonElement>(".match-victory-actions button:last-child"))?.focus(), 0);
     return () => window.clearTimeout(focusTimer);
   }, [onLeaveResults, room?.phase]);
   const submit = (action: VisibleAction) => {
@@ -780,8 +778,15 @@ export function GameplaySurface({
     {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
     {settlement && ("Draw" in step.content ? <DrawResult key={stepKey} settlement={settlement} room={room} view={drawView} onViewChange={setDrawView} /> : <SettlementPresentation key={stepKey} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} paused={settlementPaused} setPaused={setSettlementPaused} skipped={settlementSkipped} setSkipped={setSettlementSkipped} />)}
   </>;
-  const resultAction = step && (canConfirm ? <Button ref={confirmRef} className="round-win-continue" disabled={!confirmationReady} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : "Continue"}</Button>
+  const resultAction = step && (canConfirm ? <Button ref={confirmRef} className="round-win-continue" data-remaining-ms={resultRemaining} disabled={!confirmationReady} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : win ? `Continue (${formatSeconds(resultRemaining)}s)` : "Continue"}</Button>
     : <Button ref={confirmRef} variant="outline" onClick={() => setDismissedStep(stepKey)}>Dismiss</Button>);
+  if (room?.phase === "post_match" && onLeaveResults && decodeRoomFinalStandings(room)) {
+    return <MatchVictoryPage room={room} onReturn={onLeaveResults} notice={<>
+      {status !== "connected" && <p role="status">{status}</p>}
+      {closeMessage && <p role="alert">{closeMessage}</p>}
+      <GameplayToast status={status} commandError={commandError} actionError={actionError} />
+    </>} />;
+  }
   return (
     <div
       ref={tableSheenRef}
@@ -871,20 +876,12 @@ export function GameplaySurface({
               />
             )}
             {step && dismissedStep !== stepKey && room?.phase !== "post_match" && (
-              <div className="round-win-overlay">
-                {!reviewOpen && resultView}
-                <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining" aria-live="off">{formatSeconds(resultRemaining)}s</span>
-                <p key={stepKey} role="status">{resultRemaining === 0 ? "Result time expired. Waiting for the server." : confirmed ? "Waiting for players" : `${"Win" in step.content ? "Win" : "Draw" in step.content ? "Draw" : "Scores"} result ${step.id.step_index + 1} ready`}</p>
+              <div className={`round-win-overlay${win ? " result-win-modal" : ""}`}>
+                {resultView}
+                {!win && <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining" aria-live="off">{formatSeconds(resultRemaining)}s</span>}
                 <div className="round-win-actions">
-                  {!reviewOpen && resultAction}
-                  <Sheet open={reviewOpen} onOpenChange={open => setReviewKey(open ? stepKey : "")}>
-                    <SheetTrigger render={<Button variant="outline" disabled={!reviewAllowed} />}>Review</SheetTrigger>
-                    <SheetContent className="result-review overflow-y-auto" finalFocus={() => confirmRef.current && !confirmRef.current.disabled ? confirmRef.current : tableSheenRef.current?.querySelector<HTMLElement>("[data-gameplay-settings]") ?? null}>
-                      <SheetTitle>Review result</SheetTitle>
-                      <SheetDescription>The server deadline continues during Review.</SheetDescription>
-                      {reviewOpen && <><div className="result-details">{resultView}</div><p aria-label="Result time remaining">{formatSeconds(resultRemaining)}s</p>{resultAction}</>}
-                    </SheetContent>
-                  </Sheet>
+                  {(confirmed || (!win && resultRemaining > 0)) && <p key={stepKey} role="status">{confirmed ? "Waiting for players" : "Draw" in step.content ? "Draw result ready" : "Scores ready"}</p>}
+                  {resultAction}
                 </div>
               </div>
             )}

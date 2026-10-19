@@ -32,6 +32,10 @@ it.each([emptyAnalytics, { kind: "invalid", reason: "Invalid persisted records."
   const leaderboard = screen.getByRole("region", { name: "Run leaderboard" });
   expect(leaderboard).toHaveTextContent(analytics.kind === "invalid" ? "Invalid persisted records." : "No completed Matches yet.");
   expect(within(leaderboard).queryByRole("list")).not.toBeInTheDocument();
+  expect(screen.getByText("--:--:-- elapsed")).toBeVisible();
+  const match = screen.getByRole("region", { name: "Current Match" });
+  expect(within(match).getByText("Dealer").nextElementSibling).toHaveTextContent("Unknown");
+  expect(within(match).getByText("Round").nextElementSibling).toHaveTextContent("Unknown");
 });
 
 it("orders persisted Run standings by average rank then stable ID, not current Match scores", async () => {
@@ -40,10 +44,41 @@ it("orders persisted Run standings by average rank then stable ID, not current M
   const participants = emptyAnalytics.participants.map((p, i) => ({ ...p, averageRank: i < 2 ? 1.5 : 3.5, firstPlaceRate: i < 2 ? 0.5 : 0, cumulativeNet: i < 2 ? 1500 : -1500 }));
   mount({ kind: "ready", completed: 2, provisional: true, participants: participants.reverse() }); await flush();
   const rows = within(screen.getByRole("region", { name: "Run leaderboard" })).getAllByRole("row").slice(1);
-  expect(rows[0]).toHaveTextContent("Bot 0 (p0)");
-  expect(rows[1]).toHaveTextContent("Bot 1 (p1)");
-  expect(within(rows[0]).getAllByRole("cell").map(cell => cell.textContent)).toEqual(["Bot 0 (p0)", "1.50", "50.0%", "1,500"]);
-  expect(screen.queryByRole("region", { name: "Current Match scores" })).not.toBeInTheDocument();
+  expect(rows[0]).toHaveTextContent("Bot 0");
+  expect(rows[1]).toHaveTextContent("Bot 1");
+  expect(within(rows[0]).getAllByRole("cell").map(cell => cell.textContent)).toEqual(["Bot 0", "1.50", "50.0%", "1,500"]);
+  expect(screen.getByRole("region", { name: "Current Match" })).toBeVisible();
+});
+
+it("maps Current Match facts, dealer and points by authoritative Seat without exposing identity keys", async () => {
+  const current = { ...snapshot(), projection: { ...snapshot().projection, round: "East", kyoku: 2, dealer: 2, honba: 1, kyotaku: 3, remaining_wall: 42,
+    players: snapshot().projection.players.map(p => ({ ...p, seat: (p.seat + 1) % 4 })) } };
+  vi.stubGlobal("fetch", vi.fn(async () => response(current)));
+  mount(); await flush();
+  const match = screen.getByRole("region", { name: "Current Match" });
+  expect(within(match).getByText("Dealer").nextElementSibling).toHaveTextContent("Bot 1");
+  expect(match).toHaveTextContent("East 2");
+  const rows = within(match).getAllByRole("row").slice(1);
+  expect(within(rows[0]).getAllByRole("cell").map(cell => cell.textContent)).toEqual(["Bot 0", "2", "25,000"]);
+  expect(document.body.textContent).not.toMatch(/\bp[0-4]\b/);
+  fireEvent.click(screen.getByRole("button", { name: "Details" })); await flush();
+  fireEvent.click(screen.getByText("Current hands as text"));
+  expect(document.body.textContent).not.toMatch(/\bp[0-4]\b/);
+});
+
+it("closes private observation without replacing its fullscreen host and reopens without cached hands", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot())));
+  mount(); await flush();
+  const host = screen.getByRole("group", { name: "3D mahjong table" }).closest(".benchmark-observer");
+  fireEvent.click(screen.getByRole("button", { name: "Details" })); await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Close observation" })); await flush();
+  expect(document.querySelector(".benchmark-observer")).toBe(host);
+  expect(screen.queryByRole("group", { name: "3D mahjong table" })).not.toBeInTheDocument();
+  await advance(10000); expect(fetch).toHaveBeenCalledTimes(1);
+  vi.mocked(fetch).mockImplementation(() => new Promise<Response>(() => {}));
+  fireEvent.click(screen.getByRole("button", { name: "Open observation" })); await flush();
+  expect(screen.getByText("Connecting to live table…")).toBeVisible();
+  expect(screen.queryByRole("group", { name: "Your concealed hand" })).not.toBeInTheDocument();
 });
 
 it("coalesces refresh intents without overlapping private reads and reports Polling, never Live",  async () => {
@@ -57,6 +92,7 @@ it("coalesces refresh intents without overlapping private reads and reports Poll
   await act(async () => release(response(snapshot()))); await flush();
   expect(fetch).toHaveBeenCalledTimes(2);
   await act(async () => release(response(snapshot(8)))); await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Details" })); await flush();
   expect(screen.getByText(/Polling · Fresh/)).toBeVisible();
   expect(screen.queryByText(/^Live$/)).not.toBeInTheDocument();
 });
@@ -65,25 +101,30 @@ it("discloses routine connection metadata without renewing or remounting observa
   vi.stubGlobal("fetch", vi.fn(async () => response(snapshot())));
   mount(); await flush();
   const table = screen.getByRole("group", { name: "3D mahjong table" });
-  const details = screen.getByRole("button", { name: "Connection details" });
-  expect(details.closest("h2")).not.toBeNull();
+  const host = table.closest(".benchmark-observer");
+  const details = screen.getByRole("button", { name: "Details" });
+  expect(screen.getByRole("heading", { name: "Observation" })).toBeVisible();
+  expect(screen.getByText("--:--:-- elapsed")).toBeVisible();
   expect(details).toHaveAttribute("aria-expanded", "false");
   expect(screen.queryByText(/Revision 7/)).not.toBeInTheDocument();
-  expect(screen.getByText(/Read-only Admin view/)).toBeVisible();
-  expect(screen.getByText(/Last successful update:/)).toHaveTextContent("2026-10-01T00:00:00.000Z");
+  expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Last successful update:/)).not.toBeInTheDocument();
   fireEvent.click(details); await flush();
+  expect(screen.getByText(/Last successful update:/)).toHaveTextContent("2026-10-01T00:00:00.000Z");
   expect(screen.getByText(/Revision 7.*GET compatibility mode; SSE unavailable/)).toBeVisible();
   fireEvent.click(details); await flush();
   expect(details).toHaveAttribute("aria-expanded", "false");
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("group", { name: "3D mahjong table" })).toBe(table);
-  expect(screen.getByText(/Polling · Fresh/)).toBeVisible();
+  expect(table.closest(".benchmark-observer")).toBe(host);
+  expect(screen.queryByText(/Polling · Fresh/)).not.toBeInTheDocument();
 });
 
 it("only successful current authorized reads renew freshness, including unchanged revisions", async () => {
   let fail = false;
   vi.stubGlobal("fetch", vi.fn(async () => fail ? response({ detail: "Offline" }, 503) : response(snapshot())));
   mount(); await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Details" })); await flush();
   expect(screen.getByText(/Polling · Fresh/)).toBeVisible();
   fail = true; await advance(5000);
   expect(screen.getByText(/Polling · Stale/)).toBeVisible();
@@ -114,7 +155,9 @@ it("keeps Participant focus through Seat rotation and waiting without remounting
   mount(); await flush();
   const table = screen.getByRole("group", { name: "3D mahjong table" });
   fireEvent.click(screen.getByLabelText("Focus Participant")); await flush();
-  const option = screen.getByRole("option", { name: "Bot 1 (p1) · Seat 2" });
+  const option = screen.getByRole("option", { name: "Bot 1 · Seat 2" });
+  const host = table.closest(".benchmark-observer");
+  expect(host).toContainElement(option);
   fireEvent.pointerDown(option, { pointerType: "mouse" }); fireEvent.click(option); await flush();
   expect(table.querySelector('[data-position="bottom"]')).toHaveTextContent("Bot 1");
   expect(within(screen.getByRole("group", { name: "Your concealed hand" })).getByRole("img")).toHaveAttribute("alt", "2m");
@@ -124,6 +167,7 @@ it("keeps Participant focus through Seat rotation and waiting without remounting
   const rotated = snapshot(9); rotated.projection.players = rotated.projection.players.map(p => ({ ...p, seat: (p.seat + 1) % 4 }));
   next = rotated; await advance(5000);
   expect(screen.getByRole("group", { name: "3D mahjong table" })).toBe(table);
+  expect(table.closest(".benchmark-observer")).toBe(host);
   expect(table.querySelector('[data-position="bottom"]')).toHaveTextContent("Bot 1");
   expect(screen.getByText(/Focused: Bot 1 · Seat 3/)).toBeVisible();
   expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
@@ -134,7 +178,7 @@ it.each(["3p-red-east", "ThreePlayerRedEast"])("resolves %s focus without creati
   vi.stubGlobal("fetch", vi.fn(async () => response(three)));
   mount(); await flush();
   fireEvent.click(screen.getByLabelText("Focus Participant")); await flush();
-  const option = screen.getByRole("option", { name: "Bot 2 (p2) · Seat 3" });
+  const option = screen.getByRole("option", { name: "Bot 2 · Seat 3" });
   fireEvent.pointerDown(option, { pointerType: "mouse" }); fireEvent.click(option); await flush();
   expect(screen.getByText("Focused: Bot 2 · Seat 3")).toBeVisible();
   const table = screen.getByRole("group", { name: "3D mahjong table" });
@@ -162,6 +206,7 @@ it("ignores an old Run/Room response after a new observer lifetime starts", asyn
   await act(async () => releases[0](response(snapshot()))); await flush();
   expect(screen.queryByRole("group", { name: "Your concealed hand" })).not.toBeInTheDocument();
   await act(async () => releases[1](response({ ...snapshot(1), benchmark: { ...progress, run_id: "run-2" } }))); await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Details" })); await flush();
   expect(screen.getByText(/Polling · Fresh/)).toBeVisible();
 });
 
@@ -184,6 +229,87 @@ it("restores fullscreen trigger focus after denied-fullscreen in-page expansion 
   fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" })); await flush();
   expect(screen.getByRole("button", { name: "Fullscreen table" })).toHaveFocus();
   expect(screen.getByRole("group", { name: "3D mahjong table" })).toBe(table);
+});
+
+it("keeps expanded observation open when Escape reaches its host while Select is open", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot())));
+  mount(); await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Fullscreen table" })); await flush();
+  const trigger = screen.getByLabelText("Focus Participant");
+  fireEvent.click(trigger); await flush();
+  expect(screen.getByRole("listbox")).toBeVisible();
+  trigger.focus();
+  fireEvent.keyDown(document.querySelector(".benchmark-observer")!, { key: "Escape" }); await flush();
+  expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeVisible();
+  expect(trigger).toHaveFocus();
+  fireEvent.keyDown(trigger, { key: "Escape" }); await flush();
+  expect(screen.getByRole("button", { name: "Fullscreen table" })).toHaveFocus();
+});
+
+it.each([
+  { native: false, closed: false }, { native: false, closed: true },
+  { native: true, closed: false }, { native: true, closed: true },
+])("restores enabled focus after fullscreen exit (native=$native, closed=$closed)", async ({ native, closed }) => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot())));
+  mount(); await flush();
+  const table = screen.getByRole("group", { name: "3D mahjong table" });
+  const host = table.closest(".benchmark-observer") as HTMLDivElement;
+  const trigger = screen.getByRole("button", { name: "Fullscreen table" });
+  let fullscreenElement: Element | null = null;
+  const originalFullscreen = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+  if (native) {
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => fullscreenElement });
+    host.requestFullscreen = vi.fn(async () => {
+      fullscreenElement = host;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+  }
+  try {
+    trigger.focus(); fireEvent.click(trigger); await flush();
+    expect(host).toHaveAttribute("data-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Details" })); await flush();
+    if (closed) {
+      fireEvent.click(screen.getByRole("button", { name: "Close observation" })); await flush();
+      expect(screen.queryByRole("group", { name: "Your concealed hand" })).not.toBeInTheDocument();
+    }
+    const triggerFocus = vi.spyOn(trigger, "focus");
+    if (native) {
+      act(() => { fullscreenElement = null; document.dispatchEvent(new Event("fullscreenchange")); });
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+    }
+    await flush();
+    const target = screen.getByRole("button", { name: closed ? "Open observation" : "Fullscreen table" });
+    expect(target).toBeEnabled();
+    expect(target).toHaveFocus();
+    expect(host).toHaveAttribute("data-expanded", "false");
+    expect(document.querySelector(".benchmark-observer")).toBe(host);
+    if (closed) {
+      expect(trigger).toBeDisabled();
+      expect(triggerFocus).not.toHaveBeenCalled();
+      await advance(10000); expect(fetch).toHaveBeenCalledTimes(1);
+    } else {
+      expect(screen.getByRole("group", { name: "3D mahjong table" })).toBe(table);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  } finally {
+    if (native) {
+      if (originalFullscreen) Object.defineProperty(document, "fullscreenElement", originalFullscreen);
+      else Reflect.deleteProperty(document, "fullscreenElement");
+    }
+  }
+});
+
+it.each([401, 403])("authorization failure %s purges private observation and stops renewal", async status => {
+  let denied = false;
+  vi.stubGlobal("fetch", vi.fn(async () => denied ? response({ detail: "Denied" }, status) : response(snapshot())));
+  mount(); await flush();
+  expect(screen.getByRole("group", { name: "Your concealed hand" })).toBeVisible();
+  denied = true; await advance(5000);
+  expect(screen.queryByRole("group", { name: "Your concealed hand" })).not.toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Current Match" })).toHaveTextContent("No current Match.");
+  await advance(60000); expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 it("session clearing aborts reads and immediately purges local private state and renewal work", async () => {

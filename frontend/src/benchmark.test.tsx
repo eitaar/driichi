@@ -1,5 +1,5 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./app";
 import { focusManager } from "@tanstack/react-query";
 
@@ -18,7 +18,63 @@ function response(data: unknown, status = 200) { return new Response(JSON.string
 function stubFetch(handler: (path: string, init?: RequestInit) => Response) {
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => handler(String(input), init)));
 }
-beforeEach(() => { window.history.replaceState({}, "", "/admin/benchmark"); });
+const measurementObservers = new Set<object>();
+beforeEach(() => {
+  window.history.replaceState({}, "", "/admin/benchmark");
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  // JSDOM has no chart layout; numeric/consumer contracts stay real, geometry is browser-owned.
+  vi.stubGlobal("ResizeObserver", class {
+    observe() { measurementObservers.add(this); }
+    unobserve() {}
+    disconnect() { measurementObservers.delete(this); }
+  });
+});
+afterEach(() => {
+  cleanup(); // Unmount real Radar effects (disconnect/cancel RAF) before restoring browser globals.
+  expect(measurementObservers.size).toBe(0);
+  vi.unstubAllGlobals();
+});
+
+it.each(["completed", "stopped", "interrupted", "failed"])("composes authoritative %s Run progress and persistent Room metadata in house Cards", async status => {
+  window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
+  stubFetch(() => response({ ...run, status }));
+  render(<App />);
+  const summary = await screen.findByRole("region", { name: "Run summary" });
+  expect(summary).toHaveAttribute("data-slot", "card");
+  expect(within(summary).getByRole("progressbar", { name: "Completed Matches" })).toHaveAttribute("value", "0");
+  expect(within(summary).getByRole("progressbar")).toHaveAttribute("max", "3");
+  expect(within(summary).getByRole("status")).toHaveTextContent(status);
+  expect(within(summary).getByRole("link", { name: "Room controls" })).toHaveAttribute("href", "/admin/rooms/123456");
+  expect(summary).toHaveTextContent("4p-red-east");
+  expect(summary).toHaveTextContent("run-1");
+  expect(screen.getByText("server restarted").closest('[data-slot="card"]')).not.toBeNull();
+  expect(screen.getByText(/Incomplete attempt aborted/)).toBeVisible();
+  expect(screen.getByText("No completed Matches yet.").closest('[data-slot="card"]')).not.toBeNull();
+  expect(screen.queryByRole("heading", { name: "Observation" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Stop after current Match" })).not.toBeInTheDocument();
+});
+
+it("uses house Cards for loading and retryable Run failures", async () => {
+  window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
+  let release!: (value: Response) => void;
+  vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { release = resolve; })));
+  render(<App />);
+  expect((await screen.findByText("Loading Run…")).closest('[data-slot="card"]')).not.toBeNull();
+  await act(async () => { release(response({ detail: "Run unavailable" }, 503)); });
+  expect((await screen.findByRole("alert")).closest('[data-slot="card"]')).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+});
+
+it("fails closed on invalid persisted numeric evidence while retaining summary and Room access", async () => {
+  window.history.replaceState({}, "", "/admin/benchmark/runs/run-1");
+  stubFetch(() => response({ ...run, status: "completed", completed: 1, matches: [] }));
+  render(<App />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Invalid Match evidence");
+  expect(screen.getByRole("progressbar", { name: "Completed Matches" })).toHaveAttribute("value", "1");
+  expect(screen.getByRole("link", { name: "Room controls" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Benchmark analytics" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("table", { name: "Participant statistics" })).not.toBeInTheDocument();
+});
 
 it("omits the private observer opener on phone while preserving Run status and Room controls", async () => {
   const width = window.innerWidth;
@@ -30,15 +86,15 @@ it("omits the private observer opener on phone while preserving Run status and R
     expect(await screen.findByRole("heading", { name: "Benchmark Run" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Room controls" })).toBeVisible();
     expect(screen.getByText("No completed Matches yet.")).toBeVisible();
-    expect(screen.queryByText("Live table — all current hands")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Observation" })).not.toBeInTheDocument();
     expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/live"))).toBe(false);
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
     act(() => window.dispatchEvent(new Event("resize")));
-    await screen.findByText("Live table — all current hands");
+    await screen.findByRole("heading", { name: "Observation" });
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/live"))).toBe(true));
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     act(() => window.dispatchEvent(new Event("resize")));
-    expect(screen.queryByText("Live table — all current hands")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Observation" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Benchmark Run" })).toBeVisible();
   } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: width }); }
 });
@@ -118,11 +174,16 @@ it("derives charts from persisted evidence and opens the identified Match withou
   const table = await screen.findByRole("table", { name: "Participant statistics" }, { timeout: 20000 });
   const rows = within(table).getAllByRole("row");
   expect(rows).toHaveLength(5);
-  expect(rows[1]).toHaveTextContent("Same bot (p0)");
+  expect(rows[1]).toHaveTextContent("Same bot");
+  expect(table).not.toHaveTextContent(/\(p[0-4]\)/);
   expect(rows[1]).toHaveTextContent("1.00");
   expect(rows[1]).toHaveTextContent("100.0%");
   expect(rows[1]).toHaveTextContent("45,000");
   expect(screen.getByRole("heading", { name: "Cumulative net score" })).toBeVisible();
+  expect(screen.getByRole("progressbar", { name: "Completed Matches" })).toHaveAttribute("value", "3");
+  expect(screen.getByRole("progressbar")).toHaveAttribute("max", "3");
+  expect(screen.getAllByRole("heading", { name: "Match history" })).toHaveLength(1);
+  expect(document.querySelectorAll("[data-chart-family]")).toHaveLength(4);
   fireEvent.click(screen.getByRole("button", { name: "View Match 2 details" }));
   expect(await screen.findByRole("dialog")).toHaveTextContent("m2");
   expect(screen.queryByRole("link", { name: "Open Replay" })).not.toBeInTheDocument();
@@ -137,10 +198,10 @@ it("recovers a private observer read without joining a participant or submitting
     return response(live);
   });
   render(<App />);
-  await screen.findByText("Live table — all current hands");
+  await screen.findByRole("heading", { name: "Observation" });
   expect(await screen.findByRole("alert")).toHaveTextContent("Observer connection lost");
   fireEvent.click(screen.getByRole("button", { name: "Refresh table" }));
-  expect(await screen.findByText(/Read-only Admin view/)).toBeVisible();
+  expect(await screen.findByRole("table", { name: "Current Match points" })).toHaveTextContent("25,000");
   const paths = vi.mocked(fetch).mock.calls.map(([path]) => String(path));
   expect(paths.some(path => path.endsWith("/join") || path.endsWith("/actions"))).toBe(false);
 });
@@ -154,15 +215,16 @@ it("purges private snapshots on sign-out before back navigation can reuse them",
     return response(path.endsWith("/live") ? live : { ...run, status: "running" });
   }));
   render(<App />);
-  await screen.findByText(/Read-only Admin view/);
+  await screen.findByRole("table", { name: "Current Match points" });
+  fireEvent.click(screen.getByRole("button", { name: "Details" }));
   fireEvent.click(screen.getByText("Current hands as text"));
-  expect(screen.getByText(/Bot 0 \(p0\):/)).toBeVisible();
+  expect(screen.getByText(/^Bot 0: 1m,/)).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   await screen.findByRole("heading", { name: "Sign in to host." });
   window.history.pushState({}, "", "/admin/benchmark/runs/run-1");
   fireEvent.popState(window);
-  expect(screen.queryByText("Live table — all current hands")).not.toBeInTheDocument();
-  expect(screen.queryByText(/Bot 0 \(p0\):/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Observation" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/^Bot 0: 1m,/)).not.toBeInTheDocument();
 });
 
 it("waits for a fresh authorized observer read before rendering a cached hand on reentry", async () => {
@@ -173,14 +235,14 @@ it("waits for a fresh authorized observer read before rendering a cached hand on
     return response(path === "/api/v1/admin/benchmark/runs" ? [{ ...run, status: "running" }] : { ...run, status: "running" });
   }));
   render(<App />);
-  await screen.findByText(/Read-only Admin view/);
+  await screen.findByRole("table", { name: "Current Match points" });
   fireEvent.click(within(screen.getByRole("navigation", { name: "Admin" })).getByRole("link", { name: "Benchmarks" }));
   await screen.findByRole("heading", { name: "Benchmarks" });
   holdLiveRead = true;
   fireEvent.click(await screen.findByRole("link", { name: /^123456/ }));
-  await screen.findByText("Live table — all current hands");
+  await screen.findByRole("heading", { name: "Observation" });
   expect(await screen.findByText("Connecting to live table…")).toBeVisible();
-  expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("table", { name: "Current Match points" })).not.toBeInTheDocument();
 });
 
 it("removes private snapshots and leaves the Admin surface after a live read returns 401", async () => {
@@ -191,14 +253,14 @@ it("removes private snapshots and leaves the Admin surface after a live read ret
     return expired ? response({ detail: "Admin session expired" }, 401) : response(live);
   });
   render(<App />);
-  const summary = await screen.findByText("Live table — all current hands");
-  await screen.findByText(/Read-only Admin view/);
+  await screen.findByRole("table", { name: "Current Match points" });
   expired = true;
-  fireEvent.click(summary);
-  await waitFor(() => expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument());
-  fireEvent.click(summary);
+  fireEvent.click(screen.getByRole("button", { name: "Details" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close observation" }));
+  expect(screen.queryByRole("table", { name: "Current Match points" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Open observation" }));
   expect(await screen.findByRole("heading", { name: "Sign in to host." })).toBeVisible();
-  expect(screen.queryByText(/Read-only Admin view/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("table", { name: "Current Match points" })).not.toBeInTheDocument();
 });
 
 it("locally pages and filters loaded history without aggressive index polling", async () => {

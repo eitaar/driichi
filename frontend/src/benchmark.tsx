@@ -9,6 +9,8 @@ import { validateLoadedRuns, benchmarkReadiness, filterLoadedRuns, matchingStopR
 import { BenchmarkMatchDetail } from "./benchmark-match-detail";
 import { Alert, AlertTitle, AlertDescription } from "./components/ui/alert";
 import { Button } from "./components/ui/button";
+import { Card, CardHeader, CardTitle, CardAction, CardContent, CardFooter } from "./components/ui/card";
+import { ArrowClockwise } from "@phosphor-icons/react/dist/csr/ArrowClockwise";
 import { Field, FieldGroup, FieldLabel, FieldDescription } from "./components/ui/field";
 import { Input } from "./components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "./components/ui/select";
@@ -133,7 +135,7 @@ function RunList() {
         </FieldGroup>
       </form>
     </DialogContent></Dialog>
-    <section className="benchmark-history flex min-w-0 flex-col gap-4"><h2>Run history</h2>
+    <Card className="benchmark-history flex min-w-0 flex-col gap-4 p-6"><h2>Run history</h2>
       <p>Search and paging apply only to the loaded legacy snapshot. Newest-first server order is retained; timestamps and efficient server pagination are unavailable.</p>
       <Button variant="outline" disabled={runs.isFetching} onClick={() => { void runs.refetch({ cancelRefetch: false }); }}>Refresh</Button>
       <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -153,7 +155,7 @@ function RunList() {
           <PaginationItem><Button variant="outline" disabled={offset + 25 >= page.total} onClick={() => setOffset(offset + 25)}>Next page</Button></PaginationItem>
         </PaginationContent></Pagination>
       </>}
-    </section>
+    </Card>
   </>;
 }
 const modeItems = [{ value: "4p-red-east", label: "4p red East" }, { value: "4p-red-half", label: "4p red half" }, { value: "3p-red-east", label: "3p red East (no MJAI)" }, { value: "3p-red-half", label: "3p red half (no MJAI)" }];
@@ -167,28 +169,32 @@ function RunDetail({ runId }: { runId: string }) {
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
   const { query, evidence, refresh, refreshAfterMutation } = useBenchmarkEvidence(runId);
   const metadata = useQuery({ queryKey: ["admin", "benchmark", "replay-metadata", runId, selectedMatchId, 0, 50], queryFn: ({ signal }) => api.listAdminReplays(0, 50, signal), enabled: selectedMatchId !== null, retry: false });
-  if (evidence.kind === "error") return <ErrorMessage error={evidence.error} retry={() => { void refresh(); }} />;
-  if (evidence.kind === "loading" || !query.data) return <p role="status">Loading Run…</p>;
+  if (evidence.kind === "error") return <Card><CardHeader><CardTitle><h1>Run unavailable</h1></CardTitle></CardHeader><CardContent><ErrorMessage error={evidence.error} retry={() => { void refresh(); }} /></CardContent></Card>;
+  if (evidence.kind === "loading" || !query.data) return <Card><CardContent><p role="status">Loading Run…</p></CardContent></Card>;
   const { run, analytics } = query.data;
   const selectedMatch = Array.isArray(run.matches) ? run.matches.find(match => match?.match_id === selectedMatchId) : undefined;
   const matchEvidence = selectedMatch ? { ...selectedMatch, replay_availability: metadata.isError ? "unknown" as const : replayAvailability(selectedMatch.match_id, metadata.data) } : null;
-  return <>
-    <header className="flex flex-wrap items-start justify-between gap-4">
-      <div className="flex min-w-0 flex-col gap-2"><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">Benchmark Run</h1><p className="break-all font-mono text-sm">{run.run_id}</p>
-        <p role="status">{run.status} · {run.completed} / {run.target} completed Matches</p></div>
-      <div className="flex min-w-0 max-w-full flex-wrap items-start gap-3">
-        <Button variant="outline" disabled={query.isFetching} onClick={() => { void refresh(); }}>Refresh Run</Button>
-        {run.status === "running" && <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />}
-      </div>
-    </header>
-    {run.reason && <p>{run.reason}</p>}
-    {run.failed_match_id && <p className="field-hint">Incomplete attempt {run.failed_match_id} — excluded from statistics.</p>}
-    {run.status === "interrupted" && <><Button disabled aria-describedby="resume-unavailable">Resume unavailable</Button><p id="resume-unavailable">The server does not publish safe Resume eligibility, roster/revision checks, or an accepted Resume operation. This Run remains Interrupted.</p></>}
-    {run.status === "running" && <Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link>}
-    {run.status === "running" && <DesktopTableBoundary fallback={null}><LiveObserver runId={runId} roomCode={run.room_code} analytics={analytics} /></DesktopTableBoundary>}
+  return <div className="benchmark-run">
+    <Card role="region" aria-label="Run summary" className="benchmark-run-summary">
+      <CardHeader><CardTitle><h1>Benchmark Run</h1></CardTitle>
+        <CardAction className="benchmark-run-actions">
+          <Button variant="outline" disabled={query.isFetching} onClick={() => { void refresh(); }}><ArrowClockwise aria-hidden="true" />Refresh Run</Button>
+          {run.status === "running" && <StopRun runId={runId} code={run.room_code} stopRequested={query.data.stopRequested} snapshotVersion={query.dataUpdatedAt} refresh={async () => { const result = await refreshAfterMutation(); return !result || result.isError ? null : result.data?.stopRequested ?? null; }} />}
+        </CardAction>
+      </CardHeader>
+      <CardContent><div className="benchmark-run-progress"><strong>{run.completed}<span> / {run.target}</span></strong><span>completed Matches</span><progress value={run.completed} max={run.target} aria-label="Completed Matches" /></div></CardContent>
+      <CardFooter className="benchmark-run-meta"><span role="status">{run.status}</span><Link href={`/admin/rooms/${run.room_code}`}>Room controls</Link><span>Room {run.room_code}</span><span>{run.game_mode}</span><span>{run.run_id}</span></CardFooter>
+    </Card>
+    {(run.reason || run.failed_match_id || run.status === "interrupted" || !!query.data.roomError) && <Card><CardContent className="flex flex-col gap-3">
+      {run.reason && <p>{run.reason}</p>}
+      {run.failed_match_id && <p className="text-sm font-normal text-muted-foreground">Incomplete attempt {run.failed_match_id} — excluded from statistics.</p>}
+      {run.status === "interrupted" && <><Button className="self-start" disabled aria-describedby="resume-unavailable">Resume unavailable</Button><p id="resume-unavailable">The server does not publish safe Resume eligibility, roster/revision checks, or an accepted Resume operation. This Run remains Interrupted.</p></>}
+      {!!query.data.roomError && <ErrorMessage error={query.data.roomError} retry={() => { void refresh(); }} />}
+    </CardContent></Card>}
+    {run.status === "running" && <DesktopTableBoundary fallback={null}><Suspense fallback={<p role="status">Loading observation…</p>}><LiveObserver runId={runId} roomCode={run.room_code} analytics={analytics} /></Suspense></DesktopTableBoundary>}
     {analytics.kind === "invalid" ? <Alert variant="destructive"><AlertTitle>Invalid Match evidence</AlertTitle><AlertDescription>{analytics.reason}</AlertDescription><Button variant="outline" onClick={() => { void refresh(); }}>Retry</Button></Alert>
-      : analytics.completed === 0 ? <section><h2>Statistics</h2><p>No completed Matches yet.</p></section>
+      : analytics.completed === 0 ? <Card><CardHeader><CardTitle><h2>Statistics</h2></CardTitle></CardHeader><CardContent><p>No completed Matches yet.</p></CardContent></Card>
       : <Suspense fallback={<p role="status">Loading charts…</p>}><BenchmarkCharts analytics={analytics} onOpenMatch={setSelectedMatchId} /></Suspense>}
     <BenchmarkMatchDetail match={analytics.kind === "ready" ? matchEvidence : null} roster={run.roster} onClose={() => setSelectedMatchId(null)} onRetryReplay={() => { void metadata.refetch({ cancelRefetch: false }); }} />
-  </>;
+  </div>;
 }

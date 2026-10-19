@@ -100,8 +100,8 @@ async function loginAdmin(page: Page, harness: RealServerHarness) {
   await page.getByLabel("Username").fill(harness.adminUsername);
   await page.getByLabel("Password").fill(harness.adminPassword);
   await page.getByRole("button", { name: /^sign in$/i }).click();
-  await expect(page.getByRole("heading", { name: /admin session active/i })).toBeVisible({ timeout: 20_000 });
-  await page.getByRole("link", { name: /open admin/i }).click();
+  await expect(page).toHaveURL(/\/admin$/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: /admin session active/i })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /^rooms$/i })).toBeVisible();
 }
 
@@ -148,16 +148,15 @@ async function joinHuman(
   await expect(page.getByLabel("Display name")).toBeVisible();
   await expectAccessible(page, `${mode} room join`);
   await page.getByLabel("Display name").fill(`Human ${mode}`);
-  await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: /^choose your character$/i })).toBeVisible();
   await expectAccessible(page, `${mode} character choice`);
   await chooseCharacter(page);
   await page.getByRole("button", { name: /^join room$/i }).click();
-  await expect(page.getByRole("heading", { name: /you're in task 16/i })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/room/${joinCode}/lobby$`));
   await expectAccessible(page, `${mode} join accepted`);
-  await page.getByRole("link", { name: /enter lobby/i }).click();
   await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
-  await expect(page.locator(".connection-state")).toHaveText("connected", { timeout: 20_000 });
+  await expect(page.getByRole("button", { name: `Human ${mode}`, exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByLabel("Room summary")).toBeVisible();
+  await expect(page.locator(".connection-state")).toHaveCount(0);
   return page;
 }
 

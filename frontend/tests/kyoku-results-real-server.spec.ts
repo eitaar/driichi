@@ -43,16 +43,19 @@ function reconnectUiMatchesCurrentPublication(sample: ReconnectUiSample, first: 
     && sample.labels.length === 0 && (sample.phase === "post_match" ? sample.surface === "standings" && sample.standings_count === 1 : sample.phase === "playing" && sample.surface === "table" && sample.standings_count === 0);
   if (sample.epoch_ms >= step.deadline_at_ms || step.remaining_ms <= 0) return false;
   const action = !step.required.includes(ownId) ? "Dismiss" : step.confirmed.includes(ownId) ? "Waiting for players" : "Continue";
-  return step.id.step_index === 2
-    ? sample.surface === "settlement" && isDeepStrictEqual(sample.labels, ["Pause for review", "Skip animation", action, "Review"])
-    : sample.surface === "win" && isDeepStrictEqual(sample.labels, [action, "Review"]);
+  if (step.id.step_index === 2) return sample.surface === "settlement" && isDeepStrictEqual(sample.labels, ["Pause for review", "Skip animation", action]);
+  if (action !== "Continue") return sample.surface === "win" && isDeepStrictEqual(sample.labels, [action]);
+  const seconds = Number(sample.labels[0]?.match(/^Continue \((\d+)s\)$/)?.[1]);
+  const remaining = Math.ceil((step.deadline_at_ms - sample.epoch_ms) / 1000);
+  // The display updates every 50ms; sampling can straddle a whole-second tick.
+  return sample.surface === "win" && sample.labels.length === 1 && seconds >= remaining && seconds <= Math.min(5, remaining + 1);
 }
 
 function checkReconnectUiMatchesCurrentPublication() {
   const first: ResultStep = { id: { match_id: "oracle-match", kyoku_sequence: 7, step_index: 0 }, content: {}, required: ["other"], confirmed: [], published_at_ms: 1000, deadline_at_ms: 6000, remaining_ms: 4000 };
-  const step0: ReconnectUiSample = { epoch_ms: 2000, status: "connected", phase: "playing", surface: "win", standings_count: 0, step: first, labels: ["Dismiss", "Review"] };
-  const step1: ReconnectUiSample = { ...step0, epoch_ms: 6002, step: { ...first, id: { ...first.id, step_index: 1 }, published_at_ms: 6001, deadline_at_ms: 11001, required: ["own", "other"] }, labels: ["Continue", "Review"] };
-  const step2: ReconnectUiSample = { ...step1, epoch_ms: 11002, surface: "settlement", step: { ...step1.step!, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001 }, labels: ["Pause for review", "Skip animation", "Continue", "Review"] };
+  const step0: ReconnectUiSample = { epoch_ms: 2000, status: "connected", phase: "playing", surface: "win", standings_count: 0, step: first, labels: ["Dismiss"] };
+  const step1: ReconnectUiSample = { ...step0, epoch_ms: 6002, step: { ...first, id: { ...first.id, step_index: 1 }, published_at_ms: 6001, deadline_at_ms: 11001, required: ["own", "other"] }, labels: ["Continue (5s)"] };
+  const step2: ReconnectUiSample = { ...step1, epoch_ms: 11002, surface: "settlement", step: { ...step1.step!, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001 }, labels: ["Pause for review", "Skip animation", "Continue"] };
   const received: Snapshot["room"][] = [step0, step1, step2].map(sample => ({ phase: "playing", roster: [], kyoku_end: sample.step, result: null }));
   received.push({ phase: "post_match", roster: [], kyoku_end: null, result: {} });
   const matches = (sample: ReconnectUiSample) => reconnectUiMatchesCurrentPublication(sample, first, "own", received);
@@ -77,6 +80,8 @@ function checkReconnectUiMatchesCurrentPublication() {
   }
   for (const bad of [
     { ...step0, labels: ["Continue"] }, { ...step1, labels: ["Dismiss"] },
+    { ...step1, labels: ["Continue (99s)"] }, { ...step1, labels: ["Continue (0s)"] },
+    { ...step1, labels: ["Continue (5s)", "Review"] },
     { ...step0, epoch_ms: 6000 }, { ...step1, status: "disconnected" },
     { ...step2, labels: ["Continue"] }, { ...step2, epoch_ms: 16001 },
     { ...step2, surface: "win" as const }, { ...step2, step: { ...step2.step!, content: { fabricated: true } } },
@@ -88,7 +93,7 @@ function checkReconnectUiMatchesCurrentPublication() {
 
 base("reconnect UI oracle permits an authoritative settlement after slow rendering", () => {
   const first: ResultStep = { id: { match_id: "oracle-match", kyoku_sequence: 7, step_index: 0 }, content: {}, required: ["other"], confirmed: [], published_at_ms: 1000, deadline_at_ms: 6000, remaining_ms: 4000 };
-  const settlement: ReconnectUiSample = { epoch_ms: 11002, status: "connected", phase: "playing", surface: "settlement", standings_count: 0, step: { ...first, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001, required: ["own", "other"] }, labels: ["Pause for review", "Skip animation", "Continue", "Review"] };
+  const settlement: ReconnectUiSample = { epoch_ms: 11002, status: "connected", phase: "playing", surface: "settlement", standings_count: 0, step: { ...first, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001, required: ["own", "other"] }, labels: ["Pause for review", "Skip animation", "Continue"] };
   const received: Snapshot["room"][] = [{ phase: "playing", roster: [], kyoku_end: settlement.step, result: null }];
   expect(reconnectUiHasValidPublication(settlement, first, "own", received)).toBe(true);
   expect(reconnectUiMatchesCurrentPublication(settlement, first, "own", received)).toBe(true);
@@ -394,11 +399,10 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   });
   await page.goto(`${harness.frontendOrigin}/room/${code}`);
   await page.getByLabel("Display name").fill(name);
-  await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("radio", { name: "Player Red" }).check();
   await page.getByRole("button", { name: /^join room$/i }).click();
-  await page.getByRole("link", { name: /enter lobby/i }).click();
-  await expect(page.locator(".connection-state")).toHaveText("connected");
+  await expect(page).toHaveURL(new RegExp(`/room/${code}/lobby$`));
+  await expect.poll(() => page.evaluate(`(async () => { const { useGameStore } = await import(${JSON.stringify(gameStoreModulePath())}); return useGameStore.getState().status; })()`)).toBe("connected");
   const id = await page.evaluate(code => sessionStorage.getItem(`driichi:participant:${code}`), code);
   expect(id).toBeTruthy();
   return { context, page, id: id!, name, socketKey, messages, sent, sentAt, snapshots, nativeObserver };
@@ -845,7 +849,7 @@ for (const [mode, count, ordinaryAfter] of [
       expect(second.state!.kyoku_results!.wins[1]).toMatchObject({ seat: 2, winning_tile: 77, winning_tile_index: 13, win_points: 2600, evaluation: { Ordinary: { han: 2, fu: 40, limit: null } } });
       if (rendererStall) {
         const sentBefore = bySeat[0].sent.length;
-        await expect(dealerPage.getByRole("button", { name: "Continue", exact: true })).toBeFocused();
+        await expect(dealerPage.getByRole("button", { name: /^Continue \(\d+s\)$/ })).toBeFocused();
         await dealerPage.keyboard.press("Enter");
         await expect.poll(() => bySeat[0].sent.slice(sentBefore).map(raw => JSON.parse(raw)).filter(message => message.type === "confirm_result").map(message => message.step_id)).toEqual([second.room.kyoku_end!.id]);
         await expect.poll(() => bySeat[0].snapshots.some(snapshot => {

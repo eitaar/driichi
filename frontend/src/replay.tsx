@@ -10,12 +10,13 @@ import { api, problemFrom, type ProblemDetails, type ReplayFrame, type ReplaySum
 import { AudioManager } from "./game/audio";
 import { preloadRosterAssets, voiceEvents } from "./game/gameplay";
 import { RoundWinSurface, ResultsPanel, ScoreTransfer } from "./game/result-presentation";
-import { decodeWinResult, decodeSettlement } from "./game/results";
+import { decodeRoomFinalStandings, decodeWinResult, decodeSettlement } from "./game/results";
 import { TableAppearanceSettings, useTableAppearance } from "./game/table-appearance";
 import type { ProjectedState, RoomSnapshot } from "./game/types";
 import { navigate } from "./routes";
 import { AppShell } from "./components/app-shell";
 import { Button } from "./components/ui/button";
+import { ThemeToggle } from "./components/theme-toggle";
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from "./components/ui/dialog";
 import { DesktopTableBoundary, DesktopTableFallback } from "./components/desktop-table-boundary";
 import "./replay.css";
@@ -60,7 +61,7 @@ function ProblemMessage({ problem, title = "Replay unavailable", onRetry, retryi
       <h2>{title}</h2>
       <p>{problem.detail ?? problem.title ?? "The host could not load this Replay."}</p>
       {problem.request_id && <code className="request-id">Request ID {problem.request_id}</code>}
-      {onRetry ? <button className="button button-secondary" onClick={onRetry} disabled={retrying}>{retrying ? "Retrying…" : "Retry"} <ArrowRight aria-hidden="true" weight="regular" /></button> : <ReplayLink className="button button-secondary" href="/admin/replays">Back to Replay library <ArrowLeft aria-hidden="true" weight="regular" /></ReplayLink>}
+      {onRetry ? <Button variant="outline" onClick={onRetry} disabled={retrying}>{retrying ? "Retrying…" : "Retry"} <ArrowRight aria-hidden="true" weight="regular" /></Button> : <ReplayLink className="button button-secondary" href="/admin/replays">Back to Replay library <ArrowLeft aria-hidden="true" weight="regular" /></ReplayLink>}
     </section>
   );
 }
@@ -119,8 +120,8 @@ function ReplayList() {
           <nav className="replay-pagination" aria-label="Replay pages">
             <span className="state-label">Showing {data.offset + 1}–{data.offset + data.replays.length} of {data.total}</span>
             <div>
-              <button className="button button-secondary small-button" disabled={data.offset === 0 || query.isFetching} onClick={() => goToPage(data.offset - data.limit)}>Previous</button>
-              <button className="button button-secondary small-button" disabled={!data.has_more || query.isFetching} onClick={() => goToPage(data.offset + data.limit)}>Next</button>
+              <Button variant="outline" size="sm" disabled={data.offset === 0 || query.isFetching} onClick={() => goToPage(data.offset - data.limit)}>Previous</Button>
+              <Button variant="outline" size="sm" disabled={!data.has_more || query.isFetching} onClick={() => goToPage(data.offset + data.limit)}>Next</Button>
             </div>
           </nav>
         </>
@@ -144,7 +145,7 @@ function ReplayRow({ replay, onDelete }: { replay: ReplaySummary; onDelete: (rep
     <article className={`replay-row${unavailable ? " is-unavailable" : ""}`}>
       <div className="replay-row-main"><span className="state-label">{replay.source === "ranked" ? "RANKED" : "ROOM"}</span><h2>{replay.room_name ?? "Ranked Match"}</h2><code>{replay.match_id}</code></div>
       <div className="replay-row-detail"><span>{replay.game_mode}</span><time dateTime={replay.completed_at}>{formatReplayDate(replay.completed_at)}</time><span className={unavailable ? "replay-status is-bad" : "replay-status"}>{unavailable ? (replay.availability === "too_large" ? "Too large" : "Unavailable") : "Ready to view"}</span></div>
-      <div className="replay-row-actions">{unavailable ? <span className="button button-secondary small-button is-disabled" aria-disabled="true">View <ArrowRight aria-hidden="true" weight="regular" /></span> : <ReplayLink className="button button-secondary small-button" href={`/admin/replays/${encodeURIComponent(replay.match_id)}`} aria-label={`View Replay ${replay.match_id}`}>View <ArrowRight aria-hidden="true" weight="regular" /></ReplayLink>}<button className="text-button danger-text" aria-label={`Delete Replay ${replay.match_id}`} onClick={() => onDelete(replay)}><Trash aria-hidden="true" weight="regular" />Delete</button></div>
+      <div className="replay-row-actions">{unavailable ? <span className="button button-secondary small-button is-disabled" aria-disabled="true">View <ArrowRight aria-hidden="true" weight="regular" /></span> : <ReplayLink className="button button-secondary small-button" href={`/admin/replays/${encodeURIComponent(replay.match_id)}`} aria-label={`View Replay ${replay.match_id}`}>View <ArrowRight aria-hidden="true" weight="regular" /></ReplayLink>}<Button variant="destructive" aria-label={`Delete Replay ${replay.match_id}`} onClick={() => onDelete(replay)}><Trash aria-hidden="true" weight="regular" />Delete</Button></div>
     </article>
   );
 }
@@ -175,7 +176,7 @@ function ReplayDeleteDialog({ replay, pending, error, onCancel, onConfirm }: { r
       if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus();
     };
   }, []);
-  return <dialog ref={dialogRef} className="confirm-dialog replay-delete-dialog" aria-labelledby="replay-delete-heading"><div className="dialog-top"><button className="icon-button" aria-label="Close dialog" onClick={onCancel}>×</button></div><h2 id="replay-delete-heading">Delete this Replay?</h2><p>Delete the saved timeline for <strong>{replay.room_name ?? "Ranked Match"}</strong>? This cannot be undone.</p>{error != null && <p className="form-error" role="alert">{problemFrom(error).detail ?? "The Replay could not be deleted."}</p>}<div className="dialog-actions"><button className="button button-secondary" onClick={onCancel} disabled={pending}>Cancel</button><button className="button button-primary" onClick={onConfirm} disabled={pending}>{pending ? "Deleting Replay" : "Confirm delete"}</button></div></dialog>;
+  return <dialog ref={dialogRef} className="confirm-dialog replay-delete-dialog" aria-labelledby="replay-delete-heading"><div className="dialog-top"><Button variant="ghost" size="icon" aria-label="Close dialog" onClick={onCancel}>×</Button></div><h2 id="replay-delete-heading">Delete this Replay?</h2><p>Delete the saved timeline for <strong>{replay.room_name ?? "Ranked Match"}</strong>? This cannot be undone.</p>{error != null && <p className="form-error" role="alert">{problemFrom(error).detail ?? "The Replay could not be deleted."}</p>}<div className="dialog-actions"><Button variant="outline" onClick={onCancel} disabled={pending}>Cancel</Button><Button onClick={onConfirm} disabled={pending}>{pending ? "Deleting Replay" : "Confirm delete"}</Button></div></dialog>;
 }
 
 function eventKind(event: unknown): string {
@@ -230,6 +231,7 @@ function ReplayMobileMetadata({ replay }: { replay: ReplayView }) {
   const win = decodeWinResult(frame?.result, replay.game_mode);
   const settlement = decodeSettlement(frame?.settlement, replay.game_mode);
   return <section className="replay-mobile-metadata" aria-label="Replay chapter metadata">
+    <div className="replay-metadata-actions"><ThemeToggle /></div>
     {rounds.length > 0 && <label className="replay-option">Kyoku <select aria-label="Jump to Kyoku" value={position} onChange={event => setPosition(Number(event.target.value))}>{rounds.map(entry => <option key={entry.position} value={entry.position}>{entry.label}</option>)}</select></label>}
     {rounds.length > 0 && frame && <p>Chapter start: Event {position + 1} · {readableKind(eventKind(frame.visible_event))}</p>}
     {win && <RoundWinSurface result={win} room={room} assets={{}} reducedMotion />}
@@ -357,6 +359,7 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
   const settlement = decodeSettlement(frame?.settlement, replay.game_mode);
   const assets = Object.fromEntries(replay.players.flatMap((player) => player.character_id ? [[player.character_id, !genericPresentation]] : []));
   const finalFrame = frame && /^end_?game$/i.test(eventKind(frame.visible_event));
+  const finalRoom = { ...room, result: replay.result };
   useEffect(() => {
     if (!playing || position >= frames.length - 1) return;
     const timer = window.setTimeout(() => {
@@ -381,12 +384,14 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
         data-testid="replay-viewer"
         data-motion={reducedMotion || rate > 2 ? "static" : "cinematic"}
       >
-        <div className="replay-table-stage gameplay-shell">
-          <div className="gameplay-controls"><Dialog><DialogTrigger render={<Button variant="secondary" className="min-h-11" />}>Settings</DialogTrigger><DialogContent className="gameplay-settings max-h-[calc(100dvh-2rem)] overflow-y-auto"><DialogTitle>Settings</DialogTitle><DialogDescription>Local table images.</DialogDescription><TableAppearanceSettings settings={appearance} /></DialogContent></Dialog></div>
-          <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} surface="replay" appearance={appearance.appearance} /></div>
-          {win && win.event_index === frame.event_index && <div className="round-win-overlay"><RoundWinSurface key={frame.event_index} result={win} room={room} assets={assets} reducedMotion={reducedMotion || rate > 2} /></div>}
+        <div className={`replay-table-stage gameplay-shell${finalFrame ? " replay-final-stage" : ""}`}>
+          <div className="gameplay-controls"><ThemeToggle /><Dialog><DialogTrigger render={<Button variant="secondary" className="min-h-11" />}>Settings</DialogTrigger><DialogContent className="gameplay-settings max-h-[calc(100dvh-2rem)] overflow-y-auto"><DialogTitle>Settings</DialogTitle><DialogDescription>Local table images.</DialogDescription><TableAppearanceSettings settings={appearance} /></DialogContent></Dialog></div>
+          {!finalFrame && <div className="replay-table-wrap"><ThreeTable projection={frame.visible_state as ProjectedState} room={room} reducedMotion={reducedMotion || rate > 2} surface="replay" appearance={appearance.appearance} /></div>}
+          {win && win.event_index === frame.event_index && <div className="round-win-overlay result-win-modal result-win-modal--replay"><RoundWinSurface key={frame.event_index} result={win} room={room} assets={assets} reducedMotion={reducedMotion || rate > 2} /></div>}
           {settlement && <div className="round-win-overlay"><ScoreTransfer settlement={settlement} room={room} /></div>}
-          {finalFrame && replay.result != null && <div className="results-overlay"><ResultsPanel room={{ ...room, result: replay.result }} assets={assets} /></div>}
+          {finalFrame && <section className="replay-final-results" aria-label="Replay final standings">
+            {decodeRoomFinalStandings(finalRoom) ? <ResultsPanel room={finalRoom} assets={assets} /> : <p role="status">Saved final standings are unavailable.</p>}
+          </section>}
           <div className="replay-status-toast" role="status" aria-live="polite">
             <span className="replay-live-state">{presentationLabel}</span>
             <span className="state-label">EVENT {String(position + 1).padStart(3, "0")}</span>
@@ -397,15 +402,15 @@ function ReplayViewer({ replay }: { replay: ReplayView }) {
         <div className="replay-playback" aria-label="Replay controls">
           <div className="replay-timeline"><label htmlFor="replay-position">Event {position + 1} / {frames.length}</label><input id="replay-position" aria-label="Replay position" type="range" min="0" max={frames.length - 1} value={position} onChange={(event) => selectPosition(Number(event.target.value))} /><span className="replay-event">{readableKind(eventKind(frame.visible_event))}</span></div>
           <div className="replay-buttons">
-            <button type="button" aria-label="Previous Event" disabled={position === 0} onClick={() => selectPosition(position - 1)}><ArrowLeft aria-hidden="true" />Previous</button>
-            <button type="button" className="replay-play" disabled={!playing && position >= frames.length - 1} onClick={() => setPlaying(!playing)}>{playing ? <Pause aria-hidden="true" weight="fill" /> : <Play aria-hidden="true" weight="fill" />}{playing ? "Pause" : "Play"}</button>
-            <button type="button" aria-label="Next Event" disabled={position >= frames.length - 1} onClick={() => selectPosition(position + 1)}>Next<ArrowRight aria-hidden="true" /></button>
+            <Button variant="outline" type="button" aria-label="Previous Event" disabled={position === 0} onClick={() => selectPosition(position - 1)}><ArrowLeft aria-hidden="true" />Previous</Button>
+            <Button variant="outline" type="button" className="replay-play" disabled={!playing && position >= frames.length - 1} onClick={() => setPlaying(!playing)}>{playing ? <Pause aria-hidden="true" weight="fill" /> : <Play aria-hidden="true" weight="fill" />}{playing ? "Pause" : "Play"}</Button>
+            <Button variant="outline" type="button" aria-label="Next Event" disabled={position >= frames.length - 1} onClick={() => selectPosition(position + 1)}>Next<ArrowRight aria-hidden="true" /></Button>
           </div>
           <label className="replay-option">Speed <select aria-label="Playback speed" value={rate} onChange={(event) => setRate(Number(event.target.value))}>{[0.5, 1, 2, 4, 8, 16, 32, 64].map((value) => <option value={value} key={value}>{value}×</option>)}</select></label>
           <ReplayLink className="replay-library-link" href="/admin/replays">Replay library</ReplayLink>
         </div>
       </section></div>
-      <section className="replay-event-log" role="log" aria-label="Replay event log" aria-live="off"><div className="section-heading"><div><h3>Event log</h3></div><span className="state-label">SERVER FRAMES</span></div><ol>{frames.map((entry, index) => <li key={entry.event_index} className={index === position ? "is-current" : ""}><button type="button" onClick={() => selectPosition(index)}><span>{String(index + 1).padStart(3, "0")}</span><span>{frameLog(entry).join(" / ")}</span></button></li>)}</ol></section>
+      <section className="replay-event-log" role="log" aria-label="Replay event log" aria-live="off"><div className="section-heading"><div><h3>Event log</h3></div><span className="state-label">SERVER FRAMES</span></div><ol>{frames.map((entry, index) => <li key={entry.event_index} className={index === position ? "is-current" : ""}><Button variant="outline" type="button" className="h-auto whitespace-normal" onClick={() => selectPosition(index)}><span>{String(index + 1).padStart(3, "0")}</span><span>{frameLog(entry).join(" / ")}</span></Button></li>)}</ol></section>
     </>
   );
 }

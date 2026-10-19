@@ -483,8 +483,48 @@ test("keeps a long participant name and missing icon actionable", async ({ page 
   );
   const fallback = table.locator('.table-player-frame[data-position="bottom"] .asset-fallback');
   await expect(fallback).toBeVisible();
-  await expect(fallback).toHaveCSS("background-color", "rgb(53, 74, 102)");
-  await expect(fallback).toHaveCSS("color", "rgb(238, 240, 242)");
+  await expect(fallback).toHaveAttribute("aria-label", "A very long participant display name icon unavailable");
+  // Assert the semantic token contract: the fallback must consume --muted and
+  // --muted-foreground, not merely match their current resolved values.
+  const declaredTokens = await page.evaluate(() => ["--muted", "--muted-foreground"]
+    .map(token => getComputedStyle(document.documentElement).getPropertyValue(token).trim()));
+  // Deleting either token must fail here; a deleted colour token would otherwise
+  // inherit and still look non-transparent.
+  expect(declaredTokens[0]).not.toBe("");
+  expect(declaredTokens[1]).not.toBe("");
+  const fallbackTokens = await fallback.evaluate(element => {
+    const root = document.documentElement;
+    const probe = document.createElement("span");
+    element.append(probe);
+    const resolve = (token: string, property: "backgroundColor" | "color") => {
+      probe.style.backgroundColor = "";
+      probe.style.color = "";
+      probe.style[property] = `var(${token})`;
+      return getComputedStyle(probe)[property];
+    };
+    const initialBackground = resolve("--muted", "backgroundColor");
+    const initialColor = resolve("--muted-foreground", "color");
+    const sentinel = { muted: "oklch(0.5 0.2 30)", mutedForeground: "oklch(0.4 0.1 200)" };
+    root.style.setProperty("--muted", sentinel.muted);
+    root.style.setProperty("--muted-foreground", sentinel.mutedForeground);
+    const followedBackground = getComputedStyle(element).backgroundColor;
+    const followedColor = getComputedStyle(element).color;
+    const sentinelBackground = resolve("--muted", "backgroundColor");
+    const sentinelColor = resolve("--muted-foreground", "color");
+    root.style.removeProperty("--muted");
+    root.style.removeProperty("--muted-foreground");
+    probe.remove();
+    return { initialBackground, initialColor, followedBackground, followedColor, sentinelBackground, sentinelColor };
+  });
+  expect(fallbackTokens.initialBackground).not.toBe("rgba(0, 0, 0, 0)");
+  expect(fallbackTokens.initialColor).not.toBe("rgba(0, 0, 0, 0)");
+  // The fallback must follow the sentinels, and must not be inheriting an unchanged colour.
+  expect(fallbackTokens.followedBackground).toBe(fallbackTokens.sentinelBackground);
+  expect(fallbackTokens.followedColor).toBe(fallbackTokens.sentinelColor);
+  expect(fallbackTokens.followedBackground).not.toBe(fallbackTokens.initialBackground);
+  expect(fallbackTokens.followedColor).not.toBe(fallbackTokens.initialColor);
+  await expect(fallback).toHaveCSS("background-color", fallbackTokens.initialBackground);
+  await expect(fallback).toHaveCSS("color", fallbackTokens.initialColor);
   await expect(page.getByTestId("action-deck")).toBeVisible();
   await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
   await page.screenshot({
@@ -732,7 +772,7 @@ test("runs one bounded discard motion and stops invalidating after idle", async 
   }));
   expect(performanceEntries.events).toHaveLength(1);
   expect(performanceEntries.frames.length).toBeGreaterThan(0);
-  const sortedFrameDurations = performanceEntries.frames.toSorted((left, right) => left - right);
+  const sortedFrameDurations = [...performanceEntries.frames].sort((left, right) => left - right);
   const medianFrameDuration = sortedFrameDurations[Math.floor(sortedFrameDurations.length / 2)];
   console.info("[focused-motion-performance]", JSON.stringify({
     eventMs: performanceEntries.events[0],
@@ -1277,17 +1317,25 @@ test("shows the authoritative Mangan post-match results surface", async ({
       state: browser.__state,
     });
   });
-  await expect(table).toHaveAttribute("data-render-ready", "true");
-  await expect(page.getByTestId("results-panel")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Final standings", exact: true })).toBeVisible();
+  await expect(table).toHaveCount(0);
+  await expect(page.getByTestId("gameplay-shell")).toHaveCount(0);
+  await expect(page.locator("canvas")).toHaveCount(0);
+  await expect.poll(() => page.workers().length).toBe(0);
   const standings = page.getByTestId("results-panel").locator(".results-list");
   await expect(standings.locator(".result-name")).toHaveText(["Mika", "Nori", "Ren", "Aya"]);
   await expect(standings.locator(".result-score")).toHaveText(["45,000", "30,000", "15,000", "10,000"]);
-  await expect(page.getByTestId("gameplay-shell")).toHaveAttribute("data-human-controller", "interactive");
   await expect(page.getByTestId("results-panel").locator(".results-winner-hero-portrait")).toHaveAttribute("alt", "Mika portrait");
   await page.screenshot({
     path: "test-results/task-12/results-portrait-state.png",
     fullPage: false,
   });
+  await page.getByRole("button", { name: "Return to room", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Final standings", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review final standings", exact: true })).toBeFocused();
+  await expect(table).toHaveCount(0);
+  expect(page.workers()).toHaveLength(0);
 });
 
 test("shows guidance below the supported gameplay viewport", async ({
@@ -1297,8 +1345,13 @@ test("shows guidance below the supported gameplay viewport", async ({
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
-  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  const limitation = page.getByRole("region", { name: "Desktop table limitation", exact: true });
+  await expect(limitation.getByRole("heading", { name: "Desktop required for the 3D table", exact: true })).toBeVisible();
+  await expect(limitation).toContainText("Use a viewport of at least 1024 × 600.");
+  await expect(limitation.getByRole("link", { name: "Back", exact: true })).toHaveAttribute("href", "/room/123456");
   await expect(page.getByTestId("three-table")).toHaveCount(0);
+  await expect(page.locator("canvas")).toHaveCount(0);
+  expect(page.workers()).toHaveLength(0);
 });
 
 test("reactively gates the table on resize and keeps terminal alerts visible when narrow", async ({ page }) => {
@@ -1306,11 +1359,13 @@ test("reactively gates the table on resize and keeps terminal alerts visible whe
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
-  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Desktop table limitation", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 1280, height: 720 });
   await expectRenderedTable(page);
   await page.setViewportSize({ width: 900, height: 599 });
-  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Desktop table limitation", exact: true })).toBeVisible();
+  await expect(page.getByTestId("three-table")).toHaveCount(0);
+  await expect.poll(() => page.workers().length).toBe(0);
   await page.evaluate(() => {
     const socket = (window as unknown as {
       __socket: { onclose: ((event: { code: number; reason: string }) => void) | null };

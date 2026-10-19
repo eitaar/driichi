@@ -5,12 +5,32 @@
 .pre-match-shell [data-slot=input]{font-family:inherit;font-size:1rem;max-width:none;color:var(--foreground);background:var(--background);border-color:var(--input)}
 .pre-match-shell [data-slot=input]:focus{border-color:var(--ring)}
 .pre-match-shell .room-main{width:min(1200px,100%);margin:auto;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:48px;padding:24px 48px 48px;align-items:center}
-.pre-match-shell .room-main[data-join-step=room-name]{grid-template-columns:minmax(0,480px);justify-content:center}
-.pre-match-shell .join-form{grid-column:2;grid-row:1;padding:0;border:0;background:none;max-width:480px;min-width:0}.pre-match-shell [data-join-step=room-name] .join-form{grid-column:1}.pre-match-shell .join-form h1{margin-bottom:20px}
+.pre-match-shell .join-form{grid-column:2;grid-row:1;padding:0;border:0;background:none;max-width:480px;min-width:0}.pre-match-shell .join-form h1{margin-bottom:20px}
 .pre-match-shell .character-stage{grid-column:1;grid-row:1;min-width:0;text-align:center}.pre-match-shell .character-stage .character-asset-portrait{width:100%;height:clamp(260px,58vh,560px);object-fit:contain;background:none;border:0;box-shadow:none}.pre-match-shell .character-stage>p{font-size:1.25rem;margin:16px 0;overflow-wrap:anywhere}
-.pre-match-shell .character-list{display:flex;flex-wrap:wrap;gap:12px}.join-character-option{display:flex;flex-direction:column;position:relative;gap:8px;padding:8px;max-width:100%;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;overflow-wrap:anywhere}.join-character-option:has([data-checked]){border-color:var(--primary)}.join-character-option .character-asset-icon{width:72px;height:80px;object-fit:cover}.join-character-option [data-slot=radio-group-item]{align-self:flex-start}
-.join-actions{display:flex;flex-wrap:wrap;gap:12px}.join-actions>[type=submit]{flex:1}.join-room-details summary{cursor:pointer;min-height:44px;align-content:center}.join-room-details p{font-size:.875rem;color:var(--muted-foreground)}
+.pre-match-shell .character-list{display:flex;flex-wrap:wrap;gap:12px}.join-character-option{display:flex;flex-direction:column;position:relative;gap:8px;padding:8px;max-width:100%;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;overflow-wrap:anywhere}.join-character-option:has([data-checked]){border-color:var(--primary)}.join-character-option .character-asset-icon{width:72px;height:80px;object-fit:cover}.join-character-option:has(:focus-visible){outline:2px solid var(--ring);outline-offset:3px}
+.join-actions{display:flex;flex-wrap:wrap;gap:12px}.join-actions>[data-slot=button]{flex:1}.join-room-details summary{cursor:pointer;min-height:44px;align-content:center}.join-room-details p{font-size:.875rem;color:var(--muted-foreground)}
+.lobby-shell main{max-width:1440px;padding:1.5rem 2rem}
+.lobby-shell [aria-label=Participants]{gap:1rem;padding-inline:.5rem;margin-block:1.5rem}
+.lobby-shell h1{font-size:1.75rem}
+.lobby-shell .ready-block{border:0;background:transparent;padding:1rem 0;gap:1rem}
+.lobby-shell .ready-block .field-hint{font-size:.875rem;line-height:1.5}
+.lobby-participant-card{height:clamp(12rem,calc(100svh - 20rem),calc(min(52vh,30rem) + 3rem));min-height:0;display:block;--lobby-center-skew:-8deg;--lobby-center-unskew:8deg;--lobby-footer-height:min(30%,3.5rem)}
+.lobby-participant-card,.lobby-participant-card:hover,.lobby-participant-card:active{background:transparent;box-shadow:none}
+.lobby-participant-card>.lobby-center-art{position:absolute;inset:0;display:block;width:100%;height:100%;padding:0;overflow:hidden;transform:skewX(var(--lobby-center-skew));border-radius:.75rem;background:var(--muted)}
+.lobby-participant-card:is(:hover,:active,:focus-visible)>.lobby-center-art{background:var(--accent)}
+.lobby-center-unskew{position:absolute;inset:0;display:block;transform:skewX(var(--lobby-center-unskew))}
+.lobby-participant-card .lobby-portrait{display:block;width:170%;height:auto;max-width:none;margin:-14% 0 0 -35%;object-fit:initial;object-position:top}
+/* Art and footer share the whole diagonal clip; glyphs alone counter-skew. */
+.lobby-center-art::after{content:"";position:absolute;inset:auto 0 0;height:var(--lobby-footer-height);background:var(--card);border-top:1px solid var(--border);pointer-events:none}
+/* The original foreground stroke must paint above the footer. */
+.lobby-center-art::before{content:"";position:absolute;inset:0;z-index:2;border:1px solid var(--foreground);border-radius:inherit;pointer-events:none}
+.lobby-participant-card .lobby-center-name{position:absolute;bottom:0;left:50%;transform:translateX(-50%) skewX(var(--lobby-center-unskew));z-index:1;width:80%;max-width:80%;height:var(--lobby-footer-height);max-height:var(--lobby-footer-height);margin:0;padding:.75rem .5rem;overflow:auto;background:transparent;color:var(--foreground);font-family:var(--font-sans);font-size:clamp(1.125rem,2vw,1.5rem);font-weight:550;line-height:1.3;letter-spacing:0;text-align:center;white-space:normal;overflow-wrap:anywhere}
+.lobby-participant-card img[src*="tsumogiri-bot"]{position:absolute;top:1rem;left:50%;width:5rem;height:6rem;margin:0;transform:translateX(-50%);object-fit:contain}
+@media(max-width:767px){.lobby-participant-card{--lobby-center-skew:-4deg;--lobby-center-unskew:4deg}}
+@media(max-width:700px){.lobby-shell main{padding:1rem}.lobby-shell [aria-label=Participants]{gap:.75rem}.lobby-participant-card{height:auto;aspect-ratio:10/13}}
 .lobby-participant-states{display:grid;gap:12px}.lobby-participant-states div{min-width:0}.lobby-participant-states dt{color:var(--muted-foreground)}.lobby-participant-states dd{overflow-wrap:anywhere}
 .lobby-shell summary{min-height:44px;align-content:center;cursor:pointer}.lobby-blockers ul{padding-left:20px;overflow-wrap:anywhere}
 .lobby-shell .connection-state{background:none;color:var(--foreground);border:0}.lobby-shell .state-dot{background:currentColor}.lobby-shell .state-label{font-family:inherit;letter-spacing:0}.lobby-shell .form-error{color:var(--destructive)}
+/* Keep the complete selected-character form in a short desktop viewport, without shrinking controls. */
+@media(min-width:801px) and (max-height:700px){.pre-match-shell .room-main{padding-block:12px}.pre-match-shell .join-form h1{margin-bottom:8px}.pre-match-shell .join-form>[data-slot=field-group]{gap:8px}.pre-match-shell .join-character-option{gap:4px;padding:6px}.pre-match-shell .join-character-option .character-asset-icon{width:48px;height:48px}}
 @media(max-width:800px){.pre-match-shell .room-main{grid-template-columns:minmax(0,1fr);gap:24px;padding:16px 24px}.pre-match-shell .join-form{grid-column:1;grid-row:1;max-width:none}.pre-match-shell .character-stage{grid-column:1;grid-row:2}.pre-match-shell .character-stage .character-asset-portrait{height:260px}}
