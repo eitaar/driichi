@@ -17,6 +17,17 @@ describe("gameplay viewport gate", () => {
     expect(isGameplayViewportSupported(1024, 599)).toBe(false);
   });
 
+  it("uses one media listener API and removes it on unmount", () => {
+    const query = { addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() } as unknown as MediaQueryList;
+    vi.spyOn(window, "matchMedia").mockReturnValue(query);
+    const { unmount } = renderHook(() => useGameplayViewportSupport());
+    expect(query.addEventListener).toHaveBeenCalledOnce();
+    expect(query.addListener).not.toHaveBeenCalled();
+    unmount();
+    expect(query.removeEventListener).toHaveBeenCalledOnce();
+    expect(query.removeListener).not.toHaveBeenCalled();
+  });
+
   it("reacts to both matchMedia changes and window resize", () => {
     const listeners = new Set<() => void>();
     const query = {

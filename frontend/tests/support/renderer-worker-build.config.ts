@@ -1,9 +1,9 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
+import productConfig from "../../vite.config.ts";
 
 export default defineConfig({
-  plugins: [react()],
+  ...productConfig,
   build: { emptyOutDir: false, rolldownOptions: { input: [resolve(import.meta.dirname, "renderer-worker-product.html"), resolve(import.meta.dirname, "../../index.html")] } },
   worker: { format: "es" },
   preview: {

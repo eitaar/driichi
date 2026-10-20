@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   actionCandidates,
   actionGroupLabel,
@@ -25,13 +25,20 @@ import type {
 import { tileAssetUrl, tileLabel } from "./tiles";
 import { useGameplayViewportSupport } from "./viewport";
 import {
-  decodeFinalStandings,
   decodeKyokuEndStep,
   resultStepKey,
   type KyokuEndStep,
   type KyokuSettlement,
-  type WinResult,
 } from "./results";
+import { DrawResult, RoundWinSurface, ScoreTransfer, ResultsPanel, MatchVictoryPage, type AssetState } from "./result-presentation";
+import { Button } from "../components/ui/button";
+import { Alert, AlertDescription } from "../components/ui/alert";
+import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription, DialogClose } from "../components/ui/dialog";
+import { Field, FieldGroup, FieldLabel } from "../components/ui/field";
+import { Slider } from "../components/ui/slider";
+import { Switch } from "../components/ui/switch";
+import { ThemeToggle } from "../components/theme-toggle";
+import { decodeRoomFinalStandings } from "./results";
 import "./result.css";
 
 const ThreeTable = lazy(() => import("./three-table").then(module => ({ default: module.ThreeTable })));
@@ -59,10 +66,6 @@ export interface GameplayProps {
   onLeaveResults?: () => void;
 }
 
-interface AssetState {
-  [characterId: string]: boolean;
-}
-
 function projectionPlayer(
   projection: ProjectedState | null,
   seat: number,
@@ -80,17 +83,6 @@ function ownSeat(projection: ProjectedState | null): number {
 function roster(room: RoomSnapshot | null): RoomPlayerSnapshot[] {
   if (!room) return [];
   return room.roster?.length ? room.roster : (room.match_players ?? []);
-}
-
-function resultRoster(room: RoomSnapshot | null): RoomPlayerSnapshot[] | null {
-  if (!room) return null;
-  const players = roster(room);
-  const count = seatPositions(room.game_mode).length;
-  if (players.length !== count || new Set(players.map((player) => player.participant_id)).size !== count
-    || players.some((player) => typeof player.participant_id !== "string" || !player.participant_id.trim() || player.participant_id.length > 128
-      || typeof player.display_name !== "string" || !player.display_name.trim() || player.display_name.length > 256)
-    || Array.from({ length: count }, (_, seat) => seat).some((seat) => players.filter((player) => player.seat === seat).length !== 1)) return null;
-  return players;
 }
 
 function characterForSeat(
@@ -299,53 +291,26 @@ function AudioSettingsPanel({ manager, appearance }: { manager: AudioManager; ap
   const update = (patch: Partial<AudioSettings>) =>
     setSettings(manager.setSettings(patch));
   return (
-    <details className="audio-settings">
-      <summary>Settings</summary>
-      <div className="audio-settings-body">
-        <label htmlFor="audio-master">Master</label>
-        <input
-          id="audio-master"
-          aria-label="Master"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={settings.master}
-          onChange={(event) => update({ master: Number(event.target.value) })}
-        />
-        <label htmlFor="audio-sfx">SFX</label>
-        <input
-          id="audio-sfx"
-          aria-label="SFX"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={settings.sfx}
-          onChange={(event) => update({ sfx: Number(event.target.value) })}
-        />
-        <label htmlFor="audio-voice">Voice</label>
-        <input
-          id="audio-voice"
-          aria-label="Voice"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={settings.voice}
-          onChange={(event) => update({ voice: Number(event.target.value) })}
-        />
-        <label className="audio-toggle">
-          <input
-            type="checkbox"
-            checked={settings.voiceEnabled}
-            onChange={(event) => update({ voiceEnabled: event.target.checked })}
-          />
-          Voice enabled
-        </label>
-        <TableAppearanceSettings settings={appearance} />
-      </div>
-    </details>
+    <Dialog>
+      <DialogTrigger render={<Button variant="secondary" data-gameplay-settings className="min-h-11" />}>Settings</DialogTrigger>
+      <DialogContent className="gameplay-settings max-h-[calc(100dvh-2rem)] overflow-y-auto">
+        <DialogTitle>Settings</DialogTitle>
+        <DialogDescription>Audio preferences and local table images.</DialogDescription>
+        <FieldGroup>
+          {([['master', 'Master'], ['sfx', 'SFX'], ['voice', 'Voice']] as const).map(([key, label]) => (
+            <Field key={key}>
+              <FieldLabel id={`audio-${key}-label`}>{label}</FieldLabel>
+              <Slider aria-labelledby={`audio-${key}-label`} min={0} max={1} step={0.05} value={settings[key]} onValueChange={(value) => update({ [key]: value as number })} />
+            </Field>
+          ))}
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor="audio-voice-enabled">Voice enabled</FieldLabel>
+            <Switch id="audio-voice-enabled" checked={settings.voiceEnabled} onCheckedChange={(value) => update({ voiceEnabled: value })} />
+          </Field>
+          <TableAppearanceSettings settings={appearance} />
+        </FieldGroup>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -360,11 +325,12 @@ function GameplayControls({
 }) {
   return (
     <div className="gameplay-controls">
-      <div className={`connection-state connection-${status}`}>
+      {status !== "connected" && <div className={`connection-state connection-${status}`}>
         <span className="state-dot" aria-hidden="true" />
         <span>{status}</span>
-      </div>
+      </div>}
       <AudioSettingsPanel manager={manager} appearance={appearance} />
+      <ThemeToggle />
     </div>
   );
 }
@@ -381,22 +347,17 @@ function GameplayToast({
   return (
     <div className="gameplay-toast-stack">
       {(status === "reconnecting" || status === "error") && (
-        <p className="gameplay-toast" role="status">
+        <Alert role="status"><AlertDescription>
           {status === "error"
             ? "Network connection interrupted… Retrying while the last authoritative table state remains visible."
             : "Reconnecting… The last authoritative table state remains visible."}
-        </p>
+        </AlertDescription></Alert>
       )}
       {commandError && (
-        <p className="gameplay-toast" role="alert">
-          Action rejected: {commandError}
-        </p>
+        <Alert variant="destructive"><AlertDescription>Action rejected: {commandError}</AlertDescription></Alert>
       )}
       {actionError && (
-        <p className="gameplay-toast" role="alert">
-          Action rejected: {actionError}. Retry while this Decision remains
-          open.
-        </p>
+        <Alert variant="destructive"><AlertDescription>Action rejected: {actionError}. Retry while this Decision remains open.</AlertDescription></Alert>
       )}
     </div>
   );
@@ -455,6 +416,7 @@ function TileHitLayer({
 }
 
 function CandidatePopup({
+  portalContainer,
   actions,
   onAction,
   onClose,
@@ -466,118 +428,66 @@ function CandidatePopup({
   onClose: () => void;
   id: string;
   disabled: boolean;
+  portalContainer: RefObject<HTMLDivElement | null>;
 }) {
-  const popupRef = useRef<HTMLDialogElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  const popupRef = useRef<HTMLDivElement>(null);
+  const candidateRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const [returnFocus] = useState(() => document.activeElement instanceof HTMLElement ? document.activeElement : null);
   useEffect(() => {
-    const popup = popupRef.current;
-    if (!popup) return;
-    const returnFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    try {
-      if (!popup.open) popup.showModal();
-    } catch {
-      popup.setAttribute("open", "");
-    }
-    const focusableSelector = [
-      "button:not([disabled])",
-      "[href]",
-      "input:not([disabled])",
-      "select:not([disabled])",
-      "textarea:not([disabled])",
-      "[tabindex]:not([tabindex=\"-1\"])",
-    ].join(",");
-    const focusable = () =>
-      Array.from(popup.querySelectorAll<HTMLElement>(focusableSelector));
-    const initialFocus =
-      popup.querySelector<HTMLButtonElement>(
-        ".candidate-list button:not([disabled])",
-      ) ?? popup.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button");
-    initialFocus?.focus();
-    const onCancel = (event: Event) => {
-      event.preventDefault();
-      closeRef.current();
+    // Base UI traps Tab; preserve the native dialog's programmatic focus boundary too.
+    let lastFocus: HTMLElement | null = null;
+    const containFocus = (event: FocusEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && popupRef.current?.contains(target)) lastFocus = target;
+      else (lastFocus && !lastFocus.matches(":disabled") ? lastFocus : closeRef.current)?.focus();
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const elements = focusable();
-      if (elements.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey) {
-        if (active === first || !popup.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !popup.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    popup.addEventListener("cancel", onCancel);
-    popup.addEventListener("keydown", onKeyDown);
-    return () => {
-      popup.removeEventListener("cancel", onCancel);
-      popup.removeEventListener("keydown", onKeyDown);
-      if (popup.open) popup.close();
-      else popup.removeAttribute("open");
-      if (returnFocus?.isConnected) returnFocus.focus();
-    };
+    document.addEventListener("focusin", containFocus);
+    return () => document.removeEventListener("focusin", containFocus);
   }, []);
   useEffect(() => {
-    const popup = popupRef.current;
-    if (!popup) return;
-    const firstCandidate = popup.querySelector<HTMLButtonElement>(
-      ".candidate-list button:not([disabled])",
-    );
-    if (!disabled) {
-      firstCandidate?.focus();
-      return;
-    }
-    if (document.activeElement instanceof HTMLButtonElement && document.activeElement.disabled) {
-      popup.querySelector<HTMLButtonElement>(".candidate-popup-head .text-button")?.focus();
-    }
+    if (disabled) closeRef.current?.focus();
+    else candidateRef.current?.focus();
   }, [disabled]);
   return (
-    <dialog
-      ref={popupRef}
-      id={id}
-      className="candidate-popup"
-      aria-modal="true"
-      aria-label="Choose a legal candidate"
-      aria-busy={disabled ? "true" : "false"}
-    >
-      <div className="candidate-popup-head">
-        <span>Choose a line</span>
-        <button type="button" className="text-button" onClick={onClose}>
-          Close
-        </button>
-      </div>
-      <div className="candidate-list">
-        {actions.map((action) => (
-          <button
-            type="button"
-            className="button button-secondary"
-            key={action.action_id}
-            data-action-id={action.action_id}
-            disabled={disabled}
-            onClick={() => onAction(action)}
-          >
-            {describeAction(action)}
-          </button>
-        ))}
-      </div>
-    </dialog>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent
+        ref={popupRef}
+        id={id}
+        className="candidate-popup absolute max-h-[calc(100%-2rem)] overflow-y-auto"
+        portalContainer={portalContainer}
+        showCloseButton={false}
+        initialFocus={() => disabled ? closeRef.current : candidateRef.current}
+        finalFocus={() => returnFocus?.isConnected ? returnFocus : null}
+        aria-modal="true"
+        aria-busy={disabled ? "true" : "false"}
+      >
+        <DialogTitle>Choose a legal candidate</DialogTitle>
+        <DialogDescription>Choose a line from the offered actions.</DialogDescription>
+        <DialogClose render={<Button ref={closeRef} variant="ghost" className="min-h-11" />}>Close</DialogClose>
+        <div className="candidate-list">
+          {actions.map((action, index) => (
+            <Button
+              ref={index === 0 ? candidateRef : undefined}
+              type="button"
+              variant="secondary"
+              className="min-h-11 justify-start"
+              key={action.action_id}
+              data-action-id={action.action_id}
+              disabled={disabled}
+              onClick={() => onAction(action)}
+            >
+              {describeAction(action)}
+            </Button>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function ActionDeck({
+  portalContainer,
   decision,
   pending,
   disabled,
@@ -589,6 +499,7 @@ function ActionDeck({
   disabled: boolean;
   motionActive: boolean;
   onAction: (action: VisibleAction) => void;
+  portalContainer: RefObject<HTMLDivElement | null>;
 }) {
   const [popupKind, setPopupKind] = useState<
     "riichi_discard" | "chi" | "pon" | "kan" | "nuki" | null
@@ -636,26 +547,28 @@ function ActionDeck({
           (kind) => {
             const action = simpleByKind.get(kind);
             return action ? (
-              <button
+              <Button
                 key={kind}
                 type="button"
-                className={`button ${kind === "pass" ? "button-secondary" : "button-primary"}`}
+                variant={kind === "pass" ? "secondary" : "default"}
+                className="min-h-11"
                 data-action-id={action.action_id}
                 disabled={disabled}
                 onClick={() => onAction(action)}
               >
                 {actionGroupLabel(kind)}
-              </button>
+              </Button>
             ) : null;
           },
         )}
         {candidateButtons.map(({ kind, candidates }) => {
           const multiple = candidates.length > 1;
           return (
-            <button
+            <Button
               key={kind}
               type="button"
-              className="button button-secondary"
+              variant="secondary"
+              className="min-h-11"
               data-action-id={candidates.length === 1 ? candidates[0].action_id : ""}
               disabled={disabled}
               aria-haspopup={multiple ? "dialog" : undefined}
@@ -670,12 +583,13 @@ function ActionDeck({
               {candidates.length === 1
                 ? actionGroupLabel(kind)
                 : `${actionGroupLabel(kind)} (${candidates.length})`}
-            </button>
+            </Button>
           );
         })}
       </div>
       {popupKind && (
         <CandidatePopup
+          portalContainer={portalContainer}
           id={popupId}
           actions={popupKind === "riichi_discard"
             ? grouped.riichiDiscard
@@ -686,147 +600,6 @@ function ActionDeck({
         />
       )}
     </div>
-  );
-}
-
-function ResultPortrait({
-  characterId,
-  name,
-  available,
-  className = "",
-}: {
-  characterId: string | null | undefined;
-  name: string;
-  available: boolean;
-  className?: string;
-}) {
-  const [failed, setFailed] = useState(false);
-  const portraitClass = `results-winner-portrait${className ? ` ${className}` : ""}`;
-  const initial = Array.from(name.trim())[0]?.toUpperCase() ?? "?";
-  if (!characterId || !available || failed)
-    return (
-      <span
-        className={`${portraitClass} asset-fallback`}
-        role="img"
-        aria-label={`${name} portrait unavailable`}
-      >
-        {initial}
-      </span>
-    );
-  return (
-    <img
-      className={portraitClass}
-      src={`/assets/characters/${encodeURIComponent(characterId)}/portrait.webp`}
-      alt={`${name} portrait`}
-      onError={() => setFailed(true)}
-    />
-  );
-}
-
-function yakuLabel(name: string): string {
-  return name
-    .replaceAll("_", " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
-}
-
-function RoundWinTiles({ result }: { result: WinResult }) {
-  return (
-    <div className="round-win-hand" role="group" aria-label="Winning hand">
-      <div className="round-win-tile-row" role="group" aria-label={`${result.concealed.length} visible winning hand tiles`}>
-        {result.concealed.map((tile, index) => (
-          <span className={`round-win-tile${result.winning_tile_index === index ? " is-winning" : ""}`}
-            data-testid={result.winning_tile_index === index ? "winning-tile" : undefined} key={`${tile}-${index}`}>
-            <img src={tileAssetUrl(tile)} alt={tileLabel(tile)} />
-          </span>
-        ))}
-      </div>
-      {result.melds.length > 0 && (
-        <div className="round-win-melds" role="group" aria-label="Visible melds">
-          {result.melds.map((meld, meldIndex) => (
-            <span className="round-win-meld" key={`meld-${meldIndex}`} role="group" aria-label={`${meld.opened ? "Open" : "Closed"} ${meld.kind}`}>
-              {meld.tiles.map((tile, tileIndex) => (
-                <img key={`${tile}-${tileIndex}`} src={!meld.opened && meld.kind === "Ankan" && (tileIndex === 0 || tileIndex === meld.tiles.length - 1)
-                  ? new URL("../assets/tiles/Regular/Back.svg", import.meta.url).href
-                  : tileAssetUrl(tile)} alt={tileLabel(tile)} />
-              ))}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function RoundWinSurface({ result, room, assets, reducedMotion = false }: {
-  result: WinResult;
-  room: RoomSnapshot | null;
-  assets: AssetState;
-  reducedMotion?: boolean;
-}) {
-  const winner = resultRoster(room)?.find((player) => player.participant_id === result.winner && player.seat === result.seat);
-  if (!winner) return null;
-  const ordinary = "Ordinary" in result.evaluation ? result.evaluation.Ordinary : null;
-  return (
-    <section className="round-win-surface" data-testid="round-win-surface" data-motion={reducedMotion ? "static" : "cinematic"}
-      aria-labelledby="round-win-heading" role="status" aria-live="polite">
-      <div className="round-win-identity">
-        <ResultPortrait characterId={winner.character_id ?? ""} name={winner.display_name}
-          available={winner.character_id ? assets[winner.character_id] !== false : false} className="round-win-portrait" />
-        <h2 id="round-win-heading">{winner.display_name}</h2>
-      </div>
-      <div className="round-win-details" aria-label={`${result.tsumo ? "Tsumo" : "Ron"} win details`}>
-        <RoundWinTiles result={result} />
-        {result.yaku.length > 0 && (
-          <dl className="round-win-yaku" aria-label="Authoritative yaku">
-            {result.yaku.map((entry, index) => (
-              <div key={`${entry.name}-${index}`}><dt>{yakuLabel(entry.name)}</dt><dd>{entry.han !== undefined ? `${entry.han} han` : entry.yakuman_multiplier !== undefined ? `${entry.yakuman_multiplier}× yakuman` : ""}</dd></div>
-            ))}
-          </dl>
-        )}
-        <div className="round-win-total">
-          <p>{ordinary ? <>{ordinary.han} han · {ordinary.fu} fu{ordinary.limit && ` · ${ordinary.limit}`}</>
-            : "Yakuman" in result.evaluation && `${result.evaluation.Yakuman.multiplier}× yakuman`}</p>
-          <strong>{result.win_points.toLocaleString()} <small>points</small></strong>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-export function ScoreTransfer({
-  settlement,
-  room,
-  progress = 1,
-}: {
-  settlement: KyokuSettlement;
-  room: RoomSnapshot | null;
-  progress?: number;
-}) {
-  const players = resultRoster(room);
-  if (!players || settlement.changes.length !== players.length || settlement.changes.some((change) =>
-    !players.some((player) => player.seat === change.seat && player.participant_id === change.participant_id),
-  )) return null;
-  return (
-    <section className="score-transfer" aria-label="Score transfer" role="status">
-      <h2>{settlement.draw_reason ?? "Score transfer"}</h2>
-      <ol>
-        {settlement.changes.map((entry) => {
-          const player = players.find((player) => player.seat === entry.seat && player.participant_id === entry.participant_id);
-          if (!player) return null;
-          const delta = entry.delta;
-          const change = Math.round(delta * progress);
-          return (
-            <li key={player.participant_id}>
-              <span>{player.display_name}</span>
-              <span>{delta >= 0 ? "+" : "−"}{Math.abs(change).toLocaleString()}</span>
-              <strong>{(entry.before + change).toLocaleString()}</strong>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
   );
 }
 
@@ -849,11 +622,10 @@ function useResultRemaining(step: KyokuEndStep | null, receivedDeadline: number 
   return remaining;
 }
 
-function SettlementPresentation({ settlement, room, remaining, reducedMotion }: {
+function SettlementPresentation({ settlement, room, remaining, reducedMotion, paused, setPaused, skipped, setSkipped }: {
   settlement: KyokuSettlement; room: RoomSnapshot | null; remaining: number; reducedMotion: boolean;
+  paused: number | null; setPaused: (value: number | null) => void; skipped: boolean; setSkipped: (value: boolean) => void;
 }) {
-  const [paused, setPaused] = useState<number | null>(null);
-  const [skipped, setSkipped] = useState(false);
   const progress = reducedMotion || skipped ? 1 : Math.min(1, (5000 - remaining) / 3000);
   return <>
     <ScoreTransfer settlement={settlement} room={room} progress={reducedMotion || skipped ? 1 : paused ?? progress} />
@@ -862,58 +634,6 @@ function SettlementPresentation({ settlement, room, remaining, reducedMotion }: 
       <button type="button" className="button" onClick={() => setSkipped(true)}>Skip animation</button>
     </div>
   </>;
-}
-
-export function ResultsPanel({
-  room,
-  assets,
-}: {
-  room: RoomSnapshot | null;
-  assets: AssetState;
-}) {
-  const result = decodeFinalStandings(room?.result, room?.game_mode ?? "");
-  if (!result) return null;
-  const ordered = result.players.slice().sort((left, right) => left.rank - right.rank);
-  const first = ordered.find((player) => player.rank === 1)!;
-  const roomRoster = resultRoster(room);
-  if (!roomRoster || roomRoster.length !== result.players.length || result.players.some((player) =>
-    roomRoster.filter((entry) => entry.seat === player.seat && entry.participant_id === player.participant_id).length !== 1,
-  )) return null;
-  const firstName = first.display_name;
-  const firstAsset = roomRoster.find((entry) => entry.participant_id === first.participant_id)?.character_id;
-
-  return (
-    <section className="results-panel" data-testid="results-panel" aria-labelledby="results-heading">
-      <div className="results-winner">
-        <ResultPortrait
-          characterId={firstAsset}
-          name={firstName}
-          available={firstAsset ? assets[firstAsset] !== false : false}
-          className="results-winner-hero-portrait"
-        />
-      </div>
-      <div className="results-standings">
-        <h2 id="results-heading">Final standings</h2>
-        <ol className="results-list" aria-label="Final standings">
-        {ordered.map((player) => {
-          const id = player.participant_id;
-          const name = player.display_name;
-          const score = player.final_score;
-          const rank = player.rank;
-          return (
-            <li key={id} className={rank === 1 ? "is-first" : undefined}>
-              <span className="result-rank" aria-label={`Rank ${rank}`}>
-                {rank}
-              </span>
-              <span className="result-name">{name}</span>
-              <span className="result-score">{score.toLocaleString()}</span>
-            </li>
-          );
-        })}
-        </ol>
-      </div>
-    </section>
-  );
 }
 
 function GameplayPlayerStatus({
@@ -993,6 +713,7 @@ export function GameplaySurface({
     : grouped.riichiDiscard;
   const appearance = useTableAppearance();
   const tableSheenRef = useRef<HTMLDivElement>(null);
+  const candidatePortalRef = useRef<HTMLDivElement>(null);
   const resultDismissRef = useRef<HTMLButtonElement>(null);
   const step = decodeKyokuEndStep(room?.kyoku_end, room?.game_mode ?? projection?.mode ?? "");
   const receivedDeadline = useGameStore((state) => state.room === room ? state.resultDeadline : null);
@@ -1006,8 +727,18 @@ export function GameplaySurface({
   const confirmRef = useRef<HTMLButtonElement>(null);
   const supported = useGameplayViewportSupport();
   const confirmationReady = canConfirm && !confirmed && status === "connected" && resultRemaining > 0;
+  const resultAccess = supported && canConfirm && status === "connected" && resultRemaining > 0;
+  const [drawView, setDrawView] = useState("result");
+  const [settlementPaused, setSettlementPaused] = useState<number | null>(null);
+  const [settlementSkipped, setSettlementSkipped] = useState(false);
+  useEffect(() => {
+    setDrawView("result");
+    setSettlementPaused(null);
+    setSettlementSkipped(false);
+  }, [stepKey, resultAccess]);
   useEffect(() => {
     if (supported && (!canConfirm || confirmationReady)) confirmRef.current?.focus();
+    else if (supported && document.activeElement === confirmRef.current) tableSheenRef.current?.querySelector<HTMLElement>("[data-gameplay-settings]")?.focus();
   }, [stepKey, confirmationReady, canConfirm, supported]);
   const win = step && "Win" in step.content ? step.content.Win : null;
   const settlement = step && !("Win" in step.content)
@@ -1019,7 +750,7 @@ export function GameplaySurface({
   }, [decision?.decision_id, pending]);
   useEffect(() => {
     if (room?.phase !== "post_match" || !onLeaveResults) return;
-    const focusTimer = window.setTimeout(() => resultDismissRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => (resultDismissRef.current ?? document.querySelector<HTMLButtonElement>(".match-victory-actions button:last-child"))?.focus(), 0);
     return () => window.clearTimeout(focusTimer);
   }, [onLeaveResults, room?.phase]);
   const submit = (action: VisibleAction) => {
@@ -1050,6 +781,19 @@ export function GameplaySurface({
     ?? "";
   const inputDisabled = room?.kyoku_end != null || Boolean(pending) || status !== "connected" || !decision
     || actionResultHistory.some((result) => result.decision_id === decision.decision_id && result.status === "accepted");
+  const resultView = step && <>
+    {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
+    {settlement && ("Draw" in step.content ? <DrawResult key={stepKey} settlement={settlement} room={room} view={drawView} onViewChange={setDrawView} /> : <SettlementPresentation key={stepKey} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} paused={settlementPaused} setPaused={setSettlementPaused} skipped={settlementSkipped} setSkipped={setSettlementSkipped} />)}
+  </>;
+  const resultAction = step && (canConfirm ? <Button ref={confirmRef} className="round-win-continue" data-remaining-ms={resultRemaining} disabled={!confirmationReady} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : win ? `Continue (${formatSeconds(resultRemaining)}s)` : "Continue"}</Button>
+    : <Button ref={confirmRef} variant="outline" onClick={() => setDismissedStep(stepKey)}>Dismiss</Button>);
+  if (room?.phase === "post_match" && onLeaveResults && decodeRoomFinalStandings(room)) {
+    return <MatchVictoryPage room={room} onReturn={onLeaveResults} notice={<>
+      {status !== "connected" && <p role="status">{status}</p>}
+      {closeMessage && <p role="alert">{closeMessage}</p>}
+      <GameplayToast status={status} commandError={commandError} actionError={actionError} />
+    </>} />;
+  }
   return (
     <div
       ref={tableSheenRef}
@@ -1082,14 +826,12 @@ export function GameplaySurface({
       {closeMessage ? (
         <main className="gameplay-main gameplay-blocking-main">
           <section className="gameplay-blocking-state" role="alert">
-            <p className="eyebrow">TABLE UNAVAILABLE</p>
             <h1>Live table paused</h1>
             <p>{closeMessage}</p>
           </section>
         </main>
       ) : !supported ? (
         <main className="gameplay-guidance">
-          <p className="eyebrow">DESKTOP TABLE REQUIRED</p>
           <h2>Widen this window to play.</h2>
           <p>
             Gameplay needs a landscape window at least 1024 × 600. The table
@@ -1099,9 +841,9 @@ export function GameplaySurface({
       ) : (
         <main className="gameplay-main">
           <div className="table-letterbox">
+            <div ref={candidatePortalRef} className="pointer-events-none absolute inset-x-0 top-0 bottom-[calc(clamp(68px,7.7vw,109px)+38px)] z-50 [&>div]:pointer-events-auto" />
             {!projection && (
               <div className="gameplay-sync-state" role="status" aria-live="polite">
-                <p className="eyebrow">TABLE SYNC</p>
                 <strong>Waiting for an authoritative projection</strong>
                 <span>The table will synchronize when the host sends the next snapshot.</span>
               </div>
@@ -1133,6 +875,7 @@ export function GameplaySurface({
             />
             {tileCandidates && decision && (
               <CandidatePopup
+                portalContainer={candidatePortalRef}
                 key={decision.decision_id}
                 id="tile-candidate-dialog"
                 actions={tileCandidates}
@@ -1142,19 +885,19 @@ export function GameplaySurface({
               />
             )}
             {step && dismissedStep !== stepKey && room?.phase !== "post_match" && (
-              <div className="round-win-overlay">
-                {win && <RoundWinSurface key={stepKey} result={win} room={room} assets={assets} reducedMotion={reducedMotion} />}
-                {settlement && <SettlementPresentation key={resultStepKey(step.id)} settlement={settlement} room={room} remaining={resultRemaining} reducedMotion={reducedMotion} />}
-                <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining">{formatSeconds(resultRemaining)}s</span>
+              <div className={`round-win-overlay${win ? " result-win-modal" : ""}`}>
+                {resultView}
+                {!win && <span data-testid="result-timer" data-remaining-ms={resultRemaining} aria-label="Result time remaining" aria-live="off">{formatSeconds(resultRemaining)}s</span>}
                 <div className="round-win-actions">
-                  {canConfirm ? <button ref={confirmRef} type="button" className="button round-win-continue" disabled={confirmed || status !== "connected" || resultRemaining === 0} onClick={() => useGameStore.getState().confirmResult(step.id, send)}>{confirmed ? "Waiting for players" : "Continue"}</button>
-                    : <button ref={confirmRef} type="button" className="button" onClick={() => setDismissedStep(stepKey)}>Dismiss</button>}
+                  {(confirmed || (!win && resultRemaining > 0)) && <p key={stepKey} role="status">{confirmed ? "Waiting for players" : "Draw" in step.content ? "Draw result ready" : "Scores ready"}</p>}
+                  {resultAction}
                 </div>
               </div>
             )}
             {step && dismissedStep === stepKey && <p role="status">Waiting for players to confirm</p>}
             {room?.kyoku_end == null && room?.phase !== "post_match" && (
               <ActionDeck
+                portalContainer={candidatePortalRef}
                 decision={decision}
                 pending={Boolean(pending)}
                 disabled={inputDisabled}

@@ -97,6 +97,23 @@ describe("authoritative result decoders", () => {
     expect(decodeKyokuEndStep({ ...shrunk, confirmed: ["x".repeat(129)] }, "4p-red-east")).toBeNull();
   });
 
+  it("keeps Draw reason and settlement in the same publication and rejects its duplicate acknowledgement", () => {
+    const publication = { ...stepFixture(), content: { Draw: { ...settlement, draw_reason: "suucha_riichi" } }, remaining_ms: 3400 };
+    const decoded = decodeKyokuEndStep(publication, "4p-red-east");
+    expect(decoded?.id).toEqual({ match_id: "match", kyoku_sequence: 1, step_index: 0 });
+    expect(decoded?.content).toMatchObject({ Draw: { draw_reason: "suucha_riichi", changes: [{ before: 0, delta: 0, after: 0 }, { before: -1, delta: 1, after: 0 }, { before: 0, delta: 0, after: 0 }, { before: 0, delta: 0, after: 0 }] } });
+    const state = useGameStore.getState();
+    state.reset(); state.setStatus("connected");
+    state.receiveSnapshot({ game_mode: "4p-red-east", kyoku_end: publication } as never, null);
+    const deadline = useGameStore.getState().resultDeadline;
+    const messages: unknown[] = [];
+    const send = (message: unknown) => { messages.push(message); return true; };
+    expect(state.confirmResult(publication.id, send)).toBe(true);
+    expect(state.confirmResult(publication.id, send)).toBe(false);
+    expect(messages).toEqual([{ type: "confirm_result", step_id: { match_id: "match", kyoku_sequence: 1, step_index: 0 } }]);
+    expect(useGameStore.getState().resultDeadline).toBe(deadline);
+  });
+
   it("accepts exact serialized Rust result tags and preserves legal signed settlement values", () => {
     const step = decodeKyokuEndStep({
       id: { match_id: "match", kyoku_sequence: 1, step_index: 0 },

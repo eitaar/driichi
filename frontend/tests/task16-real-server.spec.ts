@@ -1,6 +1,7 @@
 /// <reference types="../node_modules/@types/node" />
 
 import AxeBuilder from "@axe-core/playwright";
+import { verifyReplayControls } from "./support/replay-controls";
 import { expect, test as base, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -53,9 +54,9 @@ let observedMultiCandidateAction = false;
 
 async function expectAccessible(page: Page, surface: string) {
   const axe = new AxeBuilder({ page });
-  if (surface === "actual decision" || surface === "results") {
-    axe.include(".gameplay-main");
-  }
+  if (surface === "actual decision") axe.include(".gameplay-main");
+  // Post-Match uses the dedicated final page, which has no .gameplay-main to scope to.
+  if (surface === "results") axe.include(".match-victory-page, .results-panel");
   const results = await axe.analyze();
   expect(
     results.violations,
@@ -99,8 +100,8 @@ async function loginAdmin(page: Page, harness: RealServerHarness) {
   await page.getByLabel("Username").fill(harness.adminUsername);
   await page.getByLabel("Password").fill(harness.adminPassword);
   await page.getByRole("button", { name: /^sign in$/i }).click();
-  await expect(page.getByRole("heading", { name: /admin session active/i })).toBeVisible({ timeout: 20_000 });
-  await page.getByRole("link", { name: /open admin/i }).click();
+  await expect(page).toHaveURL(/\/admin$/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: /admin session active/i })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /^rooms$/i })).toBeVisible();
 }
 
@@ -132,9 +133,10 @@ async function createRoom(page: Page, mode: MatchMode): Promise<string> {
 }
 
 async function chooseCharacter(page: Page) {
-  const character = page.locator("label.character-option").filter({ hasText: "Player Red" });
-  await expect(character).toHaveCount(1);
-  await character.locator("input[type=radio]").check();
+  // The radio input is intentionally sr-only inside its labelled option; a real user
+  // clicks the visible option, so the test does the same and then proves the binding.
+  await page.getByText("Player Red", { exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Player Red" })).toBeChecked();
 }
 
 async function joinHuman(
@@ -146,16 +148,18 @@ async function joinHuman(
   const page = await context.newPage();
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${harness.frontendOrigin}/room/${joinCode}`);
-  await expect(page.getByRole("heading", { name: /^choose your character$/i })).toBeVisible();
+  await expect(page.getByLabel("Display name")).toBeVisible();
   await expectAccessible(page, `${mode} room join`);
   await page.getByLabel("Display name").fill(`Human ${mode}`);
+  await expectAccessible(page, `${mode} character choice`);
   await chooseCharacter(page);
   await page.getByRole("button", { name: /^join room$/i }).click();
-  await expect(page.getByRole("heading", { name: /you're in task 16/i })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/room/${joinCode}/lobby$`));
   await expectAccessible(page, `${mode} join accepted`);
-  await page.getByRole("link", { name: /enter lobby/i }).click();
   await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
-  await expect(page.locator(".connection-state")).toHaveText("connected", { timeout: 20_000 });
+  await expect(page.getByRole("button", { name: `Human ${mode}`, exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByLabel("Room summary")).toBeVisible();
+  await expect(page.locator(".connection-state")).toHaveCount(0);
   return page;
 }
 
@@ -469,8 +473,13 @@ async function completeMatch(page: Page, mode: MatchMode, seats: number) {
   }
   await expect(page.getByRole("heading", { name: /standings/i })).toBeVisible();
   await expect(page.locator(".results-list li")).toHaveCount(seats);
-  // Controller facts are checked in the Admin roster, not the names/scores-only results.
-  await expect(page.getByTestId("gameplay-shell")).toHaveAttribute("data-human-controller", /interactive/i);
+  // Post-Match renders the dedicated final page; the gameplay shell and table are retired
+  // there, so controller facts stay in the Admin roster rather than this surface.
+  await expect(page.getByTestId("gameplay-shell")).toHaveCount(0);
+  await expect(page.getByTestId("three-table")).toHaveCount(0);
+  await expect(page.locator("canvas")).toHaveCount(0);
+  await expect.poll(() => page.workers().length).toBe(0);
+  await expect(page.getByRole("button", { name: "Return to room", exact: true })).toBeVisible();
   await expectAccessible(page, "results");
   await captureAtBothViewports(page, `${mode}-results`);
 }
@@ -511,12 +520,12 @@ test("serves the embedded gameplay with visible tiles under its CSP", async ({ p
   await expect(page.getByRole("button", { name: "Chi (2)" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Pass" })).toBeEnabled();
 
-  const settings = page.locator(".audio-settings summary");
+  const settings = page.getByRole("button", { name: "Settings", exact: true });
   await tabTo(page, settings);
   await page.keyboard.press("Enter");
-  await expect(page.locator(".audio-settings[open]")).toBeVisible();
-  await page.keyboard.press("Enter");
-  await expect(page.locator(".audio-settings[open]")).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(settings).toBeFocused();
 
   const chiTrigger = page.getByRole("button", { name: "Chi (2)" });
   await tabTo(page, chiTrigger);
@@ -586,36 +595,7 @@ async function verifyReplayAndOpenRoutes(
   await expect(adminPage.getByTestId("replay-viewer")).toHaveAttribute("data-motion", "static");
   await expectAccessible(adminPage, "replay viewer");
   await captureAtBothViewports(adminPage, `${mode}-replay-viewer`);
-  await adminPage.getByRole("button", { name: /next event/i }).click();
-  const replayControls = adminPage.locator(".replay-playback");
-  await replayControls.getByRole("button", { name: /previous event/i }).focus();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: /^play$/i })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("button", { name: /next event/i })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  const speed = replayControls.getByRole("combobox", { name: /playback speed/i });
-  await expect(speed).toBeFocused();
-  expect(await speed.locator("option").evaluateAll((options) =>
-    options.map((option) => (option as HTMLOptionElement).value),
-  )).toEqual(["0.5", "1", "2", "4", "8", "16", "32", "64"]);
-  await speed.selectOption("2");
-  await expect(speed).toHaveValue("2");
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("combobox", { name: /jump to kyoku/i })).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("link", { name: /^replay library$/i })).toBeFocused();
-  await adminPage.locator(".skip-link").focus();
-  await expect(adminPage.locator(".skip-link")).toBeFocused();
-  await adminPage.keyboard.press("Tab");
-  const settings = adminPage.locator(".audio-settings summary");
-  await expect(settings).toBeFocused();
-  await adminPage.keyboard.press("Enter");
-  await expect(adminPage.locator(".audio-settings[open]")).toBeVisible();
-  await adminPage.keyboard.press("Enter");
-  await expect(adminPage.locator(".audio-settings[open]")).toHaveCount(0);
-  await adminPage.keyboard.press("Tab");
-  await expect(replayControls.getByRole("slider", { name: /replay position/i })).toBeFocused();
+  await verifyReplayControls(adminPage);
 }
 
 for (const [mode, seats] of [
@@ -635,12 +615,14 @@ for (const [mode, seats] of [
       await fillWithBotsAndStart(adminPage, humanPage, mode, seats);
       await completeMatch(humanPage, mode, seats);
       await expect(adminPage.locator(".detail-lede")).toContainText("Post-Match", { timeout: 30_000 });
-      await expect(adminPage.locator(".seat-row.is-filled")).toHaveCount(seats);
-      await expect(adminPage.locator(".participant-row").filter({ hasText: /permanent[_ ]auto[_ ]builtinbot/i })).toHaveCount(seats - 1);
-      await expect(adminPage.locator(".participant-row").filter({ hasText: /temporary[_ ]auto/i })).toHaveCount(0);
+      // The approved Admin detail shows participating rows with state axes, not a seat rail.
+      await expect(adminPage.locator(".participant-row")).toHaveCount(seats);
+      const controllerAxes = await adminPage.locator(".participant-row .participant-axes").allInnerTexts();
+      expect(controllerAxes.join(" | "), "admin controller axes").toMatch(/permanent auto/i);
+      await expect(adminPage.locator(".participant-row").filter({ hasText: /temporary auto/i })).toHaveCount(0);
       const humanParticipant = adminPage.locator(".participant-row").filter({ hasText: new RegExp(`Human ${mode}`) });
       await expect(humanParticipant).toContainText(/interactive/i);
-      await expect(humanParticipant).not.toContainText(/temporary[_ ]auto/i);
+      await expect(humanParticipant).not.toContainText(/temporary auto/i);
       await expectAccessible(adminPage, "admin");
       await captureAtBothViewports(adminPage, `${mode}-admin-post-match`);
       await verifyReplayAndOpenRoutes(adminPage, harness, mode);

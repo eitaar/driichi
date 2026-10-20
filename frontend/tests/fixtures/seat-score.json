@@ -1,0 +1,17 @@
+{
+  "participants": [
+    { "participant_id": "identity-amber", "display_name": "Amber", "seat": 0, "rotatedSeat4": 1, "rotatedSeat3": 1, "score": 11100, "updatedScore": -1200 },
+    { "participant_id": "identity-birch", "display_name": "Birch", "seat": 1, "rotatedSeat4": 2, "rotatedSeat3": 2, "score": 22200, "updatedScore": 18700 },
+    { "participant_id": "identity-cedar", "display_name": "Cedar", "seat": 2, "rotatedSeat4": 3, "rotatedSeat3": 0, "score": 33300, "updatedScore": 45600 },
+    { "participant_id": "identity-dune", "display_name": "Dune", "seat": 3, "rotatedSeat4": 0, "rotatedSeat3": null, "score": 44400, "updatedScore": 36900 }
+  ],
+  "cases": [
+    { "mode": "4p-red-east", "viewer": 0, "rotatedViewer": 1, "bottom": "Amber", "right": "Birch", "top": "Cedar", "left": "Dune" },
+    { "mode": "4p-red-east", "viewer": 1, "rotatedViewer": 2, "bottom": "Birch", "right": "Cedar", "top": "Dune", "left": "Amber" },
+    { "mode": "4p-red-east", "viewer": 2, "rotatedViewer": 3, "bottom": "Cedar", "right": "Dune", "top": "Amber", "left": "Birch" },
+    { "mode": "4p-red-east", "viewer": 3, "rotatedViewer": 0, "bottom": "Dune", "right": "Amber", "top": "Birch", "left": "Cedar" },
+    { "mode": "3p-red-east", "viewer": 0, "rotatedViewer": 1, "bottom": "Amber", "right": "Birch", "top": null, "left": "Cedar" },
+    { "mode": "3p-red-east", "viewer": 1, "rotatedViewer": 2, "bottom": "Birch", "right": "Cedar", "top": null, "left": "Amber" },
+    { "mode": "3p-red-east", "viewer": 2, "rotatedViewer": 0, "bottom": "Cedar", "right": "Amber", "top": null, "left": "Birch" }
+  ]
+}

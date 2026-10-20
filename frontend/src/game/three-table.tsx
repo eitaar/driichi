@@ -22,6 +22,8 @@ import type { ProjectedPlayer, ProjectedState, RoomSnapshot } from "./types";
 
 export interface ThreeTableProps {
   projection: ProjectedState | null;
+  /** Presentation only: never changes the authorized hands or Participant/Seat mapping. */
+  viewSeat?: number;
   room: RoomSnapshot | null;
   animations?: AnimationItem[];
   reducedMotion?: boolean;
@@ -172,7 +174,8 @@ export function TablePlayerOverlay({
 }
 
 export function ThreeTable({
-  projection,
+  projection: authorizedProjection,
+  viewSeat,
   room,
   animations = [],
   reducedMotion = false,
@@ -182,6 +185,10 @@ export function ThreeTable({
   sheenHost,
   appearance,
 }: ThreeTableProps) {
+  const projection = useMemo(() => authorizedProjection && Number.isInteger(viewSeat)
+    && authorizedProjection.players?.some(player => player.seat === viewSeat)
+    ? { ...authorizedProjection, viewer_seat: viewSeat } : authorizedProjection,
+  [authorizedProjection, viewSeat]);
   const [atlas, setAtlas] = useState<TileAtlas | null>(null);
   const [atlasFailed, setAtlasFailed] = useState(false);
   const [webglFallback, setWebglFallback] = useState(false);

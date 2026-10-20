@@ -29,13 +29,13 @@ export function useGameplayViewportSupport(): boolean {
     const update = () => setSupported(readViewportSupport());
     const onResize = () => update();
 
-    query.addEventListener?.("change", update);
-    query.addListener?.(update);
+    if (query.addEventListener) query.addEventListener("change", update);
+    else query.addListener?.(update);
     window.addEventListener("resize", onResize, { passive: true });
     update();
     return () => {
-      query.removeEventListener?.("change", update);
-      query.removeListener?.(update);
+      if (query.removeEventListener) query.removeEventListener("change", update);
+      else query.removeListener?.(update);
       window.removeEventListener("resize", onResize);
     };
   }, []);

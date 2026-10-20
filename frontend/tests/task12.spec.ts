@@ -483,8 +483,48 @@ test("keeps a long participant name and missing icon actionable", async ({ page 
   );
   const fallback = table.locator('.table-player-frame[data-position="bottom"] .asset-fallback');
   await expect(fallback).toBeVisible();
-  await expect(fallback).toHaveCSS("background-color", "rgb(53, 74, 102)");
-  await expect(fallback).toHaveCSS("color", "rgb(238, 240, 242)");
+  await expect(fallback).toHaveAttribute("aria-label", "A very long participant display name icon unavailable");
+  // Assert the semantic token contract: the fallback must consume --muted and
+  // --muted-foreground, not merely match their current resolved values.
+  const declaredTokens = await page.evaluate(() => ["--muted", "--muted-foreground"]
+    .map(token => getComputedStyle(document.documentElement).getPropertyValue(token).trim()));
+  // Deleting either token must fail here; a deleted colour token would otherwise
+  // inherit and still look non-transparent.
+  expect(declaredTokens[0]).not.toBe("");
+  expect(declaredTokens[1]).not.toBe("");
+  const fallbackTokens = await fallback.evaluate(element => {
+    const root = document.documentElement;
+    const probe = document.createElement("span");
+    element.append(probe);
+    const resolve = (token: string, property: "backgroundColor" | "color") => {
+      probe.style.backgroundColor = "";
+      probe.style.color = "";
+      probe.style[property] = `var(${token})`;
+      return getComputedStyle(probe)[property];
+    };
+    const initialBackground = resolve("--muted", "backgroundColor");
+    const initialColor = resolve("--muted-foreground", "color");
+    const sentinel = { muted: "oklch(0.5 0.2 30)", mutedForeground: "oklch(0.4 0.1 200)" };
+    root.style.setProperty("--muted", sentinel.muted);
+    root.style.setProperty("--muted-foreground", sentinel.mutedForeground);
+    const followedBackground = getComputedStyle(element).backgroundColor;
+    const followedColor = getComputedStyle(element).color;
+    const sentinelBackground = resolve("--muted", "backgroundColor");
+    const sentinelColor = resolve("--muted-foreground", "color");
+    root.style.removeProperty("--muted");
+    root.style.removeProperty("--muted-foreground");
+    probe.remove();
+    return { initialBackground, initialColor, followedBackground, followedColor, sentinelBackground, sentinelColor };
+  });
+  expect(fallbackTokens.initialBackground).not.toBe("rgba(0, 0, 0, 0)");
+  expect(fallbackTokens.initialColor).not.toBe("rgba(0, 0, 0, 0)");
+  // The fallback must follow the sentinels, and must not be inheriting an unchanged colour.
+  expect(fallbackTokens.followedBackground).toBe(fallbackTokens.sentinelBackground);
+  expect(fallbackTokens.followedColor).toBe(fallbackTokens.sentinelColor);
+  expect(fallbackTokens.followedBackground).not.toBe(fallbackTokens.initialBackground);
+  expect(fallbackTokens.followedColor).not.toBe(fallbackTokens.initialColor);
+  await expect(fallback).toHaveCSS("background-color", fallbackTokens.initialBackground);
+  await expect(fallback).toHaveCSS("color", fallbackTokens.initialColor);
   await expect(page.getByTestId("action-deck")).toBeVisible();
   await expect(page.locator(".table-tile-hit.is-legal")).toHaveCount(14);
   await page.screenshot({
@@ -732,7 +772,7 @@ test("runs one bounded discard motion and stops invalidating after idle", async 
   }));
   expect(performanceEntries.events).toHaveLength(1);
   expect(performanceEntries.frames.length).toBeGreaterThan(0);
-  const sortedFrameDurations = performanceEntries.frames.toSorted((left, right) => left - right);
+  const sortedFrameDurations = [...performanceEntries.frames].sort((left, right) => left - right);
   const medianFrameDuration = sortedFrameDurations[Math.floor(sortedFrameDurations.length / 2)];
   console.info("[focused-motion-performance]", JSON.stringify({
     eventMs: performanceEntries.events[0],
@@ -1058,8 +1098,8 @@ test("keeps Settings accessible when opened", async ({ page }) => {
   await page.goto("/room/123456/lobby");
   await expectRenderedTable(page);
   await page.getByText("Settings", { exact: true }).click();
-  await expect(page.locator(".audio-settings[open]")).toBeVisible();
-  await expectNoSeriousOrCriticalViolations(page, ".gameplay-shell");
+  await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
+  await expectNoSeriousOrCriticalViolations(page, ".gameplay-settings");
 });
 
 test("omits the Action row when no Decision is open", async ({ page }) => {
@@ -1085,7 +1125,7 @@ for (const viewport of requiredViewports) {
     ];
     await installSocket(page, "4p-red-east", popupState);
     await page.goto("/room/123456/lobby");
-    const trigger = page.getByRole("button", { name: "Chi (2)" });
+    const trigger = page.locator('.action-buttons button[aria-haspopup="dialog"]');
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "Choose a legal candidate" });
     await expect(dialog).toHaveAttribute("aria-modal", "true");
@@ -1095,12 +1135,13 @@ for (const viewport of requiredViewports) {
     expect(dialogId).toBeTruthy();
     await expect(trigger).toHaveAttribute("aria-controls", dialogId ?? "");
     await expect(dialog.locator(".candidate-list button").first()).toBeFocused();
+    await expect(page.locator(".table-letterbox").getByRole("dialog", { name: "Choose a legal candidate" })).toHaveCount(1);
     await expectInsideStageAndClearOfHand(
       page.locator(".table-letterbox"),
       dialog,
       page.locator(".table-hit-layer"),
     );
-    await expectNoAxeViolations(page, ".gameplay-main");
+    await expectNoAxeViolations(page, ".candidate-popup");
     const candidateButtons = dialog.locator(".candidate-list button");
     await candidateButtons.last().focus();
     await page.keyboard.press("Tab");
@@ -1108,7 +1149,7 @@ for (const viewport of requiredViewports) {
     await page.keyboard.press("Shift+Tab");
     await expect(candidateButtons.last()).toBeFocused();
 
-    const backgroundPass = page.getByRole("button", { name: "Pass" });
+    const backgroundPass = page.locator('.action-buttons [data-action-id="pass-1"]');
     await backgroundPass.focus();
     await expect(backgroundPass).not.toBeFocused();
     await expect(candidateButtons.last()).toBeFocused();
@@ -1135,6 +1176,60 @@ for (const viewport of requiredViewports) {
     await expect(trigger).toBeFocused();
   });
 }
+
+test("keeps a scrolling candidate list above the hand through resize and enlarged text", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await installCharacterFixtures(page);
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  (state.decision as Record<string, unknown>).actions = Array.from({ length: 20 }, (_, index) => ({
+    action_id: `chi-${index}`,
+    action: { Chi: { target: 1, called: 1, consumed: [0, 4] } },
+  }));
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  const trigger = page.getByRole("button", { name: "Chi (20)" });
+  await trigger.click();
+  const dialog = page.locator(".table-letterbox").getByRole("dialog", { name: "Choose a legal candidate" });
+  await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  for (const width of [1024, 1920]) {
+    await page.setViewportSize({ width, height: 600 });
+    await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+    await expect(dialog).toHaveCSS("font-size", "28px");
+    await dialog.getByRole("button", { name: "Close", exact: true }).focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(dialog.locator(".candidate-list button").last()).toBeFocused();
+    await expect(dialog.locator(".candidate-list button").last()).toBeInViewport();
+    await expectInsideStageAndClearOfHand(page.locator(".table-letterbox"), dialog, page.locator(".table-hit-layer"));
+  }
+  await page.keyboard.press("Enter");
+  await expect(dialog).toHaveAttribute("aria-busy", "true");
+  const sent = await page.evaluate(() => (window as unknown as { __socket: { sent: string[] } }).__socket.sent.map(value => JSON.parse(value)));
+  expect(sent).toEqual([{ type: "submit_action", decision_id: "d1", action_id: "chi-19" }]);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
+test("portals ambiguous tile choices into the same table safe area", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await installCharacterFixtures(page);
+  const state = structuredClone(projectionFixture.projections["4p-red-east"]);
+  const tile = ((state.players as Array<Record<string, unknown>>)[0].hand as number[])[0];
+  (state.decision as Record<string, unknown>).actions = [
+    { action_id: "tile-a", action: { Discard: { tile, tsumogiri: false } } },
+    { action_id: "tile-b", action: { Discard: { tile, tsumogiri: true } } },
+  ];
+  await installSocket(page, "4p-red-east", state);
+  await page.goto("/room/123456/lobby");
+  const trigger = page.locator(".table-tile-hit.is-legal").first();
+  await trigger.click();
+  const dialog = page.locator(".table-letterbox").getByRole("dialog", { name: "Choose a legal candidate" });
+  await expect(dialog.locator(".candidate-list button")).toHaveCount(2);
+  await expectInsideStageAndClearOfHand(page.locator(".table-letterbox"), dialog, page.locator(".table-hit-layer"));
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
 
 test("disables open candidate choices after transport disconnects", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -1277,17 +1372,25 @@ test("shows the authoritative Mangan post-match results surface", async ({
       state: browser.__state,
     });
   });
-  await expect(table).toHaveAttribute("data-render-ready", "true");
-  await expect(page.getByTestId("results-panel")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Final standings", exact: true })).toBeVisible();
+  await expect(table).toHaveCount(0);
+  await expect(page.getByTestId("gameplay-shell")).toHaveCount(0);
+  await expect(page.locator("canvas")).toHaveCount(0);
+  await expect.poll(() => page.workers().length).toBe(0);
   const standings = page.getByTestId("results-panel").locator(".results-list");
   await expect(standings.locator(".result-name")).toHaveText(["Mika", "Nori", "Ren", "Aya"]);
   await expect(standings.locator(".result-score")).toHaveText(["45,000", "30,000", "15,000", "10,000"]);
-  await expect(page.getByTestId("gameplay-shell")).toHaveAttribute("data-human-controller", "interactive");
   await expect(page.getByTestId("results-panel").locator(".results-winner-hero-portrait")).toHaveAttribute("alt", "Mika portrait");
   await page.screenshot({
     path: "test-results/task-12/results-portrait-state.png",
     fullPage: false,
   });
+  await page.getByRole("button", { name: "Return to room", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Final standings", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review final standings", exact: true })).toBeFocused();
+  await expect(table).toHaveCount(0);
+  expect(page.workers()).toHaveLength(0);
 });
 
 test("shows guidance below the supported gameplay viewport", async ({
@@ -1297,8 +1400,13 @@ test("shows guidance below the supported gameplay viewport", async ({
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
-  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  const limitation = page.getByRole("region", { name: "Desktop table limitation", exact: true });
+  await expect(limitation.getByRole("heading", { name: "Desktop required for the 3D table", exact: true })).toBeVisible();
+  await expect(limitation).toContainText("Use a viewport of at least 1024 × 600.");
+  await expect(limitation.getByRole("link", { name: "Back", exact: true })).toHaveAttribute("href", "/room/123456");
   await expect(page.getByTestId("three-table")).toHaveCount(0);
+  await expect(page.locator("canvas")).toHaveCount(0);
+  expect(page.workers()).toHaveLength(0);
 });
 
 test("reactively gates the table on resize and keeps terminal alerts visible when narrow", async ({ page }) => {
@@ -1306,11 +1414,13 @@ test("reactively gates the table on resize and keeps terminal alerts visible whe
   await installCharacterFixtures(page);
   await installSocket(page, "4p-red-east");
   await page.goto("/room/123456/lobby");
-  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Desktop table limitation", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 1280, height: 720 });
   await expectRenderedTable(page);
   await page.setViewportSize({ width: 900, height: 599 });
-  await expect(page.getByText("Widen this window to play.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Desktop table limitation", exact: true })).toBeVisible();
+  await expect(page.getByTestId("three-table")).toHaveCount(0);
+  await expect.poll(() => page.workers().length).toBe(0);
   await page.evaluate(() => {
     const socket = (window as unknown as {
       __socket: { onclose: ((event: { code: number; reason: string }) => void) | null };

@@ -17,7 +17,7 @@ export function paintTableCenter(projection: ProjectedState, wallCount: number):
   for (const { seat, position } of seats) {
     const player = projection.players?.find((candidate) => candidate.seat === seat);
     if (!player) continue;
-    const angle = { bottom: 0, right: Math.PI / 2, top: Math.PI, left: -Math.PI / 2 }[position];
+    const angle = { bottom: 0, right: -Math.PI / 2, top: Math.PI, left: Math.PI / 2 }[position];
     ctx.save();
     ctx.translate(512, 512);
     ctx.rotate(angle);

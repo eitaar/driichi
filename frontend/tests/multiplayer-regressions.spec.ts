@@ -1,6 +1,6 @@
 /// <reference types="../node_modules/@types/node" />
 
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route } from "./support/task7b-evidence";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { waitForGameplayReady } from "./support/gameplay-ready";
@@ -197,13 +197,13 @@ test("keeps Human startup and updates independent of a held renderer module", as
     // Commit, not DOMContentLoaded: an eager module can block the latter.
     await page.goto("/room/123456/lobby", { waitUntil: "commit" });
     await expect.poll(() => page.evaluate(() => (window as unknown as { __constructions: number }).__constructions), { timeout: 30_000 }).toBeGreaterThan(0);
-    await expect(page.locator(".connection-state")).toHaveText("connected");
+    await expect(page.getByLabel("Room summary")).toContainText("4 / 4 selected");
+    await expect(page.locator(".connection-state")).toHaveCount(0);
     expect(held, "lobby bootstrap must not demand the renderer").toBeUndefined();
     await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
     await page.getByRole("button", { name: /^set ready/i }).click();
     expect(await page.evaluate(() => JSON.parse((window as unknown as { __socket: { sent: string[] } }).__socket.sent.at(-1)!))).toMatchObject({ type: "set_ready" });
-    await page.getByText("Room status", { exact: true }).click();
-    await expect(page.locator(".lifecycle-status")).toBeVisible();
+    await expect(page.getByLabel("Room summary")).toContainText("3 / 4 ready");
     const baseline = await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; });
     await emitRoomUpdate(page, room, state);
     await expect.poll(() => Boolean(held)).toBe(true);
@@ -242,7 +242,8 @@ test("waits for deferred gameplay readiness before finite result clocks", async 
   });
   try {
     await page.goto("/room/123456/lobby");
-    await expect(page.locator(".connection-state")).toHaveText("connected");
+    await expect(page.getByLabel("Room summary")).toContainText("4 / 4 selected");
+    await expect(page.locator(".connection-state")).toHaveCount(0);
     await emitRoomUpdate(page, room, state);
     await waitForGameplayReady(page);
     await expect(page.getByTestId("gameplay-shell")).toBeVisible();
@@ -280,7 +281,7 @@ test("keeps Human ownership on chunk failure and reloads only by explicit link",
   const updatedLobby = structuredClone(lobby);
   updatedLobby.participants[0].display_name = "Updated after module failure";
   await emitRoomUpdate(page, updatedLobby, state);
-  await expect(page.getByText("Updated after module failure / you", { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Updated after module failure', exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^set ready/i })).toBeEnabled();
   expect(await page.evaluate(() => { const w = window as unknown as { __constructions: number; __closes: number }; return { constructions: w.__constructions, closes: w.__closes }; })).toEqual(baseline);
   expect(navigations).toBe(initialNavigations);
@@ -408,7 +409,7 @@ test("leaves result presentation, reaches Ready, and can present the next result
   };
   await emitRoomUpdate(page, postMatchRoom, state);
   await expect(page.getByTestId("results-panel")).toBeVisible();
-  const dismiss = page.getByTestId("dismiss-results");
+  const dismiss = page.getByRole("button", { name: "Return to room", exact: true });
   await expect(dismiss).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: /^lobby$/i })).toBeVisible();
@@ -416,7 +417,7 @@ test("leaves result presentation, reaches Ready, and can present the next result
   await expect(review).toBeFocused();
   await review.click();
   await expect(page.getByTestId("results-panel")).toBeVisible();
-  await page.getByTestId("dismiss-results").click();
+  await dismiss.click();
 
   const ready = page.getByRole("button", { name: /^set ready$/i });
   await expect(ready).toBeEnabled();

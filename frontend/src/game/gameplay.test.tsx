@@ -1,12 +1,15 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render as renderWithoutTheme, screen, within } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { ThemeProvider } from "../components/theme-provider";
+const render = (ui: ReactNode) => renderWithoutTheme(ui, { wrapper: ThemeProvider });
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   GameplaySurface,
-  ResultsPanel,
-  RoundWinSurface,
   handActionMap,
 } from "./gameplay";
+import { ResultsPanel, RoundWinSurface } from "./result-presentation";
 import { actionCandidates } from "./actions";
 import { useGameStore } from "./store";
 import type { ProjectedState, RoomSnapshot } from "./types";
@@ -46,12 +49,159 @@ function liveRoom(content: unknown = { Win: resultWin }, remaining = 5000, index
 const liveProjection: ProjectedState = { audience: "player", viewer_seat: 0, mode: "4p-red-east", player_count: 4, players: [0, 1, 2, 3].map((seat) => player(seat, `Seat ${seat}`)), decision: null };
 const liveProps = { projection: liveProjection, status: "connected" as const, reason: "", commandError: "", connectionGeneration: 0, send: () => true, reducedMotion: false, participantId: "p0" };
 
+describe("gameplay HUD settings", () => {
+  it("keeps Theme beside Settings without resetting the result deadline", () => {
+    vi.useFakeTimers();
+    localStorage.removeItem("driichi-theme");
+    const room = liveRoom();
+    const view = render(<GameplaySurface {...liveProps} room={room} />);
+    const settings = screen.getByRole("button", { name: "Settings" });
+    const theme = screen.getByRole("button", { name: "Theme: System. Switch to Light" });
+    expect(theme.parentElement).toBe(settings.parentElement);
+    const shell = screen.getByTestId("gameplay-shell");
+    act(() => { vi.advanceTimersByTime(1100); });
+    fireEvent.click(theme);
+    expect(screen.getByRole("button", { name: "Continue (4s)" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Theme: Light. Switch to Dark" })).toBeVisible();
+    expect(screen.getByTestId("gameplay-shell")).toBe(shell);
+    view.unmount();
+    vi.useRealTimers(); localStorage.removeItem("driichi-theme");
+  });
+
+  it("opens with Enter, preserves audio preferences and restores focus on Escape", async () => {
+    localStorage.setItem("driichi:audio-settings", JSON.stringify({ master: 0.4, sfx: 0.6, voice: 0.8, voiceEnabled: false }));
+    const user = userEvent.setup();
+    render(<GameplaySurface {...liveProps} room={null} />);
+    const trigger = screen.getByRole("button", { name: "Settings" });
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    expect(within(settings).getByLabelText("Master", { selector: "input" })).toHaveAttribute("aria-valuenow", "0.4");
+    const voice = within(settings).getByRole("switch", { name: "Voice enabled" });
+    expect(voice).not.toBeChecked();
+    await user.click(voice);
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("switch", { name: "Voice enabled" })).toBeChecked();
+    expect(JSON.parse(localStorage.getItem("driichi:audio-settings")!)).toEqual({ master: 0.4, sfx: 0.6, voice: 0.8, voiceEnabled: true });
+    localStorage.removeItem("driichi:audio-settings");
+  });
+});
+
 describe("result surfaces", () => {
+  it("uses a real Return for direct final-page callers, retaining read-only and invalid fallbacks", () => {
+    const playing = liveRoom();
+    const players = playing.roster.map(p => ({ ...p, kind: "Human", final_score: 25000, rank: p.seat + 1 }));
+    const final = { ...playing, phase: "post_match", kyoku_end: null, result: { mode: "FourPlayerRedEast", players, final_scores: [25000, 25000, 25000, 25000] } };
+    const onReturn = vi.fn();
+    const view = render(<GameplaySurface {...liveProps} room={playing} onLeaveResults={onReturn} />);
+    view.rerender(<GameplaySurface {...liveProps} room={final} onLeaveResults={onReturn} commandError="not_ready" />);
+    expect(screen.getByTestId("match-victory-page")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("not_ready");
+    fireEvent.click(screen.getByRole("button", { name: "Return to room" }));
+    expect(onReturn).toHaveBeenCalledTimes(1);
+    view.rerender(<GameplaySurface {...liveProps} room={playing} onLeaveResults={onReturn} />);
+    expect(screen.getByTestId("round-win-surface")).toBeVisible();
+    view.rerender(<GameplaySurface {...liveProps} room={final} />);
+    expect(screen.queryByTestId("match-victory-page")).not.toBeInTheDocument();
+    expect(screen.getByTestId("results-panel")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Return to room" })).not.toBeInTheDocument();
+    view.rerender(<GameplaySurface {...liveProps} room={{ ...final, result: null }} onLeaveResults={onReturn} />);
+    expect(screen.queryByTestId("match-victory-page")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Final standings" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Return to room" })).toBeVisible();
+  });
+
+  it("no_review_and_one_legal_confirmation", () => {
+    vi.useFakeTimers();
+    useGameStore.getState().reset(); useGameStore.getState().setStatus("connected");
+    const room = liveRoom();
+    const send = vi.fn(() => true);
+    useGameStore.getState().receiveSnapshot(room, liveProjection);
+    const view = render(<GameplaySurface {...liveProps} send={send} room={room} />);
+    expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
+    expect(screen.queryByText("connected")).not.toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: "Continue (5s)" });
+    expect(screen.getAllByRole("button", { name: /^Continue/ })).toHaveLength(1);
+    expect(screen.getByTestId("round-win-surface").parentElement).toHaveClass("result-win-modal");
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(confirm).toHaveTextContent("Continue (4s)");
+    fireEvent.click(confirm); fireEvent.click(confirm);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ type: "confirm_result", step_id: { match_id: "m", kyoku_sequence: 1, step_index: 0 } });
+    expect(screen.getByTestId("round-win-surface").parentElement?.children).toHaveLength(2);
+    const next = liveRoom({ Win: resultWin }, 5000, 1);
+    act(() => { useGameStore.getState().receiveSnapshot(next, liveProjection); });
+    fireEvent.click(confirm); // old displayed step cannot acknowledge the new store step
+    expect(send).toHaveBeenCalledTimes(1);
+    view.rerender(<GameplaySurface {...liveProps} send={send} room={next} />);
+    expect(screen.getByRole("button", { name: "Continue (5s)" })).toHaveFocus();
+    act(() => { vi.advanceTimersByTime(5000); });
+    fireEvent.click(screen.getByRole("button", { name: "Continue (0s)" }));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Result time expired. Waiting for the server.")).not.toBeInTheDocument();
+  });
+
+  it.each(["removed", "revoked", "reconnecting"])("sends no stale confirmation after %s", (invalidation) => {
+    useGameStore.getState().reset(); useGameStore.getState().setStatus("connected");
+    const room = liveRoom(); const send = vi.fn(() => true);
+    useGameStore.getState().receiveSnapshot(room, liveProjection);
+    const view = render(<GameplaySurface {...liveProps} send={send} room={room} />);
+    const stale = screen.getByRole("button", { name: /^Continue/ });
+    const next = invalidation === "removed" ? { ...room, kyoku_end: { ...room.kyoku_end!, required: [] } } : room;
+    act(() => {
+      useGameStore.getState().receiveSnapshot(next, liveProjection);
+      if (invalidation !== "removed") useGameStore.getState().setStatus(invalidation === "revoked" ? "closed" : "reconnecting");
+    });
+    view.rerender(<GameplaySurface {...liveProps} send={send} room={next} status={invalidation === "removed" ? "connected" : invalidation === "revoked" ? "closed" : "reconnecting"} reason={invalidation === "revoked" ? "token_revoked" : ""} />);
+    fireEvent.click(stale);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("preserves direct Draw Scores but resets on access loss and a new step", async () => {
+    useGameStore.getState().reset();
+    const room = liveRoom({ Draw: resultSettlement });
+    const view = render(<GameplaySurface {...liveProps} room={room} />);
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
+    expect(screen.getByRole("button", { name: "Scores" })).toHaveAttribute("aria-pressed", "true");
+    view.rerender(<GameplaySurface {...liveProps} room={room} status="reconnecting" />);
+    view.rerender(<GameplaySurface {...liveProps} room={room} />);
+    expect(screen.getByRole("button", { name: "Result" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
+    view.rerender(<GameplaySurface {...liveProps} room={liveRoom({ Draw: resultSettlement }, 5000, 1)} />);
+    expect(screen.getByRole("button", { name: "Result" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("preserves settlement Pause and Skip without pausing the deadline", () => {
+    vi.useFakeTimers();
+    useGameStore.getState().reset();
+    render(<GameplaySurface {...liveProps} room={liveRoom({ Settlement: resultSettlement }, 4000)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Pause for review" }));
+    const pausedText = screen.getByLabelText("Score transfer").textContent;
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(screen.getByRole("button", { name: "Resume" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByLabelText("Score transfer").textContent).toBe(pausedText);
+    expect(screen.getByTestId("result-timer")).toHaveAttribute("data-remaining-ms", "3000");
+    fireEvent.click(screen.getByRole("button", { name: "Skip animation" }));
+    expect(screen.getByLabelText("Score transfer")).toHaveTextContent("+6,000");
+  });
+
+  it("keeps Draw reason and scores immediately reachable in one server step", () => {
+    render(<GameplaySurface {...liveProps} room={liveRoom({ Draw: { ...resultSettlement, draw_reason: "suucha_riichi" } })} />);
+    expect(screen.getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
+    expect(screen.queryByLabelText("Score transfer")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
+    expect(screen.getByLabelText("Score transfer")).toHaveTextContent("25,000");
+    expect(screen.getByLabelText("Score transfer")).toHaveTextContent("+6,000");
+    fireEvent.click(screen.getByRole("button", { name: "Result" }));
+    expect(screen.getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
+  });
   it("offers local surface and surround images inside the existing Settings without replacing audio controls", () => {
     render(<GameplaySurface {...liveProps} room={liveRoom()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByLabelText("Table surface image")).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
     expect(screen.getByLabelText("Table surround image")).toHaveAttribute("accept", "image/png,image/jpeg,image/webp");
-    expect(screen.getByLabelText("Master")).toBeInTheDocument();
+    expect(screen.getByLabelText("Master", { selector: "input" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear surface image", hidden: true })).toBeDisabled();
   });
 
@@ -111,7 +261,7 @@ describe("result surfaces", () => {
     const arrived = liveRoom();
     act(() => { useGameStore.getState().receiveSnapshot(arrived, liveProjection); });
     view.rerender(<GameplaySurface {...liveProps} room={arrived} />);
-    expect(screen.getByRole("button", { name: "Continue" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /^Continue/ })).toHaveFocus();
   });
 
   it("confirms only the displayed step, waits on it, and reopens each new server step", () => {
@@ -122,7 +272,7 @@ describe("result surfaces", () => {
     useGameStore.getState().receiveSnapshot(room, liveProjection);
     const send = (message: unknown) => { sent.push(message); return true; };
     const view = render(<GameplaySurface {...liveProps} send={send} room={room} reducedMotion />);
-    const confirm = screen.getByRole("button", { name: "Continue" });
+    const confirm = screen.getByRole("button", { name: /^Continue/ });
     expect(confirm).toHaveFocus();
     fireEvent.click(confirm);
     expect(sent).toEqual([{ type: "confirm_result", step_id: { match_id: "m", kyoku_sequence: 1, step_index: 0 } }]);
@@ -132,7 +282,7 @@ describe("result surfaces", () => {
     act(() => { useGameStore.getState().receiveSnapshot(second, liveProjection); });
     view.rerender(<GameplaySurface {...liveProps} room={second} send={send} reducedMotion />);
     expect(screen.getByRole("heading", { name: "Seat 2" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Continue/ })).toBeEnabled();
     const settlement = liveRoom({ Settlement: resultSettlement }, 1500, 2);
     act(() => { useGameStore.getState().receiveSnapshot(settlement, liveProjection); });
     view.rerender(<GameplaySurface {...liveProps} room={settlement} send={send} reducedMotion />);
@@ -156,9 +306,9 @@ describe("result surfaces", () => {
     act(() => { useGameStore.getState().receiveSnapshot(shrunk, projection); });
     view.rerender(<GameplaySurface {...props} room={shrunk} />);
     expect(screen.getByTestId("round-win-surface")).toBeVisible();
-    expect(screen.getByTestId("result-timer")).toHaveAttribute("data-remaining-ms", "4400");
+    expect(screen.getByRole("button", { name: "Continue (5s)" })).toBeEnabled();
     expect(useGameStore.getState().resultDeadline).toBe(deadline);
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Continue/ }));
     expect(sent).toEqual([{ type: "confirm_result", step_id: { match_id: "m", kyoku_sequence: 1, step_index: 0 } }]);
     expect(screen.getByRole("button", { name: "Waiting for players" })).toBeDisabled();
   });
@@ -195,6 +345,7 @@ describe("result surfaces", () => {
   it("displays the supplied draw reason with settlement and omits it when absent", () => {
     const settlement = { ...resultSettlement, draw_reason: "suucha_riichi", changes: resultSettlement.changes.map((change) => ({ ...change, delta: 0, after: change.before })) };
     const view = render(<GameplaySurface {...liveProps} room={liveRoom({ Draw: settlement })} reducedMotion />);
+    fireEvent.click(screen.getByRole("button", { name: "Scores" }));
     const transfer = screen.getByLabelText("Score transfer");
     expect(within(transfer).getByRole("heading", { name: "suucha_riichi" })).toBeVisible();
     expect(transfer).toHaveTextContent("+0");

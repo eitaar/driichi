@@ -1,4 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Alert, AlertDescription } from "../components/ui/alert";
+import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "../components/ui/field";
 
 export interface LocalTableImage {
   image: ImageBitmap;
@@ -87,18 +91,21 @@ export function useTableAppearance() {
 }
 
 export function TableAppearanceSettings({ settings }: { settings: ReturnType<typeof useTableAppearance> }) {
-  return <fieldset className="table-image-settings">
-    <legend>Table images — local only</legend>
-    {targets.map((target) => <div key={target}>
-      <label>Table {target} image
-        <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
+  const id = useId();
+  return <FieldSet className="table-image-settings min-w-0">
+    <FieldLegend>Table images — local only</FieldLegend>
+    <FieldDescription id={`${id}-privacy`}>Images stay in this tab and are never uploaded. PNG, JPEG or WebP, up to 10 MB and 16 megapixels.</FieldDescription>
+    <FieldGroup>
+      {targets.map((target) => <Field key={target} data-invalid={Boolean(settings.errors[target])} aria-busy={settings.pending[target]}>
+        <FieldLabel htmlFor={`${id}-${target}`}>Table {target} image</FieldLabel>
+        <Input id={`${id}-${target}`} type="file" accept="image/png,image/jpeg,image/webp" aria-invalid={Boolean(settings.errors[target])} aria-describedby={`${id}-privacy${settings.errors[target] ? ` ${id}-${target}-error` : ''}`} onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = "";
           if (file) void settings.select(target, file);
         }} />
-      </label>
-      <button type="button" disabled={!settings.appearance[target] && !settings.pending[target]} onClick={() => settings.clear(target)}>Clear {target} image</button>
-      {settings.errors[target] && <p role="alert">{settings.errors[target]}</p>}
-    </div>)}
-  </fieldset>;
+        <Button type="button" variant="secondary" className="min-h-11" disabled={!settings.appearance[target] && !settings.pending[target]} onClick={() => settings.clear(target)}>Clear {target} image</Button>
+        {settings.errors[target] && <Alert variant="destructive" id={`${id}-${target}-error`}><AlertDescription>{settings.errors[target]}</AlertDescription></Alert>}
+      </Field>)}
+    </FieldGroup>
+  </FieldSet>;
 }

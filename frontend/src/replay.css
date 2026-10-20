@@ -1,5 +1,23 @@
 /* Replay shares the Live table; only its playback and archive surfaces are styled here. */
-.replay-shell{font-family:"Segoe UI",system-ui,sans-serif;background:#eef0f2;color:#283342}
+.replay-table-stage .gameplay-controls{z-index:7;gap:.5rem;align-items:center}
+.replay-table-stage .gameplay-controls [data-slot=button]{background:var(--background);color:var(--foreground)}
+.replay-metadata-actions{display:flex;justify-content:flex-end;align-items:center}
+.replay-shell .replay-table-stage.replay-final-stage{height:auto;min-height:0;aspect-ratio:auto;padding-top:3.5rem;background:var(--background)}
+.replay-final-stage .gameplay-controls{top:.5rem}
+.replay-final-results{position:static;min-width:0;padding:1.5rem 1rem;color:var(--foreground);background:var(--background)}
+.replay-final-results .results-panel{grid-template-columns:minmax(220px,31%) minmax(0,1fr);width:100%}
+.replay-final-results .results-winner-hero-portrait{height:clamp(300px,65vh,640px)}
+.replay-shell .replay-final-stage .replay-status-toast{position:static;margin:1rem}
+
+.replay-chapter-viewer{display:grid;grid-template-columns:clamp(180px,12vw,200px) minmax(0,1fr)}
+.replay-chapter-viewer:not(:has(.replay-chapters)){grid-template-columns:minmax(0,1fr)}
+.replay-chapter-viewer .replay-viewer{min-width:0}
+.replay-chapters{min-width:0;padding:16px 8px;color:var(--foreground);background:var(--background)}
+.replay-chapters h2{font-size:1rem;margin:0 0 12px}
+.replay-chapters ol{display:flex;flex-direction:column;gap:4px;list-style:none;padding:0;margin:0;max-height:calc(100dvh - 76px);overflow-y:auto}
+.replay-chapters [aria-current="step"]{font-weight:700;text-decoration:underline;text-underline-offset:4px}
+.replay-mobile-metadata{padding:16px;color:var(--foreground);background:var(--background)}
+.replay-shell{font-family:var(--font-sans);background:var(--background);color:var(--foreground)}
 .replay-shell .topbar{background:#fafbfc;border-color:#bcc6cf}
 .replay-shell .brand,.replay-shell .nav-link,.replay-shell .text-button{color:#354a66;font-family:inherit}
 .replay-detail-shell>.topbar{display:none}
@@ -30,7 +48,7 @@
 .replay-option{display:flex;align-items:center;gap:8px;white-space:nowrap}
 .replay-option select{min-height:44px;max-width:200px;padding:8px;border:1px solid #bcc6cf;background:#fafbfc;color:#283342;font:inherit}
 .replay-library-link{margin-left:auto;color:#354a66;text-decoration:underline;text-underline-offset:3px}
-.replay-shell :is(button,select,input,a):focus-visible{outline:3px solid #2762ab;outline-offset:3px}
+.replay-shell :is(button,select,input,a):focus-visible{outline:3px solid var(--ring);outline-offset:3px}
 .replay-shell .replay-event-log li button{color:#586574;font-family:inherit;font-size:13px;letter-spacing:normal}
 .replay-shell .replay-event-log li button:hover,.replay-shell .replay-event-log li.is-current button{background:#dce4ed;color:#283342}
 .replay-shell .replay-event-log li.is-current button>span:first-child{color:#865a10}

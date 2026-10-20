@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./app";
+import { api, ApiProblem } from "./api";
+import { navigate } from "./routes";
 import { useGameStore } from "./game/store";
 
 vi.mock("./pixi-vignette", () => ({
@@ -18,6 +20,8 @@ function response(body: unknown, status = 200) {
   });
 }
 
+afterEach(() => { vi.restoreAllMocks(); });
+
 describe("entry shell", () => {
   beforeEach(() => {
     setPath("/");
@@ -31,6 +35,50 @@ describe("entry shell", () => {
     expect(screen.getByRole("textbox", { name: /room code/i })).toHaveFocus();
     await waitFor(() => expect(screen.getByRole("button", { name: /open room/i })).toBeVisible());
     expect(screen.getByRole("link", { name: /admin sign in/i })).toBeVisible();
+  });
+
+  it("missing_room_stays_on_entry", async () => {
+    vi.mocked(fetch).mockImplementation(input => Promise.resolve(String(input).endsWith('/characters/human') ? response([]) : response({ detail: 'Missing' }, 404)));
+    render(<App />);
+    const code = screen.getByLabelText('Room code');
+    fireEvent.change(code, { target: { value: '123456' } });
+    const historyLength = history.length;
+    fireEvent.submit(code.closest('form')!);
+    expect(await screen.findByText('Room not found. Check the code and try again.')).toHaveAttribute('id', 'room-code-error');
+    expect(code).toHaveAttribute('aria-describedby', 'room-code-error');
+    expect(code).toHaveValue('123456');
+    expect(location.pathname).toBe('/');
+    expect(history.length).toBe(historyLength);
+    fireEvent.change(code, { target: { value: '123457' } });
+    expect(screen.queryByText('Room not found. Check the code and try again.')).not.toBeInTheDocument();
+  });
+
+  it("transport_failure_is_not_missing_room", async () => {
+    const lookup = vi.spyOn(api, 'lookupRoom').mockRejectedValueOnce(new ApiProblem({ detail: 'Unavailable' }, 503)).mockRejectedValueOnce(new Error('offline'));
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('Room code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open room' }));
+    expect(await screen.findByText('Could not check the room. Try again.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Open room' }));
+    await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
+    expect(location.pathname).toBe('/');
+    lookup.mockRestore();
+  });
+
+  it("pending_lookup_cannot_navigate_after_unmount", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof api.lookupRoom>>) => void;
+    const lookup = vi.spyOn(api, 'lookupRoom').mockReturnValue(new Promise(done => { resolve = done; }));
+    render(<App />);
+    const code = screen.getByLabelText('Room code');
+    fireEvent.change(code, { target: { value: '123456' } });
+    fireEvent.submit(code.closest('form')!);
+    fireEvent.submit(code.closest('form')!);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(code).toBeDisabled();
+    act(() => navigate('/admin/login'));
+    await act(async () => resolve({ room_name: 'Night Market' } as Awaited<ReturnType<typeof api.lookupRoom>>));
+    expect(location.pathname).toBe('/admin/login');
+    lookup.mockRestore();
   });
 
   it("uses a static entry mode when reduced motion is requested", () => {
@@ -76,7 +124,7 @@ describe("public room join", () => {
       participant_limit: 4,
     }));
 
-    expect(await screen.findByRole("heading", { name: /choose your character/i })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /join night market/i })).toBeVisible();
     fireEvent.click(screen.getByText('Room details'));
     expect(screen.getByText(/4p-red-east/)).toBeVisible();
     expect(screen.getByText("1 / 4 participants")).toBeVisible();
@@ -113,13 +161,18 @@ describe("public room join", () => {
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /choose your character/i });
+    await screen.findByLabelText("Display name");
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Mika" } });
     expect(await screen.findByRole("alert")).toHaveTextContent("Characters could not be loaded.");
     fireEvent.click(screen.getByRole("button", { name: /retry character list/i }));
+    await screen.findByLabelText("Display name");
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Mika" } });
     expect(await screen.findByRole("radio", { name: /red player/i })).toBeVisible();
   });
 
-  it("joins with nickname and selected character without exposing the guest credential", async () => {
+  it("accepted_join_binds_before_lobby", async () => {
+    let accept!: (value: Awaited<ReturnType<typeof api.joinHuman>>) => void;
+    const join = vi.spyOn(api, 'joinHuman').mockReturnValue(new Promise(resolve => { accept = resolve; }));
     vi.stubGlobal(
       "fetch",
       vi.fn()
@@ -134,15 +187,11 @@ describe("public room join", () => {
         .mockResolvedValueOnce(response([
           { id: "player-red", name: "Red Player" },
           { id: "tsumogiri-bot", name: "Tsumogiri" },
-        ]))
-        .mockResolvedValueOnce(response({
-          participant_id: "01PARTICIPANT",
-          websocket_url: "/ws/v1/rooms/123456/human",
-        }, 201)),
+        ])),
     );
 
     render(<App />);
-    await screen.findByRole("heading", { name: /choose your character/i });
+    await screen.findByRole("heading", { name: /join night market/i });
     fireEvent.change(screen.getByRole("textbox", { name: /display name/i }), {
       target: { value: "Mika" },
     });
@@ -151,14 +200,26 @@ describe("public room join", () => {
     expect(redPlayer).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: /join room/i }));
 
-    expect(await screen.findByRole("heading", { name: /you're in night market/i })).toBeVisible();
-    expect(screen.queryByText(/websocket|cookie|token/i)).not.toBeInTheDocument();
-    const calls = vi.mocked(fetch).mock.calls;
-    expect(calls.at(-1)?.[0]).toBe("/api/v1/rooms/123456/join");
-    expect(JSON.parse(String(calls.at(-1)?.[1] && (calls.at(-1)?.[1] as RequestInit).body))).toEqual({
-      nickname: "Mika",
-      character_id: "player-red",
+    fireEvent.submit(redPlayer.closest('form')!);
+    expect(join).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledWith('123456', 'Mika', 'player-red');
+    const binding = vi.spyOn(Storage.prototype, 'setItem');
+    let bindingAtPush: string | null | undefined;
+    const push = vi.spyOn(history, 'pushState').mockImplementation(() => {
+      bindingAtPush = sessionStorage.getItem('driichi:participant:123456');
     });
+    await act(async () => accept({ participant_id: '01PARTICIPANT', websocket_url: '/ws/v1/rooms/123456/human' }));
+    expect(binding).toHaveBeenCalled();
+    expect(push).toHaveBeenCalledWith({}, '', '/room/123456/lobby');
+    expect(bindingAtPush).toBe('01PARTICIPANT');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/websocket|cookie|token/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('01PARTICIPANT')).not.toBeInTheDocument();
+    expect(screen.queryByText('/ws/v1/rooms/123456/human')).not.toBeInTheDocument();
+    expect(screen.queryByText(/you're in night market/i)).not.toBeInTheDocument();
+    binding.mockRestore();
+    push.mockRestore();
+    join.mockRestore();
   });
 });
 
@@ -191,7 +252,9 @@ describe("admin login", () => {
     expect(screen.queryByText("secret")).not.toBeInTheDocument();
   });
 
-  it("renders a non-dashboard success state after login", async () => {
+  it("accepted_login_clears_fields_then_opens_admin", async () => {
+    let accept!: (value: Awaited<ReturnType<typeof api.loginAdmin>>) => void;
+    const login = vi.spyOn(api, 'loginAdmin').mockReturnValue(new Promise(resolve => { accept = resolve; }));
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(response({ expires_at: "2026-09-16T00:00:00Z" })),
@@ -200,10 +263,90 @@ describe("admin login", () => {
     render(<App />);
     fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "admin" } });
     fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    const username = screen.getByLabelText(/username/i) as HTMLInputElement;
+    const password = screen.getByLabelText(/password/i) as HTMLInputElement;
+    fireEvent.submit(password.closest('form')!);
+    fireEvent.submit(password.closest('form')!);
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(password).toBeDisabled();
+    let credentialsAtPush: { username: string; password: string } | undefined;
+    const push = vi.spyOn(history, 'pushState').mockImplementation(() => {
+      credentialsAtPush = { username: username.value, password: password.value };
+    });
+    await act(async () => accept({ expires_at: '2026-09-16T00:00:00Z' }));
+    expect(push).toHaveBeenCalledWith({}, '', '/admin');
+    expect(credentialsAtPush).toEqual({ username: '', password: '' });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/admin session active/i)).not.toBeInTheDocument();
+    push.mockRestore();
+    login.mockRestore();
+  });
+});
 
-    expect(await screen.findByRole("heading", { name: /admin session active/i })).toBeVisible();
-    expect(screen.getByRole("link", { name: /open admin/i })).toHaveAttribute("href", "/admin");
+describe("entry transition safeguards", () => {
+  const room = { room_name: 'Night Market', game_mode: '4p-red-east', phase: 'Lobby', join_allowed: true, participant_count: 1, participant_limit: 4 };
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(input => Promise.resolve(response(String(input).endsWith('/characters/human') ? [{ id: 'player-red', name: 'Red Player' }] : room))));
+    sessionStorage.clear();
+  });
+
+  it('accepted_home_lookup_keeps_the_authoritative_route_lookup', async () => {
+    setPath('/');
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('Room code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open room' }));
+    await screen.findByLabelText('Display name');
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url) === '/api/v1/rooms/123456')).toHaveLength(2);
+  });
+
+  it.each(['storage', 'request', 'unmount'])('join_%s_failure_never_opens_lobby', async failure => {
+    setPath('/room/123456');
+    let accept!: (value: Awaited<ReturnType<typeof api.joinHuman>>) => void;
+    let reject!: (error: Error) => void;
+    const join = vi.spyOn(api, 'joinHuman').mockReturnValue(new Promise((yes, no) => { accept = yes; reject = no; }));
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('Display name'), { target: { value: 'Mika' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Red Player' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Join room' }));
+    expect(screen.getByLabelText('Display name')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+    if (failure === 'storage') vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable'); });
+    if (failure === 'unmount') act(() => navigate('/'));
+    await act(async () => {
+      if (failure === 'request') reject(new ApiProblem({ detail: 'Room is full' }, 409));
+      else accept({ participant_id: 'P1', websocket_url: '/ws' });
+    });
+    expect(location.pathname).toBe(failure === 'unmount' ? '/' : '/room/123456');
+    expect(sessionStorage.getItem('driichi:participant:123456')).toBeNull();
+    if (failure !== 'unmount') {
+      expect(screen.getByRole('alert')).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Join room' })).toBeEnabled();
+      expect(screen.getByLabelText('Display name')).toHaveValue('Mika');
+    }
+    expect(join).toHaveBeenCalledTimes(1);
+  });
+
+  it('blank_login_is_linked_and_never_sent', () => {
+    setPath('/admin/login');
+    const login = vi.spyOn(api, 'loginAdmin');
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(login).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Username')).toHaveAttribute('aria-describedby', 'admin-username-error');
+    expect(screen.getByLabelText('Password')).toHaveAttribute('aria-describedby', 'admin-password-error');
+  });
+
+  it('late_login_cannot_navigate_after_unmount', async () => {
+    setPath('/admin/login');
+    let accept!: (value: Awaited<ReturnType<typeof api.loginAdmin>>) => void;
+    vi.spyOn(api, 'loginAdmin').mockReturnValue(new Promise(resolve => { accept = resolve; }));
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    act(() => navigate('/'));
+    await act(async () => accept({ expires_at: '2026-09-16T00:00:00Z' }));
+    expect(location.pathname).toBe('/');
   });
 });
 
@@ -244,11 +387,19 @@ describe("admin room workspace", () => {
     expect(await screen.findByRole("heading", { name: /^rooms$/i })).toBeVisible();
     expect(await screen.findByRole("link", { name: /night market/i })).toBeVisible();
     expect(await screen.findByRole("heading", { name: /night market/i })).toBeVisible();
-    expect(screen.getByText(/identity/i)).toBeVisible();
-    expect(screen.getByText(/presence/i)).toBeVisible();
+    expect(screen.queryByText(/^identity$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^presence$/i)).not.toBeInTheDocument();
     expect(screen.getByText(/selection/i)).toBeVisible();
     expect(screen.getByText(/controller/i)).toBeVisible();
-    expect(screen.getAllByText(/seat open/i)).toHaveLength(4);
+    expect(screen.queryByText(/seat open/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Selected roster' })).not.toBeInTheDocument();
+    expect(document.querySelector('.participants-section')).toHaveAttribute('data-slot', 'card');
+    expect(document.querySelector('.lifecycle-section')).toHaveAttribute('data-slot', 'card');
+    expect(screen.getByRole('button', { name: 'Start Match' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('link', { name: /night market/i }));
+    expect(window.location.pathname).toBe('/admin/rooms/123456');
+    fireEvent.click(screen.getByRole('link', { name: 'Back to Rooms' }));
+    expect(window.location.pathname).toBe('/admin');
   });
 
   it("runs a Room mutation and refetches the exact Room detail key", async () => {
@@ -405,6 +556,10 @@ describe("admin mutation coverage", () => {
     render(<App />);
     await screen.findByRole("heading", { name: /night market/i });
     const nori = within(screen.getByText("Nori").closest("article") as HTMLElement);
+    expect(nori.queryByText('Identity')).not.toBeInTheDocument();
+    expect(nori.queryByText('P2')).not.toBeInTheDocument();
+    expect(nori.queryByText('Presence')).not.toBeInTheDocument();
+    expect(nori.queryByText('connected')).not.toBeInTheDocument();
     fireEvent.click(nori.getByRole("button", { name: /^select$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/rooms/123456/participants/P2/select", expect.objectContaining({ method: "POST" })));
     await waitFor(() => expect(nori.getByRole("button", { name: /^deselect$/i })).toBeEnabled());
@@ -496,13 +651,84 @@ describe("human lobby websocket", () => {
       state: null,
     });
     expect(await screen.findByRole("heading", { name: /^lobby$/i })).toBeVisible();
-    screen.getAllByText('Details',{selector:'summary'}).forEach(summary => fireEvent.click(summary));
-    expect(screen.getByText(/mika \/ you/i)).toBeVisible();
-    expect(screen.getAllByText("Presence")).toHaveLength(3);
-    expect(screen.getAllByText("Selection")).toHaveLength(3);
-    expect(screen.getAllByText("Controller")).toHaveLength(3);
-    expect(screen.getByText(/seat 1/i)).toBeVisible();
+    const cards = () => within(screen.getByRole('list', { name: 'Participants' })).getAllByRole('button').map(button => button.getAttribute('aria-label'));
+    expect(cards()).toEqual(['Bot 1', 'Bot 2', 'Mika']);
     expect(screen.getByText('3 / 3 selected')).toBeVisible();
+    expect(screen.getByText('2 / 3 ready')).toBeVisible();
+    expect(screen.queryByText('3 connected')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^connected$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Room status')).not.toBeInTheDocument();
+    expect(screen.queryByText('Match readiness blockers')).not.toBeInTheDocument();
+    expect(screen.getByText('Room code')).toBeVisible();
+    expect(screen.getByText('123456', { exact: true })).toBeVisible();
+    expect(screen.getByText('Night Market', { exact: true })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Preloading roster' })).toBeDisabled();
+    expect(screen.getByText('Preloading every selected Character.')).toBeVisible();
+    expect(screen.queryByText(/Seat 1/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mika' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Mika' });
+    expect(dialog).toHaveTextContent('Your Participant');
+    expect(dialog).not.toHaveTextContent('Seat');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    act(() => useGameStore.setState(state => ({ room: { ...state.room!, participants: [...state.room!.participants].reverse().map(p => ({ ...p, ready: true, presence: 'disconnected' })) } })));
+    expect(cards()).toEqual(['Bot 1', 'Bot 2', 'Mika']);
+    expect(screen.getByText('3 / 3 ready')).toBeVisible();
+    expect(screen.queryByText('0 connected')).not.toBeInTheDocument();
+  });
+
+  it.each([3, 4])("routes validated %ip final results before native boundary, retaining socket, notices and reopen", async (count) => {
+    class FinalSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onclose = null; onerror = null;
+      send = vi.fn(); close = vi.fn();
+      emit(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent<string>); }
+    }
+    const socket = new FinalSocket();
+    const constructor = Object.assign(vi.fn(function () { return socket; }), { OPEN: 1 });
+    vi.stubGlobal("WebSocket", constructor);
+    const players = Array.from({ length: count }, (_, seat) => ({ participant_id: seat === 0 ? "P1" : `B${seat}`, display_name: `Player ${seat}`, seat, kind: "Human", character_id: null, controller: "interactive", final_score: 30000 - seat * 1000, rank: seat + 1 }));
+    const final = { join_code: "123456", room_name: "Final Room", game_mode: `${count}p-red-east`, phase: "post_match", revision: 1, participants: [], match_players: [], roster: players, kyoku_end: null, result: { mode: count === 3 ? "ThreePlayerRedEast" : "FourPlayerRedEast", players, final_scores: players.map(p => p.final_score) } };
+    render(<App />);
+    await waitFor(() => expect(socket.onopen).not.toBeNull());
+    act(() => { socket.onopen?.(); socket.emit({ type: "snapshot", room: final, state: null }); });
+    expect(await screen.findByTestId("match-victory-page")).toBeVisible();
+    expect(within(screen.getByRole("list", { name: "Final standings" })).getAllByRole("listitem")).toHaveLength(count);
+    expect(screen.queryByTestId("gameplay-shell")).not.toBeInTheDocument();
+    expect(screen.queryByText("Widen this window to play.")).not.toBeInTheDocument();
+    const originalWidth = window.innerWidth;
+    for (const width of [390, 1024, 390]) {
+      act(() => { vi.stubGlobal("innerWidth", width); window.dispatchEvent(new Event("resize")); });
+      expect(screen.getByTestId("match-victory-page")).toBeVisible();
+      expect(document.querySelector("canvas")).toBeNull();
+    }
+    vi.stubGlobal("innerWidth", originalWidth);
+    act(() => socket.emit({ type: "error", code: "not_ready" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("not_ready");
+    fireEvent.click(screen.getByRole("button", { name: "Return to room" }));
+    expect(screen.getByRole("heading", { name: "Lobby" })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Review final standings" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "Review final standings" }));
+    expect(screen.getByTestId("match-victory-page")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Return to room" })).toHaveFocus();
+    act(() => useGameStore.setState({ status: "reconnecting", commandError: "" }));
+    expect(screen.getByRole("status")).toHaveTextContent("reconnecting");
+    act(() => useGameStore.setState({ status: "error", reason: "network_error" }));
+    expect(screen.getByText("The live Room connection failed. Reconnecting shortly.")).toBeVisible();
+    act(() => useGameStore.setState({ status: "closed", reason: "token_revoked" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("This Guest Session token is no longer valid.");
+    expect(screen.getByRole("link", { name: "Return to join" })).toHaveAttribute("href", "/room/123456");
+    act(() => useGameStore.setState({ status: "connected", reason: "" }));
+    act(() => socket.emit({ type: "room_update", room: { ...final, result: null }, state: null }));
+    await waitFor(() => expect(screen.queryByTestId("match-victory-page")).not.toBeInTheDocument());
+    expect(screen.queryByRole("list", { name: "Final standings" })).not.toBeInTheDocument();
+    act(() => socket.emit({ type: "room_update", room: { ...final, phase: "lobby", result: null }, state: null }));
+    expect(screen.getByRole("heading", { name: "Lobby" })).toBeVisible();
+    expect(constructor).toHaveBeenCalledTimes(1);
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(socket.send).not.toHaveBeenCalled();
   });
 
   it("keeps the WebSocket connected when the server rejects a normal command", async () => {
@@ -525,7 +751,7 @@ describe("human lobby websocket", () => {
     socket.emit({ type: "snapshot", room: { join_code: "123456", room_name: "Night Market", game_mode: "3p-red-east", phase: "lobby", revision: 1, participants: [], match_players: [], roster: [], result: null }, state: null });
     socket.emit({ type: "error", code: "not_ready" });
     expect(await screen.findByText(/not_ready/i)).toBeVisible();
-    expect(screen.getByText(/^connected$/i)).toBeVisible();
+    expect(screen.queryByText(/^connected$/i)).not.toBeInTheDocument();
   });
 
   it("does not send an action after an error leaves the OPEN socket unusable", async () => {
@@ -596,11 +822,12 @@ describe("human lobby websocket", () => {
     }
     const instance = new FakeWebSocket("ws://test");
     vi.stubGlobal("WebSocket", Object.assign(vi.fn(function () { return instance; }), { OPEN: FakeWebSocket.OPEN }));
+    const pendingImages: (() => void)[] = [];
     class FakeImage {
       onload: (() => void) | null = null;
       onerror: (() => void) | null = null;
       decode = () => Promise.resolve();
-      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+      set src(_value: string) { pendingImages.push(() => this.onload?.()); }
     }
     vi.stubGlobal("Image", FakeImage);
     render(<App />);
@@ -609,11 +836,29 @@ describe("human lobby websocket", () => {
       { participant_id: "B1", display_name: "Bot 1", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
       { participant_id: "B2", display_name: "Bot 2", kind: "built_in_bot", presence: "connected", selected: true, ready: true, character_id: "tsumogiri-bot", role: "none", controller: "permanent_auto_built_in_bot" },
     ], match_players: [], roster: [], result: null }, state: null });
-    const ready = await screen.findByRole("button", { name: /set ready/i });
+    const ready = await screen.findByRole("button", { name: "Preloading roster" });
+    expect(pendingImages.length).toBeGreaterThan(0);
     expect(ready).toBeDisabled();
+    fireEvent.click(ready);
+    expect(instance.sent).toEqual([]);
+    await act(async () => { pendingImages.splice(0).forEach(complete => complete()); });
     await waitFor(() => expect(ready).toBeEnabled());
     fireEvent.click(ready);
     expect(JSON.parse(instance.sent.at(-1) ?? "{}")).toEqual({ type: "set_ready", preloaded_characters: ["player-red", "tsumogiri-bot", "tsumogiri-bot"] });
+    const completeRoom = useGameStore.getState().room!;
+    for (const missingId of ['P1', 'B1']) {
+      act(() => useGameStore.setState({ room: { ...completeRoom, participants: completeRoom.participants.map(participant => participant.participant_id === missingId ? { ...participant, selected: false } : participant) } }));
+      expect(ready).toBeDisabled();
+      fireEvent.click(ready);
+      expect(instance.sent).toHaveLength(1);
+    }
+    act(() => useGameStore.setState({ room: completeRoom }));
+    await act(async () => { pendingImages.splice(0).forEach(complete => complete()); });
+    await waitFor(() => expect(ready).toBeEnabled());
+    act(() => instance.onerror?.());
+    expect(ready).toBeDisabled();
+    fireEvent.click(ready);
+    expect(instance.sent).toHaveLength(1);
   });
 
   it("repeats selected asset preload for a fresh connection generation", async () => {

@@ -43,15 +43,18 @@ function reconnectUiMatchesCurrentPublication(sample: ReconnectUiSample, first: 
     && sample.labels.length === 0 && (sample.phase === "post_match" ? sample.surface === "standings" && sample.standings_count === 1 : sample.phase === "playing" && sample.surface === "table" && sample.standings_count === 0);
   if (sample.epoch_ms >= step.deadline_at_ms || step.remaining_ms <= 0) return false;
   const action = !step.required.includes(ownId) ? "Dismiss" : step.confirmed.includes(ownId) ? "Waiting for players" : "Continue";
-  return step.id.step_index === 2
-    ? sample.surface === "settlement" && isDeepStrictEqual(sample.labels, ["Pause for review", "Skip animation", action])
-    : sample.surface === "win" && isDeepStrictEqual(sample.labels, [action]);
+  if (step.id.step_index === 2) return sample.surface === "settlement" && isDeepStrictEqual(sample.labels, ["Pause for review", "Skip animation", action]);
+  if (action !== "Continue") return sample.surface === "win" && isDeepStrictEqual(sample.labels, [action]);
+  const seconds = Number(sample.labels[0]?.match(/^Continue \((\d+)s\)$/)?.[1]);
+  const remaining = Math.ceil((step.deadline_at_ms - sample.epoch_ms) / 1000);
+  // The display updates every 50ms; sampling can straddle a whole-second tick.
+  return sample.surface === "win" && sample.labels.length === 1 && seconds >= remaining && seconds <= Math.min(5, remaining + 1);
 }
 
 function checkReconnectUiMatchesCurrentPublication() {
   const first: ResultStep = { id: { match_id: "oracle-match", kyoku_sequence: 7, step_index: 0 }, content: {}, required: ["other"], confirmed: [], published_at_ms: 1000, deadline_at_ms: 6000, remaining_ms: 4000 };
   const step0: ReconnectUiSample = { epoch_ms: 2000, status: "connected", phase: "playing", surface: "win", standings_count: 0, step: first, labels: ["Dismiss"] };
-  const step1: ReconnectUiSample = { ...step0, epoch_ms: 6002, step: { ...first, id: { ...first.id, step_index: 1 }, published_at_ms: 6001, deadline_at_ms: 11001, required: ["own", "other"] }, labels: ["Continue"] };
+  const step1: ReconnectUiSample = { ...step0, epoch_ms: 6002, step: { ...first, id: { ...first.id, step_index: 1 }, published_at_ms: 6001, deadline_at_ms: 11001, required: ["own", "other"] }, labels: ["Continue (5s)"] };
   const step2: ReconnectUiSample = { ...step1, epoch_ms: 11002, surface: "settlement", step: { ...step1.step!, id: { ...first.id, step_index: 2 }, published_at_ms: 11001, deadline_at_ms: 16001 }, labels: ["Pause for review", "Skip animation", "Continue"] };
   const received: Snapshot["room"][] = [step0, step1, step2].map(sample => ({ phase: "playing", roster: [], kyoku_end: sample.step, result: null }));
   received.push({ phase: "post_match", roster: [], kyoku_end: null, result: {} });
@@ -77,6 +80,8 @@ function checkReconnectUiMatchesCurrentPublication() {
   }
   for (const bad of [
     { ...step0, labels: ["Continue"] }, { ...step1, labels: ["Dismiss"] },
+    { ...step1, labels: ["Continue (99s)"] }, { ...step1, labels: ["Continue (0s)"] },
+    { ...step1, labels: ["Continue (5s)", "Review"] },
     { ...step0, epoch_ms: 6000 }, { ...step1, status: "disconnected" },
     { ...step2, labels: ["Continue"] }, { ...step2, epoch_ms: 16001 },
     { ...step2, surface: "win" as const }, { ...step2, step: { ...step2.step!, content: { fabricated: true } } },
@@ -394,10 +399,11 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   });
   await page.goto(`${harness.frontendOrigin}/room/${code}`);
   await page.getByLabel("Display name").fill(name);
-  await page.locator("label.character-option").filter({ hasText: "Player Red" }).locator("input[type=radio]").check();
+  await page.getByText("Player Red", { exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Player Red", exact: true })).toBeChecked();
   await page.getByRole("button", { name: /^join room$/i }).click();
-  await page.getByRole("link", { name: /enter lobby/i }).click();
-  await expect(page.locator(".connection-state")).toHaveText("connected");
+  await expect(page).toHaveURL(new RegExp(`/room/${code}/lobby$`));
+  await expect.poll(() => page.evaluate(`(async () => { const { useGameStore } = await import(${JSON.stringify(gameStoreModulePath())}); return useGameStore.getState().status; })()`)).toBe("connected");
   const id = await page.evaluate(code => sessionStorage.getItem(`driichi:participant:${code}`), code);
   expect(id).toBeTruthy();
   return { context, page, id: id!, name, socketKey, messages, sent, sentAt, snapshots, nativeObserver };
@@ -844,7 +850,7 @@ for (const [mode, count, ordinaryAfter] of [
       expect(second.state!.kyoku_results!.wins[1]).toMatchObject({ seat: 2, winning_tile: 77, winning_tile_index: 13, win_points: 2600, evaluation: { Ordinary: { han: 2, fu: 40, limit: null } } });
       if (rendererStall) {
         const sentBefore = bySeat[0].sent.length;
-        await expect(dealerPage.getByRole("button", { name: "Continue", exact: true })).toBeFocused();
+        await expect(dealerPage.getByRole("button", { name: /^Continue \(\d+s\)$/ })).toBeFocused();
         await dealerPage.keyboard.press("Enter");
         await expect.poll(() => bySeat[0].sent.slice(sentBefore).map(raw => JSON.parse(raw)).filter(message => message.type === "confirm_result").map(message => message.step_id)).toEqual([second.room.kyoku_end!.id]);
         await expect.poll(() => bySeat[0].snapshots.some(snapshot => {
@@ -957,8 +963,12 @@ for (const [mode, count, ordinaryAfter] of [
         for (const human of bySeat) await expect(human.page.getByTestId("results-panel")).toBeVisible();
         geometry.push({ surface: "Live final standings", mode, viewport, measurement: await resultGeometry(bySeat[0].page, "standings", viewport, viewport.dpr, undefined, geometryObservations) });
         await bySeat[0].page.setViewportSize({ width: 1023, height: 600 });
-        await expect(bySeat[0].page.getByText("Widen this window to play.", { exact: true })).toBeVisible();
-        await expect(bySeat[0].page.getByTestId("results-panel")).toHaveCount(0);
+        // Post-Match keeps the approved dedicated final standings page below the table
+        // threshold; only the 3D table is gated, so no desktop-limitation panel appears.
+        await expect(bySeat[0].page.getByTestId("results-panel")).toBeVisible();
+        await expect(bySeat[0].page.getByRole("region", { name: "Desktop table limitation", exact: true })).toHaveCount(0);
+        await expect(bySeat[0].page.locator(".three-table")).toHaveCount(0);
+        await expect(bySeat[0].page.locator("canvas")).toHaveCount(0);
         await expect(bySeat[0].page.locator("[data-action-id]")).toHaveCount(0);
         expect(latest(bySeat[0]).room.result).toEqual(final);
         await bySeat[0].page.setViewportSize(viewport);
@@ -990,6 +1000,7 @@ for (const [mode, count, ordinaryAfter] of [
         await replayPage.goto(`${harness.frontendOrigin}/admin/replays/${matchId}`);
         await expect(replayPage.getByTestId("replay-viewer")).toBeVisible();
         const timeline = replayPage.getByRole("slider", { name: /replay position/i });
+        const initialPosition = await timeline.inputValue();
         const pause = replayPage.getByRole("button", { name: "Pause", exact: true });
         if (await pause.count()) await pause.click();
         await expect(replayPage.getByRole("button", { name: "Play", exact: true })).toBeVisible();
@@ -999,11 +1010,18 @@ for (const [mode, count, ordinaryAfter] of [
         geometry.push({ surface: "Replay WinOverlay", mode, viewport, measurement: await resultGeometry(replayPage, "win", viewport, viewport.dpr, undefined, geometryObservations) });
         const sliderBefore = await timeline.inputValue();
         await replayPage.setViewportSize({ width: 1023, height: 600 });
-        await expect(timeline).toHaveValue(sliderBefore);
-        await expect(replayPage.getByRole("button", { name: "Play", exact: true })).toBeVisible();
-        geometry.push({ surface: "Replay below threshold existing behavior", guidanceCount: await replayPage.getByText("Widen this window to play.", { exact: true }).count(), sliderBefore, currentSlider: await timeline.inputValue(), url: replayPage.url() });
+        await expect(replayPage.getByRole("region", { name: "Desktop table limitation", exact: true })).toBeVisible();
+        await expect(timeline).toHaveCount(0);
+        await expect(replayPage.locator(".three-table, canvas")).toHaveCount(0);
+        await expect.poll(() => replayPage.workers().length).toBe(0);
+        geometry.push({ surface: "Replay below threshold metadata-only boundary", sliderBefore, url: replayPage.url() });
         await replayPage.setViewportSize(viewport);
-        geometry.push({ surface: "Replay supported restoration", mode, viewport, measurement: await resultGeometry(replayPage, "win", viewport, viewport.dpr, undefined, geometryObservations) });
+        await expect(timeline).toHaveValue(initialPosition);
+        await expect(replayPage.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+        await timeline.press("Home");
+        for (let index = 0; index < wins[0].event_index; index++) await timeline.press("ArrowRight");
+        await expect(replayPage.getByLabel("Ron win details")).toContainText("2,600");
+        geometry.push({ surface: "Replay supported fresh lifetime", mode, viewport, measurement: await resultGeometry(replayPage, "win", viewport, viewport.dpr, undefined, geometryObservations) });
         await timeline.press("End");
         await expect(replayPage.getByTestId("results-panel")).toBeVisible();
         geometry.push({ surface: "Replay final standings", mode, viewport, measurement: await resultGeometry(replayPage, "standings", viewport, viewport.dpr, undefined, geometryObservations) });
@@ -1011,7 +1029,7 @@ for (const [mode, count, ordinaryAfter] of [
         await testInfo.attach("actual-replay-final-viewport", { body: await replayPage.screenshot(), contentType: "image/png" });
         mark("Post-Match Ready and Rematch");
         for (const human of bySeat) {
-          await human.page.getByTestId("dismiss-results").click();
+          await human.page.getByRole("button", { name: "Return to room", exact: true }).click();
           await expect(human.page.getByRole("button", { name: /set ready/i })).toBeEnabled();
           await human.page.getByRole("button", { name: /set ready/i }).click();
           await expect(human.page.getByText("Ready for the next Match", { exact: true })).toBeVisible();
