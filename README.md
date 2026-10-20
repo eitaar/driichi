@@ -1,7 +1,5 @@
 # Driichi
 
-**A self-hosted riichi mahjong testbed for mjai bots, LLM agents, and human players.**
-
 Driichi is a mahjong match environment built to test and evaluate AIs that use the **mjai protocol**. Humans, mjai bots, MCP-connected LLM agents, and built-in bots can take seats at the same table — including matches such as **human vs. LLM** or **LLM vs. mjai bot**.
 
 ## What it does
@@ -9,7 +7,6 @@ Driichi is a mahjong match environment built to test and evaluate AIs that use t
 - **Mixed-player matches:** Play in a browser alongside mjai bots and MCP-controlled agents.
 - **AI evaluation:** Run bot-only benchmarks with fixed rosters, seat rotation, recorded results, and replays.
 - **Riichi mahjong:** Host three- or four-player Room Matches, with a rules engine and server-authoritative legal actions.
-- **Self-hosting:** Run the Rust server with its embedded web frontend and bundled SQLite storage.
 - **Agent connectivity:** Connect mjai-compatible clients and LLM agents through the MCP interface.
 
 > **Compatibility note:** Three-player MJAI is not supported in the current v1 scope. The riichi.dev-compatible MJAI adapter is still undergoing external compatibility validation.
