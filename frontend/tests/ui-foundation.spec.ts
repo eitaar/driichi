@@ -145,6 +145,25 @@ test("filled controls and action states use readable neutral colors in Light and
   }
 });
 
+test("enabled destructive actions immediately regain full opacity in both themes", async ({ page }) => {
+  for (const theme of ["Light", "Dark"]) {
+    await page.getByRole("button", { name: theme, exact: true }).click();
+    const button = page.getByRole("button", { name: "Disabled destructive action", exact: true });
+    await button.evaluate(element => { (element as HTMLButtonElement).disabled = true; });
+    await expect(button).toHaveCSS("opacity", "0.7");
+    const samples = await button.evaluate(async element => {
+      (element as HTMLButtonElement).disabled = false;
+      const opacity = [Number(getComputedStyle(element).opacity)];
+      for (let frame = 0; frame < 10; frame++) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        opacity.push(Number(getComputedStyle(element).opacity));
+      }
+      return opacity;
+    });
+    expect(Math.min(...samples), `${theme} enabled text must not retain disabled opacity`).toBe(1);
+  }
+});
+
 test("Participant and Rank charts share contrasting solid colors and shape identities", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
   for (const theme of ["Light", "Dark"]) {

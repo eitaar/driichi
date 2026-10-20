@@ -38,6 +38,7 @@ function Foundation() {
         </FieldGroup>
         <div className="flex flex-wrap gap-2">
           <Button>Normal action</Button><Button disabled aria-busy="true">Pending action</Button><Button disabled>Disabled action</Button>
+          <Button variant="destructive" disabled>Disabled destructive action</Button>
           <Button size="lg">Large action</Button><Button size="sm">Small action</Button><Button size="icon-sm" aria-label="Compact action">+</Button>
         </div>
         <output aria-label="Theme preference">{preference}</output>

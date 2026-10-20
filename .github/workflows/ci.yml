@@ -148,6 +148,9 @@ jobs:
       - name: Install browser runtime
         run: npx --prefix frontend playwright install --with-deps chromium
 
+      - name: Run shared UI foundation gates
+        run: npm run test:browser:foundation --prefix frontend
+
       - name: Run browser gates
         env:
           GIT_COMMIT: ${{ github.sha }}
