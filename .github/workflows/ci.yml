@@ -177,6 +177,14 @@ jobs:
         run: npm ci --prefix frontend
       - name: Install browser runtime
         run: npx --prefix frontend playwright install --with-deps chromium
+      # Keep cold dependency compilation outside the bounded service-start fixture.
+      - name: Build real-service frontend
+        run: npm run build --prefix frontend
+      - name: Build Task8 release dependencies
+        timeout-minutes: 25
+        env:
+          CARGO_TARGET_DIR: target/task8-be72f5cf
+        run: cargo build --release --locked -p double_riichi_server --features task8-test-support -j 1
       - name: Run real-service browser gates
         run: npm run test:browser:real --prefix frontend
 
