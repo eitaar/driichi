@@ -1,5 +1,7 @@
 # Driichi
 
+**English** | [日本語](README.ja.md)
+
 Driichi is a mahjong match environment built to test and evaluate AIs that use the **mjai protocol**. Humans, mjai bots, MCP-connected LLM agents, and built-in bots can take seats at the same table — including matches such as **human vs. LLM** or **LLM vs. mjai bot**.
 
 ## What it does
