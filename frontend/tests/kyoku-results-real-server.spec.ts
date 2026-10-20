@@ -399,7 +399,8 @@ async function join(context: BrowserContext, harness: RealServerHarness, code: s
   });
   await page.goto(`${harness.frontendOrigin}/room/${code}`);
   await page.getByLabel("Display name").fill(name);
-  await page.getByRole("radio", { name: "Player Red" }).check();
+  await page.getByText("Player Red", { exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Player Red", exact: true })).toBeChecked();
   await page.getByRole("button", { name: /^join room$/i }).click();
   await expect(page).toHaveURL(new RegExp(`/room/${code}/lobby$`));
   await expect.poll(() => page.evaluate(`(async () => { const { useGameStore } = await import(${JSON.stringify(gameStoreModulePath())}); return useGameStore.getState().status; })()`)).toBe("connected");
@@ -999,6 +1000,7 @@ for (const [mode, count, ordinaryAfter] of [
         await replayPage.goto(`${harness.frontendOrigin}/admin/replays/${matchId}`);
         await expect(replayPage.getByTestId("replay-viewer")).toBeVisible();
         const timeline = replayPage.getByRole("slider", { name: /replay position/i });
+        const initialPosition = await timeline.inputValue();
         const pause = replayPage.getByRole("button", { name: "Pause", exact: true });
         if (await pause.count()) await pause.click();
         await expect(replayPage.getByRole("button", { name: "Play", exact: true })).toBeVisible();
@@ -1008,11 +1010,18 @@ for (const [mode, count, ordinaryAfter] of [
         geometry.push({ surface: "Replay WinOverlay", mode, viewport, measurement: await resultGeometry(replayPage, "win", viewport, viewport.dpr, undefined, geometryObservations) });
         const sliderBefore = await timeline.inputValue();
         await replayPage.setViewportSize({ width: 1023, height: 600 });
-        await expect(timeline).toHaveValue(sliderBefore);
-        await expect(replayPage.getByRole("button", { name: "Play", exact: true })).toBeVisible();
-        geometry.push({ surface: "Replay below threshold existing behavior", guidanceCount: await replayPage.getByRole("region", { name: "Desktop table limitation", exact: true }).count(), tableCount: await replayPage.locator(".three-table").count(), sliderBefore, currentSlider: await timeline.inputValue(), url: replayPage.url() });
+        await expect(replayPage.getByRole("region", { name: "Desktop table limitation", exact: true })).toBeVisible();
+        await expect(timeline).toHaveCount(0);
+        await expect(replayPage.locator(".three-table, canvas")).toHaveCount(0);
+        await expect.poll(() => replayPage.workers().length).toBe(0);
+        geometry.push({ surface: "Replay below threshold metadata-only boundary", sliderBefore, url: replayPage.url() });
         await replayPage.setViewportSize(viewport);
-        geometry.push({ surface: "Replay supported restoration", mode, viewport, measurement: await resultGeometry(replayPage, "win", viewport, viewport.dpr, undefined, geometryObservations) });
+        await expect(timeline).toHaveValue(initialPosition);
+        await expect(replayPage.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+        await timeline.press("Home");
+        for (let index = 0; index < wins[0].event_index; index++) await timeline.press("ArrowRight");
+        await expect(replayPage.getByLabel("Ron win details")).toContainText("2,600");
+        geometry.push({ surface: "Replay supported fresh lifetime", mode, viewport, measurement: await resultGeometry(replayPage, "win", viewport, viewport.dpr, undefined, geometryObservations) });
         await timeline.press("End");
         await expect(replayPage.getByTestId("results-panel")).toBeVisible();
         geometry.push({ surface: "Replay final standings", mode, viewport, measurement: await resultGeometry(replayPage, "standings", viewport, viewport.dpr, undefined, geometryObservations) });
@@ -1020,7 +1029,7 @@ for (const [mode, count, ordinaryAfter] of [
         await testInfo.attach("actual-replay-final-viewport", { body: await replayPage.screenshot(), contentType: "image/png" });
         mark("Post-Match Ready and Rematch");
         for (const human of bySeat) {
-          await human.page.getByTestId("dismiss-results").click();
+          await human.page.getByRole("button", { name: "Return to room", exact: true }).click();
           await expect(human.page.getByRole("button", { name: /set ready/i })).toBeEnabled();
           await human.page.getByRole("button", { name: /set ready/i }).click();
           await expect(human.page.getByText("Ready for the next Match", { exact: true })).toBeVisible();
