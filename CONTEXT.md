@@ -73,16 +73,40 @@ A Match arranged through a riichi.dev-compatible endpoint without a Room, Lobby,
 _Avoid_: Hidden room, ranked room
 
 **Benchmark Mode**:
-A bot-only Room mode for comparing playing strength across matches. Human Participants cannot play; MJAI, MCP, and Built-in Bot Participants may play, but missing players are never automatically supplied.
+A bot-only Room mode where chosen supported software Participants repeatedly play finite, sequential Matches within one selected three-player or four-player ruleset. The Admin observes one live table and reviews accumulated results; an A/B research Experiment is NOT part of the currently approved design. All Bots use existing compatible MJAI/MCP/Built-in authentication and gameplay protocols; no breaking Benchmark-only v2 Bot contract is required. Humans, supplied missing Bots and automatic concurrent 3p+4p modes are not supported.
 _Avoid_: Ranked mode, bot replacement
 
 **Benchmark Run**:
-A fixed roster's series of one or more completed and recorded Matches, with seats rotated between Matches. Aborted or unrecorded Matches do not count toward its target; results belong to each Participant rather than the Bot Token it uses.
+An automatically progressing, finite series of Bot-vs-Bot Matches among a fixed roster in one game mode. Matches progress sequentially until the configured 1–1,000 completed-Match target, Admin Stop or failure. The Admin sees live play, outcomes and cumulative statistics; results belong to Participants, not Bot Tokens. Aborted/unrecorded Matches do not count; restart recovery requires explicit Admin Resume.
 _Avoid_: Rematch, Replay
+
+**Stopped Benchmark Run**:
+A Benchmark Run intentionally ended by an Admin before its configured target; the current Match finishes and is persisted when possible, and the actual completed/target counts and historical results remain accessible. Distinct from Completed (target reached) and Interrupted (unexpected crash), and is not implicitly resumed.
+_Avoid_: Completed Run, Interrupted Run, deleting history
 
 **Benchmark Admin Observer**:
 An authenticated Admin observing a live Benchmark Match with access to every player's concealed information. Ordinary Spectators remain limited to the Public View.
 _Avoid_: Spectator, Replay View
+
+**Benchmark Dashboard**:
+The Admin's primary view for managing ordinary Benchmark Runs, watching one live 3D Mahjong table (expandable to fullscreen) and reviewing current progress, per-Match and cumulative Bot statistics and Replay history.
+_Avoid_: A/B-only Experiment report, game controller
+
+**Benchmark Match Attempt**:
+A single attempt to execute a scheduled ordinary Benchmark Run Match. A failed/incomplete Attempt is recorded separately and never counts as a completed Match. Do not automatically retry an uncertain Match or assume an external Bot reset; deliberate safe restart/recovery is handled by Run control without new mandatory Bot protocol messages.
+_Avoid_: Completed Match, Rematch
+
+**Server-observed Latency**:
+Response timing observed by the game server, distinguished into time to first response and time until a legal Game Action is accepted. It is different from optional Bot-reported inference time.
+_Avoid_: Inference time, guaranteed model compute time
+
+**Live Table Fullscreen**:
+The focused display of a single active Mahjong 3D table expanded beyond its ordinary dashboard panel, without creating another Match, changing game state or showing three concurrent tables.
+_Avoid_: Multi-table viewer, additional Match, simultaneous Run
+
+**Observation Focus**:
+The software Participant selected by a Benchmark Admin Observer to anchor the table viewing perspective and display an enlarged concealed hand. Focus follows that Participant when Seats rotate between Matches; it never changes the Participant's identity, Seat, Controller, or game state.
+_Avoid_: Controller, Player View
 
 **Kyoku**:
 One dealt hand within a match, such as East 1.
